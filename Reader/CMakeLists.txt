@@ -16,14 +16,18 @@ add_executable(Reader WIN32
     src/reader_panel.cpp
     src/note_popup.cpp
     src/book_index.cpp
+    src/imaging.cpp
     src/io.cpp
     src/library.cpp
     src/settings.cpp
+    src/skins.cpp
+    src/skin_wizard.cpp
     src/store.cpp
     src/file_dialog.cpp
     src/book.h
     src/book_view.h
     src/file_dialog.h
+    src/imaging.h
     src/io.h
     src/library.h
     src/library_screen.h
@@ -31,6 +35,8 @@ add_executable(Reader WIN32
     src/note_popup.h
     src/book_index.h
     src/settings.h
+    src/skins.h
+    src/skin_wizard.h
     src/start_screen.h
     src/store.h
     src/theme.h
@@ -82,5 +88,5 @@ else()
         "Reader не запустится, пока она не окажется рядом с исполняемым файлом.")
 endif()
 
-# TODO: витрина хранилища, наблюдаемые каталоги, анимация листания,
-# оглавление и поиск.
+# TODO: витрина хранилища, наблюдаемые каталоги, второй вариант листания.
+# Мастер обложек сделан -- его план остался в doc/skin-wizard-plan.txt.

@@ -62,6 +62,17 @@ public:
     /// умеет и не должна: смена книги — дело приложения.
     std::function<void()> onLibrary;
 
+    /// Читатель попросил новую обложку. Мастер — оверлей приложения, а не
+    /// панели: он ложится поверх всей полосы.
+    std::function<void()> onAddSkin;
+
+    /// Шестерёнка у обложки: открыть в мастере правку её кривизны.
+    std::function<void(std::wstring)> onEditSkin;
+
+    /// Пересобирает список тем: встроенные плюс обложки из полосы набора.
+    /// Зовётся приложением, когда реестр обложек изменился.
+    void refreshThemes();
+
 private:
     void buildTree();
     wxl::UIElement buildContents();
@@ -98,6 +109,7 @@ private:
     std::vector<wxl::UIElement> tabPages_;
     std::vector<wxl::Button> tabButtons_;
     std::vector<wxl::Button> themeButtons_;
+    wxl::Nullable<wxl::StackPanel> themesPanel_ = nullptr;   ///< пересобирается
 
     wxl::Nullable<wxl::StackPanel> contentsList_ = nullptr;
     wxl::Nullable<wxl::StackPanel> searchList_ = nullptr;
