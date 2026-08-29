@@ -1,6 +1,9 @@
 #include "start_screen.h"
 
+#include <algorithm>
 #include <chrono>
+
+#include "card.h"
 
 namespace bukvitsa::reader {
 
@@ -10,10 +13,8 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Ширина колонки кнопок и отступ от правого края.
+// Ширина колонки кнопок; где ей стоять, знает карточка (card.h).
 constexpr float kButtonWidth = 300.0f;
-constexpr float kRightMargin = 72.0f;
-constexpr float kTopMargin = 64.0f;
 
 // Проявление: длительность одной кнопки и разбег между соседними. Четыре
 // кнопки с шагом 40 мс успокаиваются к 320 мс — за 400 мс появление уже
@@ -25,6 +26,15 @@ constexpr auto kStagger = 40ms;
 // Кнопки полупрозрачные: под ними картинка, и она должна просвечивать.
 constexpr float kRestingOpacity = 0.92f;
 
+// Лицо кнопки отмены: чуть серее остальных — она уводит, а не ведёт.
+constexpr uint32_t kCancelFace = 0xFFD9D6D2;
+
+// Большая кнопка, когда ей есть что продолжать: высота под обложку, обложка
+// в пропорции витрины, автор — тем же приглушённым тоном, что и там.
+constexpr float kContinueTall = 100.0f;
+constexpr double kCoverTall = 76.0;
+constexpr uint32_t kDimInk = 0xFF8A857D;
+
 // Откуда кнопка приезжает. Одной прозрачности мало — появление «из ничего»
 // читается плоско, а десяток пикселей вверх делает его живым.
 constexpr Vector3 kRiseFrom{0.0f, 14.0f, 0.0f};
@@ -33,16 +43,31 @@ constexpr Vector3 kRiseFrom{0.0f, 14.0f, 0.0f};
 
 StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor) {
     // Кнопки собираются раньше корня: каждая должна успеть отдать свой визуал
-    // в revealing_ до того, как дерево уедет в конструктор Grid.
+    // в revealing_ до того, как дерево уедет в конструктор Grid. Большая
+    // кнопка остаётся в руках: setContinueBook() наполнит её книгой.
+    auto continueButton = addButton(L"Продолжить чтение", 72.0f, 19.0f, &onContinueReading);
+    continueButton_ = continueButton;
+
     auto panel = StackPanel{
-        hAlign.right,
-        vAlign.top,
-        Margin{0, kTopMargin, kRightMargin, 0},
-        addButton(L"Продолжить чтение", 72.0f, 19.0f, &onContinueReading),
+        continueButton,
         addButton(L"Моя библиотека", 46.0f, 15.0f, &onLibrary),
         addButton(L"Добавить книгу", 46.0f, 15.0f, &onAddBook),
         addButton(L"Добавить каталог", 46.0f, 15.0f, &onAddFolder),
+        addButton(L"Выйти из читалки", 46.0f, 15.0f, &onExit, true),
     };
+
+    // Кнопки лежат на карточке — той же, что у мастера обложек. Проступать
+    // ей вместе с ними, но гасить прозрачность самой карточки нельзя: у неё
+    // заняты фасадные свойства (translation несёт тень), а трогать
+    // handout-визуал элемента с фасадами запрещено — XAML тогда прикладывает
+    // смещение карточки к попаданию мыши дважды, кнопки рисуются на месте, а
+    // ловят щелчки за правым краем экрана (проверено UIA: x кнопок удвоился).
+    // Поэтому прозрачностью проявляется обёртка, у которой фасадов нет.
+    auto card = buttonCard(panel);
+    auto cardShell = Grid{card};
+    Visual cardVisual = ElementCompositionPreview::getElementVisual(cardShell);
+    cardVisual.opacity(0.0f);
+    cardVisual_ = cardVisual;
 
     // Картинка и панель — дети одной ячейки Grid: порядок объявления и есть
     // порядок по глубине, так что панель ложится поверх заставки.
@@ -64,13 +89,29 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
             hAlign.center,
             vAlign.top,
         },
-        panel,
+        cardShell,
     };
 
     // Просить фокус раньше, чем дерево живо, бесполезно: элемент вне
     // визуального дерева тихо отказывает.
     root_.value().add_onLoaded([this](Object const&, RoutedEventArgs&) {
         root_.value().focus(FocusState::Programmatic);
+    });
+
+    // Enter — действие по умолчанию, то же, что большая кнопка; Escape —
+    // отмена, то же, что «Выйти из читалки». На пути вниз, чтобы клавиша
+    // работала независимо от того, на какой кнопке стоит фокус.
+    root_.value().add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
+        switch (args.key()) {
+            case VirtualKey::Enter:
+                if (onContinueReading) onContinueReading();
+                break;
+            case VirtualKey::Escape:
+                if (onExit) onExit();
+                break;
+            default: return;
+        }
+        args.handled(true);
     });
 }
 
@@ -79,7 +120,7 @@ Button StartScreen::addButton(std::wstring_view caption, float tall, float kegel
                               // параметр с именем свойства перекрыл бы одноимённый
                               // тег DSL, и `height = height` стало бы
                               // присваиванием float.
-                              std::function<void()>* action) {
+                              std::function<void()>* action, bool cancel) {
     auto button = Button{
         caption,
         width = kButtonWidth,
@@ -93,6 +134,8 @@ Button StartScreen::addButton(std::wstring_view caption, float tall, float kegel
                 if (*action) (*action)();
             },
     };
+
+    if (cancel) button.background(SolidColorBrush{ARGB{kCancelFace}});
 
     // Подъём идёт по Translation, а НЕ по Offset. Offset — это то, чем XAML
     // расставляет элементы при разметке: анимация захватывает свойство себе,
@@ -118,11 +161,72 @@ Button StartScreen::addButton(std::wstring_view caption, float tall, float kegel
     return button;
 }
 
+void StartScreen::setContinueBook(std::wstring_view title, std::wstring_view author,
+                                  const std::filesystem::path& cover) {
+    if (title.empty()) return;   // продолжать нечего — кнопка остаётся простой надписью
+
+    // Сюда попадают на каждом показе экрана, а книга меняется редко:
+    // перестраивать то же самое незачем.
+    std::wstring key = std::wstring(title) + L'\n' + std::wstring(author) + L'\n' + cover.wstring();
+    if (key == continueKey_) return;
+    continueKey_ = std::move(key);
+
+    // Колонка текста: своя надпись кнопки, под ней название, под ним автор.
+    // Grid со звёздной колонкой, а не горизонтальный StackPanel: тот мерил бы
+    // текст бесконечной шириной, и длинному названию не с чего было бы
+    // обрезаться.
+    auto lines = StackPanel{
+        column = 1,
+        vAlign.center,
+        TextBlock{L"Продолжить чтение", fontSize = 19, FontWeight{600}},
+        TextBlock{std::wstring(title), fontSize = 13, Margin{0, 5, 0, 0},
+                  textTrimming.characterEllipsis},
+        TextBlock{std::wstring(author), fontSize = 12, Margin{0, 2, 0, 0},
+                  foreground = SolidColorBrush{ARGB{kDimInk}}, textTrimming.characterEllipsis},
+    };
+
+    Button button = continueButton_.value();
+
+    if (cover.empty()) {
+        button.content(Grid{lines});
+    } else {
+        // Путь абсолютный, поэтому со схемой: без неё wxl искал бы картинку
+        // рядом с исполняемым файлом — так же устроена обложка на витрине.
+        std::wstring full = cover.wstring();
+        std::replace(full.begin(), full.end(), L'\\', L'/');
+
+        button.content(Grid{
+            columnDefinitions = L"auto,*",
+            Image{
+                source = ImageSource{L"file:///" + full},
+                height = kCoverTall,
+                Margin{0, 0, 12, 0},
+            },
+            lines,
+        });
+    }
+
+    // Растянуть, а не влево: при выравнивании по левому краю содержимому
+    // отдали бы его желанную ширину, и обрезание длинного названия не
+    // сработало бы.
+    button.height(kContinueTall);
+    button.horizontalContentAlignment(HorizontalAlignment::Stretch);
+}
+
 void StartScreen::reveal() {
     if (revealed_) return;   // окно может стать видимым не один раз
     revealed_ = true;
 
     auto const easing = compositor_.createLinearEasingFunction();
+
+    // Карточка — только прозрачностью и без разбега: подъём по Z несёт её
+    // тень, и анимация Translation увела бы его в ноль.
+    if (cardVisual_) {
+        auto fade = compositor_.createScalarKeyFrameAnimation();
+        fade.duration(kFadeDuration);
+        fade.insertKeyFrame(1.0f, 1.0f, easing);
+        cardVisual_.value().startAnimation(L"Opacity", fade);
+    }
 
     for (std::size_t index = 0; index < revealing_.size(); ++index) {
         auto const delay = kStagger * static_cast<int>(index);

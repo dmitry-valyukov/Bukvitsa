@@ -10,9 +10,8 @@
 // Заголовки проекта после стандартных. Свой первым.
 #include "skin_wizard.h"
 
+#include "card.h"
 #include "imaging.h"
-
-#include "Panels.h"
 
 namespace bukvitsa::reader {
 
@@ -27,16 +26,22 @@ constexpr uint32_t kInk = 0xFFE8E4DC;
 constexpr uint32_t kEdge = 0x33FFFFFF;
 
 // Кнопки — как на стартовом экране: та же ширина, та же полупрозрачность,
-// под ними должна просвечивать страница.
+// под ними должна просвечивать страница; где им стоять, знает карточка
+// (card.h). Отмена — чуть серее остальных, она уводит, а не ведёт.
 constexpr float kButtonWidth = 300.0f;
 constexpr float kRestingOpacity = 0.92f;
+constexpr uint32_t kCancelFace = 0xFFD9D6D2;
 
-// Сетка поверх страницы. Кривые — тёплый акцент: их видно и на светлой
-// бумаге, и на тёмном столе. Кружочки полупрозрачны, как кнопки: под ними
-// тоже должна просвечивать страница.
-constexpr D2D1_COLOR_F kCurveColor{1.0f, 0.72f, 0.30f, 0.9f};
+// Сетка поверх страницы — подсказка, а не занавес: все линии сильно
+// полупрозрачны, центральная ярче тоном, чтобы читаться сквозь текст.
+// Кружочки полупрозрачны, как кнопки: под ними тоже страница.
+constexpr D2D1_COLOR_F kCurveColor{1.0f, 0.85f, 0.45f, 0.6f};
 constexpr D2D1_COLOR_F kGripFill{1.0f, 1.0f, 1.0f, 0.55f};
 constexpr D2D1_COLOR_F kGripRing{0.15f, 0.12f, 0.08f, 0.7f};
+
+/// Тень кривой: две чёрно-коричневые полупрозрачные линии в пиксель над и
+/// под основной — они оттеняют её на светлой бумаге.
+constexpr D2D1_COLOR_F kCurveShade{0.11f, 0.07f, 0.03f, 0.3f};
 
 constexpr float kGripRadius = 7.0f;   ///< рисуемый кружочек, DIP
 constexpr float kGripReach = 12.0f;   ///< зона захвата: шире кружочка, промах злит
@@ -75,18 +80,21 @@ const EdgeCurve& SkinWizard::curve(int index) const {
     return const_cast<SkinWizard*>(this)->curve(index);
 }
 
-Button SkinWizard::overlayButton(std::wstring_view caption, void (SkinWizard::*handler)()) {
+Button SkinWizard::overlayButton(std::wstring_view caption, float tall, float kegel, bool cancel,
+                                 void (SkinWizard::*handler)()) {
     using namespace wxl::dsl;
 
     auto button = Button{
         caption,
         width = kButtonWidth,
-        height = 46.0f,
+        height = tall,
         FontWeight{600},
         Margin{0, 6},
-        fontSize = 15,
+        fontSize = kegel,
         onClick = [this, handler](Object const&, RoutedEventArgs&) { (this->*handler)(); },
     };
+
+    if (cancel) button.background(SolidColorBrush{ARGB{kCancelFace}});
 
     // Полупрозрачность — визуалом, как у стартового экрана, только без
     // анимации появления: мастер открывают действием, ждать ему нечего.
@@ -99,15 +107,17 @@ void SkinWizard::buildTree() {
 
     surfaceHost_ = Grid{};
 
-    // Кнопки — по центру правого листа: правая из двух равных колонок, в ней
-    // по центру обеих осей.
-    auto buttons = StackPanel{
-        hAlign.center,
-        vAlign.center,
-        overlayButton(L"Сохранить", &SkinWizard::beginNaming),
-        overlayButton(L"Выбрать другое изображение", &SkinWizard::chooseAnother),
-        overlayButton(L"Выйти из мастера обложек", &SkinWizard::exitWizard),
-    };
+    // Кнопки — на той же карточке и на том же месте, что у стартового
+    // экрана: «Сохранить» увеличена, как «Продолжить чтение», — это действие
+    // по умолчанию, его же зовёт Enter; «Выйти из мастера обложек» — отмена,
+    // её зовёт Escape.
+    auto buttons = buttonCard(StackPanel{
+        overlayButton(L"Сохранить", 72.0f, 19.0f, false, &SkinWizard::saveRequested),
+        overlayButton(L"Выбрать другое изображение", 46.0f, 15.0f, false,
+                      &SkinWizard::chooseAnother),
+        overlayButton(L"Выйти из мастера обложек", 46.0f, 15.0f, true,
+                      &SkinWizard::exitWizard),
+    });
 
     nameBox_ = TextBox{width = 320.0};
 
@@ -154,9 +164,34 @@ void SkinWizard::buildTree() {
         // проверке попадания, и тянуть точки было бы не за что.
         background = SolidColorBrush{ARGB{0x00000000}},
         surfaceHost_.value(),
-        Columns{Grid{}, buttons},
+        buttons,
         namePanel_.value(),
     };
+
+    // Enter — действие по умолчанию: «Сохранить», а в открытом диалоге имени
+    // — его «ОК». Escape — отмена: «Выйти из мастера обложек», а в диалоге —
+    // его «Отмена». На пути вниз, чтобы клавиши работали при любом фокусе.
+    tree.add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
+        const bool naming = namePanel_.value().visibility() == Visibility::Visible;
+        switch (args.key()) {
+            case VirtualKey::Enter:
+                if (naming) {
+                    finishNaming(true);
+                } else {
+                    saveRequested();
+                }
+                break;
+            case VirtualKey::Escape:
+                if (naming) {
+                    finishNaming(false);
+                } else {
+                    exitWizard();
+                }
+                break;
+            default: return;
+        }
+        args.handled(true);
+    });
 
     tree.add_onSizeChanged([this](Object const&, SizeChangedEventArgs&) {
         // Координаты в долях, поэтому смена размеров ничего не двигает по
@@ -165,6 +200,10 @@ void SkinWizard::buildTree() {
     });
 
     tree.add_onPointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
+        // Фокус — себе на каждом нажатии: щелчок по книге уводил его с
+        // мастера, и Enter с Escape переставали работать.
+        root_.value().focus(FocusState::Programmatic);
+
         const PointerPoint touch = args.getCurrentPoint(root_.value());
         if (!touch.properties().isLeftButtonPressed()) return;
 
@@ -190,14 +229,16 @@ void SkinWizard::buildTree() {
             // Точка ходит в обе оси. По вертикали — от кромки до четверти
             // высоты; по горизонтали — между соседками, не выходя со своей
             // половины разворота: середина — граница листов.
-            const bool top = dragCurve_ < 2;
-            const bool left = dragCurve_ % 2 == 0;
+            // Не top/left: это имена тегов DSL, и локальная переменная их
+            // прятала бы.
+            const bool onTop = dragCurve_ < 2;
+            const bool onLeft = dragCurve_ % 2 == 0;
 
-            edited.y[at] = top ? std::clamp(point.y / height_, 0.0f, kEdgeReach)
-                               : std::clamp(point.y / height_, 1.0f - kEdgeReach, 1.0f);
+            edited.y[at] = onTop ? std::clamp(point.y / height_, 0.0f, kEdgeReach)
+                                 : std::clamp(point.y / height_, 1.0f - kEdgeReach, 1.0f);
 
-            const float low = at == 0 ? (left ? 0.0f : 0.5f) : edited.x[at - 1] + kMinGap;
-            const float high = at == last ? (left ? 0.5f : 1.0f) : edited.x[at + 1] - kMinGap;
+            const float low = at == 0 ? (onLeft ? 0.0f : 0.5f) : edited.x[at - 1] + kMinGap;
+            const float high = at == last ? (onLeft ? 0.5f : 1.0f) : edited.x[at + 1] - kMinGap;
             edited.x[at] = std::clamp(point.x / width_, low, high);
 
             redraw();
@@ -318,26 +359,33 @@ void SkinWizard::redraw() {
         context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> curveBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shade;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fill;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ring;
         context->CreateSolidColorBrush(kCurveColor, &curveBrush);
+        context->CreateSolidColorBrush(kCurveShade, &shade);
         context->CreateSolidColorBrush(kGripFill, &fill);
         context->CreateSolidColorBrush(kGripRing, &ring);
-        if (!curveBrush || !fill || !ring) return;
+        if (!curveBrush || !shade || !fill || !ring) return;
+
+        // Смещение теневых линий — ровно пиксель экрана, какой бы ни был
+        // масштаб: рисуем в DIP, а пиксель хотим физический.
+        const float pixel = 1.0f / scale_;
 
         // Линии-подсказки: у каждого листа свои, от его верхней кривой к его
         // нижней, и только между крайними точками — за ними кривая всё равно
         // держит их значение, и линия во всю ширину лишь мешала бы снимку.
         for (int half = 0; half < 2; ++half) {
-            const EdgeCurve& top = curve(half);
-            const EdgeCurve& bottom = curve(half + 2);
+            // Не top/bottom: это имена тегов DSL.
+            const EdgeCurve& upper = curve(half);
+            const EdgeCurve& lower = curve(half + 2);
             constexpr std::size_t last = static_cast<std::size_t>(EdgeCurve::kPoints) - 1;
 
             for (int row = 0; row < kGuideRows; ++row) {
                 const float share = static_cast<float>(row) / (kGuideRows - 1);
                 const float base = kEdgeInset + share * (1.0f - 2.0f * kEdgeInset);
-                const float from = top.x[0] + (bottom.x[0] - top.x[0]) * share;
-                const float to = top.x[last] + (bottom.x[last] - top.x[last]) * share;
+                const float from = upper.x[0] + (lower.x[0] - upper.x[0]) * share;
+                const float to = upper.x[last] + (lower.x[last] - upper.x[last]) * share;
 
                 const int steps =
                     std::max(2, static_cast<int>((to - from) * width_ / kCurveStep));
@@ -346,11 +394,20 @@ void SkinWizard::redraw() {
                 for (int step = 0; step <= steps; ++step) {
                     const float u =
                         from + (to - from) * static_cast<float>(step) / static_cast<float>(steps);
-                    const float deviation = (edgeAt(top, u) - kEdgeInset) * (1.0f - share) +
-                                            (edgeAt(bottom, u) - (1.0f - kEdgeInset)) * share;
+                    const float deviation = (edgeAt(upper, u) - kEdgeInset) * (1.0f - share) +
+                                            (edgeAt(lower, u) - (1.0f - kEdgeInset)) * share;
                     const D2D1_POINT_2F point{u * width_, (base + deviation) * height_};
 
-                    if (step > 0) context->DrawLine(previous, point, curveBrush.Get(), 1.5f);
+                    // Линия рисуется тройкой: тёмная в пиксель выше, тёмная в
+                    // пиксель ниже и основная поверх — тень отбивает её и от
+                    // светлой бумаги, и от текста.
+                    if (step > 0) {
+                        context->DrawLine({previous.x, previous.y - pixel},
+                                          {point.x, point.y - pixel}, shade.Get(), 1.5f);
+                        context->DrawLine({previous.x, previous.y + pixel},
+                                          {point.x, point.y + pixel}, shade.Get(), 1.5f);
+                        context->DrawLine(previous, point, curveBrush.Get(), 1.5f);
+                    }
                     previous = point;
                 }
             }
@@ -394,6 +451,16 @@ void SkinWizard::chooseAnother() {
 
 void SkinWizard::exitWizard() {
     if (onExit) onExit();
+}
+
+void SkinWizard::saveRequested() {
+    // У правки старой обложки копия и имя уже есть — сохранение идёт сразу,
+    // без диалога. Имя спрашивается только у новой.
+    if (!skin_.image.empty()) {
+        if (onSave) onSave(skin_, image_);
+        return;
+    }
+    beginNaming();
 }
 
 void SkinWizard::beginNaming() {
