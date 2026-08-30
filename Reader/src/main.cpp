@@ -12,10 +12,12 @@
 #include <windows.h>
 
 #include "file_dialog.h"
+#include "imaging.h"
 #include "library.h"
 #include "settings.h"
 
 #include "FileDrop.h"
+#include "WindowBackdrop.h"
 #include "WindowHandle.h"
 #include "WindowPlacement.h"
 #include "library_screen.h"
@@ -457,6 +459,15 @@ wxl::Teardown wxl_launched() {
         title = L"Буквица",
         minSize = {720, 520},
     };
+
+    // Заставка — ещё и задником окна. Остров XAML при быстрой растяжке
+    // отстаёт от рамки на такт-другой, и в просвете видна GDI-поверхность
+    // окна, стёртая белой классовой кистью WinUI. wxl забирает эту
+    // поверхность себе и рисует в неё ту же картинку синхронно в WM_SIZE,
+    // с тем же кадрированием, что у XAML-заставки (UniformToFill к верхней
+    // середине), — просвет продолжает заставку, а не белеет.
+    wxl::window_backdrop_image(window,
+                               (exeDirectory() / L"Assets/splash-screen-1k.png").c_str());
 
     // Ввод-вывод поднимается сразу за окном: раньше нельзя (нужна его очередь),
     // позже незачем (первое, что делает приложение, — читает настройки).
