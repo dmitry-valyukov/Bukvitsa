@@ -26,6 +26,11 @@ namespace bukvitsa::reader {
 
 class LibraryScreen {
 public:
+    /// Бумажный цвет полки. Публичен, потому что тем же цветом красится оконный
+    /// задник (wxl::window_backdrop_color) в режиме библиотеки, чтобы просвет
+    /// быстрого ресайза продолжал полку, а не заставку прежнего экрана.
+    static constexpr std::uint32_t kPaper = 0xFFF7F4EE;
+
     LibraryScreen();
 
     /// Корень, который отдаётся окну как содержимое.

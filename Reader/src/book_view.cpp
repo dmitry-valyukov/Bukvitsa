@@ -628,6 +628,18 @@ std::filesystem::path BookView::backdropFile() const {
     return {};
 }
 
+std::filesystem::path BookView::backdropImage() const { return backdropFile(); }
+
+wxl::Color BookView::backgroundColor() const {
+    // Цвет темы D2D-в-долях переводится в байтовый ARGB, каким его берёт
+    // оконный задник; альфа непрозрачная — задник кроет насквозь.
+    const D2D1_COLOR_F& c = paper().background;
+    auto byte = [](float v) {
+        return static_cast<uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    return wxl::ARGB{byte(c.r), byte(c.g), byte(c.b)};
+}
+
 void BookView::setFontSize(float size) {
     const float wanted = std::clamp(size, 10.0f, 48.0f);
     if (wanted == fontSize_) return;

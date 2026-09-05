@@ -95,6 +95,20 @@ struct App {
     std::shared_ptr<Skins> skins;
 };
 
+// Оконный задник (wxl::window_backdrop_*) режима чтения: фотография-подложка
+// книги, а у ровной темы — её цвет. Повторный вызов сам освобождает прежний
+// битмап (wxl удаляет старую HBITMAP), поэтому смена задника при уходе с
+// экрана его же и освобождает. Так в просветах быстрого ресайза, где
+// XAML-остров отстаёт, проступает бумага этой книги, а не заставка.
+inline void applyReadingBackdrop(wxl::Window const& window, const BookView& view) {
+    std::filesystem::path const image = view.backdropImage();
+    if (image.empty()) {
+        wxl::window_backdrop_color(window, view.backgroundColor());
+    } else {
+        wxl::window_backdrop_image(window, image.c_str());
+    }
+}
+
 // ---- корутины приложения --------------------------------------------------
 //
 // Каждая исполняется в интерфейсном потоке и уходит с него ровно на `co_await`
@@ -364,6 +378,10 @@ task openBookFlow(App app, std::filesystem::path path) {
     *app.bookCameFrom = *app.shown;
     *app.shown = Screen::Book;
     app.window.content(app.view->root());
+
+    // Задник окна — под эту книгу, а не под заставку прежнего экрана: иначе её
+    // фон проступал бы в просветах ресайза, а её битмап так и висел бы в памяти.
+    applyReadingBackdrop(app.window, *app.view);
 }
 
 /// Запуск: настройки, реестр, первый экран и только потом -- показ окна.
@@ -556,6 +574,9 @@ wxl::Teardown wxl_launched() {
 
         *shown = Screen::Start;
         window.content(screen->root());
+        // Задник окна — снова заставка: на неё мы и возвращаемся.
+        wxl::window_backdrop_image(
+            window, (exeDirectory() / L"Assets/splash-screen-1k.png").c_str());
     };
 
     // Всё, из чего собрано приложение, одной связкой: её берут корутины.
@@ -571,6 +592,9 @@ wxl::Teardown wxl_launched() {
         shelf->show(*library, settings->continueReading);
         *shown = Screen::Library;
         window.content(shelf->root());
+        // Задник окна — ровный бумажный цвет полки (тот же, что фон
+        // LibraryScreen), чтобы просвет ресайза продолжал её, а не заставку.
+        wxl::window_backdrop_color(window, wxl::ARGB{LibraryScreen::kPaper});
 
         // Карточки уже стоят; проценты проступят на них по мере того, как
         // рабочий поток прочитает файлы состояния — по одному на книгу.
