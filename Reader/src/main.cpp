@@ -626,7 +626,11 @@ wxl::Teardown wxl_launched() {
         }
     };
 
-    panel->onSettingsChanged = [io, settings, view] {
+    // Сохранить настройки вида по текущему состоянию полосы. Одна лямбда на два
+    // источника: панель зовёт её из своих ползунков, а сама полоса — из
+    // Ctrl+колеса и клавиш ±/0/T (onReadingSettingsChanged), чтобы правки в
+    // обход панели сохранялись тем же путём, а не жили только до перезапуска.
+    auto const persistView = [io, settings, view] {
         // Обложка запоминается именем, встроенная тема — номером; прежний
         // номер при обложке остаётся как то, куда вернуться, если реестр
         // обложек пропадёт.
@@ -641,6 +645,8 @@ wxl::Teardown wxl_launched() {
         settings->margin = view->margin();
         io->spawn(saveSettingsLater(*io, *settings));
     };
+    panel->onSettingsChanged = persistView;
+    view->onReadingSettingsChanged = persistView;
 
     // ---- мастер обложек ----
     //

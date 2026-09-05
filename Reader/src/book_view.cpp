@@ -434,20 +434,21 @@ Grid BookView::buildTree() {
                 if (book_) goTo(catchUpTo(book_->characterCount()));
                 break;
             case VirtualKey::Add:
-                if (controlHeld()) setFontSize(fontSize_ + 1.0f);
+                if (controlHeld()) { setFontSize(fontSize_ + 1.0f); readingChanged(); }
                 break;
             case VirtualKey::Subtract:
-                if (controlHeld()) setFontSize(fontSize_ - 1.0f);
+                if (controlHeld()) { setFontSize(fontSize_ - 1.0f); readingChanged(); }
                 break;
             case VirtualKey::Number0:
             case VirtualKey::NumberPad0:
-                if (controlHeld()) setFontSize(20.0f);
+                if (controlHeld()) { setFontSize(20.0f); readingChanged(); }
                 break;
             case VirtualKey::T:
                 // Голая T меняет тему; Ctrl+T -- оглавление, и его разбирает
                 // приложение: сюда оно не должно доходить вовсе.
                 if (controlHeld()) return;
                 setTheme(theme_ + 1);
+                readingChanged();
                 break;
             default:
                 return;   // не наша клавиша: пусть идёт дальше
@@ -464,6 +465,7 @@ Grid BookView::buildTree() {
 
         if (control) {
             setFontSize(fontSize_ + (delta > 0 ? 1.0f : -1.0f));
+            readingChanged();
         } else {
             turnPage(delta > 0 ? -1 : 1);
         }
