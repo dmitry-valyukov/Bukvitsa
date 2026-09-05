@@ -209,6 +209,8 @@ endif()
 add_subdirectory(sandbox/AsyncScheme)
 if(WIN32)
     add_subdirectory(sandbox/IslandProbe)
+    add_subdirectory(sandbox/AttachedProbe)
+    add_subdirectory(sandbox/XamlLayoutProbe)
 endif()
 
 # ---- Документация ----
