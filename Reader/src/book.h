@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include <d2d1_1.h>
@@ -76,6 +77,28 @@ public:
     typography::Paginator& paginator() { return *paginator_; }
     const typography::Paginator& paginator() const { return *paginator_; }
 
+    /// Книга, развёрнутая в блоки, — мастер-список для оглавления и поиска.
+    /// Пагинатор смотрит в него же, но по одной главе за раз.
+    std::span<const typography::Block> blocks() const { return blocks_; }
+
+    /// Сколько в книге глав верхнего уровня — единиц, которыми она верстается.
+    std::size_t chapterCount() const { return chapterStarts_.size(); }
+
+    /// Глава, на которую пагинатор наведён сейчас.
+    std::size_t currentChapter() const { return currentChapter_; }
+
+    /// Символ, с которого начинается глава, — позиция её первого блока в книге.
+    /// Индекс — из [0, chapterCount).
+    std::uint32_t chapterFirstChar(std::size_t index) const {
+        return blocks_[chapterStarts_[index]].charOffset;
+    }
+
+    /// Наводит пагинатор на главу, внутри которой лежит этот символ книги. Та
+    /// же глава — ничего не делает, и её шейпинг не пропадает; другая —
+    /// пагинатор сбрасывается на её блоки, и вёрстку главы надо начать заново.
+    /// @return сменилась ли глава.
+    bool setCurrentChapter(std::uint32_t charOffset);
+
     /// Часть-картинка книги как она лежит в пакете. Нужна тому, кто вынимает
     /// обложку: рисовать её незачем, надо положить байты в кэш.
     const fb3::ImagePart* image(std::uint32_t index) const;
@@ -97,7 +120,21 @@ private:
     std::filesystem::path path_;
     fb3::Document document_;
     typography::Engine engine_;
+
+    /// Книга, развёрнутая в блоки, — мастер-список: на нём стоят оглавление и
+    /// поиск, и в него же (видом, не копией) смотрит пагинатор — по одной главе
+    /// за раз. Заводится до пагинатора и живёт дольше: тот держит вид в него.
+    std::vector<typography::Block> blocks_;
     std::unique_ptr<typography::Paginator> paginator_;
+
+    /// Индексы блоков — начала глав верхнего уровня; [0] всегда 0. Пагинатор
+    /// верстает по одной главе, а это её границы в мастер-списке.
+    std::vector<std::size_t> chapterStarts_;
+
+    /// Глава, на которую наведён пагинатор. npos — ещё ни на какую: в
+    /// конструкторе пагинатор смотрит на всю книгу, поэтому первый
+    /// setCurrentChapter срабатывает всегда.
+    std::size_t currentChapter_ = static_cast<std::size_t>(-1);
 
     Microsoft::WRL::ComPtr<IWICImagingFactory> wic_;
     std::vector<ImageAsset> images_;
