@@ -37,14 +37,16 @@
 #include "book.h"
 #include "note_popup.h"
 
+namespace wxl { class CompositionWindow; }
+
 namespace bukvitsa::reader {
 
 class BookView {
 public:
-    /// @param queue очередь окна: ею откладывается и мгновенная вёрстка, и
-    ///        порции, которыми считается книга. Поток, на котором стоит окно,
-    ///        обязан оставаться свободным.
-    BookView(const wxl::Compositor& compositor, const wxl::DispatcherQueue& queue);
+    /// @param window окно: его сцена несёт страницу — визуалы на композиторе
+    ///        окна, привешенные к contentVisual(), — а его очередь откладывает
+    ///        и мгновенную вёрстку, и порции, которыми считается книга.
+    BookView(wxl::CompositionWindow& window);
 
     /// Корень, который отдаётся окну как содержимое.
     const wxl::UIElement& root() const { return root_.value(); }
@@ -53,6 +55,13 @@ public:
     /// что «поверх страницы» — это внутри полосы, а не рядом с ней: страница
     /// занимает её целиком, и никакого другого места нет.
     void addOverlay(const wxl::UIElement& element);
+
+    /// Полоса стала текущим экраном — или перестала им быть. Страница живёт на
+    /// сцене окна, и вне чтения её быть видно не должно: `setActive(false)`
+    /// прячет её визуалы. Входя в чтение (`true`), заодно ставит задником окна
+    /// бумагу текущей темы — основу, сквозь которую при растяжке видна бумага,
+    /// а не заставка.
+    void setActive(bool active);
 
     /// Открывает книгу на этом символе. Книга держится здесь, пока её не
     /// сменит другая: пагинатор внутри неё указывает в её же узлы.
@@ -261,6 +270,10 @@ private:
     void drawPage(ID2D1DeviceContext* context, float width, float height);
     void drawInvitation(ID2D1DeviceContext* context, float width, float height);
 
+    /// Рисует фотоподложку темы прямо в поверхность страницы, под текстом:
+    /// страница остаётся одним битмапом, без отдельного визуала-подложки.
+    void drawThemeBackdrop(ID2D1DeviceContext* context, float width, float height);
+
     /// Всё содержимое страницы — набор, картинки, средник, колонцифру — в этот
     /// контекст. Вынесено из `drawPage`, потому что рисуется в два адреса: в
     /// поверхность напрямую у ровных тем и в слой изгиба у темы с фотографией.
@@ -300,9 +313,10 @@ private:
     /// каталоге данных, копией снимка.
     std::filesystem::path backdropFile() const;
 
-    wxl::Compositor compositor_;
-    wxl::Nullable<wxl::Grid> root_ = nullptr;
-    wxl::Nullable<wxl::Grid> pageHost_ = nullptr;   ///< несёт визуалы страницы
+    wxl::CompositionWindow* window_ = nullptr;   ///< сцена и очередь окна
+    wxl::Compositor compositor_;                 ///< композитор окна: на нём визуалы страницы
+    wxl::Nullable<wxl::Grid> root_ = nullptr;    ///< прозрачный остров: ввод и оверлеи поверх сцены
+    bool active_ = false;                        ///< полоса — текущий экран, её сцена показана
 
     /// Два листа, а не один. Верхний уезжает, нижний остаётся: листание — это
     /// именно два листа, и держать их постоянно дешевле, чем заводить второй
@@ -463,13 +477,11 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> statusFormat_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> invitationFormat_;
 
-    /// Подложка темы — свой визуал под обоими листами страницы, со своей
-    /// поверхностью в размере снимка, а не окна. Смена размера полосы двигает
-    /// только Visual::size(), как и у обычных листов, — растяжку снимка под
-    /// новый размер тянет кисть композитора, а не эта поверхность, и лишний
-    /// пересчёт при каждом WM_SIZE ей не грозит.
-    wxl::Nullable<wxl::SpriteVisual> backdrop_ = nullptr;
-    std::optional<wxl::DrawingSurface> backdropSurface_;
+    /// Фотоподложка темы, раскодированная в битмап устройства поверхности:
+    /// рисуется прямо в поверхность страницы под текстом (drawThemeBackdrop), а
+    /// не отдельным визуалом, — страница остаётся одним битмапом. Кэшируется,
+    /// пока снимок тот же; сбрасывается при смене темы, заводится в drawPage.
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> photoBitmap_;
 
     /// Подложка темы на пути от файла к экрану. Раскодированный снимок висит
     /// здесь, пока путь не сменится, — decodeImage() читает диск и стоит

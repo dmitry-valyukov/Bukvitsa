@@ -16,8 +16,13 @@
 #include <wincodec.h>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
-// а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
-// он единственный тянет за собой стандартные заголовки, которых нет здесь.
+// а стандартный заголовок после импорта MSVC уже не принимает. CompositionWindow
+// первым из них: у него свои стандартные заголовки, а после импорта их не
+// подключить; сам он к импорту не ведёт.
+#include "CompositionWindow.h"
+
+// Свой следующим: он единственный тянет за собой стандартные заголовки,
+// которых нет здесь, — и уже он ведёт к импорту модуля книги.
 #include "book_view.h"
 
 #include "imaging.h"
@@ -223,8 +228,13 @@ bool controlHeld() {
 
 }  // namespace
 
-BookView::BookView(const Compositor& compositor, const DispatcherQueue& queue)
-    : compositor_(compositor), queue_(queue), note_(compositor) {
+BookView::BookView(CompositionWindow& window)
+    : window_(&window),
+      compositor_(window.compositor()),
+      queue_(window.dispatcherQueue()),
+      // Всплывашка сноски — XAML-остров, её рисунок висит в дереве острова, а не
+      // на сцене: ей нужен композитор острова, а не окна.
+      note_(window.chromeCompositor()) {
     root_ = buildTree();
 
     IDWriteFactory* const dwrite = dwriteFactory();
@@ -248,27 +258,12 @@ Grid BookView::buildTree() {
     // перекрыли бы одноимённые переменные во всём остальном коде.
     using namespace wxl::dsl;
 
-    // Страница живёт в отдельном узле, а не прямо в корне: поверхность
-    // прицеплена к нему дочерним визуалом, а всё, что кладут поверх полосы
-    // (сноска, панель), — это дети корня, идущие после него. Порядок детей и
-    // есть порядок по глубине.
-    pageHost_ = Grid{};
-
     // Два листа под общим контейнером. Клип контейнера — то, что не даёт
     // повёрнутому листу вылезти за полосу: клип живёт в координатах самого
     // визуала и применяется до его преобразования, поэтому повёрнутый лист
     // обрезается по прямоугольнику страницы, а не по описанному вокруг него.
     sheets_ = compositor_.createContainerVisual();
     sheets_.value().clip(compositor_.createInsetClip());
-
-    // Подложка темы — в самом низу, под обоими листами: у неё тот же клип
-    // контейнера, а видна она там, где сверху ни строки, ни бумаги. Кисть
-    // подводится позже, вместе с первым снимком, — до тех пор визуал прячет
-    // сама видимость.
-    SpriteVisual backdrop = compositor_.createSpriteVisual();
-    backdrop.isVisible(false);
-    sheets_.value().children().insertAtBottom(backdrop);
-    backdrop_ = backdrop;
 
     for (int index = 0; index < 2; ++index) {
         SpriteVisual sheet = compositor_.createSpriteVisual();
@@ -352,24 +347,26 @@ Grid BookView::buildTree() {
 
     applyShadowTint();
 
-    ElementCompositionPreview::setElementChildVisual(pageHost_.value(), sheets_.value());
+    // Страница — на сцене окна: её визуалы висят на композиторе окна и привешены
+    // к contentVisual() (над задником, под островом), а не всунуты в дерево XAML
+    // через setElementChildVisual. Пока полоса не стала текущим экраном, её сцена
+    // скрыта — setActive(true) покажет её при входе в чтение.
+    window_->contentVisual().children().insertAtTop(sheets_.value());
+    sheets_.value().isVisible(false);
 
     auto tree = Grid{
         // Корень берёт фокус на себя: событие клавиши начинается у того, на
         // чём фокус, и пока фокуса нет ни на чём, ловить нечего.
         isTabStop = true,
 
-        // Кисть здесь нужна по двум причинам, и обе неочевидны.
-        //
-        // Панель без кисти в проверке попадания не участвует вовсе, и щелчок
-        // по полосе не доходил никуда: ни до знака сноски, ни до трети
-        // страницы. И кисть эта — цвета бумаги, а не прозрачная: страницу
-        // рисует композитор поверх неё, но в те кадры, когда он ещё не
-        // нарисовал (первый показ, растянутое мышью окно), из-под неё должна
-        // проглядывать бумага, а не белизна окна.
-        background = SolidColorBrush{ARGB{argbOf(kThemes[0].background)}},
+        // Кисть прозрачная, но она есть: без кисти Grid не участвует в проверке
+        // попадания вовсе, и щелчок по полосе не доходил бы никуда — ни до знака
+        // сноски, ни до трети страницы. Прозрачная потому, что страница теперь
+        // на сцене под этим островом, и сквозь него должна быть видна она.
+        // Бумагу-основу под страницей несёт задник окна (см. setActive), а сам
+        // набор нарисован на сцене.
+        background = SolidColorBrush{colors.transparent},
 
-        pageHost_.value(),
         note_.root(),
     };
 
@@ -560,11 +557,32 @@ bool BookView::dismissOverlays() {
     return true;
 }
 
+void BookView::setActive(bool active) {
+    active_ = active;
+
+    // Задник окна в чтении — сама страница, один битмап на весь задник: её
+    // ставит redraw поверхностью surface_[resting_], и никакой бумаги-подложки
+    // под ней нет. Уходя, задник вернёт себе стартовый экран (заставку).
+    if (active && window_) {
+        updateBackdrop();
+        redraw();
+    }
+
+    // Листы в покое не нужны: страница видна задником окна. Они выходят на сцену
+    // только на время переворота — показывает их startTurn, прячут обратно
+    // turnCompleted и cancelTurn.
+    if (sheets_) sheets_.value().isVisible(false);
+}
+
 void BookView::setTheme(int index) {
     const int count = themeCount();
     theme_ = ((index % count) + count) % count;
     note_.hide();   // подложка всплывашки покрашена прошлой темой
-    root_.value().background(SolidColorBrush{ARGB{argbOf(paper().background)}});
+    // Бумага-основа — задником окна, а не кистью корня: страница теперь на
+    // сцене, и основа под ней, сквозь которую при растяжке видна бумага, а не
+    // заставка, — это задний фон окна. Ставим только когда полоса показана: до
+    // входа в чтение задником владеет заставка стартового экрана.
+    if (active_ && window_) window_->background(ARGB{argbOf(paper().background)});
     applyShadowTint();   // тени тоже покрашены прошлой темой
 
     // Карта держит форму конкретной обложки — новой теме она не годится.
@@ -591,7 +609,7 @@ void BookView::setSkins(std::vector<Skin> skins) {
     // Пересохранённая обложка могла сменить и снимок, и кривые.
     backdropLoaded_.clear();
     backdropSource_.Reset();
-    backdropSurface_.reset();
+    photoBitmap_.Reset();
     warpMap_.Reset();
     warpFlat_ = false;
     updateBackdrop();
@@ -713,7 +731,6 @@ bool BookView::applySize(float width, float height, float scale) {
         sheet.centerPoint({0.0f, height * 0.5f, 0.0f});
     }
     sheets_.value().size({width, height});
-    backdrop_.value().size({width, height});
 
     // Полоска тени меряется целым разворотом, а до нужной доли её ужимает
     // Scale: ширина тени зависит от корешка, а корешок при этом вызове ещё
@@ -996,6 +1013,8 @@ void BookView::startDraftTurn() {
     resting_ = 1 - resting_;
     redraw();
 
+    if (sheets_) sheets_.value().isVisible(true);   // листы — на время переворота
+
     if (columns_ == 2) {
         animateSpreadTurn(true);
     } else {
@@ -1044,6 +1063,11 @@ void BookView::redraw() {
             drawInvitation(context, width_, height_);
         }
     });
+
+    // Страница — задник окна: один битмап на весь задник, кроет его синхронно,
+    // как заставка. В чтении (active_) ставим поверхность задником; на стартовом
+    // экране задником владеет заставка.
+    if (active_ && window_) window_->background(surface_[resting_]);
 }
 
 void BookView::turnPage(int delta) {
@@ -1190,6 +1214,10 @@ void BookView::startTurn(std::size_t wanted, bool forward) {
     resting_ = 1 - resting_;
     redraw();
 
+    // Листы выходят на сцену на время переворота — в покое их прячут; страница
+    // при этом уже задником окна (redraw), и уезжающий лист открывает её.
+    if (sheets_) sheets_.value().isVisible(true);
+
     // Книжное листание — только для разворота: снимать бумагу с корешка
     // можно там, где корешок есть. В одну колонку и в три листается тем
     // же, чем листалось всегда.
@@ -1204,7 +1232,10 @@ void BookView::startTurn(std::size_t wanted, bool forward) {
 
 void BookView::turnCompleted() {
     turning_ = false;
-    if (pending_ == 0) return;
+    if (pending_ == 0) {
+        if (sheets_) sheets_.value().isVisible(false);   // очередь пуста — в покой
+        return;
+    }
 
     --pending_;
     if (draft_) {
@@ -1221,6 +1252,9 @@ void BookView::cancelTurn() {
     ++turnEpoch_;
     turning_ = false;
     pending_ = 0;
+    // Переворот отменён — в покой: листы прячем, страница видна задником окна.
+    // Начнётся следом встречный переворот — startTurn снова их покажет.
+    if (sheets_) sheets_.value().isVisible(false);
 }
 
 void BookView::raise(const SpriteVisual& sheet) {
@@ -1653,57 +1687,20 @@ const fb3::Node* BookView::noteAt(Point point, Point& anchor) const {
 void BookView::updateBackdrop() {
     const std::filesystem::path wanted = backdropFile();
     if (wanted.empty()) {
-        backdrop_.value().isVisible(false);
+        backdropSource_.Reset();
+        photoBitmap_.Reset();
+        backdropLoaded_.clear();
         return;
     }
 
+    // Раскодированный снимок держится, пока путь тот же: decodeImage читает диск
+    // и дорог. Смена снимка сбрасывает и кэш битмапа устройства — его заведёт
+    // заново drawThemeBackdrop, вкомпоновывая фото прямо в поверхность страницы.
     if (backdropLoaded_ != wanted.native()) {
         backdropSource_ = decodeImage(wanted);
         backdropLoaded_ = wanted.native();
-        backdropSurface_.reset();   // старая поверхность — под старый снимок
+        photoBitmap_.Reset();
     }
-
-    if (!backdropSource_) {
-        backdrop_.value().isVisible(false);
-        return;
-    }
-
-    if (!backdropSurface_) {
-        UINT pixelWidth = 0;
-        UINT pixelHeight = 0;
-        if (FAILED(backdropSource_->GetSize(&pixelWidth, &pixelHeight)) || pixelWidth == 0 ||
-            pixelHeight == 0) {
-            backdropSource_.Reset();   // не вышло — больше не пытаемся
-            backdrop_.value().isVisible(false);
-            return;
-        }
-
-        // Поверхность заводится в размере снимка, а не полосы: он не
-        // меняется с размером окна, и растягивать его до нового размера —
-        // дело кисти ниже, а не пересоздания поверхности на каждый WM_SIZE.
-        const float pixelW = static_cast<float>(pixelWidth);
-        const float pixelH = static_cast<float>(pixelHeight);
-        backdropSurface_.emplace(compositor_, SizeInt32{static_cast<int32_t>(pixelWidth),
-                                                        static_cast<int32_t>(pixelHeight)});
-        backdropSurface_->draw([this, pixelW, pixelH](ID2D1DeviceContext* context) {
-            Microsoft::WRL::ComPtr<ID2D1Bitmap1> bitmap;
-            if (FAILED(context->CreateBitmapFromWicBitmap(backdropSource_.Get(), nullptr,
-                                                          &bitmap)))
-                return;
-            context->DrawBitmap(bitmap.Get(), D2D1::RectF(0.0f, 0.0f, pixelW, pixelH), 1.0f,
-                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        });
-
-        // На всю полосу, без сохранения пропорций: снимок скомпонован под
-        // полосу — книга в середине, стол по краям, — и кадрирование ради
-        // пропорций резало бы именно книгу. Растяжение бумажной фактуры глаз
-        // не ловит; тянет его теперь кисть композитора, а не DrawBitmap.
-        CompositionSurfaceBrush brush = backdropSurface_->brush();
-        brush.stretch(CompositionStretch::Fill);
-        backdrop_.value().brush(brush);
-    }
-
-    backdrop_.value().isVisible(true);
 }
 
 bool BookView::ensureWarp(ID2D1DeviceContext* context) {
@@ -1859,17 +1856,41 @@ bool BookView::ensureBlur() {
     return true;
 }
 
+void BookView::drawThemeBackdrop(ID2D1DeviceContext* context, float width, float height) {
+    if (!backdropSource_) return;
+
+    // Битмап устройства заводится раз на снимок и держится: CreateBitmapFromWicBitmap
+    // на каждый кадр стоил бы дорого, а перерисовка бывает лишь на листании и
+    // растяжке. Устройство поверхности стабильно, пока не потеряно.
+    if (!photoBitmap_) {
+        if (FAILED(context->CreateBitmapFromWicBitmap(backdropSource_.Get(), nullptr, &photoBitmap_)))
+            return;
+    }
+
+    // На всю полосу, без сохранения пропорций (как прежняя кисть Fill): снимок
+    // скомпонован под полосу — книга по центру, стол по краям.
+    context->DrawBitmap(photoBitmap_.Get(), D2D1::RectF(0.0f, 0.0f, width, height), 1.0f,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+}
+
 void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) {
-    // Ровные темы кроют лист целиком, как и раньше. У темы с подложкой лист
-    // остаётся прозрачным везде, где нет ни строки, ни следа эффектов, — под
-    // ним лежит собственный визуал подложки, и закрасить его тем же цветом
-    // значило бы спрятать от читателя.
+    // Ровная тема кроет лист бумагой; тема с подложкой начинает лист с самой
+    // фотоподложки, а текст ложится поверх неё — всё в одну поверхность, одним
+    // битмапом, без отдельного визуала под страницей.
     if (backdropFile().empty()) {
         context->Clear(paper().background);
         drawPageContent(context, width, height);
         return;
     }
-    context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+    // Фото-тема: фотоподложка — в ту же поверхность, под текстом, чтобы страница
+    // осталась одним битмапом. Не раскодировалась — бумага темы, чтобы задник не
+    // сквозил.
+    if (backdropSource_) {
+        context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+        drawThemeBackdrop(context, width, height);
+    } else {
+        context->Clear(paper().background);
+    }
 
     const bool warped = ensureWarp(context);
 

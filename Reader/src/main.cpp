@@ -344,21 +344,24 @@ task openBookFlow(App app, std::filesystem::path path) {
     app.view->open(std::move(book), app.state->charOffset);
     app.panel->setState(app.state.get());
 
-    // Сверстать и нарисовать до показа. Полоса займёт то же место, что и экран,
-    // который сейчас на нём стоит, — а у него и спрашиваем размер с масштабом.
-    // Иначе читатель, нажав «Продолжить чтение», успевает увидеть пустой лист:
-    // элемент попадает в дерево сразу, а рисовать его есть чем только со
-    // следующего кадра.
-    if (Nullable<UIElement> const showing = app.window->content()) {
-        if (Nullable<XamlRoot> const root = showing->xamlRoot()) {
-            Size const area = root->size();
-            app.view->prepare(area.width, area.height,
-                              static_cast<float>(root->rasterizationScale()));
-        }
+    // Сверстать и нарисовать до показа, чтобы читатель не увидел пустой лист.
+    // Страница живёт задником окна, и меру — размер с масштабом — берём у самого
+    // окна, а не у экрана поверх него. Так это работает и при автооткрытии на
+    // старте, когда никакого экрана ещё нет: прежде размер спрашивали у
+    // content()->xamlRoot(), а на старте острова нет вовсе — и падало на нуле.
+    if (SizeInt32 const pixels = app.window->clientSize();
+        pixels.width > 0 && pixels.height > 0) {
+        float scale = app.window->rasterizationScale();
+        if (scale <= 0.0f) scale = 1.0f;
+        app.view->prepare(static_cast<float>(pixels.width) / scale,
+                          static_cast<float>(pixels.height) / scale, scale);
     }
 
     *app.bookCameFrom = *app.shown;
     *app.shown = Screen::Book;
+    // Полоса становится текущим экраном: показать её страницу на сцене и увести
+    // задник окна с заставки на бумагу темы. Только потом — остров ввода поверх.
+    app.view->setActive(true);
     app.window->content(app.view->root());
 }
 
@@ -481,7 +484,7 @@ wxl::Teardown wxl_launched() {
     io->start(window->dispatcherQueue());
 
     auto screen = std::make_shared<StartScreen>(window->chromeCompositor());
-    auto view = std::make_shared<BookView>(window->chromeCompositor(), window->dispatcherQueue());
+    auto view = std::make_shared<BookView>(*window);
     auto shelf = std::make_shared<LibraryScreen>();
     auto skins = std::make_shared<Skins>();
     auto wizard = std::make_shared<SkinWizard>(window->chromeCompositor());
@@ -539,13 +542,20 @@ wxl::Teardown wxl_launched() {
 
     auto const closePanel = [panel] { panel->close(); };
 
-    auto const showStartScreen = [window, screen, settings, library, shown, rememberPosition,
+    auto const showStartScreen = [window, screen, view, settings, library, shown, rememberPosition,
                                   closePanel] {
         closePanel();
         // Уходя из книги, место чтения пишем сразу: отложенная запись ждёт
         // паузы, а читатель уже ушёл -- и, может быть, закроет приложение
         // раньше, чем таймер сработает.
         rememberPosition();
+
+        // Полоса перестаёт быть текущим экраном: убрать её страницу со сцены и
+        // вернуть задником окна заставку — под стартовым экраном она, а не
+        // бумага книги. Задел на будущее (кэш texture держит снимок) — второй
+        // показ заставки идёт без загрузки.
+        view->setActive(false);
+        window->backgroundAsync(exeDirectory() / L"Assets/splash-screen-1k.png");
 
         // Большой кнопке — её книга: обложка, название, автор. На каждом
         // показе, потому что последняя открытая книга могла смениться, пока
@@ -568,6 +578,12 @@ wxl::Teardown wxl_launched() {
                               closePanel] {
         closePanel();
         rememberPosition();   // и полка тут же покажет свежий процент
+
+        // Как и на стартовом экране: полоса перестаёт быть текущим экраном —
+        // её страница уходит со сцены, а задником окна снова заставка.
+        app.view->setActive(false);
+        window->backgroundAsync(exeDirectory() / L"Assets/splash-screen-1k.png");
+
         // Полка пересобирается на каждый показ: книга могла добавиться, а
         // место чтения — уехать с тех пор, как её видели в прошлый раз.
         shelf->show(*library, settings->continueReading);
