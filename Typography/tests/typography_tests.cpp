@@ -95,7 +95,7 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
 void testPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                     std::uint32_t characterCount);void testChunkedPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                            std::uint32_t characterCount);
-void testDraftPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                      std::uint32_t characterCount);
 void testSeparatorAtPageBottom(typography::Engine& engine);
 
@@ -296,7 +296,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     showFirstLines(engine, blocks, 620.0f);
     testPagination(engine, blocks, book.characterCount());
     testChunkedPagination(engine, blocks, book.characterCount());
-    testDraftPagination(engine, blocks, book.characterCount());
+    testEagerPagination(engine, blocks, book.characterCount());
     testScaledShaping(engine, blocks, 620.0f);
 }
 
@@ -489,7 +489,7 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     style.fontSize = 20.0f;
 
     const auto started = std::chrono::steady_clock::now();
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
     const auto firstElapsed = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - started).count();
@@ -590,7 +590,7 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
 
     // Снимок целой вёрстки. Именно снимок, а не ссылки: следующая вёрстка
@@ -692,85 +692,29 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     check(worstChunk <= 50.0 + worstBlock * 3.0 + 25.0, "порция не растягивается на всю книгу");
 }
 
-/// Грязная вёрстка: то, что читатель видит в тот же кадр, в котором сменил
-/// кегль или размер окна, и то, чем он листает вперёд, пока книга набирается
-/// начисто.
-void testDraftPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+/// Энергичный досчёт: когда читатель идёт туда, куда фоновые порции ещё не
+/// дошли, набор доводится ровно до нужного места и не дальше. На этом стоит
+/// листание назад и прыжок по закладке — ждать порций там нечего, но и считать
+/// главу целиком незачем.
+void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                          std::uint32_t characterCount) {
     typography::PageStyle style;
     style.width = 620.0f;
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
     if (paginator.pageCount() < 8) {
-        check(true, "книга слишком коротка для грязной вёрстки — пропущено");
+        check(true, "книга слишком коротка для проверки досчёта — пропущено");
         return;
     }
 
-    // Место чтения берётся из настоящей вёрстки: так оно и приходит из
-    // читалки — первым символом страницы, на которой читатель стоял.
+    // Место чтения где-то в середине — так оно и приходит из читалки: первым
+    // символом страницы, на которой читатель стоял.
     const std::uint32_t at = paginator.page(paginator.pageCount() / 2).firstCharOffset;
 
-    // И кегль другой: грязная вёрстка затем и нужна, что полоса сменилась.
-    style.fontSize = 23.0f;
-
-    const auto started = std::chrono::steady_clock::now();
-    paginator.draftAt(style, at, 2);
-    const double elapsed = std::chrono::duration<double, std::milli>(
-                               std::chrono::steady_clock::now() - started).count();
-
-    std::printf("  грязная вёрстка: %zu страниц с символа %u, %.2f мс\n", paginator.draftCount(),
-                at, elapsed);
-
-    check(paginator.draftCount() >= 2, "грязная вёрстка даёт столько страниц, сколько просили");
-    check(paginator.draftPage(0).firstCharOffset == at,
-          "грязная страница начинается ровно с места чтения");
-    check(paginator.draftPage(1).firstCharOffset > at, "вторая страница идёт за первой");
-
-    // Полоса та же, что и у книжной вёрстки: грязная страница не имеет права
-    // быть длиннее той, которую читатель увидит потом.
-    bool inside = true;
-    for (std::size_t i = 0; i < paginator.draftCount(); ++i) {
-        for (const typography::PlacedLine& placed : paginator.draftPage(i).lines) {
-            if (placed.baseline > style.height || placed.line == nullptr) inside = false;
-        }
-    }
-    check(inside, "строки грязной страницы не вылезают за полосу");
-
-    // Листание вперёд. Страницу за показанными грязная вёрстка досчитывает
-    // тогда, когда её спросили, а не заранее: перевёрстка случается на каждое
-    // движение мыши, листание — куда реже. Главное здесь то, что текст не
-    // теряется и не повторяется: новый разворот начинается ровно там, где
-    // кончился прежний.
-    bool walks = true;
-    int steps = 0;
-
-    for (; steps < 24; ++steps) {
-        if (!paginator.draftUpTo(3)) break;   // книга кончилась
-
-        const std::uint32_t next = paginator.draftPage(2).firstCharOffset;
-        if (next <= paginator.draftPage(1).lastCharOffset) walks = false;
-
-        paginator.draftAt(style, next, 2);
-        if (paginator.draftCount() == 0 || paginator.draftPage(0).firstCharOffset != next)
-            walks = false;
-    }
-
-    check(steps > 0, "по книге можно листать грязной вёрсткой");
-    check(walks, "следующий разворот начинается там, где кончился прежний");
-
-    // Досчёт до конца книги: грязная вёрстка честно говорит, что дальше
-    // страниц нет, а не отдаёт пустую.
-    paginator.draftAt(style, paginator.page(paginator.pageCount() - 1).firstCharOffset, 2);
-    const bool beyond = paginator.draftUpTo(64);
-    check(!beyond, "за концом книги грязных страниц не выдумывается");
-
-    // Энергичный досчёт: чистовой набор доводится ровно до нужного места и не
-    // дальше. На этом стоит листание назад и прыжок по закладке — читателю
-    // там ждать порций нечего, но и считать книгу целиком незачем.
-    typography::Paginator second(engine, blocks, characterCount);
+    typography::Chapter second(engine, blocks, characterCount);
     second.beginLayout(style);
     const bool more = second.advanceTo(at);
     const std::size_t reached = second.pageForCharOffset(at);
@@ -812,7 +756,7 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
     // строка на неё вместе уже не помещаются.
     style.height = 30.0f;
 
-    typography::Paginator paginator(
+    typography::Chapter paginator(
         engine, blocks, static_cast<std::uint32_t>(paragraph.paragraph.text.size()));
     paginator.setStyle(style);
 
