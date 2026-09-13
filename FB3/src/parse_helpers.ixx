@@ -26,7 +26,12 @@ inline bool toBool(std::optional<wxl::text::u8_view> value, bool fallback = fals
 }
 
 /// Целое из значения атрибута; числом должно быть всё значение целиком.
-std::optional<int> toInt(std::optional<wxl::text::u8_view> value);
+///
+/// Берёт байты, а не проверенный вид: цифры — это цифры, и правильность UTF-8
+/// разбору числа не нужна. Отсутствующий атрибут — забота вызывающего, и она
+/// пишется звеном той же цепочки:
+/// `attribute(name).transform(&u8_view::chars).and_then(toInt)`.
+std::optional<int> toInt(std::string_view value);
 
 /// «20mm», «50%», «1.5em» — число и единица без пробела между ними.
 /// Пересчётом в пиксели занимается вёрстка: только она знает кегль полосы.

@@ -12,12 +12,10 @@ import :parse_helpers;
 
 namespace bukvitsa::fb3::detail {
 
-std::optional<int> toInt(const std::optional<wxl::text::u8_view> value) {
-    if (!value) return std::nullopt;
-
+std::optional<int> toInt(const std::string_view value) {
     // Числом должно быть всё значение: «12abc» — это не двенадцать, это
     // испорченный атрибут, и лучше о нём не знать вовсе, чем знать половину.
-    return wxl::text::parse<int>(value->chars());
+    return wxl::text::parse<int>(value);
 }
 
 Length toLength(const std::optional<wxl::text::u8_view> value) {
