@@ -18,12 +18,6 @@ std::optional<int> toInt(const std::string_view value) {
     return wxl::text::parse<int>(value);
 }
 
-std::optional<int> toInt(const std::optional<wxl::text::u8_view> value) {
-    if (!value) return std::nullopt;
-
-    return toInt(value->chars());
-}
-
 Length toLength(const std::optional<wxl::text::u8_view> value) {
     Length length;
 

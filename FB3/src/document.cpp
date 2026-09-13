@@ -248,7 +248,10 @@ private:
             data.article = toBool(source.attribute("article"));
             data.clipped = source.child("clipped") != nullptr;
             data.firstCharPos = static_cast<std::uint32_t>(
-                toInt(source.attribute("first-char-pos")).value_or(static_cast<int>(doc_.characterCount)));
+                source.attribute("first-char-pos")
+                    .transform(&wxl::text::u8_view::chars)
+                    .and_then(toInt)
+                    .value_or(static_cast<int>(doc_.characterCount)));
             return &data;
         }
 
@@ -315,8 +318,14 @@ private:
         case NodeKind::TableCell: {
             TableCellData& data = doc_.cells.emplace_back();
             data.header = source.name() == "th";
-            data.colSpan = static_cast<std::uint16_t>(toInt(source.attribute("colspan")).value_or(1));
-            data.rowSpan = static_cast<std::uint16_t>(toInt(source.attribute("rowspan")).value_or(1));
+            data.colSpan = static_cast<std::uint16_t>(source.attribute("colspan")
+                                                          .transform(&wxl::text::u8_view::chars)
+                                                          .and_then(toInt)
+                                                          .value_or(1));
+            data.rowSpan = static_cast<std::uint16_t>(source.attribute("rowspan")
+                                                          .transform(&wxl::text::u8_view::chars)
+                                                          .and_then(toInt)
+                                                          .value_or(1));
             data.align = toAlign(source.attribute("align"));
             data.verticalAlign = toVerticalAlign(source.attribute("valign"));
             return &data;

@@ -115,7 +115,9 @@ void readSequences(const node& parent, Description& description) {
 
         SequenceEntry entry;
         entry.name = wxl::text::u8_text(sequence.attribute("name").value_or(wxl::text::u8_view{}));
-        entry.number = detail::toInt(sequence.attribute("number"));
+        entry.number = sequence.attribute("number")
+                           .transform(&wxl::text::u8_view::chars)
+                           .and_then(detail::toInt);
 
         if (!entry.name.empty())
             description.sequences.push_back(std::move(entry));
@@ -139,7 +141,7 @@ std::optional<int> yearOf(const node* dateHolder) {
     if (const auto value = date->attribute("value"); value && value->size() >= 4)
         return detail::toInt(value->chars().substr(0, 4));
 
-    return detail::toInt(textOf(date));
+    return detail::toInt(textOf(date).chars());
 }
 
 }  // namespace
@@ -215,9 +217,15 @@ Description readDescription(const wxl::xml::node& root) {
 
     if (const node* fragment = root.child("fb3-fragment")) {
         FragmentInfo info;
-        info.fullLength = static_cast<std::uint64_t>(detail::toInt(fragment->attribute("full_length")).value_or(0));
+        info.fullLength = static_cast<std::uint64_t>(fragment->attribute("full_length")
+                                                         .transform(&wxl::text::u8_view::chars)
+                                                         .and_then(detail::toInt)
+                                                         .value_or(0));
         info.fragmentLength =
-            static_cast<std::uint64_t>(detail::toInt(fragment->attribute("fragment_length")).value_or(0));
+            static_cast<std::uint64_t>(fragment->attribute("fragment_length")
+                                           .transform(&wxl::text::u8_view::chars)
+                                           .and_then(detail::toInt)
+                                           .value_or(0));
         description.fragment = info;
     }
 
