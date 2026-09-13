@@ -23,7 +23,7 @@ std::optional<std::string> readWhole(const path& p) {
 
     if (!source.opened()) return std::nullopt;
 
-    const std::optional<std::uint64_t> length = source.size();
+    const wxl::core::nullable<std::uint64_t> length = source.size();
 
     if (!length) return std::nullopt;
 
