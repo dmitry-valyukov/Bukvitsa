@@ -14,7 +14,7 @@
 export module bukvitsa.fb3:opc;
 
 import std;
-import wxl.text;
+import wxl.unicode;
 
 export namespace bukvitsa::fb3 {
 
@@ -30,7 +30,7 @@ struct PackagePart {
     std::wstring name;        ///< нормализованное имя части ("/fb3/body.xml")
     // TODO: contentType - как enum для известных и unknown для неизвестных
     // (всё равно неизвестно, что с ними делать)
-    wxl::text::u8_text contentType;  ///< "application/fb3-body+xml" и т.п.
+    wxl::unicode::u8_text contentType;  ///< "application/fb3-body+xml" и т.п.
 };
 
 /// Пакет OPC, открытый на чтение.
@@ -76,10 +76,10 @@ public:
     /// Часть по идентификатору связи от другой части. Так разрешается
     /// `<img src="rId7">`: src в FB3 указывает на Id связи, а не на файл.
     std::optional<PackagePart> partByRelationshipId(const PackagePart& source,
-                                                    wxl::text::u8_view relationshipId) const;
+                                                    wxl::unicode::u8_view relationshipId) const;
 
     /// Все связи заданного типа от части — например, все картинки тела.
-    std::vector<std::pair<wxl::text::u8_text, PackagePart>> relationshipsOfType(
+    std::vector<std::pair<wxl::unicode::u8_text, PackagePart>> relationshipsOfType(
         const PackagePart& source, std::wstring_view relationshipType) const;
 
     /// Содержимое части целиком.

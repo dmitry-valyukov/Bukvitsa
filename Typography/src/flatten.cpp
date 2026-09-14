@@ -14,7 +14,7 @@
 #include "bukvitsa/typography/block.h"
 
 import bukvitsa.fb3;
-import wxl.text;
+import wxl.unicode;
 
 namespace bukvitsa::typography {
 namespace fb3 = bukvitsa::fb3;
@@ -247,14 +247,14 @@ private:
         appendUnit(L' ', pendingSpaceAt_);
     }
 
-    void appendText(wxl::text::u8_view utf8, std::uint32_t firstCharOffset) {
+    void appendText(wxl::unicode::u8_view utf8, std::uint32_t firstCharOffset) {
         std::uint32_t offset = firstCharOffset;
 
         // Текст пришёл проверенным: wxl.xml проверяет документ целиком, прежде
         // чем его разбирать, и её дерево — а за ним и модель книги — отдаёт
         // u8_view. Обход кодовых точек берёт этот довод готовым и не
         // спрашивает заново на каждом байте.
-        for (const char32_t code : wxl::text::code_points(utf8)) {
+        for (const char32_t code : wxl::unicode::code_points(utf8)) {
             if (!preformatted_ && code < 0x80u && isSpace(static_cast<char>(code))) {
                 if (!pendingSpace_) {
                     pendingSpace_ = true;

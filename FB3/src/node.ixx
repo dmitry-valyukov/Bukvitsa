@@ -11,7 +11,7 @@
 // копирует байты, и модель тоже. Отсюда единственное правило для пользователя:
 // узлы живут ровно столько, сколько Document.
 //
-// Вид этот — `wxl::text::u8_view`, то есть текст, про который уже известно, что
+// Вид этот — `wxl::unicode::u8_view`, то есть текст, про который уже известно, что
 // он правильный UTF-8: `wxl.xml` проверяет документ целиком, прежде чем его
 // разбирать, и незачем спрашивать об этом заново у вёрстки на каждом абзаце.
 // Сравнивается он с обычным литералом ровно так же, как раньше.
@@ -19,7 +19,7 @@
 export module bukvitsa.fb3:node;
 
 import std;
-import wxl.text;
+import wxl.unicode;
 
 export namespace bukvitsa::fb3 {
 
@@ -104,8 +104,8 @@ struct Length {
 /* самого сложного из них.                                            */
 
 struct SectionData {
-    wxl::text::u8_view id;          ///< UUID секции — на нём стоят позиции чтения
-    wxl::text::u8_view doi;
+    wxl::unicode::u8_view id;          ///< UUID секции — на нём стоят позиции чтения
+    wxl::unicode::u8_view doi;
     SectionOutput output = SectionOutput::Default;
     bool article = false;         ///< самостоятельная единица (статья сборника)
     bool clipped = false;         ///< вырезана из пробного фрагмента
@@ -118,31 +118,31 @@ struct DivData {
     Length width, minWidth, maxWidth;
     bool border = false;
     bool keepOnOnePage = false;   ///< on-one-page: не разрывать между полосами
-    wxl::text::u8_view bindTo;      ///< id элемента, к которому привязан плавающий блок
+    wxl::unicode::u8_view bindTo;      ///< id элемента, к которому привязан плавающий блок
 };
 
 struct ImageData {
-    wxl::text::u8_view relationshipId; ///< src= указывает на Id связи, не на файл
-    wxl::text::u8_view alt;
+    wxl::unicode::u8_view relationshipId; ///< src= указывает на Id связи, не на файл
+    wxl::unicode::u8_view alt;
     Length width, minWidth, maxWidth;
     std::uint32_t partIndex = 0;     ///< индекс части в Document::images()
 };
 
 struct NoteRefData {
-    wxl::text::u8_view targetId;    ///< id соответствующего NoteBody
+    wxl::unicode::u8_view targetId;    ///< id соответствующего NoteBody
     NoteRole role = NoteRole::Auto;
     NoteNumbering numbering = NoteNumbering::Arabic;
     const class Node* target = nullptr; ///< разрешён при загрузке: без поиска при вёрстке
 };
 
 struct LinkData {
-    wxl::text::u8_view href;        ///< внешний URL либо "#id" внутри книги
+    wxl::unicode::u8_view href;        ///< внешний URL либо "#id" внутри книги
     bool internal = false;
 };
 
 struct ListData {
     bool ordered = false;         ///< ol против ul
-    wxl::text::u8_view markerImageRelationshipId;
+    wxl::unicode::u8_view markerImageRelationshipId;
 };
 
 struct TableCellData {
@@ -154,7 +154,7 @@ struct TableCellData {
 };
 
 struct SpanData {
-    wxl::text::u8_view className;
+    wxl::unicode::u8_view className;
 };
 
 /* ------------------------------------------------------------------ */
@@ -174,7 +174,7 @@ public:
     bool hasChildren() const { return firstChild_ != nullptr; }
 
     /// Текст листа (kind() == Text). Вид в буфер документа, ничего не копирует.
-    wxl::text::u8_view text() const { return text_; }
+    wxl::unicode::u8_view text() const { return text_; }
 
     /// Позиция первого символа узла в полной книге. Это валюта закладок
     /// и прогресса: она не зависит ни от кегля, ни от размера окна, ни от
@@ -222,7 +222,7 @@ private:
 
     NodeKind kind_ = NodeKind::Text;
     std::uint32_t charOffset_ = 0;
-    wxl::text::u8_view text_;
+    wxl::unicode::u8_view text_;
     const void* data_ = nullptr;   ///< указывает на структуру, которую называет kind_
 
     Node* parent_ = nullptr;

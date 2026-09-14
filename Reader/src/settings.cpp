@@ -9,7 +9,7 @@
 // модульный std, а стандартный заголовок после него MSVC уже не принимает.
 #include "store.h"
 
-import wxl.text;
+import wxl.unicode;
 import wxl.xml;
 
 namespace bukvitsa::reader {
@@ -100,7 +100,7 @@ Settings parseSettings(std::string xml) {
 std::string settingsXml(const Settings& settings) {
     // text_builder, а не поток с нейтральной локалью: локали у него нет вовсе,
     // и дробное число пишется точкой, какие бы настройки ни стояли в Windows.
-    wxl::text::text_builder<> out;
+    wxl::unicode::text_builder<> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<settings version=\"{}\">\n", Settings::kVersion);

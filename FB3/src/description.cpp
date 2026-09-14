@@ -1,7 +1,7 @@
 module bukvitsa.fb3;
 
 import std;
-import wxl.text;
+import wxl.unicode;
 import wxl.xml;
 
 import :description;
@@ -18,7 +18,7 @@ using wxl::xml::node;
 /// Метаданным нужна владеющая копия, потому что `Description` переживает
 /// документ, а кусок почти всегда ровно один — на этот случай копия делается
 /// сразу нужного размера, без роста буфера.
-wxl::text::u8_text textOf(const node* el) {
+wxl::unicode::u8_text textOf(const node* el) {
     if (!el) return {};
 
     const auto pieces = el->text_pieces();
@@ -26,9 +26,9 @@ wxl::text::u8_text textOf(const node* el) {
 
     if (at == pieces.end()) return {};
 
-    const wxl::text::u8_view first = *at;
+    const wxl::unicode::u8_view first = *at;
 
-    if (++at == pieces.end()) return wxl::text::u8_text(first);
+    if (++at == pieces.end()) return wxl::unicode::u8_text(first);
 
     std::string joined(first.chars());
 
@@ -37,10 +37,10 @@ wxl::text::u8_text textOf(const node* el) {
 
     // Куски резаны разметкой, а не посреди последовательности, поэтому склейка
     // правильного текста снова правильна -- вот и весь довод.
-    return wxl::text::u8_text(wxl::text::assume_valid(joined));
+    return wxl::unicode::u8_text(wxl::unicode::assume_valid(joined));
 }
 
-PersonRole roleFromLink(wxl::text::u8_view link) {
+PersonRole roleFromLink(wxl::unicode::u8_view link) {
     if (link == "author") return PersonRole::Author;
     if (link == "translator") return PersonRole::Translator;
     if (link == "editor") return PersonRole::Editor;
@@ -56,7 +56,7 @@ PersonRole roleFromLink(wxl::text::u8_view link) {
 /// Как показать человека одной строкой. Имя из частей собирается само —
 /// но только если они есть: в реальных файлах у части людей заполнен лишь
 /// `<title><main>`, и выдуманная из пустых частей строка была бы хуже него.
-wxl::text::u8_text displayNameOf(const Person& person, wxl::text::u8_view titleMain) {
+wxl::unicode::u8_text displayNameOf(const Person& person, wxl::unicode::u8_view titleMain) {
     std::string name;
 
     if (!person.firstName.empty()) name = person.firstName.chars();
@@ -69,9 +69,9 @@ wxl::text::u8_text displayNameOf(const Person& person, wxl::text::u8_view titleM
         name += person.lastName.chars();
     }
 
-    if (name.empty()) return wxl::text::u8_text(titleMain);
+    if (name.empty()) return wxl::unicode::u8_text(titleMain);
 
-    return wxl::text::u8_text(wxl::text::assume_valid(name));
+    return wxl::unicode::u8_text(wxl::unicode::assume_valid(name));
 }
 
 void readPersons(const node& relations, Description& description) {
@@ -85,19 +85,19 @@ void readPersons(const node& relations, Description& description) {
         // Отдельной константой, а не литералом прямо в value_or: проверка
         // литерала происходит в compile-time, а value_or -- обычная функция,
         // и передать через неё consteval-конструктор нельзя.
-        static constexpr wxl::text::u8_view defaultLink = u8"author";
+        static constexpr wxl::unicode::u8_view defaultLink = u8"author";
 
         const auto link = subject.attribute("link").value_or(defaultLink);
         person.role = roleFromLink(link);
         if (person.role == PersonRole::Other)
-            person.roleName = wxl::text::u8_text(link);
-        person.id = wxl::text::u8_text(subject.attribute("id").value_or(wxl::text::u8_view{}));
+            person.roleName = wxl::unicode::u8_text(link);
+        person.id = wxl::unicode::u8_text(subject.attribute("id").value_or(wxl::unicode::u8_view{}));
 
         person.firstName = textOf(subject.child("first-name"));
         person.middleName = textOf(subject.child("middle-name"));
         person.lastName = textOf(subject.child("last-name"));
 
-        wxl::text::u8_text titleMain;
+        wxl::unicode::u8_text titleMain;
         if (const node* title = subject.child("title"))
             titleMain = textOf(title->child("main"));
 
@@ -114,9 +114,9 @@ void readSequences(const node& parent, Description& description) {
             continue;
 
         SequenceEntry entry;
-        entry.name = wxl::text::u8_text(sequence.attribute("name").value_or(wxl::text::u8_view{}));
+        entry.name = wxl::unicode::u8_text(sequence.attribute("name").value_or(wxl::unicode::u8_view{}));
         entry.number = sequence.attribute("number")
-                           .transform(&wxl::text::u8_view::chars)
+                           .transform(&wxl::unicode::u8_view::chars)
                            .and_then(detail::toInt);
 
         if (!entry.name.empty())
@@ -146,7 +146,7 @@ std::optional<int> yearOf(const node* dateHolder) {
 
 }  // namespace
 
-wxl::text::u8_text Description::authorsLine() const {
+wxl::unicode::u8_text Description::authorsLine() const {
     std::string line;
 
     for (const Person& person : persons) {
@@ -157,7 +157,7 @@ wxl::text::u8_text Description::authorsLine() const {
         line += person.displayName.chars();
     }
 
-    return wxl::text::u8_text(wxl::text::assume_valid(line));
+    return wxl::unicode::u8_text(wxl::unicode::assume_valid(line));
 }
 
 /// Разбор description.xml. Внутренняя точка входа: Document зовёт её,
@@ -165,8 +165,8 @@ wxl::text::u8_text Description::authorsLine() const {
 Description readDescription(const wxl::xml::node& root) {
     Description description;
 
-    description.id = wxl::text::u8_text(root.attribute("id").value_or(wxl::text::u8_view{}));
-    description.version = wxl::text::u8_text(root.attribute("version").value_or(wxl::text::u8_view{}));
+    description.id = wxl::unicode::u8_text(root.attribute("id").value_or(wxl::unicode::u8_view{}));
+    description.version = wxl::unicode::u8_text(root.attribute("version").value_or(wxl::unicode::u8_view{}));
 
     if (const node* title = root.child("title")) {
         description.title = textOf(title->child("main"));
@@ -218,12 +218,12 @@ Description readDescription(const wxl::xml::node& root) {
     if (const node* fragment = root.child("fb3-fragment")) {
         FragmentInfo info;
         info.fullLength = static_cast<std::uint64_t>(fragment->attribute("full_length")
-                                                         .transform(&wxl::text::u8_view::chars)
+                                                         .transform(&wxl::unicode::u8_view::chars)
                                                          .and_then(detail::toInt)
                                                          .value_or(0));
         info.fragmentLength =
             static_cast<std::uint64_t>(fragment->attribute("fragment_length")
-                                           .transform(&wxl::text::u8_view::chars)
+                                           .transform(&wxl::unicode::u8_view::chars)
                                            .and_then(detail::toInt)
                                            .value_or(0));
         description.fragment = info;

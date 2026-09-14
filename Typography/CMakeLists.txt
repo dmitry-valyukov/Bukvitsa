@@ -15,8 +15,8 @@ target_include_directories(bukvitsa_typography PUBLIC
 
 target_link_libraries(bukvitsa_typography PUBLIC bukvitsa::fb3)
 
-# wxl::text — только внутри: обход кодовых точек книги при развороте в блоки.
-target_link_libraries(bukvitsa_typography PRIVATE wxl::text)
+# wxl::unicode — только внутри: обход кодовых точек книги при развороте в блоки.
+target_link_libraries(bukvitsa_typography PRIVATE wxl::unicode)
 
 # MicroTeX — только внутри: наружу formula.h отдаёт Formula и FormulaEngine,
 # ни одного имени tex:: в публичных заголовках нет.

@@ -1,7 +1,7 @@
 module bukvitsa.fb3;
 
 import std;
-import wxl.text;
+import wxl.unicode;
 import wxl.xml;
 
 import :document;
@@ -221,13 +221,13 @@ private:
     }
 
     void addText(const xmlnode& text, Node& parent) {
-        const wxl::text::u8_view value = text.value();
+        const wxl::unicode::u8_view value = text.value();
 
         if (value.empty())
             return;
 
         // Отступы файла между блоками — не текст книги.
-        if (!holdsInlineContent(parent.kind()) && wxl::text::trim(value.chars()).empty())
+        if (!holdsInlineContent(parent.kind()) && wxl::unicode::trim(value.chars()).empty())
             return;
 
         Node* const node = makeNode(NodeKind::Text);
@@ -235,21 +235,21 @@ private:
         append(parent, *node);
 
         doc_.textNodes.push_back(node);
-        doc_.characterCount += static_cast<std::uint32_t>(wxl::text::count_code_points(value));
+        doc_.characterCount += static_cast<std::uint32_t>(wxl::unicode::count_code_points(value));
     }
 
     const void* payloadFor(NodeKind kind, const xmlnode& source) {
         switch (kind) {
         case NodeKind::Section: {
             SectionData& data = doc_.sections.emplace_back();
-            data.id = source.attribute("id").value_or(wxl::text::u8_view{});
-            data.doi = source.attribute("doi").value_or(wxl::text::u8_view{});
+            data.id = source.attribute("id").value_or(wxl::unicode::u8_view{});
+            data.doi = source.attribute("doi").value_or(wxl::unicode::u8_view{});
             data.output = toSectionOutput(source.attribute("output"));
             data.article = toBool(source.attribute("article"));
             data.clipped = source.child("clipped") != nullptr;
             data.firstCharPos = static_cast<std::uint32_t>(
                 source.attribute("first-char-pos")
-                    .transform(&wxl::text::u8_view::chars)
+                    .transform(&wxl::unicode::u8_view::chars)
                     .and_then(toInt)
                     .value_or(static_cast<int>(doc_.characterCount)));
             return &data;
@@ -264,14 +264,14 @@ private:
             data.maxWidth = toLength(source.attribute("max-width"));
             data.border = toBool(source.attribute("border"));
             data.keepOnOnePage = toBool(source.attribute("on-one-page"));
-            data.bindTo = source.attribute("bindto").value_or(wxl::text::u8_view{});
+            data.bindTo = source.attribute("bindto").value_or(wxl::unicode::u8_view{});
             return &data;
         }
 
         case NodeKind::Image: {
             ImageData& data = doc_.imageRefs.emplace_back();
-            data.relationshipId = source.attribute("src").value_or(wxl::text::u8_view{});
-            data.alt = source.attribute("alt").value_or(wxl::text::u8_view{});
+            data.relationshipId = source.attribute("src").value_or(wxl::unicode::u8_view{});
+            data.alt = source.attribute("alt").value_or(wxl::unicode::u8_view{});
             data.width = toLength(source.attribute("width"));
             data.minWidth = toLength(source.attribute("min-width"));
             data.maxWidth = toLength(source.attribute("max-width"));
@@ -290,9 +290,9 @@ private:
             // "#id" внутри книги: решётка -- это разметка ссылки, а не часть
             // идентификатора, и срез по ней остаётся правильным текстом,
             // потому что режется он по ASCII-символу.
-            std::string_view target = source.attribute("href").value_or(wxl::text::u8_view{}).chars();
+            std::string_view target = source.attribute("href").value_or(wxl::unicode::u8_view{}).chars();
             if (target.starts_with('#')) target.remove_prefix(1);
-            data.targetId = wxl::text::assume_valid(target);
+            data.targetId = wxl::unicode::assume_valid(target);
             data.role = toNoteRole(source.attribute("role"));
             data.numbering = toNoteNumbering(source.attribute("autotext"));
             doc_.pendingNoteRefs.push_back(&data);
@@ -301,7 +301,7 @@ private:
 
         case NodeKind::Link: {
             LinkData& data = doc_.links.emplace_back();
-            data.href = source.attribute("href").value_or(wxl::text::u8_view{});
+            data.href = source.attribute("href").value_or(wxl::unicode::u8_view{});
             data.internal = data.href.chars().starts_with('#');
             return &data;
         }
@@ -311,7 +311,7 @@ private:
             data.ordered = source.name() == "ol";
             if (const xmlnode* marker = source.child("marker"))
                 if (const xmlnode* img = marker->child("img"))
-                    data.markerImageRelationshipId = img->attribute("src").value_or(wxl::text::u8_view{});
+                    data.markerImageRelationshipId = img->attribute("src").value_or(wxl::unicode::u8_view{});
             return &data;
         }
 
@@ -319,11 +319,11 @@ private:
             TableCellData& data = doc_.cells.emplace_back();
             data.header = source.name() == "th";
             data.colSpan = static_cast<std::uint16_t>(source.attribute("colspan")
-                                                          .transform(&wxl::text::u8_view::chars)
+                                                          .transform(&wxl::unicode::u8_view::chars)
                                                           .and_then(toInt)
                                                           .value_or(1));
             data.rowSpan = static_cast<std::uint16_t>(source.attribute("rowspan")
-                                                          .transform(&wxl::text::u8_view::chars)
+                                                          .transform(&wxl::unicode::u8_view::chars)
                                                           .and_then(toInt)
                                                           .value_or(1));
             data.align = toAlign(source.attribute("align"));
@@ -333,7 +333,7 @@ private:
 
         case NodeKind::Span: {
             SpanData& data = doc_.spans.emplace_back();
-            data.className = source.attribute("class").value_or(wxl::text::u8_view{});
+            data.className = source.attribute("class").value_or(wxl::unicode::u8_view{});
             return &data;
         }
 
@@ -427,7 +427,7 @@ void Document::parse() {
     if (!impl_->description.coverImageIndex) {
         for (std::uint32_t i = 0; i < impl_->images.size(); ++i) {
             std::string id(impl_->images[i].relationshipId.chars());
-            wxl::text::make_ascii_lower(id);
+            wxl::unicode::make_ascii_lower(id);
             if (id.find("cover") != std::string::npos) {
                 impl_->description.coverImageIndex = i;
                 break;

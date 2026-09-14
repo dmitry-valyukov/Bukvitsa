@@ -25,9 +25,9 @@ wxl_add_module_library(bukvitsa_fb3 STATIC
 add_library(bukvitsa::fb3 ALIAS bukvitsa_fb3)
 
 # PUBLIC, в отличие от прежнего PRIVATE: модель книги отвечает
-# wxl::text::u8_view, то есть тип из wxl.text стоит в интерфейсе модуля, и
+# wxl::unicode::u8_view, то есть тип из wxl.unicode стоит в интерфейсе модуля, и
 # компилировать его импорт приходится всякому, кто импортирует FB3.
-target_link_libraries(bukvitsa_fb3 PUBLIC wxl::text)
+target_link_libraries(bukvitsa_fb3 PUBLIC wxl::unicode)
 
 # wxl::xml — только внутри: её импортирует партиция :internal, которую
 # первичный интерфейс не переэкспортирует.
