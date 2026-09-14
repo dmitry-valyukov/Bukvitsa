@@ -34,15 +34,20 @@ std::uint64_t numberOf(const wxl::xml::node& element, std::string_view name,
     if (!value) return fallback;
 
     // Числом должно быть всё значение: разобралось не до конца — значит там не
-    // число, и лучше умолчание, чем половина прочитанного.
-    return wxl::unicode::parse<std::uint64_t>(value->chars()).value_or(fallback);
+    // число, и лучше умолчание, чем половина прочитанного. try_parse не трогает
+    // результат, пока не разберёт весь текст, — умолчание и остаётся.
+    std::uint64_t number = fallback;
+    wxl::unicode::try_parse(value->chars(), number);
+    return number;
 }
 
 double realOf(const wxl::xml::node& element, std::string_view name, double fallback) {
     const auto value = element.attribute(name);
     if (!value) return fallback;
 
-    return wxl::unicode::parse<double>(value->chars()).value_or(fallback);
+    double number = fallback;
+    wxl::unicode::try_parse(value->chars(), number);
+    return number;
 }
 
 
