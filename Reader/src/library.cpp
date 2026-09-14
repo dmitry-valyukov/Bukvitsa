@@ -11,6 +11,7 @@
 
 // После своих заголовков: document.h тянет import wxl.core, а стандартный
 // заголовок после импорта MSVC уже не принимает.
+import wxl.core;
 import wxl.unicode;
 import wxl.xml;
 
@@ -30,7 +31,7 @@ std::wstring_view coverExtension(std::string_view contentType) {
 /// Один атрибут: имя, значение, экранирование. Отдельной функцией, потому что
 /// в реестре их семь на запись, и повторять xmlValue() семь раз — значит однажды
 /// забыть.
-void attribute(wxl::unicode::text_builder<>& out, std::string_view name, std::wstring_view value) {
+void attribute(wxl::unicode::text_builder<wxl::core::sta_allocator>& out, std::string_view name, std::wstring_view value) {
     out.format(" {}=\"{}\"", name, xmlValue(value));
 }
 
@@ -94,7 +95,10 @@ void Library::loadFrom(std::string xml) {
 }
 
 std::string Library::toXml() const {
-    wxl::unicode::text_builder<> out;
+    // Аллокатор -- STA-пул: и этот формирователь, и bookStateXml ниже зовутся
+    // из корутин между двумя `co_await`, то есть в интерфейсном потоке (см.
+    // io.h); на рабочий поток уходят только готовые байты.
+    wxl::unicode::text_builder<wxl::core::sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<library version=\"{}\">\n", kVersion);
@@ -248,7 +252,7 @@ BookState parseBookState(std::string xml) {
 }
 
 std::string bookStateXml(const BookState& state) {
-    wxl::unicode::text_builder<> out;
+    wxl::unicode::text_builder<wxl::core::sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<book version=\"{}\">\n", BookState::kVersion);

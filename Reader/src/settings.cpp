@@ -9,6 +9,7 @@
 // модульный std, а стандартный заголовок после него MSVC уже не принимает.
 #include "store.h"
 
+import wxl.core;
 import wxl.unicode;
 import wxl.xml;
 
@@ -100,7 +101,10 @@ Settings parseSettings(std::string xml) {
 std::string settingsXml(const Settings& settings) {
     // text_builder, а не поток с нейтральной локалью: локали у него нет вовсе,
     // и дробное число пишется точкой, какие бы настройки ни стояли в Windows.
-    wxl::unicode::text_builder<> out;
+    // Аллокатор -- STA-пул: формирователь зовётся из корутины между двумя
+    // `co_await`, а этот код у читалки исполняется в интерфейсном потоке (см.
+    // io.h), на рабочий поток уходят только байты.
+    wxl::unicode::text_builder<wxl::core::sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<settings version=\"{}\">\n", Settings::kVersion);
