@@ -15,7 +15,11 @@ namespace bukvitsa::fb3::detail {
 std::optional<int> toInt(const std::string_view value) {
     // Числом должно быть всё значение: «12abc» — это не двенадцать, это
     // испорченный атрибут, и лучше о нём не знать вовсе, чем знать половину.
-    return wxl::unicode::parse<int>(value);
+    // parse отвечает core::nullable, а цепочки над атрибутами wxl.xml
+    // (`attribute(...).and_then(toInt)`) пока живут в std::optional, потому
+    // что его отдаёт сама wxl.xml. Мост стоит здесь, пока она не переедет.
+    const auto parsed = wxl::unicode::parse<int>(value);
+    return parsed ? std::optional<int>{*parsed} : std::nullopt;
 }
 
 Length toLength(const std::optional<wxl::unicode::u8_view> value) {
