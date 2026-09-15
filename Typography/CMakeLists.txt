@@ -4,7 +4,7 @@ add_library(bukvitsa_typography STATIC
     src/engine.cpp
     src/formula.cpp
     src/glyph_painter.cpp
-    src/paginator.cpp
+    src/chapter.cpp
     src/typography.cpp
 )
 add_library(bukvitsa::typography ALIAS bukvitsa_typography)
@@ -15,8 +15,8 @@ target_include_directories(bukvitsa_typography PUBLIC
 
 target_link_libraries(bukvitsa_typography PUBLIC bukvitsa::fb3)
 
-# wxl::text — только внутри: обход кодовых точек книги при развороте в блоки.
-target_link_libraries(bukvitsa_typography PRIVATE wxl::text)
+# wxl::core — только внутри: обход кодовых точек книги при развороте в блоки.
+target_link_libraries(bukvitsa_typography PRIVATE wxl::core)
 
 # MicroTeX — только внутри: наружу formula.h отдаёт Formula и FormulaEngine,
 # ни одного имени tex:: в публичных заголовках нет.

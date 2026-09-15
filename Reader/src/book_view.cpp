@@ -16,8 +16,13 @@
 #include <wincodec.h>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
-// а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
-// он единственный тянет за собой стандартные заголовки, которых нет здесь.
+// а стандартный заголовок после импорта MSVC уже не принимает. CompositionWindow
+// первым из них: у него свои стандартные заголовки, а после импорта их не
+// подключить; сам он к импорту не ведёт.
+#include "CompositionWindow.h"
+
+// Свой следующим: он единственный тянет за собой стандартные заголовки,
+// которых нет здесь, — и уже он ведёт к импорту модуля книги.
 #include "book_view.h"
 
 #include "imaging.h"
@@ -132,6 +137,43 @@ constexpr float kShadowReach = kShadowShift + kShadowBlur;
 /// глазом и по кадрам. Вернуть перед тем, как читать книгу.
 constexpr auto kLeafSlide = 500ms;
 
+/// Стороны разворота — индексы страниц-визуалов pages_.
+constexpr std::size_t kLeftPage = 0;
+constexpr std::size_t kRightPage = 1;
+
+/// Кисть страницы-визуала для поверхности: тянет её на весь визуал
+/// (UniformToFill, как прежде задник окна). В просвете быстрой растяжки страница
+/// уже нового размера, а поверхность ещё старого, и без растяжения её край
+/// сквозил бы на рабочий стол.
+CompositionSurfaceBrush pageBrush(DrawingSurface const& surface) {
+    CompositionSurfaceBrush brush = surface.brush();
+    brush.stretch(CompositionStretch::UniformToFill);
+    return brush;
+}
+
+/// Сколько листов переворота держим в воздухе разом. При быстром листании
+/// каждый нажим пускает свой лист, и они летят внахлёст; больше этого числа не
+/// копим — самый старый добивается рывком. Каждый лист — поверхность в размер
+/// окна, то есть память (десяток с лишним листов — сотня-другая мегабайт),
+/// поэтому число хоть и щедрое, но не бесконечное.
+constexpr std::size_t kMaxFlips = 16;
+
+/// Отпускание пула листов в простое. Первый лишний лист роняем через долгую
+/// паузу — вдруг читатель тут же листнёт снова и пул понадобится сразу; дальше
+/// по одному в секунду, пока не останется один (его держим на следующее
+/// листание, чтобы не заводить поверхность заново). Так пик памяти держится
+/// лишь на время листания, а в покое от пула остаётся один лист.
+constexpr auto kFlipReleaseFirst = 10s;
+constexpr auto kFlipReleaseStep = 1s;
+
+/// Закон листания — пологая S-кривая (кубическая безье): небольшой разгон в
+/// начале и торможение в конце, чтобы движение читалось живым, а не
+/// равномерным. Контрольные точки симметричны относительно середины разворота;
+/// концы мягкие, но скорость на них не гаснет в ноль — оттого «небольшой», а не
+/// полная остановка на краях. Правится этими четырьмя числами.
+constexpr float kEaseX1 = 0.30f, kEaseY1 = 0.10f;
+constexpr float kEaseX2 = 0.70f, kEaseY2 = 0.90f;
+
 /// Насколько широко тень расходится к концу переворота — в долях страницы, а
 /// не в точках. Тень меряется окном: на широком экране полсотни точек
 /// теряются, на узком закрывают текст. Целая страница в конце означает ровно
@@ -147,8 +189,13 @@ constexpr float kFoldFaint = 0.5f;
 /// Плотность у самой кромки и в середине спада. Тут и у остальных теней
 /// записана только прозрачность: тон у всех общий и берётся из темы, потому
 /// что тень на бумаге уходит в её же тон, а не в серое.
-constexpr std::uint32_t kFoldNear = 0x96000000;
-constexpr std::uint32_t kFoldMid = 0x36000000;
+///
+/// На четверть легче прежнего: у корешка тень читалась провалом, а не
+/// углублением, и съедала первые буквы строки. Той же парой меряется средник
+/// разворота — он обязан совпасть с полутоном изгиба, иначе подмена в конце
+/// переворота видна ступенькой.
+constexpr std::uint32_t kFoldNear = 0x70000000;
+constexpr std::uint32_t kFoldMid = 0x28000000;
 
 /// Куда по ходу переворота уезжает середина спада. В начале он сосредоточен у
 /// кромки — тень читается краем; к концу выравнивается и края у тени не
@@ -161,7 +208,7 @@ constexpr float kFoldMidSoft = 0.62f;
 /// бумаге, в отличие от корешкового, который поднят и оттого мажет широко.
 /// Без неё лист не читается отдельной бумагой поверх страницы — а на неё вся
 /// вторая половина переворота и опирается. Тоже в долях окна.
-constexpr float kEdgeOfWindow = 0.026f;
+constexpr float kEdgeOfWindow = 0.039f;
 constexpr std::uint32_t kEdgeNear = 0x70000000;
 constexpr std::uint32_t kEdgeMid = 0x26000000;
 constexpr float kEdgeMidStop = 0.42f;
@@ -183,6 +230,52 @@ constexpr float kBendMidStop = 0.45f;
 /// подмена должна успеть пройти незаметно, пока лист доходит последние
 /// проценты пути.
 constexpr float kHandover = 0.78f;
+
+/// Подъём листа к глазу: во сколько раз свободный край выше собственной высоты
+/// в верхней точке переворота. У корешка лист остаётся в своих размерах — там
+/// он держится страницы и не поднимается вовсе, — а к свободному краю растёт, и
+/// прямоугольник становится трапецией. Это и есть «ближе»: край, который
+/// перелистывают, идёт к глазу, и глаз читает больший размер как меньшее
+/// расстояние.
+constexpr float kLiftPeak = 1.25f;
+
+/// Выключка подъёма — своя, с погасшей скоростью на концах. Подъём состоит из
+/// двух отрезков, вверх и вниз, и общая кривая листания (kEase*), у которой
+/// концы намеренно не гаснут, дала бы на вершине излом — глаз читает такой
+/// излом щелчком. Здесь лист трогается плавно, замирает наверху и так же
+/// плавно ложится.
+constexpr float kLiftEaseX1 = 0.50f, kLiftEaseY1 = 0.0f;
+constexpr float kLiftEaseX2 = 0.50f, kLiftEaseY2 = 1.0f;
+
+/// Трапеция листа — формула, которую композитор считает каждый кадр.
+///
+/// Аффинной матрицей трапеции не выйдет: сдвиг, поворот и растяжение сохраняют
+/// параллельность сторон, и прямоугольник ими становится параллелограммом.
+/// Нужен проективный переход — четвёртый столбец Matrix4x4, тот самый, которым
+/// композиция делает перспективу: композитор делит на W после умножения, и
+/// линейный по x знаменатель поднимает высоту тем сильнее, чем дальше от
+/// корешка.
+///
+/// Вывод. Пусть корешок стоит в Hinge, свободный край отстоит от него на d, и
+/// высота у края должна вырасти в k раз. В долях u = (x - Hinge)/d переход
+///     W = 1 + p·u,   X = u·(1 + p),   Y = y - Half
+/// при p = 1/k - 1 даёт ровно требуемое: у корешка (u = 0) единица, у края
+/// (u = 1) высота в k раз. Раскрыв u обратно в x, получаем числа ниже: Slant —
+/// это p, Fall — p/d, Half — середина листа по высоте, от которой он растёт в
+/// обе стороны. Ширина при этом поджимается сама, как в перспективе: дальняя
+/// от глаза половина листа занимает меньше места, чем ближняя, — этого не
+/// избежать и не надо, ровно так выглядит наклонённая бумага.
+///
+/// Amount — доля подъёма, 0..1. Все шестнадцать чисел линейны по ней, поэтому
+/// её одной довольно, чтобы вести трапецию во времени обычной скалярной
+/// анимацией: матричной покадровой анимации в композиции нет.
+constexpr wchar_t kLiftFormula[] =
+    L"Matrix4x4("
+    L"1 + lift.Amount * (Slant + Hinge * Fall), lift.Amount * Half * Fall, 0, lift.Amount * Fall,"
+    L"0, 1, 0, 0,"
+    L"0, 0, 1, 0,"
+    L"-Hinge * lift.Amount * (Slant + Hinge * Fall), -Hinge * lift.Amount * Half * Fall, 0,"
+    L"1 - Hinge * lift.Amount * Fall)";
 
 /// Прозрачность из записанного цвета. Нужна затем, чтобы средник и полутон
 /// изгиба брали её из одного места: они обязаны совпасть, иначе подмена в
@@ -207,12 +300,24 @@ D2D1_COLOR_F tintedF(const D2D1_COLOR_F& color, float alpha) {
     return {color.r, color.g, color.b, alpha};
 }
 
-/// Цвет темы в том виде, в каком его берёт XAML. Нужен ровно однажды — для
-/// подложки под страницей, — поэтому тут, а не в theme.h: там цвета лежат
-/// такими, какими их берёт Direct2D, и это их главное место работы.
-constexpr std::uint32_t argbOf(const D2D1_COLOR_F& color) {
-    auto channel = [](float value) { return static_cast<std::uint32_t>(value * 255.0f + 0.5f); };
-    return 0xFF000000u | (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b);
+/// Ставит трапецию на одну сторону листа: у `hinge` она остаётся в своих
+/// размерах, у `freeEdge` вырастает в kLiftPeak раз — во столько, сколько
+/// скажет Amount в `phase`.
+///
+/// Обе стороны листа — снимаемая бумага и приходящий лист — берут общий
+/// корешок и свои, противоположные, свободные края. Оттого они и сходятся на
+/// сгибе в одной высоте: точка на расстоянии s от корешка поднята одинаково, с
+/// какой бы стороны бумаги она ни была, а сгиб — это одна точка, видимая с
+/// обеих. Ничего согласовывать для этого не нужно, так выходит само.
+void liftSheet(ExpressionAnimation const& warp, CompositionPropertySet const& phase,
+               Visual const& visual, float hinge, float freeEdge, float height) {
+    const float slant = 1.0f / kLiftPeak - 1.0f;
+    warp.setReferenceParameter(L"lift", phase);
+    warp.setScalarParameter(L"Slant", slant);
+    warp.setScalarParameter(L"Fall", slant / (freeEdge - hinge));
+    warp.setScalarParameter(L"Half", height * 0.5f);
+    warp.setScalarParameter(L"Hinge", hinge);
+    visual.startAnimation(L"TransformMatrix", warp);
 }
 
 bool controlHeld() {
@@ -223,9 +328,21 @@ bool controlHeld() {
 
 }  // namespace
 
-BookView::BookView(const Compositor& compositor, const DispatcherQueue& queue)
-    : compositor_(compositor), queue_(queue), note_(compositor) {
+BookView::BookView(CompositionWindow& window)
+    : window_(&window),
+      compositor_(window.compositor()),
+      queue_(window.dispatcherQueue()),
+      releaseTimer_(window.dispatcherQueue().createTimer()),
+      // Всплывашка сноски — XAML-остров, её рисунок висит в дереве острова, а не
+      // на сцене: ей нужен композитор острова, а не окна.
+      note_(window.chromeCompositor()) {
     root_ = buildTree();
+
+    // Таймер отпускания пула листов не повторяется — перезаводится сам с новой
+    // паузой (armRelease/onReleaseTick).
+    releaseTimer_.isRepeating(false);
+    releaseTimer_.add_onTick(
+        [this](wxl::Object const&, wxl::Object const&) { onReleaseTick(); });
 
     IDWriteFactory* const dwrite = dwriteFactory();
     if (!dwrite) return;
@@ -248,128 +365,65 @@ Grid BookView::buildTree() {
     // перекрыли бы одноимённые переменные во всём остальном коде.
     using namespace wxl::dsl;
 
-    // Страница живёт в отдельном узле, а не прямо в корне: поверхность
-    // прицеплена к нему дочерним визуалом, а всё, что кладут поверх полосы
-    // (сноска, панель), — это дети корня, идущие после него. Порядок детей и
-    // есть порядок по глубине.
-    pageHost_ = Grid{};
-
-    // Два листа под общим контейнером. Клип контейнера — то, что не даёт
-    // повёрнутому листу вылезти за полосу: клип живёт в координатах самого
+    // Контейнер листов переворотов — над страницами. Клип контейнера не
+    // даёт повёрнутому листу вылезти за полосу: клип живёт в координатах самого
     // визуала и применяется до его преобразования, поэтому повёрнутый лист
-    // обрезается по прямоугольнику страницы, а не по описанному вокруг него.
+    // режется по прямоугольнику страницы, а не по описанному вокруг него. Сами
+    // листы заводятся по требованию (makeFlip) — при быстром листании их в
+    // воздухе несколько разом.
     sheets_ = compositor_.createContainerVisual();
     sheets_.value().clip(compositor_.createInsetClip());
 
-    // Подложка темы — в самом низу, под обоими листами: у неё тот же клип
-    // контейнера, а видна она там, где сверху ни строки, ни бумаги. Кисть
-    // подводится позже, вместе с первым снимком, — до тех пор визуал прячет
-    // сама видимость.
-    SpriteVisual backdrop = compositor_.createSpriteVisual();
-    backdrop.isVisible(false);
-    sheets_.value().children().insertAtBottom(backdrop);
-    backdrop_ = backdrop;
-
-    for (int index = 0; index < 2; ++index) {
-        SpriteVisual sheet = compositor_.createSpriteVisual();
-
-        // Крой заводится сразу, а не в начале переворота: заводить его там
-        // было бы то же самое, только каждый раз заново. В покое он ничего не
-        // режет — отступы отрицательные, и окно шире листа ровно на вылет
-        // тени, которую иначе срезало бы вместе с ней.
-        InsetClip crop = compositor_.createInsetClip(-kShadowReach, -kShadowReach, -kShadowReach,
-                                                     -kShadowReach);
-        sheet.clip(crop);
-
-        sheets_.value().children().insertAtTop(sheet);
-        sheet_.push_back(sheet);
-        clip_.push_back(crop);
+    // Две страницы разворота — на сцене под листами, каждая в своей половине
+    // окна. Размер и шов не наши: сцену (задний спрайт окна) wxl ресайзит
+    // синхронно в WM_SIZE, а страницы берут у неё размер и половину ширины
+    // выражениями композитора — те считаются на потоке DWM в том же кадре, и в
+    // просвете быстрой растяжки окно остаётся покрытым без единого нашего
+    // вызова (applySize их не трогает, своего Size у них нет). Половина ширины
+    // — это и есть корешок: поля симметричны (см. spine()). Задник окна под
+    // ними без кисти (setActive): красить под страницами нечего.
+    ContainerVisual const scene = window_->contentVisual();
+    ExpressionAnimation const sizeOfScene = compositor_.createExpressionAnimation(L"scene.Size");
+    sizeOfScene.setReferenceParameter(L"scene", scene);
+    ExpressionAnimation const halfOfScene =
+        compositor_.createExpressionAnimation(L"scene.Size.X * 0.5");
+    halfOfScene.setReferenceParameter(L"scene", scene);
+    for (std::size_t side = 0; side < 2; ++side) {
+        SpriteVisual page = compositor_.createSpriteVisual();
+        InsetClip crop = compositor_.createInsetClip();
+        crop.startAnimation(side == kLeftPage ? L"RightInset" : L"LeftInset", halfOfScene);
+        page.clip(crop);
+        page.startAnimation(L"Size", sizeOfScene);
+        page.isVisible(false);
+        scene.children().insertAtBottom(page);
+        pages_[side] = page;
     }
 
-    // Тень поднятой бумаги. Кисть у неё горизонтальная и в долях собственной
-    // ширины (MappingMode по умолчанию относительный), поэтому полоске
-    // достаточно ездить — перекрашивать её не приходится.
-    CompositionLinearGradientBrush foldBrush = compositor_.createLinearGradientBrush();
-    foldBrush.startPoint({0.0f, 0.0f});
-    foldBrush.endPoint({1.0f, 0.0f});
-    CompositionColorGradientStop foldMid =
-        compositor_.createColorGradientStop(kFoldMidStop, colors.transparent);
-    foldBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    foldBrush.colorStops().append(foldMid);
-    foldBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-    foldMid_ = foldMid;
+    // Пул листов зарезервирован под предел: дальше push_back не переселяет
+    // вектор, и указатели на листы, что держат обработчики конца переворота,
+    // остаются годными.
+    flips_.reserve(kMaxFlips);
 
-    SpriteVisual fold = compositor_.createSpriteVisual();
-    fold.brush(foldBrush);
-    fold.isVisible(false);
-    sheets_.value().children().insertAtTop(fold);
-
-    foldBrush_ = foldBrush;
-    fold_ = fold;
-
-    // Тень наружного края приходящего листа. Отдельная от предыдущей: у той
-    // край поднят и тень широкая, растущая, а этот край лежит на бумаге, и
-    // тень у него узкая и неизменная. Градиент развёрнут — густо у листа,
-    // прозрачно прочь от него.
-    CompositionLinearGradientBrush edgeBrush = compositor_.createLinearGradientBrush();
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(kEdgeMidStop, colors.transparent));
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-
-    SpriteVisual edge = compositor_.createSpriteVisual();
-    edge.brush(edgeBrush);
-    edge.isVisible(false);
-    sheets_.value().children().insertAtTop(edge);
-
-    edgeBrush_ = edgeBrush;
-    edge_ = edge;
-
-    // Приходящий лист. Кисть ему выдаётся на каждый переворот — ту же, что
-    // носит лежащий внизу разворот, — а крой у него свой: им он и выезжает.
-    SpriteVisual leaf = compositor_.createSpriteVisual();
-    InsetClip leafCrop = compositor_.createInsetClip();
-    leaf.clip(leafCrop);
-    leaf.isVisible(false);
-    sheets_.value().children().insertAtTop(leaf);
-
-    // Полутон изгиба — ребёнок листа, а не сосед: он затеняет саму бумагу и
-    // обязан кроиться вместе с ней. Дети рисуются поверх кисти визуала, так
-    // что ложится он именно на страницу.
-    CompositionLinearGradientBrush bendBrush = compositor_.createLinearGradientBrush();
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(kBendMidStop, colors.transparent));
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-
-    SpriteVisual bend = compositor_.createSpriteVisual();
-    bend.brush(bendBrush);
-    leaf.children().insertAtTop(bend);
-
-    bendBrush_ = bendBrush;
-    bend_ = bend;
-
-    leaf_ = leaf;
-    leafCrop_ = leafCrop;
-
-    applyShadowTint();
-
-    ElementCompositionPreview::setElementChildVisual(pageHost_.value(), sheets_.value());
+    // Листы переворотов — на сцене окна над страницами, привешены к
+    // contentVisual() (над задником, под островом), а не всунуты в дерево XAML
+    // через setElementChildVisual. Пока полоса не стала текущим экраном, её
+    // сцена скрыта — setActive(true) покажет при входе.
+    window_->contentVisual().children().insertAtTop(sheets_.value());
+    sheets_.value().isVisible(false);
 
     auto tree = Grid{
         // Корень берёт фокус на себя: событие клавиши начинается у того, на
         // чём фокус, и пока фокуса нет ни на чём, ловить нечего.
         isTabStop = true,
 
-        // Кисть здесь нужна по двум причинам, и обе неочевидны.
-        //
-        // Панель без кисти в проверке попадания не участвует вовсе, и щелчок
-        // по полосе не доходил никуда: ни до знака сноски, ни до трети
-        // страницы. И кисть эта — цвета бумаги, а не прозрачная: страницу
-        // рисует композитор поверх неё, но в те кадры, когда он ещё не
-        // нарисовал (первый показ, растянутое мышью окно), из-под неё должна
-        // проглядывать бумага, а не белизна окна.
-        background = SolidColorBrush{ARGB{argbOf(kThemes[0].background)}},
+        // Кисть прозрачная, но она есть: без кисти Grid не участвует в проверке
+        // попадания вовсе, и щелчок по полосе не доходил бы никуда — ни до знака
+        // сноски, ни до трети страницы. Прозрачная потому, что страница теперь
+        // на сцене под этим островом, и сквозь него должна быть видна она.
+        // Бумагу вместе с набором несут страницы-визуалы на сцене, а задник
+        // окна в чтении без кисти вовсе (см. setActive).
+        background = SolidColorBrush{colors.transparent},
 
-        pageHost_.value(),
         note_.root(),
     };
 
@@ -403,10 +457,10 @@ Grid BookView::buildTree() {
                     turnPage(-1);
                     break;
                 case VirtualKey::Home:
-                    if (book_) goTo(catchUpTo(0));
+                    if (book_) goToCharOffset(0);
                     break;
                 case VirtualKey::End:
-                    if (book_) goTo(catchUpTo(book_->characterCount()));
+                    if (book_) goToCharOffset(book_->characterCount());
                     break;
                 default: return;
             }
@@ -426,12 +480,12 @@ Grid BookView::buildTree() {
                 turnPage(-1);
                 break;
             case VirtualKey::Home:
-                if (book_) goTo(catchUpTo(0));
+                if (book_) goToCharOffset(0);
                 break;
             case VirtualKey::End:
                 // Конец книги известен только досчитанной, поэтому здесь
                 // чистовой набор доводится до самого конца.
-                if (book_) goTo(catchUpTo(book_->characterCount()));
+                if (book_) goToCharOffset(book_->characterCount());
                 break;
             case VirtualKey::Add:
                 if (controlHeld()) { setFontSize(fontSize_ + 1.0f); readingChanged(); }
@@ -542,7 +596,7 @@ void BookView::open(std::shared_ptr<Book> book, std::uint32_t charOffset) {
 
 std::span<const typography::Block> BookView::blocks() const {
     if (!book_) return {};
-    return book_->paginator().blocks();
+    return book_->blocks();
 }
 
 std::size_t BookView::pageCount() const {
@@ -562,11 +616,36 @@ bool BookView::dismissOverlays() {
     return true;
 }
 
+void BookView::setActive(bool active) {
+    active_ = active;
+
+    // Страница в чтении — две страницы-визуала на сцене окна (pages_), а задник
+    // окна без кисти: страницы кроют его целиком, и красить под ними нечего.
+    // Входя, снимаем кисть и показываем страницы тем же кадром, что redraw
+    // рисует разворот и одевает их. Уходя — наоборот: страницы прячутся, а
+    // задник на промежуток до фона следующего экрана (заставка приходит
+    // асинхронно) берёт осевший разворот сам — иначе окно сквозило бы на стол.
+    if (active && window_) {
+        window_->clearBackground();
+        updateBackdrop();
+        redraw();
+    } else if (window_ && settled_) {
+        cancelTurn();   // летящие садятся: заднику положен нынешний разворот, а не прошлый
+        window_->background(*settled_);
+    }
+    for (auto const& page : pages_)
+        if (page) page.value().isVisible(active);
+
+    // Листы в покое не нужны: разворот видно страницами. Они выходят на сцену
+    // только на время переворота — показывает их startTurn, прячут обратно
+    // finishFlip и cancelTurn.
+    if (sheets_) sheets_.value().isVisible(false);
+}
+
 void BookView::setTheme(int index) {
     const int count = themeCount();
     theme_ = ((index % count) + count) % count;
     note_.hide();   // подложка всплывашки покрашена прошлой темой
-    root_.value().background(SolidColorBrush{ARGB{argbOf(paper().background)}});
     applyShadowTint();   // тени тоже покрашены прошлой темой
 
     // Карта держит форму конкретной обложки — новой теме она не годится.
@@ -593,7 +672,7 @@ void BookView::setSkins(std::vector<Skin> skins) {
     // Пересохранённая обложка могла сменить и снимок, и кривые.
     backdropLoaded_.clear();
     backdropSource_.Reset();
-    backdropSurface_.reset();
+    photoBitmap_.Reset();
     warpMap_.Reset();
     warpFlat_ = false;
     updateBackdrop();
@@ -628,18 +707,6 @@ std::filesystem::path BookView::backdropFile() const {
     return {};
 }
 
-std::filesystem::path BookView::backdropImage() const { return backdropFile(); }
-
-wxl::Color BookView::backgroundColor() const {
-    // Цвет темы D2D-в-долях переводится в байтовый ARGB, каким его берёт
-    // оконный задник; альфа непрозрачная — задник кроет насквозь.
-    const D2D1_COLOR_F& c = paper().background;
-    auto byte = [](float v) {
-        return static_cast<uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
-    };
-    return wxl::ARGB{byte(c.r), byte(c.g), byte(c.b)};
-}
-
 void BookView::setFontSize(float size) {
     const float wanted = std::clamp(size, 10.0f, 48.0f);
     if (wanted == fontSize_) return;
@@ -654,10 +721,10 @@ void BookView::setLineHeight(float multiplier) {
     requestRelayout();
 }
 
-void BookView::setMargin(float ems) {
-    const float wanted = std::clamp(ems, 0.5f, 10.0f);
-    if (wanted == marginEms_) return;
-    marginEms_ = wanted;
+void BookView::setMargin(float fraction) {
+    const float wanted = std::clamp(fraction, 0.02f, 0.25f);
+    if (wanted == marginFraction_) return;
+    marginFraction_ = wanted;
     requestRelayout();
 }
 
@@ -680,7 +747,7 @@ bool BookView::resizeSurface() {
     // же число, которым XAML умножает DIP в пиксели, и оно обязано совпадать.
     // XamlRoot появляется, когда элемент попал в живое дерево: до Loaded его
     // нет, и спрашивать масштаб не у кого.
-    Nullable<XamlRoot> const xamlRoot = root_.value().xamlRoot();
+    core::nullable<XamlRoot> const xamlRoot = root_.value().xamlRoot();
     float scale = xamlRoot ? static_cast<float>(xamlRoot->rasterizationScale()) : 1.0f;
     if (scale <= 0.0f) scale = 1.0f;
 
@@ -688,7 +755,7 @@ bool BookView::resizeSurface() {
 }
 
 bool BookView::applySize(float width, float height, float scale) {
-    if (width == width_ && height == height_ && scale == scale_ && !surface_.empty()) return false;
+    if (width == width_ && height == height_ && scale == scale_ && settled_) return false;
 
     width_ = width;
     height_ = height;
@@ -698,60 +765,32 @@ bool BookView::applySize(float width, float height, float scale) {
                            static_cast<int32_t>(height * scale + 0.5f)};
     if (pixels.width <= 0 || pixels.height <= 0) return false;
 
-    // Поверхности меняют размер, а не пересоздаются: кисти, которые их уже
-    // показывают, продолжают показывать их же.
-    if (surface_.empty()) {
-        for (std::size_t index = 0; index < sheet_.size(); ++index) {
-            surface_.emplace_back(compositor_, pixels);
-            sheet_[index].brush(surface_[index].brush());
+    // Задник и поверхности листов меняют размер, а не пересоздаются: кисти,
+    // которые их уже показывают (фон окна, листы), продолжают показывать их же.
+    if (!settled_)
+        settled_.emplace(compositor_, pixels);
+    else
+        settled_->resize(pixels);
 
-            // Тень листа — здесь, а не в начале переворота: маской ей служит
-            // кисть листа, а кисть появляется ровно тут. Дальше она только
-            // гаснет и зажигается.
-            DropShadow shadow = compositor_.createDropShadow();
-            shadow.blurRadius(kShadowBlur);
-            shadow.offset({kShadowShift, 0.0f, 0.0f});
-            shadow.mask(sheet_[index].brush());
-            shadow.opacity(0.0f);
-            sheet_[index].shadow(shadow);
-            shadow_.push_back(shadow);
-        }
-    } else {
-        for (DrawingSurface& sheet : surface_) sheet.resize(pixels);
-    }
-
-    for (SpriteVisual const& sheet : sheet_) {
-        sheet.size({width, height});
-        // Поворот идёт вокруг левого края: там у книги корешок, и лист
-        // поднимается именно оттуда.
-        sheet.centerPoint({0.0f, height * 0.5f, 0.0f});
+    // Листы пула — под новый размер: их поверхности и все зависящие от ширины
+    // визуалы. Новые заведутся уже в этом размере (makeFlip).
+    for (Flip& flip : flips_) {
+        flip.surface->resize(pixels);
+        flip.sheet.size({width, height});
+        // Полоска тени сгиба меряется целым разворотом (её ужимает Scale по
+        // ходу), приходящий лист — тоже; тени края и полутон изгиба — постоянной
+        // ширины в долях окна.
+        flip.fold.size({width, height});
+        flip.leaf.size({width, height});
+        flip.edge.size({width * kEdgeOfWindow, height});
+        flip.bend.size({width * kBendOfWindow, height});
     }
     sheets_.value().size({width, height});
-    backdrop_.value().size({width, height});
 
-    // Полоска тени меряется целым разворотом, а до нужной доли её ужимает
-    // Scale: ширина тени зависит от корешка, а корешок при этом вызове ещё
-    // может быть не посчитан.
-    fold_.value().size({width, height});
-
-    // А этой ужимать нечего: ширина у неё постоянная, и посчитать её можно
-    // прямо здесь.
-    edge_.value().size({width * kEdgeOfWindow, height});
-    bend_.value().size({width * kBendOfWindow, height});
-
-    // Приходящий лист меряется целым разворотом, как и обычные листы: он
-    // носит их кисть, и страница на ней лежит в тех же координатах.
-    leaf_.value().size({width, height});
-
-    applyShadowTint();   // у теней, заведённых выше, цвет ещё не темы
-
-    // Окно кроя задано в тех же единицах, что и полоса, и после смены её
-    // размера бессмысленно. Оставить его недосброшенным — значит спрятать
-    // кусок настоящей страницы, если размер сменился посреди переворота.
-    // Вместе с ним отменяется и очередь: доигрывать её по новым размерам
-    // означало бы листать вслепую.
+    // Окна кроя листов заданы в прежних числах и после смены размера
+    // бессмысленны — все идущие перевороты в покой: доигрывать их по новым
+    // размерам значило бы листать вслепую.
     cancelTurn();
-    resetSheets();
     return true;
 }
 
@@ -807,14 +846,14 @@ float BookView::characterWidth() const {
 }
 
 float BookView::lineChars(int columns) const {
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
     const float available = width_ - margin * 2.0f;
     const float gutters = margin * kGutterOfMargin * static_cast<float>(columns - 1);
     return (available - gutters) / static_cast<float>(columns) / characterWidth();
 }
 
 int BookView::chooseColumns(bool sticky) const {
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
     if (width_ - margin * 2.0f <= 0.0f) return 1;
 
     // Колонки заполняют место между полями целиком, поэтому мера решает
@@ -845,19 +884,23 @@ void BookView::relayoutNow() {
     ++paginationEpoch_;
 
     // Перевёрстка меняет и корешок, и ширину страницы, а листы могли остаться
-    // от прерванного переворота с окном кроя, посчитанным по прежним числам.
-    // Очередь листания к прежним числам привязана не меньше: и номер разворота
-    // в ней, и число колонок, которым он считается, после перевёрстки другие.
+    // от прерванных переворотов с окнами кроя, посчитанными по прежним числам.
+    // Все идущие перевороты — в покой: доигрывать их по новым размерам значило
+    // бы листать вслепую.
     cancelTurn();
-    resetSheets();
 
     if (!book_ || width_ <= 0.0f || height_ <= 0.0f) {
-        draft_ = false;
         redraw();
         return;
     }
 
-    const float margin = fontSize_ * marginEms_;
+    // Пагинатор верстает по одной главе: наводим его на ту, где стоит читатель,
+    // прежде чем считать. Та же глава — вызов ничего не делает, и тяга кегля не
+    // пере-шейпит; другая (открыли книгу на запомненном месте) — глава
+    // посчитается заново.
+    book_->setCurrentChapter(readingPosition_);
+
+    const float margin = width_ * marginFraction_;
     const float statusHeight = fontSize_ * 1.6f;
 
     columns_ = chooseColumns(windowResize_);
@@ -877,43 +920,58 @@ void BookView::relayoutNow() {
 
     pageStyle_ = style;
 
-    // Вот ради чего позиции чтения хранятся в символах: полоса стала другой, а
-    // читатель остался на том же месте — и видит его сейчас же. Грязная
-    // страница начинается ровно с той буквы, на которой он стоял, и считается
-    // за единицы миллисекунд, потому что считает только то, что видно.
+    // Вот ради чего книга режется на главы: полоса стала другой, а перевёрстка
+    // считает не всю книгу, а одну текущую главу — единицы миллисекунд, — и
+    // потому идёт начисто прямо здесь, в обработчике события. Черновика больше
+    // нет: с разбивкой по главам чистовой набор сам достаточно дёшев.
     //
-    // Место чтения при этом не двигается ни на символ. Раньше оно прижималось
-    // к началу свежей страницы, и от каждой смены кегля прогресс чуть уезжал;
-    // теперь прижимать не к чему — страница начинается с него самого.
-    //
-    book_->paginator().draftAt(pageStyle_, readingPosition_,
-                               static_cast<std::size_t>(columns_));
-    draft_ = true;
-    numberKnown_ = false;
+    // Досчитываем ровно до видимого разворота — этого хватает, чтобы показать
+    // страницу; остаток главы добирается порциями в простое, и с него
+    // становится известно общее число страниц («из M»).
+    typography::Chapter& paginator = book_->paginator();
+    paginator.beginLayout(pageStyle_);
+    paginator.advanceTo(readingPosition_);
+
+    // Место чтения становится левой колонкой разворота — разворот начинается
+    // ровно с той колонки, где лежала буква, а не с округлённого вниз края.
+    // Так на стыке глав не пропадает колонка: лента идёт от места чтения
+    // подряд, и правую сторону разворота при нужде занимает начало следующей
+    // главы. Прижимать читателя к началу колонки нестрашно — колонки при одном
+    // стиле бьются одинаково, так что прищёлк случается лишь однажды, на смене
+    // кегля, а не уезжает с каждой перевёрсткой.
+    page_ = paginator.pageCount() == 0 ? 0 : paginator.pageForCharOffset(readingPosition_);
+    paginator.advanceToPage(page_ + static_cast<std::size_t>(columns_));
+    if (paginator.pageCount() != 0)
+        readingPosition_ = paginator.page(page_).firstCharOffset;
+
     redraw();
 
-    // А книга набирается начисто следом, порциями и в свободное время потока.
-    startPagination();
+    // Остаток главы — порциями в свободное время потока: с него узнаётся общее
+    // число страниц. Если глава уже досчиталась (короткая), звать нечего.
+    if (!paginator.isComplete())
+        startPagination();
 }
 
 void BookView::startPagination() {
     // Заказ уже в очереди — второй ничего не прибавит: задание всё равно
-    // возьмёт ту полосу, какую застанет, а полоса к тому времени будет
-    // нынешней.
+    // продолжит счёт той главы, какую застанет.
     if (cleanPosted_) return;
     cleanPosted_ = true;
 
     std::weak_ptr<int> alive = alive_;
 
+    // Тот же набор, что relayoutNow уже начал и досчитал до видимого разворота:
+    // его номер — нынешний paginationEpoch_. Порции продолжают счёт с курсора
+    // главы, не начиная заново, — синхронно посчитанные страницы остаются на
+    // месте, а фон лишь добирает хвост главы ради общего числа страниц.
+    const std::uint32_t epoch = paginationEpoch_;
+
     // Низкий приоритет — это и есть «в свободное время»: поток сперва разберёт
     // ввод и покажет нарисованное, а уже потом возьмётся за книгу.
-    queue_.tryEnqueue(DispatcherQueuePriority::Low, [this, alive] {
+    queue_.tryEnqueue(DispatcherQueuePriority::Low, [this, alive, epoch] {
         if (alive.expired()) return;
         cleanPosted_ = false;
         if (!book_) return;
-
-        const std::uint32_t epoch = ++paginationEpoch_;
-        book_->paginator().beginLayout(pageStyle_);
         paginateChunk(epoch);
     });
 }
@@ -923,120 +981,202 @@ void BookView::paginateChunk(std::uint32_t epoch) {
 
     const bool more = book_->paginator().advance(kPaginationSlice);
 
-    // Чистовой набор не подменяет собой то, что читатель видит. Он делит
-    // полосу иначе — с начала книги, а не с места чтения, — и подмена была бы
-    // прыжком текста под глазами. Меняется только колонцифра: у показанного
-    // разворота появляется номер, а у книги — общее число страниц.
-    const bool known = cleanSpread().has_value();
-    bool changed = known != numberKnown_;
-    numberKnown_ = known;
+    // Порции добирают хвост главы, а не то, что видно: видимый разворот уже
+    // посчитан начисто в relayoutNow. Меняется от них лишь общее число страниц
+    // — и то один раз, когда глава досчитана. До тех пор колонцифра показывает
+    // «из …», поэтому и перерисовывать нечего, пока счёт идёт.
+    if (more) {
+        std::weak_ptr<int> alive = alive_;
+        queue_.tryEnqueue(DispatcherQueuePriority::Low, [this, alive, epoch] {
+            if (alive.expired()) return;
+            paginateChunk(epoch);
+        });
+        return;
+    }
 
-    if (!more) changed = true;
-    if (changed) redraw();
-    if (!more) return;
-
-    std::weak_ptr<int> alive = alive_;
-    queue_.tryEnqueue(DispatcherQueuePriority::Low, [this, alive, epoch] {
-        if (alive.expired()) return;
-        paginateChunk(epoch);
-    });
+    redraw();   // глава досчитана: «из …» стало «из M»
 }
 
-std::size_t BookView::catchUpTo(std::uint32_t charOffset) {
-    typography::Paginator& paginator = book_->paginator();
+BookView::Column BookView::columnOf(std::uint32_t charOffset) {
+    // Место может лежать в другой главе — наводим на неё и верстаем начисто.
+    book_->setCurrentChapter(charOffset);
 
-    // Энергично, без срока: порции хороши, пока читатель читает, а он ждёт
-    // ответа. Остаток книги при этом по-прежнему добирается порциями — та,
-    // что уже стоит в очереди, просто продолжит с того, на чём мы кончили.
+    typography::Chapter& paginator = book_->paginator();
+    if (paginator.pageCount() == 0)
+        paginator.beginLayout(pageStyle_);
+
+    // Энергично, без срока: читатель прыгнул по закладке и ждёт ответа. Остаток
+    // главы по-прежнему добирается порциями — та, что стоит в очереди, продолжит
+    // с того, на чём мы кончили.
     paginator.advanceTo(charOffset);
-    if (paginator.pageCount() == 0) return 0;
+    if (paginator.pageCount() == 0)
+        return Column{book_->currentChapter(), 0};
 
-    std::size_t at = paginator.pageForCharOffset(charOffset);
-    at -= at % static_cast<std::size_t>(columns_);
-
-    // Разворот — это несколько страниц, и довести набор до первой из них мало.
-    paginator.advanceToPage(at + static_cast<std::size_t>(columns_));
-    return at;
+    // Колонка, в которой лежит символ, — левая колонка разворота. К числу
+    // колонок не прижимаем: разворот начинается ровно с места чтения, а не с
+    // округлённого вниз края, — иначе на стыке глав пропадала бы колонка.
+    return Column{book_->currentChapter(), paginator.pageForCharOffset(charOffset)};
 }
 
-std::optional<std::size_t> BookView::cleanSpread() const {
-    if (!book_) return std::nullopt;
-    if (!draft_) return page_;
-
-    const typography::Paginator& paginator = book_->paginator();
-    if (paginator.pageCount() == 0) return std::nullopt;
-
-    // Номер известен, только когда набор ушёл за эту страницу: пока она
-    // последняя, на ней ещё будет место, и номер следующей ещё не решён.
-    if (!paginator.isComplete() &&
-        paginator.page(paginator.pageCount() - 1).firstCharOffset <= readingPosition_)
-        return std::nullopt;
-
-    const std::size_t at = paginator.pageForCharOffset(readingPosition_);
-    return at - at % static_cast<std::size_t>(columns_);
+BookView::Column BookView::anchorColumn() const {
+    const std::size_t chapter =
+        book_->currentChapter() == static_cast<std::size_t>(-1) ? 0 : book_->currentChapter();
+    return Column{chapter, page_};
 }
 
-void BookView::turnDraftForward() {
-    // Очередь та же, что и у чистового листания: читатель, нажавший «дальше»
-    // дважды, просил два разворота, а не один.
-    if (turning_ && turnForward_) {
-        ++pending_;
-        return;
+typography::Chapter& BookView::chapterLaidTo(std::size_t index, std::size_t pages) {
+    typography::Chapter& chapter = book_->chapterAt(index);
+
+    // Разложена ли она под нынешнюю полосу? Свежая (ни одной страницы) или
+    // соседняя, оставшаяся в кэше от прежней полосы, — переложить под текущую.
+    // Текущую главу это не трогает: её стиль уже совпадает.
+    if (chapter.pageCount() == 0 || !(chapter.style() == pageStyle_))
+        chapter.beginLayout(pageStyle_);
+    chapter.advanceToPage(pages);
+    return chapter;
+}
+
+bool BookView::ribbonStep(Column& pos, bool forward) {
+    if (forward) {
+        // В пределах главы — следующая колонка, если она есть. advanceToPage до
+        // pos.index+2 доводит счёт настолько, чтобы знать: либо колонка есть,
+        // либо глава на ней и кончилась (тогда она уже complete).
+        typography::Chapter& chapter = chapterLaidTo(pos.chapter, pos.index + 2);
+        if (pos.index + 1 < chapter.pageCount()) {
+            ++pos.index;
+            return true;
+        }
+        // Глава кончилась — на начало первой непустой следующей.
+        for (std::size_t next = pos.chapter + 1; next < book_->chapterCount(); ++next) {
+            if (chapterLaidTo(next, 1).pageCount() > 0) {
+                pos.chapter = next;
+                pos.index = 0;
+                return true;
+            }
+        }
+        return false;   // последняя колонка книги
     }
 
+    if (pos.index > 0) {
+        --pos.index;
+        return true;
+    }
+    // Начало главы — в конец предыдущей непустой. Её нужно знать целиком, чтобы
+    // взять последнюю колонку, — верстаем до конца (глава мала).
+    for (std::size_t prev = pos.chapter; prev-- > 0;) {
+        typography::Chapter& chapter = chapterLaidTo(prev, static_cast<std::size_t>(-1));
+        if (chapter.pageCount() > 0) {
+            pos.chapter = prev;
+            pos.index = chapter.pageCount() - 1;
+            return true;
+        }
+    }
+    return false;   // первая колонка книги
+}
+
+bool BookView::ribbonSpread(Column& pos, bool forward) {
+    Column probe = pos;
+    for (int i = 0; i < columns_; ++i) {
+        if (!ribbonStep(probe, forward)) {
+            if (forward)
+                return false;         // конец книги — разворот не сдвинуть
+            probe = Column{};         // начало книги — на самый первый разворот
+            break;
+        }
+    }
+    if (probe.chapter == pos.chapter && probe.index == pos.index)
+        return false;
+    pos = probe;
+    return true;
+}
+
+void BookView::buildSpread() {
+    spread_.clear();
+    spreadOwnColumns_ = 0;
+    if (!book_ || width_ <= 0.0f)
+        return;
+
+    // Кэш держим ровно вокруг текущей главы. Радиус обязан покрыть весь
+    // показанный разворот: он тянется на несколько глав вперёд, если они короче
+    // него. Чистим до сборки — иначе трим уронил бы главу, чью страницу лента
+    // уже держит.
+    book_->trimChapters(static_cast<std::size_t>(columns_) + 1);
+
+    const Column anchor = anchorColumn();
+    Column pos = anchor;
+
+    for (int slot = 0; slot < columns_; ++slot) {
+        // Довести колонку до реальной страницы, перешагивая исчерпанные главы:
+        // короткая глава бывает уже разворота, и на неё приходится не одна его
+        // колонка.
+        const typography::Page* page = nullptr;
+        while (pos.chapter < book_->chapterCount()) {
+            typography::Chapter& chapter = chapterLaidTo(pos.chapter, pos.index + 1);
+            if (pos.index < chapter.pageCount()) {
+                page = &chapter.page(pos.index);
+                break;
+            }
+            ++pos.chapter;   // в этой главе такой колонки нет — на начало следующей
+            pos.index = 0;
+        }
+        if (!page)
+            break;   // конец книги — дальше пусто
+
+        spread_.push_back(page);
+        if (pos.chapter == anchor.chapter)
+            ++spreadOwnColumns_;
+        ++pos.index;
+    }
+}
+
+void BookView::showColumn(const Column& target) {
     cancelTurn();
-    startDraftTurn();
-}
+    note_.hide();
 
-void BookView::startDraftTurn() {
-    const auto columns = static_cast<std::size_t>(columns_);
-    typography::Paginator& paginator = book_->paginator();
+    if (target.chapter != book_->currentChapter())
+        book_->makeCurrentChapter(target.chapter);
+    page_ = target.index;
+    if (book_->paginator().pageCount() != 0)
+        readingPosition_ = book_->paginator().page(page_).firstCharOffset;
 
-    // Следующая страница нужна ровно здесь: её первый символ — то место, с
-    // которого начинается новый разворот. Считать её заранее, на каждое
-    // движение мыши, значило бы считать зря, поэтому грязная вёрстка
-    // досчитывается по надобности — и говорит, если досчитывать уже нечего.
-    if (!paginator.draftUpTo(columns + 1)) {
-        pending_ = 0;   // книга кончилась
-        return;
-    }
-
-    note_.hide();   // страница ушла, а сноска на ней осталась бы висеть
-    readingPosition_ = paginator.draftPage(columns).firstCharOffset;
-    paginator.draftAt(pageStyle_, readingPosition_, columns);
-
-    // Порядок тот же, что и у чистового листания: к началу анимации верная
-    // страница уже нарисована и уже лежит внизу.
-    resting_ = 1 - resting_;
     redraw();
-
-    if (columns_ == 2) {
-        animateSpreadTurn(true);
-    } else {
-        animateTurn(true);
-    }
-
     if (onPositionChanged) onPositionChanged(readingPosition_);
 }
 
-const typography::Page* BookView::spreadPage(std::size_t column) const {
-    if (!book_) return nullptr;
+void BookView::redraw() {
+    if (!settled_ || width_ <= 0.0f || height_ <= 0.0f) return;
 
-    const typography::Paginator& paginator = book_->paginator();
-    if (draft_) {
-        if (column >= paginator.draftCount()) return nullptr;
-        return &paginator.draftPage(column);
+    // Собираем показанный разворот из ленты колонок до отрисовки: дальше и
+    // рисование, и попадание по сноске читают уже готовый spread_.
+    buildSpread();
+
+    // Посреди книжного переворота нынешний разворот несёт самый новый лист, а
+    // не осевший: рисуем в его поверхность — перелистываемая страница и
+    // приходящий лист смотрят на неё и обновятся сами, — а неперелистываемую
+    // не трогаем: ей до посадки листа положено старое. Иначе глава,
+    // досчитанная в полёте («из …» стало «из M»), одевала бы обе страницы в
+    // новое, и летящий лист пропадал бы на глазах — на тех же точках под ним.
+    if (settledStale_) {
+        if (Flip* const newest = newestFlip()) drawSpread(*newest->surface);
+        return;
     }
 
-    const std::size_t number = page_ + column;
-    if (number >= paginator.pageCount()) return nullptr;
-    return &paginator.page(number);
+    drawSpread(*settled_);
+
+    // Обе страницы — на осевший разворот. В чтении: до входа страницы скрыты,
+    // а задником окна владеет заставка стартового экрана.
+    if (active_) dressPages();
 }
 
-void BookView::redraw() {
-    if (surface_.empty() || width_ <= 0.0f || height_ <= 0.0f) return;
+void BookView::dressPages() {
+    // Одна кисть на обе страницы: поверхность одна, крой у каждой свой. Кисть
+    // DrawingSurface на каждый вызов новая, поверхность за ней та же.
+    CompositionSurfaceBrush const brush = pageBrush(*settled_);
+    for (auto const& page : pages_) page.value().brush(brush);
+}
 
-    surface_[resting_].draw([this](ID2D1DeviceContext* context) {
+void BookView::drawSpread(DrawingSurface& surface) {
+    surface.draw([this](ID2D1DeviceContext* context) {
         // Поверхность в пикселях, а вёрстка в DIP: масштаб домножается к тому
         // смещению атласа, которое wxl уже поставила, — иначе поверхность
         // легла бы поверх чужой.
@@ -1052,7 +1192,7 @@ void BookView::redraw() {
         context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         context->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-        if (spreadPage(0)) {
+        if (!spread_.empty()) {
             drawPage(context, width_, height_);
         } else {
             drawInvitation(context, width_, height_);
@@ -1061,189 +1201,369 @@ void BookView::redraw() {
 }
 
 void BookView::turnPage(int delta) {
-    if (!book_) return;
-
-    if (draft_) {
-        // Вперёд грязная вёрстка листается сама: следующий разворот считается
-        // тем же способом, что и нынешний, и книга при этом ни при чём.
-        if (delta > 0) {
-            turnDraftForward();
-            return;
-        }
-
-        // А назад — нет. Начало предыдущей страницы известно только тому, кто
-        // набрал книгу с начала, поэтому листание назад и есть тот случай,
-        // ради которого чистовой набор всё это время считался.
-        const auto columns = static_cast<std::size_t>(columns_);
-        const std::size_t at = catchUpTo(readingPosition_);
-        goTo(at >= columns ? at - columns : 0);
+    if (!book_ || pageCount() == 0 || delta == 0)
         return;
-    }
+    const bool forward = delta > 0;
 
-    if (pageCount() == 0) return;
+    // Следующий разворот ленты от нынешнего места. Лента непрерывна, так что
+    // это обычный шаг: границу главы он проходит сам, не прыжком. Место чтения
+    // и страницы двигаются сразу, а лист летит вдогонку — поэтому быстрые
+    // нажатия в одну сторону пускают несколько листов внахлёст, а не ждут в
+    // очереди; встречное в режиме книги сперва сажает летящие (startTurn).
+    Column target = anchorColumn();
+    if (!ribbonSpread(target, forward))
+        return;   // край книги — листать некуда
 
-    // Листается разворот целиком: на две колонки читатель за раз прочитывает
-    // две страницы, и перелистывать по одной значило бы половину показывать
-    // дважды.
-    //
-    // Считается от конца очереди, а не от видимого разворота. Пока переворот
-    // идёт, читатель уже попросил следующую страницу, и второе нажатие обязано
-    // прибавиться к первому, а не повторить его.
-    const auto count = static_cast<std::ptrdiff_t>(pageCount());
-    const auto step = static_cast<std::ptrdiff_t>(delta) * columns_;
-    const auto target = std::clamp(static_cast<std::ptrdiff_t>(queueEnd()) + step,
-                                   static_cast<std::ptrdiff_t>(0), count - 1);
-    goTo(static_cast<std::size_t>(target));
+    startTurn(target, forward);
 }
 
-std::size_t BookView::queueEnd() const {
-    if (pending_ == 0) return page_;
-
-    // Шаги очереди — соседние развороты в одну сторону, и в очередь попадает
-    // только тот, что в книге есть (см. goTo): значит, конец считается
-    // умножением и за край не выходит.
-    const auto step = static_cast<std::ptrdiff_t>(columns_) * pending_;
-    const auto tail = static_cast<std::ptrdiff_t>(page_) + (turnForward_ ? step : -step);
-    return static_cast<std::size_t>(tail);
-}
-
-std::size_t BookView::neighbourSpread(std::size_t page, bool forward) const {
-    const auto count = static_cast<std::ptrdiff_t>(pageCount());
-    const auto step = static_cast<std::ptrdiff_t>(columns_) * (forward ? 1 : -1);
-    const auto next = std::clamp(static_cast<std::ptrdiff_t>(page) + step,
-                                 static_cast<std::ptrdiff_t>(0), count - 1);
-
-    // Упор в край книги отдаёт тот же разворот, с которого шли: у goTo это и
-    // значит «идти некуда».
-    auto spread = static_cast<std::size_t>(next);
-    return spread - spread % static_cast<std::size_t>(columns_);
-}
-
-void BookView::goTo(std::size_t page) {
-    if (!book_ || pageCount() == 0) return;
-
-    // Сход с грязной вёрстки. Полоса встаёт на тот чистовой разворот, внутри
-    // которого лежит место чтения, и уже от него листает дальше: у грязной
-    // страницы номера нет, и мерить шаг не от чего. Зовущий к этому времени
-    // уже досчитал набор до нужного места — `catchUpTo`.
-    const bool leftDraft = draft_;
-    if (draft_) {
-        // Очередь листания вместе с ней и кончается: её шаги считались по
-        // грязной вёрстке, а полоса уходит на чистовую, и вести туда, куда
-        // читатель уже не собирается, незачем.
-        cancelTurn();
-
-        draft_ = false;
-        page_ = book_->paginator().pageForCharOffset(readingPosition_);
-        page_ -= page_ % static_cast<std::size_t>(columns_);
-    }
-
-    // Номер страницы всегда указывает на начало разворота: с него начинается
-    // и отрисовка, и следующий шаг листания.
-    std::size_t wanted = std::min(page, pageCount() - 1);
-    wanted -= wanted % static_cast<std::size_t>(columns_);
-
-    // Всё меряется от конца очереди: пока идёт переворот, книга считается
-    // стоящей там, куда очередь придёт, а не там, где она видна.
-    const std::size_t tail = queueEnd();
-    if (wanted == tail && !surface_.empty()) {
-        // Идти некуда — но если полоса только что сошла с грязной вёрстки,
-        // показать чистовую всё равно надо: страница на экране начиналась с
-        // места чтения, а чистовая начинается со своего.
-        if (leftDraft) {
-            readingPosition_ = book_->paginator().page(page_).firstCharOffset;
-            note_.hide();
-            redraw();
-            if (onPositionChanged) onPositionChanged(readingPosition_);
-        }
-        return;   // уже здесь или уже туда идём
-    }
-
-    const bool forward = wanted > tail;
-
-    // Ровно следующий разворот в ту же сторону встаёт в очередь и ждёт своего
-    // переворота. Всё остальное — встречное листание, прыжок по закладке, по
-    // оглавлению, по находке поиска — идущий переворот отменяет: очередь эта
-    // ведёт туда, куда читатель уже не собирается.
-    if (turning_ && forward == turnForward_ && wanted == neighbourSpread(tail, forward)) {
-        ++pending_;
-        return;
-    }
-
-    cancelTurn();
-
-    if (!surface_.empty() && width_ > 0.0f) {
-        startTurn(wanted, forward);
-        return;
-    }
-
-    // Полосы ещё нет — ни поверхности, ни размера: страница просто ставится,
-    // переворачивать нечего и нечем.
-    note_.hide();
-    page_ = wanted;
-    readingPosition_ = book_->paginator().page(page_).firstCharOffset;
-    redraw();
-    if (onPositionChanged) onPositionChanged(readingPosition_);
-}
-
-void BookView::startTurn(std::size_t wanted, bool forward) {
+void BookView::startTurn(const Column& target, bool forward) {
     note_.hide();   // страница ушла, а сноска на ней осталась бы висеть
 
-    page_ = wanted;
+    // Режим книги — разворот в две колонки: там есть корешок и переворот листа
+    // у него. Одна колонка и три с лишним — режим газеты: уезжает целая
+    // страница. Страницы ведут себя в них по-разному, поэтому режим решаем
+    // сразу.
+    const bool book = columns_ == 2;
+
+    // Встречное листание в режиме книги сперва сажает всё, что летит. Бумага
+    // снимается с осевшего разворота, а у летящего листа перелистываемая
+    // страница ещё в воздухе: снимать с неё нечего, и лист, пущенный навстречу
+    // поверх летящих, показывал бы под собой то, чего в книге уже нет. Садятся
+    // они рывком, в покой, осевший разворот — самого нового из них
+    // (cancelTurn); листы в ту же сторону остаются лететь внахлёст.
+    if (book)
+        for (const Flip& f : flips_)
+            if (f.active && f.forward != forward) {
+                cancelTurn();
+                break;
+            }
+
+    // Лист возьмётся свободный, новый или посаженный рывком — см. acquireFlip.
+    Flip& flip = acquireFlip();
+    flip.forward = forward;
+    flip.epoch = flip.started = ++flipClock_;
+
+    // Режим газеты: уезжающий лист несёт уходящую страницу, а из-под него
+    // открываются страницы — новый разворот. Уходящее снимаем в лист ДО того,
+    // как книга шагнёт: тогда на страницах ещё старое, а после шага — новое.
+    if (!book)
+        drawSpread(*flip.surface);
+
+    // Двигаем книгу на целевой разворот. Целевая колонка может лежать в соседней
+    // главе: делаем её текущей, не теряя вёрстки (buildSpread разложил её как
+    // соседнюю на стыке).
+    if (target.chapter != book_->currentChapter())
+        book_->makeCurrentChapter(target.chapter);
+    page_ = target.index;
     readingPosition_ = book_->paginator().page(page_).firstCharOffset;
 
-    // Новая страница рисуется на свободный лист, и он становится тем, на
-    // котором книга стоит. Порядок именно такой: к началу анимации верная
-    // страница уже нарисована и уже лежит внизу, поэтому сбой анимации
-    // может стоить кадра, но не страницы.
-    //
-    // Отсюда же и причина, по которой очередь не может забегать вперёд:
-    // свободный лист один, и пока по нему едет кромка, рисовать на нём
-    // следующий разворот некуда. Очередь потому и хранится числом шагов, а не
-    // готовыми страницами.
-    resting_ = 1 - resting_;
-    redraw();
-
-    // Книжное листание — только для разворота: снимать бумагу с корешка
-    // можно там, где корешок есть. В одну колонку и в три листается тем
-    // же, чем листалось всегда.
-    if (columns_ == 2) {
-        animateSpreadTurn(forward);
+    if (book) {
+        // Режим книги: неперелистываемая страница (при листании вперёд левая)
+        // остаётся на старом развороте, пока приходящий лист её не накроет.
+        // Новых страниц у переворота две — оборот снимаемой бумаги и та, что
+        // открывается под ней, — то есть ровно один новый разворот: собираем
+        // его и рисуем в поверхность листа, единственной отрисовкой на
+        // переворот. Из неё animateSpreadTurn оденет перелистываемую страницу
+        // и выведет приходящий лист; старое лист заимствует у страницы, на
+        // которой оно уже показано. Осевший разворот (settled_) лист, сев,
+        // сменит обменом поверхностей, без отрисовки (landFlip), — до того
+        // нынешний разворот несёт самый новый лист, а не settled_
+        // (settledStale_).
+        buildSpread();
+        drawSpread(*flip.surface);
+        settledStale_ = true;
     } else {
-        animateTurn(forward);
+        // Режим газеты: страницы — новый разворот, его и открывает уезжающий
+        // лист.
+        redraw();
     }
+
+    if (sheets_) sheets_.value().isVisible(true);   // листы — на время переворота
+
+    if (book)
+        animateSpreadTurn(flip, forward);
+    else
+        animateTurn(flip, forward);
 
     if (onPositionChanged) onPositionChanged(readingPosition_);
 }
 
-void BookView::turnCompleted() {
-    turning_ = false;
-    if (pending_ == 0) return;
+BookView::Flip& BookView::acquireFlip() {
+    releaseTimer_.stop();   // снова листают — отпускание пула отменяется
 
-    --pending_;
-    if (draft_) {
-        startDraftTurn();
-        return;
+    // Свободный лист в пуле?
+    for (Flip& f : flips_)
+        if (!f.active) {
+            f.active = true;
+            return f;
+        }
+
+    // Ещё не набрали лимит — заводим новый. Пул зарезервирован под kMaxFlips
+    // (buildTree), так что push_back не переселяет вектор: указатели на листы,
+    // что держат обработчики конца, остаются годными.
+    if (flips_.size() < kMaxFlips) {
+        flips_.push_back(makeFlip());
+        Flip& fresh = flips_.back();
+        fresh.active = true;
+        applyShadowTint();   // покрасить его тени под нынешнюю тему
+        return fresh;
     }
 
-    startTurn(neighbourSpread(page_, turnForward_), turnForward_);
+    // Все в воздухе, а листать просят ещё — сажаем самый старый рывком. Сев,
+    // он отдаёт свой разворот неперелистываемой странице как доигравший
+    // (landFlip): иначе из-под ещё летящих на миг выглянуло бы то, что было
+    // до него.
+    Flip* oldest = &flips_.front();
+    for (Flip& f : flips_)
+        if (f.started < oldest->started)
+            oldest = &f;
+    oldest->epoch = ++flipClock_;   // его обработчик конца, придя, увидит чужой номер
+    finishFlip(*oldest);
+    landFlip(*oldest);
+    oldest->active = true;
+    return *oldest;
+}
+
+BookView::Flip* BookView::newestFlip() {
+    Flip* newest = nullptr;
+    for (Flip& f : flips_)
+        if (!newest || f.started > newest->started)
+            newest = &f;
+    return newest;
+}
+
+BookView::Flip BookView::makeFlip() {
+    using namespace wxl::dsl;   // colors.transparent — как в buildTree
+
+    const SizeInt32 pixels{static_cast<int32_t>(width_ * scale_ + 0.5f),
+                           static_cast<int32_t>(height_ * scale_ + 0.5f)};
+    DrawingSurface surface(compositor_, pixels);
+
+    SpriteVisual sheet = compositor_.createSpriteVisual();
+    sheet.brush(surface.brush());
+    sheet.size({width_, height_});
+    // Крой в покое отпущен на вылет тени: нулевые отступы — ровно лист, а тени
+    // положено лежать за его краем.
+    InsetClip clip = compositor_.createInsetClip(-kShadowReach, -kShadowReach, -kShadowReach,
+                                                 -kShadowReach);
+    sheet.clip(clip);
+    sheet.isVisible(false);
+
+    // Тень уезжающего листа — маской ей кисть листа, поэтому тень повторяет
+    // лист, а не описанный прямоугольник. Гасится и зажигается прозрачностью.
+    DropShadow shadow = compositor_.createDropShadow();
+    shadow.blurRadius(kShadowBlur);
+    shadow.offset({kShadowShift, 0.0f, 0.0f});
+    shadow.mask(sheet.brush());
+    shadow.opacity(0.0f);
+    sheet.shadow(shadow);
+
+    // Тень сгиба (книжное листание): горизонтальный градиент в долях своей
+    // ширины, поэтому полоске достаточно ездить — перекрашивать не приходится.
+    CompositionLinearGradientBrush foldBrush = compositor_.createLinearGradientBrush();
+    foldBrush.startPoint({0.0f, 0.0f});
+    foldBrush.endPoint({1.0f, 0.0f});
+    CompositionColorGradientStop foldMid =
+        compositor_.createColorGradientStop(kFoldMidStop, colors.transparent);
+    foldBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
+    foldBrush.colorStops().append(foldMid);
+    foldBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    SpriteVisual fold = compositor_.createSpriteVisual();
+    fold.brush(foldBrush);
+    fold.size({width_, height_});
+    fold.isVisible(false);
+
+    // Тень наружного края приходящего листа: узкая и неизменная, градиент
+    // развёрнут — густо у листа, прозрачно прочь.
+    CompositionLinearGradientBrush edgeBrush = compositor_.createLinearGradientBrush();
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(kEdgeMidStop, colors.transparent));
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    SpriteVisual edge = compositor_.createSpriteVisual();
+    edge.brush(edgeBrush);
+    edge.size({width_ * kEdgeOfWindow, height_});
+    edge.isVisible(false);
+
+    // Приходящий лист (кисть выдаётся на каждый переворот — задника) и полутон
+    // изгиба у сгиба: ребёнок листа, кроится вместе с ним.
+    SpriteVisual leaf = compositor_.createSpriteVisual();
+    InsetClip leafClip = compositor_.createInsetClip();
+    leaf.clip(leafClip);
+    leaf.size({width_, height_});
+    leaf.isVisible(false);
+    CompositionLinearGradientBrush bendBrush = compositor_.createLinearGradientBrush();
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(kBendMidStop, colors.transparent));
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    SpriteVisual bend = compositor_.createSpriteVisual();
+    bend.brush(bendBrush);
+    bend.size({width_ * kBendOfWindow, height_});
+    leaf.children().insertAtTop(bend);
+
+    // Подъём листа к глазу (книжное листание): доля подъёма — скаляр в
+    // собственных свойствах листа, а две трапеции читают её выражениями. Числа
+    // геометрии ставит начало каждого переворота: корешок и свободный край
+    // зависят от стороны листания, а размеры — от окна.
+    CompositionPropertySet lift = sheet.properties();
+    lift.insertScalar(L"Amount", 0.0f);
+    ExpressionAnimation sheetLift = compositor_.createExpressionAnimation(kLiftFormula);
+    ExpressionAnimation leafLift = compositor_.createExpressionAnimation(kLiftFormula);
+
+    // Все листовые визуалы — в контейнер; их Z на каждый переворот уточняет
+    // анимация (плоское — под старые, книжное — над старыми).
+    VisualCollection const children = sheets_.value().children();
+    children.insertAtTop(sheet);
+    children.insertAtTop(fold);
+    children.insertAtTop(edge);
+    children.insertAtTop(leaf);
+
+    return Flip{std::move(surface), sheet,     clip,      shadow,  leaf, leafClip, bend,
+                bendBrush,          fold,      foldBrush, foldMid, edge, edgeBrush,
+                lift,               sheetLift, leafLift};
+}
+
+void BookView::finishFlip(Flip& flip) {
+    // Сначала снять анимации, потом писать: пока анимация на свойстве жива,
+    // прямая запись до него не доходит, и недоехавший лист доехал бы позже уже
+    // не к месту.
+    flip.sheet.stopAnimation(L"Offset");
+    flip.sheet.stopAnimation(L"RotationAngleInDegrees");
+    flip.sheet.offset({0.0f, 0.0f, 0.0f});
+    flip.sheet.rotationAngleInDegrees(0.0f);
+    flip.sheet.isVisible(false);
+
+    flip.clip.stopAnimation(L"LeftInset");
+    flip.clip.stopAnimation(L"RightInset");
+    flip.clip.leftInset(-kShadowReach);
+    flip.clip.rightInset(-kShadowReach);
+    flip.clip.topInset(-kShadowReach);
+    flip.clip.bottomInset(-kShadowReach);
+
+    flip.shadow.opacity(0.0f);
+
+    flip.fold.stopAnimation(L"Offset");
+    flip.fold.stopAnimation(L"Scale");
+    flip.fold.stopAnimation(L"Opacity");
+    flip.fold.isVisible(false);
+    flip.foldMid.stopAnimation(L"Offset");
+
+    flip.edge.stopAnimation(L"Offset");
+    flip.edge.isVisible(false);
+
+    flip.leaf.stopAnimation(L"Offset");
+    flip.leaf.isVisible(false);
+    flip.bend.stopAnimation(L"Offset");
+    flip.bend.stopAnimation(L"Opacity");
+    flip.bend.opacity(1.0f);
+    flip.leafClip.stopAnimation(L"LeftInset");
+    flip.leafClip.stopAnimation(L"RightInset");
+
+    // Подъём снимается с обеих сторон листа, и трапеция сходит в тождественную.
+    // Не только ради вида застывшего листа: выражение, оставленное на свойстве,
+    // композитор считает каждый кадр — за все свободные листы пула и без
+    // всякой нужды.
+    flip.lift.stopAnimation(L"Amount");
+    flip.lift.insertScalar(L"Amount", 0.0f);
+    flip.sheet.stopAnimation(L"TransformMatrix");
+    flip.sheet.transformMatrix(identity_matrix());
+    flip.leaf.stopAnimation(L"TransformMatrix");
+    flip.leaf.transformMatrix(identity_matrix());
+
+    flip.active = false;
+}
+
+void BookView::landFlip(Flip& flip) {
+    // Режим газеты: лист нёс уходящий разворот, и он больше никому не нужен —
+    // осевший сменился ещё в startTurn (флаг не взведён).
+    if (!settledStale_) return;
+
+    // Режим книги: лист нёс новый разворот, и теперь тот — осевший. Не рисуя:
+    // осевший разворот меняется с листом поверхностями, а прежняя уходит листу
+    // под следующее листание. Так на пачку листов приходится ровно по одной
+    // отрисовке на лист и ни одной сверх; кисти листа, глядевшие на его прежнюю
+    // поверхность, анимация переставляет на каждом перевороте заново.
+    //
+    // Неперелистываемая страница переезжает на него сейчас, а не когда сядут
+    // все: приходящий лист только что лёг на неё ровно этими точками (подмены
+    // не видно — тот же кадр, что и сокрытие листа), а следующий лист, ещё
+    // летящий, ложится уже на них. Ждать последнего значило бы показать из-под
+    // него то, что было до первого. Перелистываемая страница носит поверхность
+    // самого нового листа и здесь не трогается: когда сядет и он, обмен
+    // положит ту же поверхность в settled_ (settleSheets).
+    std::swap(*settled_, *flip.surface);
+    if (active_)
+        pages_[flip.forward ? kLeftPage : kRightPage].value().brush(pageBrush(*settled_));
+}
+
+void BookView::settleSheets() {
+    for (Flip& f : flips_)
+        if (f.active) return;
+
+    // Все листы сели. В режиме книги осевший разворот — разворот последнего
+    // севшего, то есть самого нового (landFlip), и обе страницы уже на нём:
+    // неперелистываемую одел landFlip, а перелистываемая носит поверхность
+    // самого нового листа — ту самую, что обменом легла в settled_. Одевать
+    // заново нечего: осевший разворот — нынешний.
+    settledStale_ = false;
+
+    if (sheets_) sheets_.value().isVisible(false);
+    armRelease();   // все листы свободны — отпускать пул по таймеру
 }
 
 void BookView::cancelTurn() {
-    // Номер меняется — и обработчик конца, если пакет отменённого переворота
-    // всё-таки о нём скажет, узнает свой номер чужим и промолчит.
-    ++turnEpoch_;
-    turning_ = false;
-    pending_ = 0;
+    // Все идущие перевороты — в покой рывком. Пакеты их концов ещё придут, но
+    // каждому листу здесь меняется epoch, и обработчик, придя, увидит чужой
+    // номер и промолчит: остановленная анимация закрывает пакет так же, как
+    // доигравшая. Садится при этом один самый новый: его разворот — нынешний,
+    // а развороты остальных пропущены — в книге их уже нет.
+    Flip* newest = nullptr;
+    for (Flip& f : flips_)
+        if (f.active) {
+            f.epoch = ++flipClock_;
+            finishFlip(f);
+            if (!newest || f.started > newest->started) newest = &f;
+        }
+    if (newest) landFlip(*newest);
+    settleSheets();   // все сели: листы скрыть, пул — на отпускание
 }
 
-void BookView::raise(const SpriteVisual& sheet) {
-    // Сначала вынуть, потом положить наверх. Композитор не переставляет визуал,
-    // у которого уже есть родитель, — он отвечает на это E_INVALIDARG, а
-    // исключение из обработчика XAML стоит приложению жизни. Оба листа лежат
-    // в контейнере с самого начала, так что «уже есть» — это всегда.
-    sheets_.value().children().remove(sheet);
-    sheets_.value().children().insertAtTop(sheet);
+void BookView::armRelease() {
+    // Один лист держим всегда — на следующее листание, чтобы не заводить
+    // поверхность заново. Отпускать нечего, пока в пуле не больше одного.
+    if (flips_.size() <= 1) return;
+    releaseTimer_.stop();
+    releaseTimer_.interval(kFlipReleaseFirst);
+    releaseTimer_.start();
+}
+
+void BookView::onReleaseTick() {
+    releaseTimer_.stop();
+
+    // Снова листают — пул нужен, ничего не трогаем. acquireFlip таймер уже
+    // остановил, но тик мог уйти в очередь раньше остановки.
+    for (const Flip& f : flips_)
+        if (f.active) return;
+
+    // Отпускаем один лишний лист: снимаем его визуалы со сцены и роняем — с ним
+    // уходит и его поверхность в размер окна. Берём последний: все свободны,
+    // порядок не важен, а pop_back остальных не двигает. Последний, один, лист
+    // оставляем — на следующее листание.
+    if (flips_.size() > 1) {
+        Flip& f = flips_.back();
+        VisualCollection const children = sheets_.value().children();
+        children.remove(f.sheet);
+        children.remove(f.fold);
+        children.remove(f.edge);
+        children.remove(f.leaf);   // полутон изгиба — ребёнок листа, уходит с ним
+        flips_.pop_back();
+    }
+
+    // Ещё есть лишние — следующий через секунду.
+    if (flips_.size() > 1) {
+        releaseTimer_.interval(kFlipReleaseStep);
+        releaseTimer_.start();
+    }
 }
 
 void BookView::applyShadowTint() {
@@ -1261,156 +1581,132 @@ void BookView::applyShadowTint() {
         stops[2].color(tinted(hue, 0.0f));
     };
 
-    paint(foldBrush_.value().colorStops(), kFoldNear, kFoldMid);
-    paint(edgeBrush_.value().colorStops(), kEdgeNear, kEdgeMid);
-    paint(bendBrush_.value().colorStops(), kBendNear, kBendMid);
-
-    // Тень обычного переворота — не градиент, а размытие, и цвет у неё свой
-    // собственный. Прозрачностью там правит сама тень, поэтому тон берётся
-    // непрозрачным.
-    for (DropShadow const& shadow : shadow_) shadow.color(tinted(hue, 1.0f));
-}
-
-void BookView::resetSheets() {
-    // Сперва всё — на место, и только потом двигается одно.
-    //
-    // Лист, уехавший в прошлый переворот, там и остаётся: смещение с поворотом
-    // ему никто не снимал. Через переворот очередь показывать страницу
-    // доходит до него — новая страница честно на нём нарисована, но сам он всё
-    // ещё за левым краем, и читатель видит под уезжающей страницей пустоту.
-    // Поэтому положение снимается здесь, до анимации, а не в конце прошлой:
-    // к первому кадру переворота новая страница обязана уже лежать на месте.
-    //
-    // Крой тут важнее смещения. Застрявшее смещение портит копию прежней
-    // страницы — ту, которой всё равно суждено уехать. Застрявший крой
-    // спрятал бы кусок настоящей: того самого листа, на котором книга стоит.
-    for (std::size_t index = 0; index < sheet_.size(); ++index) {
-        SpriteVisual const& sheet = sheet_[index];
-
-        // Сначала снять анимацию, потом писать. Пока анимация на свойстве
-        // жива, прямая запись до него не доходит, и лист, которому не дали
-        // доехать при быстром листании, доехал бы уже в роли того, на котором
-        // книга стоит, — то есть унёс бы страницу за край.
-        sheet.stopAnimation(L"Offset");
-        sheet.stopAnimation(L"RotationAngleInDegrees");
-        sheet.offset({0.0f, 0.0f, 0.0f});
-        sheet.rotationAngleInDegrees(0.0f);
-
-        // В покое крой отпущен на вылет тени: нулевые отступы — это ровно
-        // лист, а тени положено лежать за его краем.
-        InsetClip const& crop = clip_[index];
-        crop.stopAnimation(L"LeftInset");
-        crop.stopAnimation(L"RightInset");
-        crop.leftInset(-kShadowReach);
-        crop.rightInset(-kShadowReach);
-        crop.topInset(-kShadowReach);
-        crop.bottomInset(-kShadowReach);
-
-        if (index < shadow_.size()) shadow_[index].opacity(0.0f);
+    // Тени у каждого листа пула свои — красим все. Тень уезжающего листа не
+    // градиент, а размытие: тон непрозрачный, прозрачностью правит сама тень.
+    for (Flip& f : flips_) {
+        paint(f.foldBrush.colorStops(), kFoldNear, kFoldMid);
+        paint(f.edgeBrush.colorStops(), kEdgeNear, kEdgeMid);
+        paint(f.bendBrush.colorStops(), kBendNear, kBendMid);
+        f.shadow.color(tinted(hue, 1.0f));
     }
-
-    fold_.value().stopAnimation(L"Offset");
-    fold_.value().stopAnimation(L"Scale");
-    fold_.value().stopAnimation(L"Opacity");
-    fold_.value().isVisible(false);
-    foldMid_.value().stopAnimation(L"Offset");
-
-    edge_.value().stopAnimation(L"Offset");
-    edge_.value().isVisible(false);
-
-    leaf_.value().stopAnimation(L"Offset");
-    leaf_.value().isVisible(false);
-    bend_.value().stopAnimation(L"Offset");
-    bend_.value().stopAnimation(L"Opacity");
-    bend_.value().opacity(1.0f);
-    leafCrop_.value().stopAnimation(L"LeftInset");
-    leafCrop_.value().stopAnimation(L"RightInset");
 }
 
-void BookView::animateTurn(bool forward) {
-    resetSheets();
+void BookView::animateTurn(Flip& flip, bool forward) {
+    // Уезжающий лист несёт уходящую страницу из собственной поверхности. Лист
+    // мог прежде служить в режиме книги, где его кисть переставлена на чужую
+    // поверхность, а своя ушла осевшему развороту обменом при оседании, —
+    // ставим нынешнюю свою и ей же маскируем тень: в газете лист открывает
+    // страницы под собой, а не повторяет их.
+    flip.sheet.brush(flip.surface->brush());
+    flip.shadow.mask(flip.sheet.brush());
 
-    // Уезжает всегда копия прежней страницы, приходит всегда новая. Разница
-    // между «вперёд» и «назад» только в том, кто из них наверху: вперёд
-    // прежний лист уходит влево, назад новый приходит слева.
-    SpriteVisual const& moving = forward ? spare() : resting();
-    raise(moving);
+    // Поворот идёт вокруг левого края: там корешок, оттуда лист и поднимается.
+    // Ставится здесь, а не раз на лист: центр преобразования принадлежит
+    // плоскому листанию, а книжное его обнуляет — там лист не поворачивается, а
+    // гнётся трапецией от собственного начала координат.
+    flip.sheet.centerPoint({0.0f, height_ * 0.5f, 0.0f});
 
-    // Уехать надо дальше собственной ширины. Лист поворачивается вокруг левого
-    // края, и его дальний нижний угол отходит от оси не на ширину, а на
-    // гипотенузу: к ширине, укороченной косинусом, добавляется половина высоты,
-    // умноженная на синус. Уезжай лист ровно на ширину — этот угол так и
-    // оставался бы в кадре полоской бумаги у левого края.
-    // Плюс тень: она сдвинута вправо и размыта, поэтому переживает бумагу и
-    // осталась бы у левого края серой полоской, уйди лист ровно по своему углу.
-    const float away =
-        -(width_ * kTurnCos + height_ * 0.5f * kTurnSin + kShadowShift + kShadowBlur);
-    const float from = forward ? 0.0f : away;
-    const float to = forward ? away : 0.0f;
-    const float angleFrom = forward ? 0.0f : -kTurnAngle;
-    const float angleTo = forward ? -kTurnAngle : 0.0f;
+    // Плоское листание: новые листы — под старыми. Только что заведённый лист
+    // кладём в самый низ контейнера, над страницами; уже летящие остаются выше
+    // и уезжают первыми, открывая тех, что под ними.
+    VisualCollection const children = sheets_.value().children();
+    children.remove(flip.sheet);
+    children.insertAtBottom(flip.sheet);
 
-    auto const easing = compositor_.createLinearEasingFunction();
+    // Уезжает копия уходящего разворота (flip.sheet), открывая задник — новый
+    // разворот. Уехать надо дальше собственной ширины: лист поворачивается
+    // вокруг левого края, и его дальний нижний угол отходит не на ширину, а на
+    // гипотенузу (ширина·cos + полвысоты·sin); плюс тень, сдвинутую вправо и
+    // размытую, иначе она осталась бы у края серой полоской. Вперёд лист уходит
+    // влево, назад — вправо.
+    const float reach = width_ * kTurnCos + height_ * 0.5f * kTurnSin + kShadowShift + kShadowBlur;
+    const float to = forward ? -reach : reach;
+    const float angleTo = forward ? -kTurnAngle : kTurnAngle;
+
+    auto const easing =
+        compositor_.createCubicBezierEasingFunction({kEaseX1, kEaseY1}, {kEaseX2, kEaseY2});
 
     auto slide = compositor_.createVector3KeyFrameAnimation();
     slide.duration(kTurn);
-    slide.insertKeyFrame(0.0f, Vector3{from, 0.0f, 0.0f}, easing);
+    slide.insertKeyFrame(0.0f, Vector3{0.0f, 0.0f, 0.0f}, easing);
     slide.insertKeyFrame(1.0f, Vector3{to, 0.0f, 0.0f}, easing);
 
     auto turn = compositor_.createScalarKeyFrameAnimation();
     turn.duration(kTurn);
-    turn.insertKeyFrame(0.0f, angleFrom, easing);
+    turn.insertKeyFrame(0.0f, 0.0f, easing);
     turn.insertKeyFrame(1.0f, angleTo, easing);
 
     // Тень — не украшение: лист и страница под ним одного цвета, и без тени
-    // глаз не видит, что один поднят над другим. Заведена она в applySize,
-    // где у листа появляется кисть — она же ей и маска, поэтому тень
-    // повторяет лист, а не описанный вокруг прямоугольник.
-    shadow_[forward ? 1 - resting_ : resting_].opacity(kShadowOpacity);
+    // глаз не видит, что один поднят над другим.
+    flip.shadow.opacity(kShadowOpacity);
+    flip.sheet.isVisible(true);
 
-    // В конце переворота делать нечего, поэтому конец и не отслеживается:
-    // уехавший лист так и остаётся уехавшим до своего следующего выхода, а
-    // приводит его в порядок начало следующего переворота — там это нужно, а
-    // здесь было бы обещанием, которое некому исполнить, если анимацию
-    // прервали.
-    moving.startAnimation(L"Offset", slide);
-    moving.startAnimation(L"RotationAngleInDegrees", turn);
+    // Конец переворота отслеживается пакетом: по нему лист освобождается в пул.
+    // Пакет закрывает и остановленную анимацию, поэтому обработчик проверяет и
+    // жизнь полосы, и свой ли это лист (epoch).
+    const std::uint32_t epoch = flip.epoch;
+    Flip* const which = &flip;
+    auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
+    flip.sheet.startAnimation(L"Offset", slide);
+    flip.sheet.startAnimation(L"RotationAngleInDegrees", turn);
+    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
+                              Object const&, CompositionBatchCompletedEventArgs&) {
+        if (alive.expired() || which->epoch != epoch) return;
+        finishFlip(*which);
+        landFlip(*which);
+        settleSheets();
+    });
+    batch.end();
 }
 
-void BookView::animateSpreadTurn(bool forward) {
-    resetSheets();
-
+void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // Уходит старый разворот, и в обе стороны он остаётся сверху: книжное
     // листание снимает верхнюю бумагу с неподвижной стопки, а не увозит
-    // страницу за край. Новый разворот уже нарисован и уже лежит под ней —
-    // тем же порядком в goTo, что и у обычного переворота.
-    SpriteVisual const& going = spare();
-    InsetClip const& goingCrop = clip_[1 - resting_];
-    SpriteVisual const& coming = leaf_.value();
-    InsetClip const& comingCrop = leafCrop_.value();
-    SpriteVisual const& fold = fold_.value();
+    // страницу за край. У переворота две стороны разной давности: под снимаемой
+    // бумагой с первого же кадра открывается НОВАЯ страница, а неперелистываемая
+    // остаётся СТАРОЙ, пока приходящий лист её не накроет. Для того страницы и
+    // два визуала: перелистываемую переставляем на новый разворот сейчас,
+    // другую — при оседании (settleSheets).
+    SpriteVisual const& going = flip.sheet;
+    InsetClip const& goingCrop = flip.clip;
+    SpriteVisual const& coming = flip.leaf;
+    InsetClip const& comingCrop = flip.leafClip;
+    SpriteVisual const& fold = flip.fold;
+    SpriteVisual const& rim = flip.edge;
+    SpriteVisual const& flipping = pages_[forward ? kRightPage : kLeftPage].value();
 
-    // Приходящий лист носит кисть того самого разворота, что лежит под ним:
-    // страница на нём уже нарисована, и нужны от неё только другое место и
-    // своё окно. Кисть DrawingSurface делает новую на каждый вызов, а
-    // поверхность за ней всё та же — второй отрисовки не возникает.
-    coming.brush(surface_[resting_].brush());
+    // Уходящий лист несёт СТАРУЮ перелистываемую страницу — ту, что показана
+    // прямо сейчас: её кисть и забираем у страницы-визуала, прежде чем одеть ту
+    // в новое. Своей отрисовки у уходящего нет, и какой из летящих листов или
+    // осевший разворот эту кисть дал — неважно: страница уже носит верную.
+    going.brush(flipping.brush());
 
-    // Пять слоёв по глубине: новый разворот внизу, тень сгиба над ним,
-    // снимаемая бумага, тень наружного края приходящего листа — она лежит
-    // на снимаемой бумаге, а не на самом листе, — и лист сверху. Каждый
-    // слой — вынуть и вставить, по той же причине, что и в raise(): визуал
-    // с родителем композитор переставлять отказывается.
-    SpriteVisual const& rim = edge_.value();
+    // Обе НОВЫЕ страницы — из поверхности листа, куда startTurn нарисовал новый
+    // разворот: перелистываемая страница-визуал одевается в неё с первого кадра
+    // (из-под снимаемой бумаги открывается новое), приходящий лист несёт ту,
+    // что ляжет на неперелистываемую. Кисть DrawingSurface делает новую на
+    // каждый вызов, а поверхность за ней та же — второй отрисовки не возникает.
+    flipping.brush(pageBrush(*flip.surface));
+    coming.brush(flip.surface->brush());
+
+    // Стопка листов: снимаемая бумага нового листа — ПОД всеми летящими, а
+    // приходящий лист — НАД ними. Летящие подняты раньше и висят выше, так что
+    // в правой половине сверху лежит самый старый — и его тень сгиба падает на
+    // бумагу, которую снимают следом; а снятый последним ляжет на левую стопку
+    // последним, сверху. Первая версия клала весь новый лист поверх старых, и
+    // читатель видел это как «нижняя страница вылезла на передний план»: его
+    // бумага — те же точки, что только что показывала правая страница, — с
+    // первого кадра накрывала всё, что летело. Друг друга по развороту листы
+    // не затирают, потому что каждый несёт лишь свою перелистываемую страницу
+    // (см. крой ниже), а не весь разворот. Тень сгиба — под бумагой, тень
+    // наружного края — под приходящим листом.
     VisualCollection const children = sheets_.value().children();
-    children.remove(resting());
-    children.insertAtBottom(resting());
-    children.remove(fold);
-    children.insertAbove(fold, resting());
     children.remove(going);
-    children.insertAbove(going, fold);
+    children.insertAtBottom(going);
+    children.remove(fold);
+    children.insertAtBottom(fold);
     children.remove(rim);
-    children.insertAbove(rim, going);
+    children.insertAtTop(rim);
     children.remove(coming);
     children.insertAtTop(coming);
 
@@ -1422,8 +1718,31 @@ void BookView::animateSpreadTurn(bool forward) {
     const float travel = forward ? rightPage : leftPage;
     const wchar_t* const inset = forward ? L"RightInset" : L"LeftInset";
 
-    // Ровно, без разгона: бумагу тянет рука, а не роняет тяжесть.
-    auto const easing = compositor_.createLinearEasingFunction();
+    // Лист несёт только перелистываемую страницу: вперёд — правую (левую половину
+    // разворота отрезаем к корешку неподвижным отступом), назад — левую. Иначе
+    // неперелистываемая половина каждого листа затирала бы соседние листы при
+    // быстром листании внахлёст; за неё отвечает своя страница-визуал.
+    if (forward)
+        goingCrop.leftInset(leftPage);
+    else
+        goingCrop.rightInset(rightPage);
+
+    // Лист поднимается к глазу: у корешка он в своих размерах, к свободному
+    // краю растёт трапецией. Корешок у обеих сторон общий, а свободные края
+    // противоположны — это один и тот же край бумаги, только у снимаемой
+    // стороны он ещё снаружи перелистываемой страницы, а у приходящей уже
+    // перевёрнут на другую сторону разворота. Центр преобразования при этом
+    // обнуляется: трапеция задана от начала координат листа, а центр нужен
+    // только плоскому листанию, где вокруг него идёт поворот.
+    going.centerPoint({0.0f, 0.0f, 0.0f});
+    liftSheet(flip.sheetLift, flip.lift, going, leftPage, forward ? width_ : 0.0f, height_);
+    liftSheet(flip.leafLift, flip.lift, coming, leftPage, forward ? 0.0f : width_, height_);
+
+    // Пологая S-кривая: рука, тянущая бумагу, слегка разгоняется в начале и
+    // тормозит к корешку — не роняет тяжесть, но и не тянет мёртво-равномерно
+    // (kEase*).
+    auto const easing =
+        compositor_.createCubicBezierEasingFunction({kEaseX1, kEaseY1}, {kEaseX2, kEaseY2});
 
     auto crawl = compositor_.createScalarKeyFrameAnimation();
     crawl.duration(kLeafSlide);
@@ -1440,8 +1759,8 @@ void BookView::animateSpreadTurn(bool forward) {
     const float lead = forward ? 0.0f : -width_;
     const float direction = forward ? 1.0f : -1.0f;
 
-    foldBrush_.value().startPoint({forward ? 0.0f : 1.0f, 0.0f});
-    foldBrush_.value().endPoint({forward ? 1.0f : 0.0f, 0.0f});
+    flip.foldBrush.startPoint({forward ? 0.0f : 1.0f, 0.0f});
+    flip.foldBrush.endPoint({forward ? 1.0f : 0.0f, 0.0f});
 
     auto follow = compositor_.createVector3KeyFrameAnimation();
     follow.duration(kLeafSlide);
@@ -1521,8 +1840,8 @@ void BookView::animateSpreadTurn(bool forward) {
     const float band = width_ * kEdgeOfWindow;
     const float behind = forward ? -band : 0.0f;
 
-    edgeBrush_.value().startPoint({forward ? 1.0f : 0.0f, 0.0f});
-    edgeBrush_.value().endPoint({forward ? 0.0f : 1.0f, 0.0f});
+    flip.edgeBrush.startPoint({forward ? 1.0f : 0.0f, 0.0f});
+    flip.edgeBrush.endPoint({forward ? 0.0f : 1.0f, 0.0f});
 
     auto trail = compositor_.createVector3KeyFrameAnimation();
     trail.duration(kLeafSlide);
@@ -1537,8 +1856,8 @@ void BookView::animateSpreadTurn(bool forward) {
     const float bendFrom = forward ? -bendWidth : width_;
     const float bendTo = forward ? leftPage - bendWidth : leftPage;
 
-    bendBrush_.value().startPoint({forward ? 1.0f : 0.0f, 0.0f});
-    bendBrush_.value().endPoint({forward ? 0.0f : 1.0f, 0.0f});
+    flip.bendBrush.startPoint({forward ? 1.0f : 0.0f, 0.0f});
+    flip.bendBrush.endPoint({forward ? 0.0f : 1.0f, 0.0f});
 
     auto curve = compositor_.createVector3KeyFrameAnimation();
     curve.duration(kLeafSlide);
@@ -1555,17 +1874,30 @@ void BookView::animateSpreadTurn(bool forward) {
     settle.insertKeyFrame(kHandover, 1.0f, easing);
     settle.insertKeyFrame(1.0f, 0.0f, easing);
 
+    // Доля подъёма — вверх к середине переворота и обратно вниз. Ею одной
+    // ведутся обе трапеции: все числа матрицы линейны по этой доле, и
+    // композитор пересчитывает их сам (kLiftFormula).
+    auto const liftEasing = compositor_.createCubicBezierEasingFunction(
+        {kLiftEaseX1, kLiftEaseY1}, {kLiftEaseX2, kLiftEaseY2});
+
+    auto rise = compositor_.createScalarKeyFrameAnimation();
+    rise.duration(kLeafSlide);
+    rise.insertKeyFrame(0.0f, 0.0f, liftEasing);
+    rise.insertKeyFrame(0.5f, 1.0f, liftEasing);
+    rise.insertKeyFrame(1.0f, 0.0f, liftEasing);
+
+    going.isVisible(true);
     fold.isVisible(true);
     rim.isVisible(true);
     coming.isVisible(true);
 
-    // Конец здесь, в отличие от обычного переворота, отслеживается: за ним
-    // может стоять очередь. Говорит о нём пакет, а не таймер: время анимации
-    // отсчитывает композитор, и его ответ — единственный, который не разойдётся
-    // с картинкой.
-    turning_ = true;
-    turnForward_ = forward;
-    const std::uint32_t epoch = ++turnEpoch_;
+    // Конец отслеживается пакетом: по нему лист освобождается в пул. Пакет
+    // закрывает и остановленную анимацию (лист добили при быстром листании или
+    // сбросили при перевёрстке), поэтому обработчик проверяет и жизнь полосы, и
+    // свой ли это лист — по epoch: у добитого он уже сменился, и обработчик
+    // узнаёт свой номер чужим и молчит.
+    const std::uint32_t epoch = flip.epoch;
+    Flip* const which = &flip;
 
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
 
@@ -1573,25 +1905,20 @@ void BookView::animateSpreadTurn(bool forward) {
     fold.startAnimation(L"Offset", follow);
     fold.startAnimation(L"Scale", widen);
     fold.startAnimation(L"Opacity", lighten);
-    foldMid_.value().startAnimation(L"Offset", flatten);
+    flip.foldMid.startAnimation(L"Offset", flatten);
     rim.startAnimation(L"Offset", trail);
     coming.startAnimation(L"Offset", slide);
     comingCrop.startAnimation(opening, open);
-    bend_.value().startAnimation(L"Offset", curve);
-    bend_.value().startAnimation(L"Opacity", settle);
+    flip.bend.startAnimation(L"Offset", curve);
+    flip.bend.startAnimation(L"Opacity", settle);
+    flip.lift.startAnimation(L"Amount", rise);
 
-    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), epoch](
+    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
                         Object const&, CompositionBatchCompletedEventArgs&) {
-        // Полосы может уже не быть: книгу закрывают и посреди переворота, а
-        // пакет о конце сообщает после него.
-        if (alive.expired()) return;
-
-        // Пакет закрывает и остановленная анимация, так что «конец» приходит
-        // и на переворот, который отменили встречным листанием. Прибирать за
-        // ним нечего — за него уже прибрал resetSheets следующего.
-        if (epoch != turnEpoch_) return;
-
-        turnCompleted();
+        if (alive.expired() || which->epoch != epoch) return;
+        finishFlip(*which);
+        landFlip(*which);
+        settleSheets();
     });
     batch.end();
 }
@@ -1599,21 +1926,18 @@ void BookView::animateSpreadTurn(bool forward) {
 void BookView::goToCharOffset(std::uint32_t charOffset) {
     if (!book_) return;
 
-    // Прыжок по закладке, оглавлению или находке поиска — это место, которого
-    // у грязной вёрстки нет: она умеет идти только вперёд от того, что
-    // показывает. Значит, чистовой набор досчитывается до него — и полоса
-    // переходит на него.
-    //
-    // Через номер страницы, а не прямо: место чтения обязано совпасть с
-    // началом показанной страницы, иначе прогресс и закладка разойдутся с тем,
-    // что видит читатель.
-    goTo(catchUpTo(charOffset));
+    // Прыжок по закладке, оглавлению или находке поиска — это разрыв ленты, а
+    // не листание: разворот встаёт с колонки, где лежит место, без анимации
+    // перехода. Досчёт нужной главы делает columnOf; фоновые порции прежней
+    // главы, если ушли в другую, устаревают — их отменяет relayout при первом
+    // же движении, а до того они молча пройдут по новой текущей главе.
+    showColumn(columnOf(charOffset));
 }
 
 float BookView::columnLeft(std::size_t index) const {
     if (!book_) return 0.0f;
 
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
     const float column = book_->paginator().style().width;
     const float gutter = margin * kGutterOfMargin;
 
@@ -1626,20 +1950,17 @@ float BookView::spine() const {
     // Считается от колонок, а не как половина полосы. Поля симметричны, и
     // ответ тот же, но зависеть от этого незачем: корешок — это середина
     // средника, и сказано это должно быть про средник.
-    const float gutter = fontSize_ * marginEms_ * kGutterOfMargin;
+    const float gutter = width_ * marginFraction_ * kGutterOfMargin;
     return columnLeft(1) - gutter * 0.5f;
 }
 
 const fb3::Node* BookView::noteAt(Point point, Point& anchor) const {
     if (!book_) return nullptr;
 
-    for (std::size_t column = 0; column < static_cast<std::size_t>(columns_); ++column) {
-        const typography::Page* const shown = spreadPage(column);
-        if (!shown) break;
-
+    for (std::size_t column = 0; column < spread_.size(); ++column) {
         const float left = columnLeft(column);
 
-        for (const typography::PlacedLine& placed : shown->lines) {
+        for (const typography::PlacedLine& placed : spread_[column]->lines) {
             const typography::Line& line = *placed.line;
             const float baseline = kVerticalMargin + placed.baseline;
 
@@ -1667,57 +1988,20 @@ const fb3::Node* BookView::noteAt(Point point, Point& anchor) const {
 void BookView::updateBackdrop() {
     const std::filesystem::path wanted = backdropFile();
     if (wanted.empty()) {
-        backdrop_.value().isVisible(false);
+        backdropSource_.Reset();
+        photoBitmap_.Reset();
+        backdropLoaded_.clear();
         return;
     }
 
+    // Раскодированный снимок держится, пока путь тот же: decodeImage читает диск
+    // и дорог. Смена снимка сбрасывает и кэш битмапа устройства — его заведёт
+    // заново drawThemeBackdrop, вкомпоновывая фото прямо в поверхность страницы.
     if (backdropLoaded_ != wanted.native()) {
         backdropSource_ = decodeImage(wanted);
         backdropLoaded_ = wanted.native();
-        backdropSurface_.reset();   // старая поверхность — под старый снимок
+        photoBitmap_.Reset();
     }
-
-    if (!backdropSource_) {
-        backdrop_.value().isVisible(false);
-        return;
-    }
-
-    if (!backdropSurface_) {
-        UINT pixelWidth = 0;
-        UINT pixelHeight = 0;
-        if (FAILED(backdropSource_->GetSize(&pixelWidth, &pixelHeight)) || pixelWidth == 0 ||
-            pixelHeight == 0) {
-            backdropSource_.Reset();   // не вышло — больше не пытаемся
-            backdrop_.value().isVisible(false);
-            return;
-        }
-
-        // Поверхность заводится в размере снимка, а не полосы: он не
-        // меняется с размером окна, и растягивать его до нового размера —
-        // дело кисти ниже, а не пересоздания поверхности на каждый WM_SIZE.
-        const float pixelW = static_cast<float>(pixelWidth);
-        const float pixelH = static_cast<float>(pixelHeight);
-        backdropSurface_.emplace(compositor_, SizeInt32{static_cast<int32_t>(pixelWidth),
-                                                        static_cast<int32_t>(pixelHeight)});
-        backdropSurface_->draw([this, pixelW, pixelH](ID2D1DeviceContext* context) {
-            Microsoft::WRL::ComPtr<ID2D1Bitmap1> bitmap;
-            if (FAILED(context->CreateBitmapFromWicBitmap(backdropSource_.Get(), nullptr,
-                                                          &bitmap)))
-                return;
-            context->DrawBitmap(bitmap.Get(), D2D1::RectF(0.0f, 0.0f, pixelW, pixelH), 1.0f,
-                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        });
-
-        // На всю полосу, без сохранения пропорций: снимок скомпонован под
-        // полосу — книга в середине, стол по краям, — и кадрирование ради
-        // пропорций резало бы именно книгу. Растяжение бумажной фактуры глаз
-        // не ловит; тянет его теперь кисть композитора, а не DrawBitmap.
-        CompositionSurfaceBrush brush = backdropSurface_->brush();
-        brush.stretch(CompositionStretch::Fill);
-        backdrop_.value().brush(brush);
-    }
-
-    backdrop_.value().isVisible(true);
 }
 
 bool BookView::ensureWarp(ID2D1DeviceContext* context) {
@@ -1873,17 +2157,41 @@ bool BookView::ensureBlur() {
     return true;
 }
 
+void BookView::drawThemeBackdrop(ID2D1DeviceContext* context, float width, float height) {
+    if (!backdropSource_) return;
+
+    // Битмап устройства заводится раз на снимок и держится: CreateBitmapFromWicBitmap
+    // на каждый кадр стоил бы дорого, а перерисовка бывает лишь на листании и
+    // растяжке. Устройство поверхности стабильно, пока не потеряно.
+    if (!photoBitmap_) {
+        if (FAILED(context->CreateBitmapFromWicBitmap(backdropSource_.Get(), nullptr, &photoBitmap_)))
+            return;
+    }
+
+    // На всю полосу, без сохранения пропорций (как прежняя кисть Fill): снимок
+    // скомпонован под полосу — книга по центру, стол по краям.
+    context->DrawBitmap(photoBitmap_.Get(), D2D1::RectF(0.0f, 0.0f, width, height), 1.0f,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+}
+
 void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) {
-    // Ровные темы кроют лист целиком, как и раньше. У темы с подложкой лист
-    // остаётся прозрачным везде, где нет ни строки, ни следа эффектов, — под
-    // ним лежит собственный визуал подложки, и закрасить его тем же цветом
-    // значило бы спрятать от читателя.
+    // Ровная тема кроет лист бумагой; тема с подложкой начинает лист с самой
+    // фотоподложки, а текст ложится поверх неё — всё в одну поверхность, одним
+    // битмапом, без отдельного визуала под страницей.
     if (backdropFile().empty()) {
         context->Clear(paper().background);
         drawPageContent(context, width, height);
         return;
     }
-    context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+    // Фото-тема: фотоподложка — в ту же поверхность, под текстом, чтобы страница
+    // осталась одним битмапом. Не раскодировалась — бумага темы, чтобы задник не
+    // сквозил.
+    if (backdropSource_) {
+        context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+        drawThemeBackdrop(context, width, height);
+    } else {
+        context->Clear(paper().background);
+    }
 
     const bool warped = ensureWarp(context);
 
@@ -1936,7 +2244,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
 
 void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = paper();
-    const float margin = fontSize_ * marginEms_;
+    const float margin = width_ * marginFraction_;
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;
@@ -1944,18 +2252,12 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     context->CreateSolidColorBrush(shade.dim, &dimBrush);
     if (!textBrush || !dimBrush) return;
 
-    // Колонок столько, сколько поместилось по мере строки; каждая — своя
-    // страница пагинатора, идущие подряд. Разворот стоит по середине окна,
-    // остаток ширины уходит в поля поровну.
-    std::size_t drawn = 0;
-
-    for (std::size_t column = 0; column < static_cast<std::size_t>(columns_); ++column) {
-        const typography::Page* const shown = spreadPage(column);
-        if (!shown) break;
-        drawn = column + 1;
-
+    // Колонки разворота — готовая лента (buildSpread): каждая своя страница,
+    // идущие подряд, при нужде со стыка из следующей главы. Разворот стоит по
+    // середине окна, остаток ширины уходит в поля поровну.
+    for (std::size_t column = 0; column < spread_.size(); ++column) {
         const float left = columnLeft(column);
-        const typography::Page& page = *shown;
+        const typography::Page& page = *spread_[column];
 
         for (const typography::PlacedImage& image : page.images) {
             if (ID2D1Bitmap1* bitmap = book_->bitmap(image.imageIndex, context)) {
@@ -2021,26 +2323,31 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
         // На развороте колонцифра называет обе страницы: читатель видит две, и
         // одна в счётчике расходилась бы с тем, что перед глазами.
         //
-        // Номер известен, только когда чистовой набор ушёл за эту страницу, а
-        // общее число — только когда он кончился. Пока нет — многоточие:
+        // Номер левой колонки известен сразу — видимый разворот посчитан
+        // начисто в тот же кадр. Общее же число страниц главы становится
+        // известно, только когда её набор кончился; пока нет — многоточие:
         // число, которое сейчас сменится другим, хуже честного молчания.
         // Процент при этом верен всегда, потому что считается по символам
-        // книги, а место чтения перевёрстка не двигает.
-        //
-        // На грязной странице номер берётся от чистового набора — по тому же
-        // символу. Страница на экране начинается не там, где чистовая, но
-        // расходятся они меньше чем на страницу, и назвать читателю место в
-        // книге это не мешает.
-        const std::optional<std::size_t> first = cleanSpread();
+        // книги, а место чтения перевёрстка почти не двигает.
+        // Номера — по левой главе: разворот на стыке кончается колонками
+        // следующей, но «стр. X из M» называет ту главу, где стоит читатель, и
+        // не залезает в номера соседней. Сколько колонок разворота её —
+        // spreadOwnColumns_.
+        const std::size_t first = page_;
+        const std::size_t own = std::max<std::size_t>(spreadOwnColumns_, 1);
         const std::wstring numbers =
-            !first          ? std::wstring{L"…"}
-            : drawn <= 1    ? std::format(L"{}", *first + 1)
-                            : std::format(L"{}–{}", *first + 1, *first + drawn);
+            own <= 1 ? std::format(L"{}", first + 1)
+                     : std::format(L"{}–{}", first + 1, first + own);
         const std::wstring total = book_->paginator().isComplete()
                                        ? std::format(L"{}", std::max<std::size_t>(pageCount(), 1))
                                        : std::wstring{L"…"};
+
+        // Номер и общее число — по главе: пагинатор знает лишь её, и «из M»
+        // здесь значит «из стольких страниц в этой главе». Процент — по всей
+        // книге, по символам; им читатель и меряет весь путь.
         const std::wstring status =
-            std::format(L"{} / {}     {:.0f}%", numbers, total, progress() * 100.0f);
+            std::format(L"Глава {} · стр. {} из {}     {:.0f}%",
+                        book_->currentChapter() + 1, numbers, total, progress() * 100.0f);
         context->DrawText(status.c_str(), static_cast<UINT32>(status.size()), statusFormat_.Get(),
                           D2D1::RectF(margin, height - kVerticalMargin, width - margin, height),
                           dimBrush.Get());

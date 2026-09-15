@@ -12,7 +12,6 @@ add_executable(Reader WIN32
     src/start_screen.cpp
     src/book.cpp
     src/book_view.cpp
-    src/card.cpp
     src/library_screen.cpp
     src/reader_panel.cpp
     src/note_popup.cpp
@@ -27,7 +26,6 @@ add_executable(Reader WIN32
     src/file_dialog.cpp
     src/book.h
     src/book_view.h
-    src/card.h
     src/file_dialog.h
     src/imaging.h
     src/io.h
@@ -54,7 +52,8 @@ target_link_libraries(Reader PRIVATE
     wxl::winui
     wxl::async
     wxl::xml
-    wxl::text
+    wxl::core
+    wxl::fmt
     bukvitsa::typography
     windowscodecs
     dxguid
@@ -88,6 +87,24 @@ else()
     message(WARNING
         "Нет Microsoft.WindowsAppRuntime.Bootstrap.dll по пути ${_reader_bootstrap_dll}; "
         "Reader не запустится, пока она не окажется рядом с исполняемым файлом.")
+endif()
+
+# Win2D (Microsoft.Graphics.Canvas) активируется неупакованно из своей нативной
+# DLL — CompositionWindow грузит ею текстуры (TextureCache), и без неё окно
+# падает при создании. Как загрузчик выше: путь объявляет wxl.winui, копируем
+# рядом с исполняемым файлом.
+set(_reader_win2d_dll
+    "${WXL_WIN2D_DIR}/runtimes/win-x64/native/Microsoft.Graphics.Canvas.dll")
+
+if(EXISTS "${_reader_win2d_dll}")
+    add_custom_command(TARGET Reader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_reader_win2d_dll}" "$<TARGET_FILE_DIR:Reader>"
+        COMMENT "Копирование Microsoft.Graphics.Canvas.dll (Win2D) рядом с Reader")
+else()
+    message(WARNING
+        "Нет Microsoft.Graphics.Canvas.dll по пути ${_reader_win2d_dll}; "
+        "Reader упадёт при создании окна, пока она не окажется рядом с ним.")
 endif()
 
 # TODO: витрина хранилища, наблюдаемые каталоги, второй вариант листания.

@@ -14,7 +14,7 @@
 #include "bukvitsa/typography/block.h"
 
 import bukvitsa.fb3;
-import wxl.text;
+import wxl.core;
 
 namespace bukvitsa::typography {
 namespace fb3 = bukvitsa::fb3;
@@ -114,6 +114,12 @@ private:
     /// сильнее, чем «сноска 37».
     std::uint32_t noteNumber_ = 0;
 
+    /// Глубина секции, открытой с прошлого положенного блока и ещё не
+    /// отмеченной. Её понесёт первый же следующий блок (`markSectionStart`):
+    /// вход в секцию сам блока не создаёт, а метка нужна на первом блоке
+    /// секции, каким бы путём тот ни попал в список.
+    std::uint8_t pendingSection_ = 0;
+
     /* ---------------- блоки ---------------- */
 
     void beginBlock(BlockKind kind, const fb3::Node& source, const Context& context) {
@@ -149,8 +155,10 @@ private:
 
         trimSpans();
 
-        if (!block_.paragraph.text.empty())
+        if (!block_.paragraph.text.empty()) {
+            markSectionStart(block_);
             blocks_.push_back(std::move(block_));
+        }
 
         block_ = Block{};
     }
@@ -176,9 +184,19 @@ private:
                       [](const NoteAnchor& note) { return note.length == 0; });
     }
 
+    /// Помечает блок началом секции, если с прошлого положенного блока в
+    /// дерево вошла секция. Метку несёт первый же блок после входа, каким бы
+    /// путём тот ни пришёл; пустой блок, выброшенный finishBlock, метку не
+    /// тратит — до push_back дело у него не доходит.
+    void markSectionStart(Block& block) {
+        block.startsSection = pendingSection_;
+        pendingSection_ = 0;
+    }
+
     /// Блок без текста — картинка или разделитель — пишется сразу.
     void emitStandalone(Block block) {
         finishBlock();
+        markSectionStart(block);
         blocks_.push_back(std::move(block));
     }
 
@@ -229,14 +247,14 @@ private:
         appendUnit(L' ', pendingSpaceAt_);
     }
 
-    void appendText(wxl::text::u8_view utf8, std::uint32_t firstCharOffset) {
+    void appendText(wxl::core::u8_view utf8, std::uint32_t firstCharOffset) {
         std::uint32_t offset = firstCharOffset;
 
         // Текст пришёл проверенным: wxl.xml проверяет документ целиком, прежде
         // чем его разбирать, и её дерево — а за ним и модель книги — отдаёт
         // u8_view. Обход кодовых точек берёт этот довод готовым и не
         // спрашивает заново на каждом байте.
-        for (const char32_t code : wxl::text::code_points(utf8)) {
+        for (const char32_t code : wxl::core::code_points(utf8)) {
             if (!preformatted_ && code < 0x80u && isSpace(static_cast<char>(code))) {
                 if (!pendingSpace_) {
                     pendingSpace_ = true;
@@ -377,6 +395,7 @@ private:
         const bool wasOpen = open_;
 
         finishBlock();
+        markSectionStart(image);
         blocks_.push_back(std::move(image));
 
         if (wasOpen) {
@@ -411,10 +430,16 @@ private:
             walkChildren(node, context);
             return;
 
-        case NodeKind::Section:
-            context.level = static_cast<std::uint8_t>(std::min(context.level + 1, 6));
+        case NodeKind::Section: {
+            const auto depth = static_cast<std::uint8_t>(std::min(context.level + 1, 6));
+            context.level = depth;
+            // Первый блок секции понесёт метку её начала. Открылись секции
+            // подряд (вложенная сразу за родителем, без блока между) — метку
+            // несёт самая мелкая: глава верхнего уровня важнее своей подсекции.
+            pendingSection_ = pendingSection_ ? std::min(pendingSection_, depth) : depth;
             walkChildren(node, context);
             return;
+        }
 
         case NodeKind::Title:
             context.paragraphKind = BlockKind::Title;

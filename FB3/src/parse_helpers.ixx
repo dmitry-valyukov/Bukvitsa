@@ -2,10 +2,10 @@
 //
 // Здесь остаётся только то, что знает про FB3: что атрибута может не быть и
 // какие слова формат пишет в его значении. Всё, что касается символов и чисел
-// как таковых, берётся из wxl::text.
+// как таковых, берётся из wxl::core.
 //
 // Значение атрибута приходит проверенным: wxl.xml проверяет документ целиком,
-// прежде чем его разбирать, и её дерево отдаёт wxl::text::u8_view. Сравнение с
+// прежде чем его разбирать, и её дерево отдаёт wxl::core::u8_view. Сравнение с
 // литералом от этого не меняется -- обёртка сравнивается с обычным текстом.
 
 // Партиция, которую первичный интерфейс не переэкспортирует: это внутренняя
@@ -13,26 +13,31 @@
 export module bukvitsa.fb3:parse_helpers;
 
 import std;
-import wxl.text;
+import wxl.core;
 
 import :node;
 
 export namespace bukvitsa::fb3::detail {
 
 /// FB3 пишет истину и как `true`, и как `1`.
-inline bool toBool(std::optional<wxl::text::u8_view> value, bool fallback = false) {
+inline bool toBool(std::optional<wxl::core::u8_view> value, bool fallback = false) {
     if (!value) return fallback;
     return *value == "true" || *value == "1";
 }
 
 /// Целое из значения атрибута; числом должно быть всё значение целиком.
-std::optional<int> toInt(std::optional<wxl::text::u8_view> value);
+///
+/// Берёт байты, а не проверенный вид: цифры — это цифры, и правильность UTF-8
+/// разбору числа не нужна. Отсутствующий атрибут — забота вызывающего, и она
+/// пишется звеном той же цепочки:
+/// `attribute(name).transform(&u8_view::chars).and_then(toInt)`.
+std::optional<int> toInt(std::string_view value);
 
 /// «20mm», «50%», «1.5em» — число и единица без пробела между ними.
 /// Пересчётом в пиксели занимается вёрстка: только она знает кегль полосы.
-Length toLength(std::optional<wxl::text::u8_view> value);
+Length toLength(std::optional<wxl::core::u8_view> value);
 
-inline FloatMode toFloatMode(std::optional<wxl::text::u8_view> value) {
+inline FloatMode toFloatMode(std::optional<wxl::core::u8_view> value) {
     if (!value) return FloatMode::None;
     if (*value == "left") return FloatMode::Left;
     if (*value == "right") return FloatMode::Right;
@@ -40,7 +45,7 @@ inline FloatMode toFloatMode(std::optional<wxl::text::u8_view> value) {
     return FloatMode::None;
 }
 
-inline Align toAlign(std::optional<wxl::text::u8_view> value) {
+inline Align toAlign(std::optional<wxl::core::u8_view> value) {
     if (!value) return Align::Inherit;
     if (*value == "left") return Align::Left;
     if (*value == "right") return Align::Right;
@@ -49,7 +54,7 @@ inline Align toAlign(std::optional<wxl::text::u8_view> value) {
     return Align::Inherit;
 }
 
-inline VerticalAlign toVerticalAlign(std::optional<wxl::text::u8_view> value) {
+inline VerticalAlign toVerticalAlign(std::optional<wxl::core::u8_view> value) {
     if (!value) return VerticalAlign::Inherit;
     if (*value == "top") return VerticalAlign::Top;
     if (*value == "middle") return VerticalAlign::Middle;
@@ -57,7 +62,7 @@ inline VerticalAlign toVerticalAlign(std::optional<wxl::text::u8_view> value) {
     return VerticalAlign::Inherit;
 }
 
-inline NoteRole toNoteRole(std::optional<wxl::text::u8_view> value) {
+inline NoteRole toNoteRole(std::optional<wxl::core::u8_view> value) {
     if (!value) return NoteRole::Auto;
     if (*value == "footnote") return NoteRole::Footnote;
     if (*value == "endnote") return NoteRole::Endnote;
@@ -66,7 +71,7 @@ inline NoteRole toNoteRole(std::optional<wxl::text::u8_view> value) {
     return NoteRole::Auto;
 }
 
-inline NoteNumbering toNoteNumbering(std::optional<wxl::text::u8_view> value) {
+inline NoteNumbering toNoteNumbering(std::optional<wxl::core::u8_view> value) {
     if (!value) return NoteNumbering::Arabic;
     if (*value == "i") return NoteNumbering::Roman;
     if (*value == "a") return NoteNumbering::Alpha;
@@ -75,7 +80,7 @@ inline NoteNumbering toNoteNumbering(std::optional<wxl::text::u8_view> value) {
     return NoteNumbering::Arabic;
 }
 
-inline SectionOutput toSectionOutput(std::optional<wxl::text::u8_view> value) {
+inline SectionOutput toSectionOutput(std::optional<wxl::core::u8_view> value) {
     if (!value) return SectionOutput::Default;
     if (*value == "trial") return SectionOutput::Trial;
     if (*value == "trial-only") return SectionOutput::TrialOnly;

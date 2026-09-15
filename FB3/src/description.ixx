@@ -5,7 +5,7 @@
 export module bukvitsa.fb3:description;
 
 import std;
-import wxl.text;
+import wxl.core;
 
 export namespace bukvitsa::fb3 {
 
@@ -19,18 +19,18 @@ enum class PersonRole : std::uint8_t {
 // TODO: - интернированные строки везде, где только можно
 struct Person {
     PersonRole role = PersonRole::Author;
-    wxl::text::u8_text roleName;   ///< исходное имя роли, когда role == Other
-    wxl::text::u8_text firstName;
-    wxl::text::u8_text middleName;
-    wxl::text::u8_text lastName;
-    wxl::text::u8_text displayName; ///< как показывать одной строкой
+    wxl::core::u8_text roleName;   ///< исходное имя роли, когда role == Other
+    wxl::core::u8_text firstName;
+    wxl::core::u8_text middleName;
+    wxl::core::u8_text lastName;
+    wxl::core::u8_text displayName; ///< как показывать одной строкой
 
-    wxl::text::u8_text id;          ///< UUID автора: одно лицо в разных книгах
+    wxl::core::u8_text id;          ///< UUID автора: одно лицо в разных книгах
 };
 
 /// Место книги в серии; серии в FB3 вложенные («цикл» внутри «мира»).
 struct SequenceEntry {
-    wxl::text::u8_text name;
+    wxl::core::u8_text name;
     // TODO: заменить на compressed optional где только можно
     std::optional<int> number;
 };
@@ -44,23 +44,23 @@ struct FragmentInfo {
 
 /// Разобранное description.xml.
 struct Description {
-    wxl::text::u8_text id;          ///< UUID книги
-    wxl::text::u8_text version;
+    wxl::core::u8_text id;          ///< UUID книги
+    wxl::core::u8_text version;
 
-    wxl::text::u8_text title;
-    wxl::text::u8_text subtitle;
-    std::vector<wxl::text::u8_text> altTitles;
+    wxl::core::u8_text title;
+    wxl::core::u8_text subtitle;
+    std::vector<wxl::core::u8_text> altTitles;
 
     std::vector<Person> persons;
     std::vector<SequenceEntry> sequences;
 
-    wxl::text::u8_text language;
-    wxl::text::u8_text annotation;   ///< простой текст: аннотация с разметкой живёт в теле
-    wxl::text::u8_text publisher;
+    wxl::core::u8_text language;
+    wxl::core::u8_text annotation;   ///< простой текст: аннотация с разметкой живёт в теле
+    wxl::core::u8_text publisher;
     std::optional<int> yearWritten;
     std::optional<int> yearPublished;
-    std::vector<wxl::text::u8_text> isbns;
-    std::vector<wxl::text::u8_text> subjects;   ///< тематика из fb3-classification
+    std::vector<wxl::core::u8_text> isbns;
+    std::vector<wxl::core::u8_text> subjects;   ///< тематика из fb3-classification
 
     std::optional<FragmentInfo> fragment;
 
@@ -68,7 +68,7 @@ struct Description {
     std::optional<std::uint32_t> coverImageIndex;
 
     /// Авторы одной строкой — то, что видно в списке книг.
-    wxl::text::u8_text authorsLine() const;
+    wxl::core::u8_text authorsLine() const;
 };
 
 }  // namespace bukvitsa::fb3

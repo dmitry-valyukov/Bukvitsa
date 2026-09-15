@@ -16,10 +16,16 @@
 #   wait <мс>         пауза
 #   shot [файл]       PNG окна (по умолчанию shot.png, каталог задаёт -ShotDir)
 #   key <клавиши>     SendKeys: {PGDN} {PGUP} {HOME} {END} {ESC} ^{ADD} и т.п.
+#   press <клавиши>   то же, но без поднятия окна и без паузы после: для пачек
+#                     нажатий, где счёт идёт на десятки миллисекунд (листание
+#                     внахлёст) — окно уже поднято предыдущей командой
 #   type <текст>      набор текста в фокус
 #   click <x> <y>     щелчок в точке от левого верхнего угла окна, в пикселях
 #   rclick <x> <y>    то же правой кнопкой
 #   size              прямоугольник окна: x;y;ширина;высота
+#   resize <ш> <в>    задать окну размер (из максимизации выводит); снимок сразу
+#                     за ним ловит просвет растяжки — то, что нарисовано до
+#                     того, как остров XAML успел переверстаться
 #   title             заголовок окна
 
 [CmdletBinding()]
@@ -77,7 +83,20 @@ while ($process.MainWindowHandle -eq [IntPtr]::Zero) {
 }
 $hwnd = $process.MainWindowHandle
 
+# Приложение, которого не стало, выглядит для остальных команд как окно
+# нулевого размера -- и жаловались они именно на размер, пряча настоящую
+# новость. Спрашиваем сам процесс: код возврата разом отвечает, вышло оно само
+# (0 или свой код) или упало (0xC0000005 и подобные).
+function Assert-Alive {
+    $process.Refresh()
+    if (-not $process.HasExited) { return }
+
+    $code = $process.ExitCode
+    throw ("Приложение завершилось: код {0} (0x{1:X8})." -f $code, $code)
+}
+
 function Get-WindowRect {
+    Assert-Alive
     $r = New-Object Win+RECT
     [void][Win]::GetWindowRect($hwnd, [ref]$r)
     return @{ X = $r.Left; Y = $r.Top; W = $r.Right - $r.Left; H = $r.Bottom - $r.Top }
@@ -93,6 +112,18 @@ function Get-ActiveWindow {
         return $popup
     }
     return $hwnd
+}
+
+function Move-Pointer([int]$x, [int]$y) {
+    # MOVE|ABSOLUTE, а не SetCursorPos, и по той же причине, что в перетаскивании
+    # ниже: SetCursorPos переставляет курсор, но событий указателя для
+    # современного стека ввода не рождает. WinUI такого перемещения не видит,
+    # а не увидев его — не считает последующее нажатие своим: кнопка не
+    # подсвечивается и Click не приходит.
+    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $ax = [uint32]([double]$x * 65535 / ($bounds.Width - 1))
+    $ay = [uint32]([double]$y * 65535 / ($bounds.Height - 1))
+    [Win]::mouse_event(0x8001, $ax, $ay, 0, [UIntPtr]::Zero)
 }
 
 function Raise-Window {
@@ -139,19 +170,27 @@ try {
             'wait'  { Start-Sleep -Milliseconds ([int]$rest) }
             'shot'  { Save-Shot ($(if ($rest) { $rest } else { 'shot.png' })) }
             'title' {
+                Assert-Alive
                 $sb = New-Object System.Text.StringBuilder 512
                 [void][Win]::GetWindowTextW($hwnd, $sb, $sb.Capacity)
                 Write-Output "title: $($sb.ToString())"
             }
             'size'  { $r = Get-WindowRect; Write-Output "size: $($r.X);$($r.Y);$($r.W);$($r.H)" }
+            'resize' {
+                $wh = $rest -split '\s+'
+                [void][Win]::ShowWindow($hwnd, 9)   # SW_RESTORE: максимизированное окно размера не примет
+                # SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE: только размер.
+                [void][Win]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, [int]$wh[0], [int]$wh[1], 0x0016)
+            }
             'key'   { Raise-Window; [System.Windows.Forms.SendKeys]::SendWait($rest); Start-Sleep -Milliseconds 120 }
+            'press' { [System.Windows.Forms.SendKeys]::SendWait($rest) }
             'type'  { Raise-Window; [System.Windows.Forms.SendKeys]::SendWait($rest); Start-Sleep -Milliseconds 120 }
             'click' {
                 Raise-Window
                 $xy = $rest -split '\s+'
                 $r = Get-WindowRect
-                [void][Win]::SetCursorPos($r.X + [int]$xy[0], $r.Y + [int]$xy[1])
-                Start-Sleep -Milliseconds 60
+                Move-Pointer ($r.X + [int]$xy[0]) ($r.Y + [int]$xy[1])
+                Start-Sleep -Milliseconds 120
                 [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
                 [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
                 Start-Sleep -Milliseconds 150
@@ -193,8 +232,8 @@ try {
                 Raise-Window
                 $xy = $rest -split '\s+'
                 $r = Get-WindowRect
-                [void][Win]::SetCursorPos($r.X + [int]$xy[0], $r.Y + [int]$xy[1])
-                Start-Sleep -Milliseconds 60
+                Move-Pointer ($r.X + [int]$xy[0]) ($r.Y + [int]$xy[1])
+                Start-Sleep -Milliseconds 120
                 [Win]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)   # RIGHTDOWN
                 [Win]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)   # RIGHTUP
                 Start-Sleep -Milliseconds 150

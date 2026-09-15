@@ -19,18 +19,13 @@
 
 #include "library.h"
 
-#include "Nullable.h"
+#include "Object.h"
 #include "pch.h"
 
 namespace bukvitsa::reader {
 
 class LibraryScreen {
 public:
-    /// Бумажный цвет полки. Публичен, потому что тем же цветом красится оконный
-    /// задник (wxl::window_backdrop_color) в режиме библиотеки, чтобы просвет
-    /// быстрого ресайза продолжал полку, а не заставку прежнего экрана.
-    static constexpr std::uint32_t kPaper = 0xFFF7F4EE;
-
     LibraryScreen();
 
     /// Корень, который отдаётся окну как содержимое.
@@ -60,10 +55,10 @@ public:
 private:
     wxl::Button shelfItem(const BookEntry& entry);
 
-    wxl::Nullable<wxl::Grid> root_ = nullptr;
-    wxl::Nullable<wxl::StackPanel> shelf_ = nullptr;
-    wxl::Nullable<wxl::CheckBox> continueBox_ = nullptr;
-    wxl::Nullable<wxl::TextBlock> emptyNote_ = nullptr;
+    wxl::core::nullable<wxl::Grid> root_ = nullptr;
+    wxl::core::nullable<wxl::StackPanel> shelf_ = nullptr;
+    wxl::core::nullable<wxl::CheckBox> continueBox_ = nullptr;
+    wxl::core::nullable<wxl::TextBlock> emptyNote_ = nullptr;
 
     /// Строка прогресса каждой карточки, по guid книги. Живёт ровно от одного
     /// показа полки до другого -- как и сами карточки.

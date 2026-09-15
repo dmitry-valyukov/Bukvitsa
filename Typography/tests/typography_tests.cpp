@@ -18,8 +18,6 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
-import wxl.core;
-
 // Заголовки вёрстки после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/block.h"
@@ -27,9 +25,9 @@ import wxl.core;
 #include "bukvitsa/typography/layout.h"
 #include "bukvitsa/typography/page.h"
 
+import wxl.core;
 import bukvitsa.fb3;
 import bukvitsa.mathml;
-import wxl.text;
 
 using namespace bukvitsa;
 
@@ -95,8 +93,11 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
 void testPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                     std::uint32_t characterCount);void testChunkedPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                            std::uint32_t characterCount);
-void testDraftPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                      std::uint32_t characterCount);
+void testChapterFirstPage(typography::Engine& engine,
+                          const std::vector<typography::Block>& blocks,
+                          std::uint32_t characterCount);
 void testSeparatorAtPageBottom(typography::Engine& engine);
 
 /// Формулы: MicroTeX с бэкендом Direct2D/DirectWrite. Стек проверяется
@@ -148,7 +149,7 @@ void testFormulas(IDWriteFactory* dwrite) {
     // Вся цепочка EPUB: MathML → TeX → MicroTeX. Формула квадратного
     // уравнения в том виде, в каком её пишут конвертеры издателей.
     {
-        const std::optional<wxl::text::u8_view> mathml = wxl::text::checked(
+        const std::optional<wxl::core::u8_view> mathml = wxl::core::checked(
             "<math display=\"block\"><mi>x</mi><mo>=</mo><mfrac>"
             "<mrow><mo>\xE2\x88\x92</mo><mi>b</mi><mo>\xC2\xB1</mo><msqrt>"
             "<msup><mi>b</mi><mn>2</mn></msup><mo>\xE2\x88\x92</mo><mn>4</mn><mi>a</mi>"
@@ -296,7 +297,8 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     showFirstLines(engine, blocks, 620.0f);
     testPagination(engine, blocks, book.characterCount());
     testChunkedPagination(engine, blocks, book.characterCount());
-    testDraftPagination(engine, blocks, book.characterCount());
+    testEagerPagination(engine, blocks, book.characterCount());
+    testChapterFirstPage(engine, blocks, book.characterCount());
     testScaledShaping(engine, blocks, 620.0f);
 }
 
@@ -365,7 +367,7 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
             continue;
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
-        const std::vector<typography::Line> lines = engine.layout(block.paragraph, width, style);
+        const auto lines = engine.layout(block.paragraph, width, style);
 
         std::uint32_t reached = 0;
         for (const typography::Line& line : lines) {
@@ -463,7 +465,7 @@ void showFirstLines(typography::Engine& engine, const std::vector<typography::Bl
             continue;
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
-        const std::vector<typography::Line> lines = engine.layout(block.paragraph, width, style);
+        const auto lines = engine.layout(block.paragraph, width, style);
 
         std::printf("  абзац на полосе %.0f (отступ %.0f):\n", width, style.firstLineIndent);
         for (std::size_t i = 0; i < lines.size() && i < 8; ++i) {
@@ -489,7 +491,7 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     style.fontSize = 20.0f;
 
     const auto started = std::chrono::steady_clock::now();
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
     const auto firstElapsed = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - started).count();
@@ -503,6 +505,14 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
 
     std::printf("  пагинация: %zu страниц, %.0f мс; смена кегля: %.0f мс\n",
                 paginator.pageCount(), firstElapsed, againElapsed);
+
+    // Среднее на абзац: вся книга накоплена и свёрстана разом (setStyle),
+    // делим на число блоков. Первый прогон — полная пагинация, с шейпингом;
+    // второй (смена кегля) — только разбивка на строки. Счётчик рядом с
+    // числом, чтобы видеть, что мерилось не пустое место.
+    std::printf("  абзацев: %zu; на абзац: %.1f мкс полная, %.1f мкс перевёрстка\n",
+                blocks.size(), firstElapsed * 1000.0 / static_cast<double>(blocks.size()),
+                againElapsed * 1000.0 / static_cast<double>(blocks.size()));
 
     check(paginator.pageCount() > 0, "книга разложена по страницам");
 
@@ -526,6 +536,36 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
         if (paginator.pageForCharOffset(page.firstCharOffset) != i) roundTrip = false;
     }
     check(roundTrip, "по позиции чтения находится своя страница");
+
+    // Каждая глава верхнего уровня начинается с новой страницы: символ, с
+    // которого начинается её первый блок, обязан быть началом какой-то
+    // страницы, а не серединой чужой. Подсекции (startsSection > 1) сюда не
+    // входят — они текут внутри своей главы.
+    std::size_t chapters = 0;
+    std::size_t chaptersChecked = 0;
+    bool chaptersStartPages = true;
+    for (const typography::Block& block : blocks) {
+        if (block.startsSection != 1) continue;
+        ++chapters;
+
+        // Главу, начинающуюся не текстом (картинкой, разделителем), этот тест
+        // проверить не может: пагинатору здесь не дан размер картинок, и
+        // картинка на полосу ничего не кладёт, а значит и страницы собой не
+        // начинает. В самой читалке размер есть — там такая глава страницу
+        // начинает; здесь ограничиваемся текстовыми началами, а их
+        // большинство.
+        if (block.paragraph.charOffsets.empty()) continue;
+        ++chaptersChecked;
+
+        // Начало страницы — это первый поставленный на неё символ, а он у
+        // текстового блока лежит в charOffsets (после свёрнутых пробелов), а не
+        // в charOffset узла: у заголовка с отбивкой перед текстом они разные.
+        const std::uint32_t firstChar = block.paragraph.charOffsets.front();
+        const std::size_t at = paginator.pageForCharOffset(firstChar);
+        if (paginator.page(at).firstCharOffset != firstChar) chaptersStartPages = false;
+    }
+    std::printf("  глав верхнего уровня: %zu (текстовых проверено: %zu)\n", chapters, chaptersChecked);
+    check(chaptersStartPages, "каждая глава начинается с новой страницы");
 
     // Блоки, отданные наружу: на них стоят оглавление, поиск и переход по
     // закладке. Проверяется, что это те же блоки, что верстались, и что
@@ -552,7 +592,7 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
 
     // Снимок целой вёрстки. Именно снимок, а не ссылки: следующая вёрстка
@@ -655,85 +695,29 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     check(worstChunk <= 50.0 + worstBlock * 3.0 + 25.0, "порция не растягивается на всю книгу");
 }
 
-/// Грязная вёрстка: то, что читатель видит в тот же кадр, в котором сменил
-/// кегль или размер окна, и то, чем он листает вперёд, пока книга набирается
-/// начисто.
-void testDraftPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+/// Энергичный досчёт: когда читатель идёт туда, куда фоновые порции ещё не
+/// дошли, набор доводится ровно до нужного места и не дальше. На этом стоит
+/// листание назад и прыжок по закладке — ждать порций там нечего, но и считать
+/// главу целиком незачем.
+void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                          std::uint32_t characterCount) {
     typography::PageStyle style;
     style.width = 620.0f;
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
-    typography::Paginator paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, blocks, characterCount);
     paginator.setStyle(style);
     if (paginator.pageCount() < 8) {
-        check(true, "книга слишком коротка для грязной вёрстки — пропущено");
+        check(true, "книга слишком коротка для проверки досчёта — пропущено");
         return;
     }
 
-    // Место чтения берётся из настоящей вёрстки: так оно и приходит из
-    // читалки — первым символом страницы, на которой читатель стоял.
+    // Место чтения где-то в середине — так оно и приходит из читалки: первым
+    // символом страницы, на которой читатель стоял.
     const std::uint32_t at = paginator.page(paginator.pageCount() / 2).firstCharOffset;
 
-    // И кегль другой: грязная вёрстка затем и нужна, что полоса сменилась.
-    style.fontSize = 23.0f;
-
-    const auto started = std::chrono::steady_clock::now();
-    paginator.draftAt(style, at, 2);
-    const double elapsed = std::chrono::duration<double, std::milli>(
-                               std::chrono::steady_clock::now() - started).count();
-
-    std::printf("  грязная вёрстка: %zu страниц с символа %u, %.2f мс\n", paginator.draftCount(),
-                at, elapsed);
-
-    check(paginator.draftCount() >= 2, "грязная вёрстка даёт столько страниц, сколько просили");
-    check(paginator.draftPage(0).firstCharOffset == at,
-          "грязная страница начинается ровно с места чтения");
-    check(paginator.draftPage(1).firstCharOffset > at, "вторая страница идёт за первой");
-
-    // Полоса та же, что и у книжной вёрстки: грязная страница не имеет права
-    // быть длиннее той, которую читатель увидит потом.
-    bool inside = true;
-    for (std::size_t i = 0; i < paginator.draftCount(); ++i) {
-        for (const typography::PlacedLine& placed : paginator.draftPage(i).lines) {
-            if (placed.baseline > style.height || placed.line == nullptr) inside = false;
-        }
-    }
-    check(inside, "строки грязной страницы не вылезают за полосу");
-
-    // Листание вперёд. Страницу за показанными грязная вёрстка досчитывает
-    // тогда, когда её спросили, а не заранее: перевёрстка случается на каждое
-    // движение мыши, листание — куда реже. Главное здесь то, что текст не
-    // теряется и не повторяется: новый разворот начинается ровно там, где
-    // кончился прежний.
-    bool walks = true;
-    int steps = 0;
-
-    for (; steps < 24; ++steps) {
-        if (!paginator.draftUpTo(3)) break;   // книга кончилась
-
-        const std::uint32_t next = paginator.draftPage(2).firstCharOffset;
-        if (next <= paginator.draftPage(1).lastCharOffset) walks = false;
-
-        paginator.draftAt(style, next, 2);
-        if (paginator.draftCount() == 0 || paginator.draftPage(0).firstCharOffset != next)
-            walks = false;
-    }
-
-    check(steps > 0, "по книге можно листать грязной вёрсткой");
-    check(walks, "следующий разворот начинается там, где кончился прежний");
-
-    // Досчёт до конца книги: грязная вёрстка честно говорит, что дальше
-    // страниц нет, а не отдаёт пустую.
-    paginator.draftAt(style, paginator.page(paginator.pageCount() - 1).firstCharOffset, 2);
-    const bool beyond = paginator.draftUpTo(64);
-    check(!beyond, "за концом книги грязных страниц не выдумывается");
-
-    // Энергичный досчёт: чистовой набор доводится ровно до нужного места и не
-    // дальше. На этом стоит листание назад и прыжок по закладке — читателю
-    // там ждать порций нечего, но и считать книгу целиком незачем.
-    typography::Paginator second(engine, blocks, characterCount);
+    typography::Chapter second(engine, blocks, characterCount);
     second.beginLayout(style);
     const bool more = second.advanceTo(at);
     const std::size_t reached = second.pageForCharOffset(at);
@@ -747,6 +731,74 @@ void testDraftPagination(typography::Engine& engine, const std::vector<typograph
     std::printf("  энергичный досчёт: %zu страниц из %zu, книга %s\n", second.pageCount(),
                 paginator.pageCount(), more ? "ещё не досчитана" : "досчитана целиком");
 }
+/// Первая колонка главы, свёрстанной своим пагинатором, не должна быть пустой.
+///
+/// Читалка режет книгу на главы верхнего уровня и верстает каждую отдельным
+/// Chapter. На стыке лента показывает первую колонку следующей главы — и если
+/// пагинатор отдаёт её пустой, читатель видит пустую страницу. Тест
+/// воспроизводит стык на настоящей книге: берёт главу из середины и проверяет,
+/// что её страница 0 непуста и начинается ровно с её первого блока.
+void testChapterFirstPage(typography::Engine& engine,
+                          const std::vector<typography::Block>& blocks,
+                          std::uint32_t characterCount) {
+    std::vector<std::size_t> starts;
+    for (std::size_t i = 0; i < blocks.size(); ++i)
+        if (i == 0 || blocks[i].startsSection == 1) starts.push_back(i);
+    if (starts.empty()) {
+        check(true, "нет глав верхнего уровня — пропущено");
+        return;
+    }
+
+    // Полоса — узкая колонка книжного разворота, как у читалки: там стык и виден.
+    typography::PageStyle style;
+    style.width = 300.0f;
+    style.height = 800.0f;
+    style.fontSize = 20.0f;
+
+    // Проходим каждую главу верхнего уровня и ищем ту, у которой первая колонка
+    // выходит пустой: читатель увидел бы её на стыке пустой страницей.
+    std::size_t emptyChapters = 0;
+    std::size_t firstEmpty = starts.size();
+    for (std::size_t c = 0; c < starts.size(); ++c) {
+        const std::size_t first = starts[c];
+        const std::size_t last = c + 1 < starts.size() ? starts[c + 1] : blocks.size();
+
+        const std::span<const typography::Block> span(blocks.data() + first, last - first);
+        typography::Chapter chapter(engine, span, characterCount);
+        chapter.beginLayout(style);
+        chapter.advanceToPage(static_cast<std::size_t>(-1));
+
+        // Глава без страниц — не беда: лента колонок её перешагивает (секция
+        // из одного разделителя). Беда — глава, у которой страницы есть, а
+        // первая пуста: её читатель увидит пустой колонкой на стыке.
+        if (chapter.pageCount() > 0 && chapter.page(0).lines.empty() &&
+            chapter.page(0).images.empty()) {
+            if (firstEmpty == starts.size()) firstEmpty = c;
+            ++emptyChapters;
+        }
+    }
+
+    if (emptyChapters > 0) {
+        // Показываем первую провинившуюся главу с её блоками — по ним видно, чем
+        // она начинается.
+        const std::size_t first = starts[firstEmpty];
+        const std::size_t last =
+            firstEmpty + 1 < starts.size() ? starts[firstEmpty + 1] : blocks.size();
+        std::printf("\n=== пустая первая колонка: глава %zu из %zu (блоки %zu..%zu) ===\n",
+                    firstEmpty, starts.size(), first, last);
+        for (std::size_t i = first; i < last && i < first + 6; ++i) {
+            const typography::Block& b = blocks[i];
+            std::printf("    [%s @%u sect%u lvl%u] %.70s\n", nameOf(b.kind), b.charOffset,
+                        static_cast<unsigned>(b.startsSection), static_cast<unsigned>(b.level),
+                        toUtf8(b.paragraph.text).c_str());
+        }
+    }
+
+    std::printf("  глав верхнего уровня: %zu, с пустой первой колонкой: %zu\n", starts.size(),
+                emptyChapters);
+    check(emptyChapters == 0, "ни одна глава не начинается пустой колонкой");
+}
+
 /// Разделитель, пришедшийся на низ полосы, не должен зацикливать набор.
 ///
 /// Отбивка разделителя занимает место, но страницы не начинает: страница
@@ -775,7 +827,7 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
     // строка на неё вместе уже не помещаются.
     style.height = 30.0f;
 
-    typography::Paginator paginator(
+    typography::Chapter paginator(
         engine, blocks, static_cast<std::uint32_t>(paragraph.paragraph.text.size()));
     paginator.setStyle(style);
 
@@ -803,8 +855,8 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
         const typography::ParagraphStyle atTwentySix = styleFor(block, 26.0f);
 
         const typography::ShapedParagraphPtr shaped = engine.shape(block.paragraph, atTwenty);
-        const std::vector<typography::Line> scaled = engine.layout(*shaped, width, atTwentySix);
-        const std::vector<typography::Line> fresh = engine.layout(block.paragraph, width, atTwentySix);
+        const auto scaled = engine.layout(*shaped, width, atTwentySix);
+        const auto fresh = engine.layout(block.paragraph, width, atTwentySix);
 
         ++compared;
         if (scaled.size() != fresh.size())

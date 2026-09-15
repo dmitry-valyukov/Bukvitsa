@@ -9,9 +9,9 @@ using namespace wxl::dsl;
 
 namespace {
 
-// Витрина — часть той же книги, а не отдельное приложение, оттого и бумажный
-// цвет. Он теперь публичный (LibraryScreen::kPaper в заголовке): им же красится
-// оконный задник в режиме библиотеки, и место у цвета должно быть одно.
+// Полка бумажного цвета, как и полоса набора: витрина — часть той же книги,
+// а не отдельное приложение.
+constexpr uint32_t kPaper = 0xFFF7F4EE;
 constexpr uint32_t kInk = 0xFF201E1C;
 constexpr uint32_t kDim = 0xFF8A857D;
 constexpr uint32_t kCard = 0xFFFFFDF9;
