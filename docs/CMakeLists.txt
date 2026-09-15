@@ -38,8 +38,6 @@ wxl_add_doxygen_site(docs_wxl
         "${BUKVITSA_WXL_ROOT}/wxl.core/src"
         "${BUKVITSA_WXL_ROOT}/wxl.core/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.core/readme.md"
-        "${BUKVITSA_WXL_ROOT}/wxl.unicode/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.unicode/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.async/src"
         "${BUKVITSA_WXL_ROOT}/wxl.async/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.logging/src"

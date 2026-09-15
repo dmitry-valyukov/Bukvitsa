@@ -17,7 +17,7 @@
 export module bukvitsa.fb3:document;
 
 import std;
-import wxl.unicode;
+import wxl.core;
 
 import :description;
 import :node;
@@ -28,9 +28,9 @@ export namespace bukvitsa::fb3 {
 /// Декодирование — дело того, кто рисует; модель хранит источник.
 struct ImagePart {
     // TODO: обсудить!
-    wxl::unicode::u8_text relationshipId;
+    wxl::core::u8_text relationshipId;
     // TODO: enum
-    wxl::unicode::u8_text contentType;
+    wxl::core::u8_text contentType;
 
     // TODO: - байты надо доставать лениво только для декодирования
     // не надо их хранить

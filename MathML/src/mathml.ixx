@@ -14,7 +14,7 @@
 export module bukvitsa.mathml;
 
 import std;
-import wxl.unicode;
+import wxl.core;
 
 export namespace bukvitsa::mathml {
 
@@ -30,13 +30,13 @@ struct TexFormula {
 /// Переводит фрагмент MathML — элемент `<math>`, при необходимости найденный
 /// внутри переданного XML, — в TeX-строку для движка формул.
 ///
-/// Вход — проверенный UTF-8: текст EPUB уже прошёл через wxl::unicode наверху.
+/// Вход — проверенный UTF-8: текст EPUB уже прошёл через wxl::core наверху.
 /// Пространства имён не сверяются, элементы узнаются по локальным именам:
 /// встречается и голый `<math>`, и `<m:math>`, и намеспейс по умолчанию.
 ///
 /// @return nullopt, когда вход не XML, в нём нет `<math>` или вложенность
 ///         глубже разумного (враждебный вход, а не формула). Всё остальное
 ///         переводится: незнакомое — содержимым, по правилу выше.
-std::optional<TexFormula> toTex(wxl::unicode::u8_view mathml);
+std::optional<TexFormula> toTex(wxl::core::u8_view mathml);
 
 }  // namespace bukvitsa::mathml

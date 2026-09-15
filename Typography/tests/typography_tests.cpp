@@ -18,8 +18,6 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
-import wxl.core;
-
 // Заголовки вёрстки после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/block.h"
@@ -27,9 +25,9 @@ import wxl.core;
 #include "bukvitsa/typography/layout.h"
 #include "bukvitsa/typography/page.h"
 
+import wxl.core;
 import bukvitsa.fb3;
 import bukvitsa.mathml;
-import wxl.unicode;
 
 using namespace bukvitsa;
 
@@ -151,7 +149,7 @@ void testFormulas(IDWriteFactory* dwrite) {
     // Вся цепочка EPUB: MathML → TeX → MicroTeX. Формула квадратного
     // уравнения в том виде, в каком её пишут конвертеры издателей.
     {
-        const std::optional<wxl::unicode::u8_view> mathml = wxl::unicode::checked(
+        const std::optional<wxl::core::u8_view> mathml = wxl::core::checked(
             "<math display=\"block\"><mi>x</mi><mo>=</mo><mfrac>"
             "<mrow><mo>\xE2\x88\x92</mo><mi>b</mi><mo>\xC2\xB1</mo><msqrt>"
             "<msup><mi>b</mi><mn>2</mn></msup><mo>\xE2\x88\x92</mo><mn>4</mn><mi>a</mi>"

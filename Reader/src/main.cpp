@@ -22,7 +22,7 @@
 #include "skin_wizard.h"
 #include "start_screen.h"
 
-// Последним: он ведёт к модели книги, а она импортирует wxl.unicode, после чего
+// Последним: он ведёт к модели книги, а она импортирует wxl.core, после чего
 // стандартный заголовок MSVC уже не принимает.
 #include "book.h"
 #include "book_view.h"
@@ -31,7 +31,7 @@
 #include "store.h"
 
 // Импорт последним, после всех обычных заголовков.
-import wxl.unicode;
+import wxl.core;
 
 using namespace wxl;
 using namespace wxl::dsl;
@@ -422,7 +422,7 @@ managed_task openBookFlow(App app, std::filesystem::path path) {
         } catch (std::exception const& failure) {
             // Разговор с читателем, а не запись в лог: он только что выбрал этот
             // файл и вправе узнать, что с ним не так.
-            wxl::unicode::u16_text const reason = wxl::unicode::assume_valid(failure.what()).to_utf16();
+            wxl::core::u16_text const reason = wxl::core::assume_valid(failure.what()).to_utf16();
             std::wstring const complaint = L"Не удалось открыть книгу:\n" + path.wstring() +
                                            L"\n\n" + std::wstring(reason.wchars());
             ::MessageBoxW(app.window->handle(), complaint.c_str(), L"Буквица",

@@ -11,7 +11,7 @@
 module bukvitsa.mathml;
 
 import std;
-import wxl.unicode;
+import wxl.core;
 import wxl.xml;
 
 namespace bukvitsa::mathml {
@@ -179,7 +179,7 @@ private:
     // Весь текст токена, одной строкой UTF-16, пробельные края обрезаны.
     static std::wstring tokenText(const xml::node& e) {
         std::wstring text;
-        for (const wxl::unicode::u8_view piece : e.text_pieces()) {
+        for (const wxl::core::u8_view piece : e.text_pieces()) {
             text += std::wstring_view{piece.to_utf16().wchars()};
         }
         std::size_t begin = 0;
@@ -268,7 +268,7 @@ private:
             out_ += L' ';
             return;
         }
-        const std::optional<wxl::unicode::u8_view> variant = e.attribute("mathvariant");
+        const std::optional<wxl::core::u8_view> variant = e.attribute("mathvariant");
         const bool upright = variant && variant->chars() == "normal";
         if (multi || upright) {
             out_ += L"\\mathrm{";
@@ -407,7 +407,7 @@ private:
 
     void fenced(const xml::node& e) {
         const auto attributeOr = [&](std::string_view name, std::wstring fallback) {
-            const std::optional<wxl::unicode::u8_view> value = e.attribute(name);
+            const std::optional<wxl::core::u8_view> value = e.attribute(name);
             if (!value) return fallback;
             return std::wstring{std::wstring_view{value->to_utf16().wchars()}};
         };
@@ -499,7 +499,7 @@ private:
 
 }  // namespace
 
-std::optional<TexFormula> toTex(wxl::unicode::u8_view mathml) {
+std::optional<TexFormula> toTex(wxl::core::u8_view mathml) {
     xml::document document;
     const xml::node* root = nullptr;
     try {
@@ -517,7 +517,7 @@ std::optional<TexFormula> toTex(wxl::unicode::u8_view mathml) {
 
     TexFormula formula;
     formula.tex = std::move(walk).take();
-    const std::optional<wxl::unicode::u8_view> display = math->attribute("display");
+    const std::optional<wxl::core::u8_view> display = math->attribute("display");
     formula.display = display && display->chars() == "block";
     return formula;
 }

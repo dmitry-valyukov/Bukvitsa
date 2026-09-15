@@ -52,7 +52,7 @@ target_link_libraries(Reader PRIVATE
     wxl::winui
     wxl::async
     wxl::xml
-    wxl::unicode
+    wxl::core
     bukvitsa::typography
     windowscodecs
     dxguid
