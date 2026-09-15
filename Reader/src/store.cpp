@@ -5,12 +5,12 @@
 // Свой заголовок последним: он импортирует wxl.xml (см. store.h).
 #include "store.h"
 
-import wxl.text;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
-std::string xmlValue(const wxl::text::u16_view value) {
-    return wxl::text::xml_escaped(value.to_utf8().chars());
+std::string xmlValue(const wxl::core::u16_view value) {
+    return wxl::core::xml_escaped(value.to_utf8().chars());
 }
 
 std::string xmlValue(const std::wstring_view value) {
@@ -20,7 +20,7 @@ std::string xmlValue(const std::wstring_view value) {
     // превратился бы в три байта, которых UTF-8 не знает, и при следующем
     // запуске wxl.xml отвергла бы весь файл — то есть реестр книг или настройки
     // пропали бы целиком из-за одного дурного имени.
-    return xmlValue(wxl::text::u16_view(wxl::text::repaired(value)));
+    return xmlValue(wxl::core::u16_view(wxl::core::repaired(value)));
 }
 
 std::wstring attributeOf(const wxl::xml::node& element, std::string_view name) {
@@ -34,15 +34,20 @@ std::uint64_t numberOf(const wxl::xml::node& element, std::string_view name,
     if (!value) return fallback;
 
     // Числом должно быть всё значение: разобралось не до конца — значит там не
-    // число, и лучше умолчание, чем половина прочитанного.
-    return wxl::text::parse<std::uint64_t>(value->chars()).value_or(fallback);
+    // число, и лучше умолчание, чем половина прочитанного. try_parse не трогает
+    // результат, пока не разберёт весь текст, — умолчание и остаётся.
+    std::uint64_t number = fallback;
+    wxl::core::try_parse(value->chars(), number);
+    return number;
 }
 
 double realOf(const wxl::xml::node& element, std::string_view name, double fallback) {
     const auto value = element.attribute(name);
     if (!value) return fallback;
 
-    return wxl::text::parse<double>(value->chars()).value_or(fallback);
+    double number = fallback;
+    wxl::core::try_parse(value->chars(), number);
+    return number;
 }
 
 

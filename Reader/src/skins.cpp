@@ -9,6 +9,8 @@
 #include "settings.h"
 #include "store.h"
 
+import wxl.fmt;
+
 namespace bukvitsa::reader {
 
 namespace {
@@ -44,7 +46,7 @@ EdgeCurve curveOf(const wxl::xml::node& element, EdgeCurve fallback) {
     return curve;
 }
 
-void writeCurve(wxl::text::text_builder<>& out, const char* name, const EdgeCurve& curve) {
+void writeCurve(wxl::core::text_builder<wxl::core::sta_allocator>& out, const char* name, const EdgeCurve& curve) {
     out.format("    <{}>\n", name);
     for (std::size_t index = 0; index < static_cast<std::size_t>(EdgeCurve::kPoints); ++index) {
         out.format("      <point x=\"{}\" y=\"{}\"/>\n", curve.x[index], curve.y[index]);
@@ -141,7 +143,7 @@ void Skins::loadFrom(std::string xml) {
 }
 
 std::string Skins::toXml() const {
-    wxl::text::text_builder<> out;
+    wxl::core::text_builder<wxl::core::sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<skins version=\"{}\">\n", kVersion);
