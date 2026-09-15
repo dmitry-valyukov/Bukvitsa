@@ -126,6 +126,12 @@ if(NOT TARGET wxl::xml)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.xml/src" "${CMAKE_BINARY_DIR}/wxl.xml" EXCLUDE_FROM_ALL)
 endif()
 
+# Построитель текста поверх fmt: модуль отдельный, чтобы ядро не зависело от
+# внешнего кода, а имена остались в wxl::core. Им читалка пишет свои XML.
+if(NOT TARGET wxl::fmt)
+    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.fmt/src" "${CMAKE_BINARY_DIR}/wxl.fmt" EXCLUDE_FROM_ALL)
+endif()
+
 # wxl.async — ради черновика асинхронной схемы в sandbox/. Читалка его пока не
 # линкует, поэтому EXCLUDE_FROM_ALL здесь не формальность: без цели, которая
 # его назвала, он и не собирается.

@@ -9,6 +9,8 @@
 #include "settings.h"
 #include "store.h"
 
+import wxl.fmt;
+
 namespace bukvitsa::reader {
 
 namespace {
