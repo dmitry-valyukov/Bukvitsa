@@ -27,7 +27,7 @@ if(WIN32)
 endif()
 
 # TODO: переносы (hunspell-hyphen + словари hyph_ru_RU/hyph_en_US в external/) —
-# в первой версии их нет по решению: см. docs/decisions.md.
+# в первой версии их нет по решению: см. .claude/decisions.md.
 
 if(BUKVITSA_BUILD_TESTS)
     add_subdirectory(tests)
