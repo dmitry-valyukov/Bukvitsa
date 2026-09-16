@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <span>
 #include <string>
 
@@ -22,6 +23,7 @@
 // а стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/formula.h"
+#include "bukvitsa/typography/hyphenation.h"
 #include "bukvitsa/typography/layout.h"
 #include "bukvitsa/typography/page.h"
 
@@ -100,6 +102,8 @@ void testChapterFirstPage(typography::Engine& engine,
                           std::uint32_t characterCount);
 void testSeparatorAtPageBottom(typography::Engine& engine);
 void testClustersStayWhole(typography::Engine& engine);
+void testHyphenation();
+void testHyphenationInLayout(typography::Engine& engine);
 
 /// Формулы: MicroTeX с бэкендом Direct2D/DirectWrite. Стек проверяется
 /// насквозь — разбор, метрики и настоящая растеризация в битмап WIC: пустая
@@ -1171,6 +1175,182 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
     check(worstWidth < 0.05f, "ширины строк совпадают");
 }
 
+/// Строка корпуса — UTF-8, а текст вёрстки UTF-16. Переводит wxl::core: своих
+/// переводчиков в дереве нет.
+std::wstring widen(std::string_view utf8) {
+    const std::optional<wxl::core::u8_view> text = wxl::core::checked(utf8);
+    return text ? std::wstring{text->to_utf16().wchars()} : std::wstring{};
+}
+
+/// Слово, размеченное переносами, — «до-сто-при-ме-ча-тель-ность».
+std::wstring hyphenated(std::wstring_view word) {
+    const typography::HyphenPoints points = typography::hyphenate(word);
+
+    std::wstring marked;
+    for (std::size_t at = 0; at < word.size(); ++at) {
+        if (at != 0 && (points >> at) & 1) marked += L'-';
+        marked += word[at];
+    }
+    return marked;
+}
+
+bool hyphenatedIs(std::wstring_view word, std::wstring_view expected) {
+    const std::wstring marked = hyphenated(word);
+    if (marked == expected) return true;
+
+    std::printf("       %ls: ждали %ls, вышло %ls\n", std::wstring(word).c_str(),
+                std::wstring(expected).c_str(), marked.c_str());
+    return false;
+}
+
+/// Переносы по образцам Лянга.
+///
+/// Главная проверка — корпус: слова книг из FB3/testdata с переносами,
+/// посчитанными независимой реализацией того же алгоритма прямо по образцам
+/// (Typography/tools/gen-hyphen-patterns.py). Движок обязан совпасть с ней
+/// слово в слово: любое расхождение значит ошибку укладки таблицы или её
+/// обхода, а не разночтение образцов.
+void testHyphenation() {
+    std::printf("\n=== переносы ===\n");
+
+    // Слова, ради которых образцы и выбраны: правило «гласная — согласная —
+    // гласная» разорвало бы их по-другому и неверно.
+    check(hyphenatedIs(L"достопримечательность", L"до-сто-при-ме-ча-тель-ность"),
+          "достопримечательность");
+    check(hyphenatedIs(L"подъезд", L"подъ-езд"), "приставка не отрывается от ъ");
+    check(hyphenatedIs(L"разбить", L"раз-бить"), "морфемная граница");
+    check(hyphenatedIs(L"ванна", L"ван-на"), "удвоенная согласная");
+    check(hyphenatedIs(L"асбест", L"ас-бест"), "слово из списка исключений");
+    check(hyphenatedIs(L"associate", L"as-so-ciate"), "английское исключение");
+    check(hyphenatedIs(L"hyphenation", L"hy-phen-ation"), "английское слово");
+
+    check(hyphenatedIs(L"мама", L"ма-ма"), "две буквы с каждой стороны — можно");
+    check(typography::hyphenate(L"оса") == 0, "одну букву не отрывают");
+    check(typography::hyphenate(L"под") == 0, "трёх букв мало");
+
+    // Слово, где есть хоть что-то помимо букв алфавита, не переносится вовсе —
+    // и это то, отчего перенос не может попасть внутрь буквы.
+    check(typography::hyphenate(L"досто\x0301примечательность") == 0, "слово со знаком ударения");
+    check(typography::hyphenate(L"страница5") == 0, "слово с цифрой");
+    check(typography::hyphenate(L"привет\xD83D\xDC4D") == 0, "слово с эмодзи");
+    check(typography::hyphenate(L"") == 0, "пустое слово");
+
+    for (const CorpusLetter& letter : kLetters) {
+        std::wstring word = L"досто";
+        word += letter.text;
+        word += L"примечательность";
+        check(typography::hyphenate(word) == 0, letter.name);
+    }
+
+    // Корпус.
+    const std::filesystem::path corpus =
+        std::filesystem::path{BUKVITSA_TYPOGRAPHY_DATA_DIR} / "hyphen_corpus.txt";
+
+    std::ifstream file(corpus);
+    if (!file) {
+        std::printf("FAILED не открылся корпус %s\n", corpus.string().c_str());
+        ++failures;
+        return;
+    }
+
+    std::size_t words = 0, wrong = 0;
+    for (std::string line; std::getline(file, line);) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+
+        const std::wstring expected = widen(line);
+        std::wstring word;
+        for (const wchar_t character : expected)
+            if (character != L'-') word += character;
+
+        ++words;
+        if (hyphenated(word) != expected && ++wrong <= 10)
+            std::printf("       %ls: ждали %ls, вышло %ls\n", word.c_str(), expected.c_str(),
+                        hyphenated(word).c_str());
+    }
+
+    std::printf("  корпус: %zu слов\n", words);
+    check(words > 1000, "корпус не пуст");
+    check(wrong == 0, "каждое слово корпуса размечено как эталон");
+}
+
+/// Кончается ли строка дефисом переноса. Глиф спрашивается у того же шрифта,
+/// каким набран последний прогон: вёрстка берёт типографский дефис, а в шрифте
+/// без него — минус-дефис, и тест обязан признать оба.
+bool endsWithHyphen(const typography::Line& line) {
+    if (line.runs.empty()) return false;
+
+    const typography::GlyphRun& run = line.runs.back();
+    if (run.glyphIndices.empty() || run.fontFace == nullptr) return false;
+
+    for (const UINT32 code : {0x2010u, 0x002Du}) {
+        UINT16 glyph = 0;
+        if (SUCCEEDED(run.fontFace->GetGlyphIndices(&code, 1, &glyph)) && glyph != 0 &&
+            run.glyphIndices.back() == glyph)
+            return true;
+    }
+    return false;
+}
+
+/// Переносы в вёрстке: разметка доходит до строк и печатает дефис, мягкий
+/// перенос из книги не виден, пока строка на нём не кончилась, а по
+/// неразрывному пробелу строка не рвётся вовсе.
+void testHyphenationInLayout(typography::Engine& engine) {
+    std::printf("\n=== переносы в вёрстке ===\n");
+
+    typography::ParagraphStyle style;
+
+    // Длинные слова в узкую полосу: без переносов строка была бы одним словом
+    // и дырой в пол-полосы.
+    std::wstring text;
+    for (int at = 0; at < 12; ++at) text += L"достопримечательность ";
+    typography::Paragraph long_ = paragraphOf(text);
+
+    const auto lines = engine.layout(long_, 200.0f, style);
+    std::size_t hyphenated = 0;
+    for (const typography::Line& line : lines)
+        if (endsWithHyphen(line)) ++hyphenated;
+
+    std::printf("  строк %zu, из них с переносом %zu\n", lines.size(), hyphenated);
+    check(hyphenated > 0, "слово переносится, и дефис нарисован");
+
+    // Мягкий перенос из книги невидим, пока строка на нём не кончилась.
+    const typography::Paragraph whole =
+        paragraphOf(L"\x043D\x0435\x0441\x043A\x043E\x043B\x044C\x043A\x043E");
+    const typography::Paragraph marked =
+        paragraphOf(L"\x043D\x0435\x00AD" L"\x0441\x043A\x043E\x043B\x044C\x043A\x043E");
+
+    const auto plain = engine.layout(whole, 1000.0f, style);
+    const auto soft = engine.layout(marked, 1000.0f, style);
+    const bool measured = plain.size() == 1 && soft.size() == 1;
+    check(measured && std::abs(plain[0].width - soft[0].width) < 0.01f,
+          "мягкий перенос не занимает места посреди строки");
+
+    // Он же — место разрыва: слово из одних согласных образцы не разорвут, и
+    // единственный перенос в нём тот, что стоит в книге.
+    const auto broken = engine.layout(paragraphOf(L"\x0444\x0444\x0444\x0444\x0444\x00AD"
+                                                 L"\x0444\x0444\x0444\x0444\x0444"),
+                                      60.0f, style);
+    check(broken.size() == 2 && endsWithHyphen(broken[0]),
+          "строка кончилась на мягком переносе, и дефис появился");
+
+    // Неразрывный пробел: строка не вправе начаться сразу после него, какой бы
+    // ширины ни была полоса.
+    std::wstring tied;
+    for (int at = 0; at < 20; ++at) tied += L"\x0430\x0430 \x0431\x0431\x00A0\x0432\x0432 ";
+    const typography::Paragraph paragraph = paragraphOf(tied);
+
+    bool kept = true;
+    for (float width = 40.0f; width <= 400.0f; width += 7.0f)
+        for (const typography::Line& line : engine.layout(paragraph, width, style))
+            if (line.textStart > 0 && tied[line.textStart - 1] == L'\x00A0') {
+                std::printf("       полоса %.0f: строка начата после неразрывного пробела\n", width);
+                kept = false;
+            }
+
+    check(kept, "по неразрывному пробелу строка не рвётся");
+}
+
 }  // namespace
 
 int main() {
@@ -1190,6 +1370,8 @@ int main() {
     testFormulas(dwrite.Get());
     testSeparatorAtPageBottom(engine);
     testClustersStayWhole(engine);
+    testHyphenation();
+    testHyphenationInLayout(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
 
