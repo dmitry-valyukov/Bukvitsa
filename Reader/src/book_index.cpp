@@ -6,6 +6,8 @@
 // стандартный заголовок после импорта MSVC уже не принимает.
 #include "book_index.h"
 
+import wxl.core;
+
 namespace bukvitsa::reader {
 namespace {
 
@@ -30,12 +32,16 @@ std::uint32_t offsetAt(const typography::Block& block, std::size_t index) {
 }
 
 /// Кусок текста вокруг находки: немного до и побольше после.
+///
+/// Края считаются в единицах UTF-16 и потому сдвигаются к началу символа:
+/// половина суррогатной пары на краю отрывка показалась бы прямоугольником.
 std::wstring contextAround(std::wstring_view text, std::size_t at, std::size_t length) {
     constexpr std::size_t kBefore = 30;
     constexpr std::size_t kAfter = 70;
 
-    const std::size_t from = at > kBefore ? at - kBefore : 0;
-    const std::size_t to = std::min(text.size(), at + length + kAfter);
+    const std::size_t from = wxl::core::floor_code_point_boundary(text, at > kBefore ? at - kBefore : 0);
+    const std::size_t to =
+        wxl::core::floor_code_point_boundary(text, std::min(text.size(), at + length + kAfter));
 
     std::wstring out;
     if (from > 0) out += L"…";
@@ -99,8 +105,13 @@ std::wstring hintAt(std::span<const typography::Block> blocks, std::uint32_t cha
     }
     if (!found) return {};
 
-    std::wstring hint = found->paragraph.text.substr(0, kWords);
-    if (found->paragraph.text.size() > kWords) hint += L"…";
+    // Граница в kWords единиц может прийтись на середину суррогатной пары —
+    // тогда подсказка на единицу короче, зато без обрубка символа.
+    const std::wstring& text = found->paragraph.text;
+    const std::size_t cut = wxl::core::floor_code_point_boundary(text, kWords);
+
+    std::wstring hint = text.substr(0, cut);
+    if (cut < text.size()) hint += L"…";
     return hint;
 }
 

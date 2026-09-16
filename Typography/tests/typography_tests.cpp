@@ -99,6 +99,7 @@ void testChapterFirstPage(typography::Engine& engine,
                           const std::vector<typography::Block>& blocks,
                           std::uint32_t characterCount);
 void testSeparatorAtPageBottom(typography::Engine& engine);
+void testClustersStayWhole(typography::Engine& engine);
 
 /// Формулы: MicroTeX с бэкендом Direct2D/DirectWrite. Стек проверяется
 /// насквозь — разбор, метрики и настоящая растеризация в битмап WIC: пустая
@@ -833,6 +834,76 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
     std::printf("\n=== узкая полоса ===\n");
     check(paginator.pageCount() >= 1, "разделитель у низа полосы не зацикливает набор");
 }
+
+/// Вёрстка не режет символ: ни строка, ни прогон глифов не начинаются с
+/// второй половины суррогатной пары или со знака, приставленного к букве.
+/// Половину пары шрифт не рисует — на месте иероглифа встали бы два
+/// прямоугольника, — а знак ударения без буквы повис бы в начале строки.
+///
+/// Мест, где вёрстка сама выбирает, где резать, два, и оба здесь. Прогон
+/// длиннее ёмкости кластерной карты делится у пробела, а пробела может не
+/// быть вовсе — китайский текст без них обходится. Слово шире полосы рубится
+/// по символам, и на узкой полосе кусок бывает уже одного глифа.
+void testClustersStayWhole(typography::Engine& engine) {
+    std::printf("\n=== символ не режется ===\n");
+
+    const auto paragraphOf = [](std::wstring text) {
+        typography::Paragraph paragraph;
+        paragraph.text = std::move(text);
+        paragraph.charOffsets.resize(paragraph.text.size());
+        for (std::uint32_t i = 0; i < paragraph.charOffsets.size(); ++i)
+            paragraph.charOffsets[i] = i;
+        return paragraph;
+    };
+
+    const auto startsWhole = [&](const typography::Paragraph& paragraph, float width) {
+        typography::ParagraphStyle style;
+        style.fontSize = 20.0f;
+
+        const std::wstring& text = paragraph.text;
+        const auto whole = [&](std::uint32_t at) {
+            if (at == 0 || at >= text.size()) return true;
+            const bool insidePair =
+                wxl::core::is_low_surrogate(text[at]) && wxl::core::is_high_surrogate(text[at - 1]);
+            return !insidePair && text[at] != L'\x0306';
+        };
+
+        const auto lines = engine.layout(paragraph, width, style);
+        std::printf("       строк %zu\n", lines.size());
+
+        bool result = !lines.empty();
+        for (const typography::Line& line : lines) {
+            if (!whole(line.textStart)) {
+                std::printf("       строка начинается внутри символа: %u\n", line.textStart);
+                result = false;
+            }
+            for (const typography::GlyphRun& run : line.runs) {
+                if (!whole(run.textStart)) {
+                    std::printf("       прогон начинается внутри символа: %u\n", run.textStart);
+                    result = false;
+                }
+            }
+        }
+        return result;
+    };
+
+    // U+20BB7 — иероглиф из дополнительной плоскости, в UTF-16 это пара. Её
+    // первая половина стоит там, где прогон без пробелов делится, когда
+    // пробела не нашлось: на восьмую долю ёмкости раньше её конца.
+    std::wstring chinese(3499, L'\x4E2D');
+    chinese += L"\U00020BB7";
+    chinese.append(1000, L'\x4E2D');
+    check(startsWhole(paragraphOf(std::move(chinese)), 400.0f),
+          "длинный прогон без пробелов не делится посреди суррогатной пары");
+
+    // Полоса в два кегля рубит слово кусками по полкегля — уже любого глифа.
+    // Пары — иероглиф и математическая буква; «й» записана буквой «и» и
+    // отдельным знаком краткой, то есть кластером без всякой пары.
+    const std::wstring word = L"\U00020BB7\U00020BB7\U0001D400\U0001D401"
+                              L"\x0438\x0306\x0438\x0306\x0438\x0306";
+    check(startsWhole(paragraphOf(word), 40.0f),
+          "слово шире полосы рубится между символами, а не внутри них");
+}
 /// Смена кегля через сохранённый шейпинг должна давать ровно то же, что
 /// шейпинг заново на новом кегле.
 ///
@@ -898,6 +969,7 @@ int main() {
 
     testFormulas(dwrite.Get());
     testSeparatorAtPageBottom(engine);
+    testClustersStayWhole(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
 

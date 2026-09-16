@@ -30,6 +30,8 @@
 #include "bukvitsa/typography/layout.h"
 #include "bukvitsa/typography/linebreak.h"
 
+import wxl.core;
+
 namespace bukvitsa::typography {
 namespace {
 
@@ -434,12 +436,19 @@ struct Engine::Impl {
                 // прогон длиннее её ёмкости шейпер отвергает. Делим по пробелу,
                 // если он рядом: шейпинг через границу прогона теряет лигатуры,
                 // и лучше потерять их на пробеле, чем в середине слова.
+                //
+                // Пробела рядом может и не быть — китайскому тексту они не
+                // нужны, — и тогда граница падает куда придётся. Туда, где
+                // кончается символ: половину суррогатной пары шейпер получил
+                // бы отдельно и нарисовал бы на месте иероглифа два
+                // прямоугольника.
                 if (end - at > kMaxRunLength) {
                     std::uint32_t cut = at + kMaxRunLength;
                     const std::uint32_t limit = cut - std::min<std::uint32_t>(kMaxRunLength / 8, cut - at - 1);
                     while (cut > limit && paragraph.text[cut - 1] != L' ')
                         --cut;
-                    end = cut > at ? cut : at + kMaxRunLength;
+                    end = static_cast<std::uint32_t>(
+                        wxl::core::floor_code_point_boundary(paragraph.text, cut));
                 }
 
                 // Начертание блока и начертание разметки складываются: курсив
@@ -789,7 +798,13 @@ struct Engine::Impl {
             // нет. Но показать книгу важнее, чем соблюсти правило, которое
             // здесь всё равно ничего не спасает, поэтому рвём по символу — и
             // только здесь, когда иначе строка не поместится никак.
-            if (chopWord && !pendingIsGlue && pending > 0.0f &&
+            //
+            // По символу, а не по единице текста: рвать можно только перед
+            // кластером, а у второй и следующих единиц кластера ширины нет —
+            // её несёт первая. Без этого условия глиф шире куска разрывал бы
+            // сам себя: вторую половину суррогатной пары или знак краткой
+            // отдельно от «и».
+            if (chopWord && !pendingIsGlue && pending > 0.0f && metrics.width[i] > 0.0f &&
                 pending + metrics.width[i] > chunkWidth) {
                 flush(i);
 
