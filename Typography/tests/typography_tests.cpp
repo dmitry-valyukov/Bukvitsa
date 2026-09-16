@@ -1392,6 +1392,41 @@ void testHyphenationInLayout(typography::Engine& engine) {
     check(kept, "по неразрывному пробелу строка не рвётся");
 }
 
+/// Серии переносов на живом тексте: все абзацы «Отцов и детей» в самой узкой
+/// колонке, какую строит читалка, и в ещё более узкой — ни одна серия не
+/// длиннее двух строк. Штраф за двойной перенос такого не обеспечивал: серии в
+/// пять строк оставались при любом его весе.
+void testHyphenSeries(typography::Engine& engine, const std::filesystem::path& testdata) {
+    const std::filesystem::path book = testdata / "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
+    if (!std::filesystem::exists(book)) {
+        std::printf("\n=== серии переносов: нет «Отцов и детей», пропущено ===\n");
+        return;
+    }
+
+    std::printf("\n=== серии переносов ===\n");
+    const fb3::Document document(book);
+    const std::vector<typography::Block> blocks = typography::flatten(document.body());
+
+    for (const float width : {460.0f, 300.0f}) {
+        std::size_t lines = 0, hyphens = 0, longest = 0;
+        for (const typography::Block& block : blocks) {
+            if (block.kind != typography::BlockKind::Paragraph || block.paragraph.text.empty()) continue;
+
+            std::size_t row = 0;
+            for (const typography::Line& line : engine.layout(block.paragraph, width, styleFor(block, 20.0f))) {
+                ++lines;
+                row = endsWithHyphen(line) ? row + 1 : 0;
+                hyphens += row != 0;
+                longest = std::max(longest, row);
+            }
+        }
+
+        std::printf("  полоса %.0f: строк %zu, переносов %zu, подряд не больше %zu\n", width, lines,
+                    hyphens, longest);
+        check(longest <= 2, "больше двух переносов подряд не бывает");
+    }
+}
+
 /// Диагностический снимок, когда набор просят показать глазами: одни и те же
 /// абзацы «Отцов и детей» в узкой колонке без переносов и с ними, рядом, в PNG
 /// по пути из BUKVITSA_HYPHEN_SHOT. Без переменной не делает ничего.
@@ -1546,6 +1581,7 @@ int main() {
     testHyphenationInLayout(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
+    testHyphenSeries(engine, testdata);
     shootHyphenation(engine, testdata);
 
     for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3",
