@@ -105,6 +105,24 @@ void testSearchContextKeepsLetters() {
     }
 }
 
+/// Оглавление не копирует заголовки: его строки живут, пока заполняется
+/// вкладка, а текст блока — пока открыта книга.
+void testContentsBorrowTitles() {
+    std::printf("\n=== оглавление ===\n");
+
+    typography::Block title = blockOf(L"Глава первая");
+    title.kind = typography::BlockKind::Title;
+    const typography::Block blocks[] = {title, blockOf(L"Текст главы.")};
+
+    const std::vector<reader::ContentsEntry> contents = reader::contentsOf(blocks);
+    check(contents.size() == 1, "в оглавлении один заголовок");
+    if (contents.size() != 1) return;
+
+    check(contents[0].title == L"Глава первая", "строка оглавления — текст заголовка");
+    check(contents[0].title.data() == blocks[0].paragraph.text.data(),
+          "заголовок взят из блока, а не скопирован");
+}
+
 }  // namespace
 
 int main() {
@@ -112,6 +130,7 @@ int main() {
 
     testHintKeepsLetters();
     testSearchContextKeepsLetters();
+    testContentsBorrowTitles();
 
     std::printf("\n%s\n", failures == 0 ? "OK" : "ЕСТЬ ОШИБКИ");
     return failures;

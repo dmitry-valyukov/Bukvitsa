@@ -23,7 +23,7 @@ namespace bukvitsa::reader {
 
 /// Строка оглавления.
 struct ContentsEntry {
-    wxl::core::u16_text title;
+    wxl::core::u16_view title;     ///< вид в текст блока: живёт, пока живы блоки
     std::uint8_t level = 0;        ///< глубина секции: 0 — часть, дальше главы
     std::uint32_t charOffset = 0;
 };
