@@ -174,8 +174,8 @@ void Skins::loadFrom(std::string xml) {
 
         for (const wxl::xml::node& element : root.children_named("skin")) {
             Skin skin = defaultSkin();
-            skin.name = attributeOf(element, "name");
-            skin.image = attributeOf(element, "image");
+            skin.name = attributeOf(element, "name").wchars();
+            skin.image = attributeOf(element, "image").wchars();
 
             if (const wxl::xml::node* curve = element.child("topLeft"))
                 skin.topLeft = curveOf(*curve, skin.topLeft);

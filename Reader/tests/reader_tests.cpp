@@ -28,10 +28,11 @@ bool isLetterStart(std::wstring_view text, std::size_t at) {
     return at >= text.size() || wxl::core::floor_grapheme_boundary(text, at) == at;
 }
 
-typography::Block blockOf(std::wstring text) {
+/// Текст собран тестом из кусков, поэтому проверяется, как всякий чужой.
+typography::Block blockOf(std::wstring_view text) {
     typography::Block block;
     block.kind = typography::BlockKind::Paragraph;
-    block.paragraph.text = std::move(text);
+    block.paragraph.text = wxl::core::u16_text(wxl::core::checked(text).value());
     block.paragraph.charOffsets.resize(block.paragraph.text.size());
     for (std::uint32_t i = 0; i < block.paragraph.charOffsets.size(); ++i)
         block.paragraph.charOffsets[i] = i;
@@ -67,8 +68,8 @@ void testHintKeepsLetters() {
         text.append(20, L'\x0436');
 
         const typography::Block blocks[] = {blockOf(text)};
-        const std::wstring hint = reader::hintAt(blocks, 0);
-        const std::wstring_view cut = withoutEllipses(hint);
+        const wxl::core::u16_text hint = reader::hintAt(blocks, 0);
+        const std::wstring_view cut = withoutEllipses(hint.wchars());
 
         check(text.starts_with(cut) && isLetterStart(text, cut.size()),
               "подсказка кончается между буквами");
@@ -96,7 +97,7 @@ void testSearchContextKeepsLetters() {
         check(hits.size() == 1, "находка одна");
         if (hits.size() != 1) continue;
 
-        const std::wstring_view piece = withoutEllipses(hits[0].context);
+        const std::wstring_view piece = withoutEllipses(hits[0].context.wchars());
         const std::size_t from = text.find(piece);
         check(from != std::wstring::npos && isLetterStart(text, from) &&
                   isLetterStart(text, from + piece.size()),

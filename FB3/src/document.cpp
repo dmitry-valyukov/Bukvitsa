@@ -288,11 +288,9 @@ private:
             // Локальное имя: href у <note> голый, у <a> — в пространстве xlink,
             // и после разрешения имён это одно и то же "href".
             // "#id" внутри книги: решётка -- это разметка ссылки, а не часть
-            // идентификатора, и срез по ней остаётся правильным текстом,
-            // потому что режется он по ASCII-символу.
-            std::string_view target = source.attribute("href").value_or(wxl::core::u8_view{}).chars();
-            if (target.starts_with('#')) target.remove_prefix(1);
-            data.targetId = wxl::core::assume_valid(target);
+            // идентификатора.
+            const wxl::core::u8_view href = source.attribute("href").value_or(wxl::core::u8_view{});
+            data.targetId = href.chars().starts_with('#') ? href.substr(1) : href;
             data.role = toNoteRole(source.attribute("role"));
             data.numbering = toNoteNumbering(source.attribute("autotext"));
             doc_.pendingNoteRefs.push_back(&data);

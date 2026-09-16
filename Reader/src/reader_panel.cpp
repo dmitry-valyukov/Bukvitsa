@@ -411,7 +411,7 @@ void ReaderPanel::fillContents() {
     for (const ContentsEntry& entry : contents) {
         const std::uint32_t offset = entry.charOffset;
         contentsList_.value().children().append(
-            listItem(entry.title, {}, std::min<float>(entry.level, 4) * 14.0f,
+            listItem(entry.title.wchars(), {}, std::min<float>(entry.level, 4) * 14.0f,
                      [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
@@ -429,7 +429,7 @@ void ReaderPanel::fillBookmarks() {
     for (const Bookmark& mark : state_->bookmarks) {
         const std::uint32_t offset = mark.charOffset;
         bookmarkList_.value().children().append(
-            listItem(mark.hint.empty() ? L"Закладка" : mark.hint, {}, 0,
+            listItem(mark.hint.empty() ? L"Закладка" : mark.hint.wchars(), {}, 0,
                      [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
@@ -454,7 +454,7 @@ void ReaderPanel::runSearch() {
     for (const SearchHit& hit : hits) {
         const std::uint32_t offset = hit.charOffset;
         searchList_.value().children().append(
-            listItem(hit.context, {}, 0, [this, offset] { view_.goToCharOffset(offset); }));
+            listItem(hit.context.wchars(), {}, 0, [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
 

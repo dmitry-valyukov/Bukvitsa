@@ -450,10 +450,10 @@ struct Engine::Impl {
                 if (end - at > kMaxRunLength) {
                     std::uint32_t cut = at + kMaxRunLength;
                     const std::uint32_t limit = cut - std::min<std::uint32_t>(kMaxRunLength / 8, cut - at - 1);
-                    while (cut > limit && paragraph.text[cut - 1] != L' ')
+                    while (cut > limit && paragraph.text.plain()[cut - 1] != u' ')
                         --cut;
 
-                    const std::wstring_view rest = std::wstring_view(paragraph.text).substr(at);
+                    const wxl::core::u16_view rest = wxl::core::u16_view(paragraph.text).substr(at);
                     std::size_t letters = wxl::core::floor_grapheme_boundary(rest, cut - at);
                     if (letters == 0)
                         letters = wxl::core::next_grapheme_boundary(rest, 0);
@@ -571,7 +571,8 @@ struct Engine::Impl {
         // границы между ними нет своего глифа.
         if (format.style.spaced) {
             const float spacing = format.fontSize * kSpacedTracking;
-            const std::wstring_view letters(text, length);
+            const wxl::core::u16_view letters =
+                wxl::core::u16_view(paragraph.text).substr(format.start, length);
 
             for (std::size_t letter = 0; letter < length;) {
                 const std::size_t next = wxl::core::next_grapheme_boundary(letters, letter);
@@ -722,7 +723,7 @@ struct Engine::Impl {
         // только вперёд и только в словах, которые рубятся, — то есть почти
         // никогда: весь остальной текст рвётся по переломам DirectWrite, а
         // внутри буквы их не бывает.
-        const std::wstring_view text(paragraph.text);
+        const wxl::core::u16_view text = paragraph.text;
         std::size_t letter = 0;
 
         float pending = 0.0f;

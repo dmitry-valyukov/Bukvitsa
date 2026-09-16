@@ -92,8 +92,11 @@ struct NoteAnchor {
 };
 
 /// Абзац как сплошной текст плюс разметка поверх него.
+///
+/// Текст проверенный: он собран из проверенного текста книги, а тип не даёт
+/// ни дописать, ни отрезать половину суррогатной пары.
 struct Paragraph {
-    std::wstring text;
+    wxl::core::u16_text text;
     std::vector<StyleSpan> spans;
     std::vector<NoteAnchor> notes;
 

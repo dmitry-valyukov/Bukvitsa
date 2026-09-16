@@ -29,6 +29,7 @@
 // пагинатора. Значит, всякий, кто включает этот заголовок, включает его после
 // своих стандартных.
 import bukvitsa.fb3;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -38,8 +39,8 @@ struct BookEntry {
     std::wstring guid;      ///< наш идентификатор; он же имя файла состояния
     std::wstring path;      ///< где лежит файл; книга остаётся на месте
     std::wstring bookId;    ///< UUID книги из FB3, если он у неё есть
-    std::wstring title;
-    std::wstring authors;
+    wxl::core::u16_text title;
+    wxl::core::u16_text authors;
     std::wstring cover;    ///< имя файла обложки в cache, пусто -- обложки нет
     std::uint64_t fileSize = 0;        ///< вместе с path — дешёвая проверка «тот же файл»
     std::uint32_t characterCount = 0;  ///< знаменатель прогресса чтения
@@ -110,7 +111,7 @@ CoverBytes coverOf(const fb3::Document& document, std::wstring_view guid);
 /// кегля и окна, слова не меняются. По той же причине место хранится символом.
 struct Bookmark {
     std::uint32_t charOffset = 0;
-    std::wstring hint;
+    wxl::core::u16_text hint;
 };
 
 /// Всё, что читалка помнит про одну книгу: books\{guid}.xml.

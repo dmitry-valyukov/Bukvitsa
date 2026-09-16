@@ -30,14 +30,12 @@ wxl::core::u8_text textOf(const node* el) {
 
     if (++at == pieces.end()) return wxl::core::u8_text(first);
 
-    std::string joined(first.chars());
+    wxl::core::u8_text joined(first);
 
     for (; at != pieces.end(); ++at)
-        joined.append((*at).chars());
+        joined += *at;
 
-    // Куски резаны разметкой, а не посреди последовательности, поэтому склейка
-    // правильного текста снова правильна -- вот и весь довод.
-    return wxl::core::u8_text(wxl::core::assume_valid(joined));
+    return joined;
 }
 
 PersonRole roleFromLink(wxl::core::u8_view link) {
@@ -57,21 +55,21 @@ PersonRole roleFromLink(wxl::core::u8_view link) {
 /// но только если они есть: в реальных файлах у части людей заполнен лишь
 /// `<title><main>`, и выдуманная из пустых частей строка была бы хуже него.
 wxl::core::u8_text displayNameOf(const Person& person, wxl::core::u8_view titleMain) {
-    std::string name;
+    wxl::core::u8_text name;
 
-    if (!person.firstName.empty()) name = person.firstName.chars();
+    if (!person.firstName.empty()) name += person.firstName;
     if (!person.middleName.empty()) {
-        if (!name.empty()) name += ' ';
-        name += person.middleName.chars();
+        if (!name.empty()) name += u8" ";
+        name += person.middleName;
     }
     if (!person.lastName.empty()) {
-        if (!name.empty()) name += ' ';
-        name += person.lastName.chars();
+        if (!name.empty()) name += u8" ";
+        name += person.lastName;
     }
 
     if (name.empty()) return wxl::core::u8_text(titleMain);
 
-    return wxl::core::u8_text(wxl::core::assume_valid(name));
+    return name;
 }
 
 void readPersons(const node& relations, Description& description) {
@@ -147,17 +145,17 @@ std::optional<int> yearOf(const node* dateHolder) {
 }  // namespace
 
 wxl::core::u8_text Description::authorsLine() const {
-    std::string line;
+    wxl::core::u8_text line;
 
     for (const Person& person : persons) {
         if (person.role != PersonRole::Author)
             continue;
         if (!line.empty())
-            line += ", ";
-        line += person.displayName.chars();
+            line += u8", ";
+        line += person.displayName;
     }
 
-    return wxl::core::u8_text(wxl::core::assume_valid(line));
+    return line;
 }
 
 /// Разбор description.xml. Внутренняя точка входа: Document зовёт её,

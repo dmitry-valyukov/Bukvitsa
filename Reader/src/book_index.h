@@ -23,7 +23,7 @@ namespace bukvitsa::reader {
 
 /// Строка оглавления.
 struct ContentsEntry {
-    std::wstring title;
+    wxl::core::u16_text title;
     std::uint8_t level = 0;        ///< глубина секции: 0 — часть, дальше главы
     std::uint32_t charOffset = 0;
 };
@@ -37,7 +37,7 @@ std::vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks)
 
 /// Находка поиска: место и кусок текста вокруг него.
 struct SearchHit {
-    std::wstring context;          ///< отрывок абзаца, в котором нашлось
+    wxl::core::u16_text context;   ///< отрывок абзаца, в котором нашлось
     std::uint32_t charOffset = 0;  ///< позиция самой находки в книге
 };
 
@@ -50,6 +50,6 @@ std::vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
                                   std::wstring_view needle, std::size_t limit = 200);
 
 /// Первые слова абзаца, в котором стоит эта позиция, — подсказка для закладки.
-std::wstring hintAt(std::span<const typography::Block> blocks, std::uint32_t charOffset);
+wxl::core::u16_text hintAt(std::span<const typography::Block> blocks, std::uint32_t charOffset);
 
 }  // namespace bukvitsa::reader

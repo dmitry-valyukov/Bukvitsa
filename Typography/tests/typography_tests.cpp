@@ -272,7 +272,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     bool collapsed = true;
     for (const typography::Block& block : blocks) {
         if (block.kind == typography::BlockKind::Preformatted) continue;
-        const std::wstring_view text = block.paragraph.text;
+        const std::wstring_view text = block.paragraph.text.wchars();
         if (!text.empty() && (text.front() == L' ' || text.back() == L' ')) collapsed = false;
         if (text.find(L"  ") != std::wstring::npos) collapsed = false;
     }
@@ -283,7 +283,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
         const typography::Block& block = blocks[i];
         // Обрезка по букве, а не по байтам UTF-8: `%.100s` резал букву пополам
         // прямо в выводе теста.
-        const std::wstring_view whole(block.paragraph.text);
+        const std::wstring_view whole = block.paragraph.text.wchars();
         const std::size_t cut = wxl::core::floor_grapheme_boundary(whole, 50);
         const std::string text = toUtf8(whole.substr(0, cut));
 
@@ -384,9 +384,9 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
             // добавку в float и вправе промахнуться на последний разряд.
             if (line.width > width + 0.15f && line.width - width > worstOverflow) {
                 worstOverflow = line.width - width;
-                worstLine = block.paragraph.text.substr(line.textStart, line.textLength);
+                worstLine = block.paragraph.text.wchars().substr(line.textStart, line.textLength);
                 worstStart = line.textStart;
-                worstNeighbours = block.paragraph.text.substr(
+                worstNeighbours = block.paragraph.text.wchars().substr(
                     line.textStart >= 6 ? line.textStart - 6 : 0,
                     line.textLength + 12);
                 worstKind = nameOf(block.kind);
@@ -422,7 +422,7 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
 
         if (firstMarker.empty() && !block.paragraph.notes.empty()) {
             const typography::NoteAnchor& note = block.paragraph.notes.front();
-            firstMarker = block.paragraph.text.substr(note.position, note.length);
+            firstMarker = block.paragraph.text.wchars().substr(note.position, note.length);
         }
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
@@ -475,7 +475,7 @@ void showFirstLines(typography::Engine& engine, const std::vector<typography::Bl
         std::printf("  абзац на полосе %.0f (отступ %.0f):\n", width, style.firstLineIndent);
         for (std::size_t i = 0; i < lines.size() && i < 8; ++i) {
             const typography::Line& line = lines[i];
-            const std::wstring text = block.paragraph.text.substr(line.textStart, line.textLength);
+            const std::wstring text(block.paragraph.text.wchars().substr(line.textStart, line.textLength));
             std::printf("    %6.1f |%s\n", line.width, toUtf8(text).c_str());
         }
         ++shown;
@@ -794,7 +794,7 @@ void testChapterFirstPage(typography::Engine& engine,
             const typography::Block& b = blocks[i];
             std::printf("    [%s @%u sect%u lvl%u] %.70s\n", nameOf(b.kind), b.charOffset,
                         static_cast<unsigned>(b.startsSection), static_cast<unsigned>(b.level),
-                        toUtf8(b.paragraph.text).c_str());
+                        toUtf8(b.paragraph.text.wchars()).c_str());
         }
     }
 
@@ -818,7 +818,7 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
 
     typography::Block paragraph;
     paragraph.kind = typography::BlockKind::Paragraph;
-    paragraph.paragraph.text = L"Строка, которой уже не хватает места на полосе.";
+    paragraph.paragraph.text = wxl::core::u16_text{u"Строка, которой уже не хватает места на полосе."};
     paragraph.paragraph.charOffsets.resize(paragraph.paragraph.text.size());
     for (std::uint32_t i = 0; i < paragraph.paragraph.charOffsets.size(); ++i)
         paragraph.paragraph.charOffsets[i] = i;
@@ -927,28 +927,28 @@ std::string fb3Of(std::string_view body) {
 /// где вёрстка сама выбирает позицию в тексте.
 struct CorpusLetter {
     const char* name;
-    std::wstring_view text;
-    wchar_t filler;   ///< буква той же письменности: прогон длиннее ёмкости должен быть одним
+    wxl::core::u16_view text;
+    char32_t filler;   ///< буква той же письменности: прогон длиннее ёмкости должен быть одним
 };
 
 constexpr CorpusLetter kLetters[] = {
-    {"и + краткая", L"\x0438\x0306", L'\x0436'},
-    {"е + диерезис + акут", L"\x0435\x0308\x0301", L'\x0436'},
-    {"иероглиф вне BMP", L"\xD842\xDFB7", L'\x4E2D'},
-    {"деванагари кша", L"\x0915\x094D\x0937", L'\x0915'},
-    {"хангыль L V T", L"\x1100\x1161\x11A8", L'\xAC00'},
-    {"флаг", L"\xD83C\xDDEF\xD83C\xDDF5", 0},
-    {"эмодзи с цветом кожи", L"\xD83D\xDC4D\xD83C\xDFFD", 0},
-    {"семья через ZWJ", L"\xD83D\xDC68\x200D\xD83D\xDC69\x200D\xD83D\xDC67", 0},
+    {"и + краткая", u"\x0438\x0306", U'\x0436'},
+    {"е + диерезис + акут", u"\x0435\x0308\x0301", U'\x0436'},
+    {"иероглиф вне BMP", u"\xD842\xDFB7", U'\x4E2D'},
+    {"деванагари кша", u"\x0915\x094D\x0937", U'\x0915'},
+    {"хангыль L V T", u"\x1100\x1161\x11A8", U'\xAC00'},
+    {"флаг", u"\xD83C\xDDEF\xD83C\xDDF5", 0},
+    {"эмодзи с цветом кожи", u"\xD83D\xDC4D\xD83C\xDFFD", 0},
+    {"семья через ZWJ", u"\xD83D\xDC68\x200D\xD83D\xDC69\x200D\xD83D\xDC67", 0},
 };
 
-bool isLetterStart(std::wstring_view text, std::uint32_t at) {
+bool isLetterStart(wxl::core::u16_view text, std::uint32_t at) {
     return at >= text.size() || wxl::core::floor_grapheme_boundary(text, at) == at;
 }
 
-typography::Paragraph paragraphOf(std::wstring text) {
+typography::Paragraph paragraphOf(wxl::core::u16_view text) {
     typography::Paragraph paragraph;
-    paragraph.text = std::move(text);
+    paragraph.text = wxl::core::u16_text(text);
     paragraph.charOffsets.resize(paragraph.text.size());
     for (std::uint32_t i = 0; i < paragraph.charOffsets.size(); ++i)
         paragraph.charOffsets[i] = i;
@@ -1019,7 +1019,7 @@ void testClustersStayWhole(typography::Engine& engine) {
 
             check(blocks[0].paragraph.text == L"\x0436\x0438\x0306\x0436",
                   "знак, размеченный отдельно, остаётся при своей букве");
-            check(blocks[1].paragraph.text.starts_with(L" \x0301"),
+            check(blocks[1].paragraph.text.wchars().starts_with(L" \x0301"),
                   "пробел — основа знака в начале абзаца — не выбрасывается");
             check(blocks[2].paragraph.text == L"\x0436\x0438\x0306" L"1" L"\x0436",
                   "знак сноски, поставленный вёрсткой, встаёт после буквы, а не внутри неё");
@@ -1036,17 +1036,18 @@ void testClustersStayWhole(typography::Engine& engine) {
     for (const CorpusLetter& letter : kLetters) {
         if (!letter.filler) continue;
 
-        std::wstring text(3499, letter.filler);
+        wxl::core::u16_text text;
+        for (int i = 0; i < 3499; ++i) text.push_back(letter.filler);
         text += letter.text;
-        text.append(1000, letter.filler);
+        for (int i = 0; i < 1000; ++i) text.push_back(letter.filler);
 
-        const typography::Paragraph paragraph = paragraphOf(std::move(text));
+        const typography::Paragraph paragraph = paragraphOf(text);
         check(linesStartAtLetters(paragraph, engine.layout(paragraph, 400.0f, style), letter.name),
               std::string("длинный прогон делится между буквами: ") + letter.name);
     }
 
     // Полоса в два кегля рубит слово кусками по полкегля — уже любой буквы.
-    std::wstring word;
+    wxl::core::u16_text word;
     for (int round = 0; round < 3; ++round)
         for (const CorpusLetter& letter : kLetters)
             word += letter.text;
@@ -1057,7 +1058,7 @@ void testClustersStayWhole(typography::Engine& engine) {
 
     // Строка с места чтения: место указывает на знак краткой, строка
     // начинается с его буквы.
-    const typography::Paragraph reading = paragraphOf(L"\x0436\x0436\x0438\x0306\x0436\x0436");
+    const typography::Paragraph reading = paragraphOf(u"\x0436\x0436\x0438\x0306\x0436\x0436");
     const typography::ShapedParagraphPtr shaped = engine.shape(reading, style);
     const auto fromMark = engine.layoutFrom(*shaped, 3, 400.0f, style);
     check(!fromMark.empty() && fromMark.front().textStart == 2,
@@ -1076,7 +1077,7 @@ void testClustersStayWhole(typography::Engine& engine) {
     typography::ParagraphStyle ragged = style;
     ragged.alignment = typography::Alignment::Left;
 
-    typography::Paragraph plain = paragraphOf(L"\x0436\x0301\x0436\x0301");
+    typography::Paragraph plain = paragraphOf(u"\x0436\x0301\x0436\x0301");
     typography::Paragraph spaced = plain;
     typography::FontStyle spacing;
     spacing.spaced = true;
@@ -1100,7 +1101,7 @@ void testClustersStayWhole(typography::Engine& engine) {
     // процентов — больше, чем DirectWrite сжимает сам, так что остаток
     // снимает равномерное сжатие. Ширины сжимаются, глиф буквы — нет, и знак
     // обязан остаться там, где его посадил шрифт.
-    const typography::Paragraph single = paragraphOf(L"\x0436\x0301");
+    const typography::Paragraph single = paragraphOf(u"\x0436\x0301");
     const auto natural = engine.layout(single, 1000.0f, ragged);
     const bool attached = !natural.empty() && natural[0].runs.size() == 1 &&
                           natural[0].runs[0].advances.size() == 2 &&

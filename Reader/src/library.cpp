@@ -1,12 +1,11 @@
-#include "library.h"
-
 #include <windows.h>
 #include <objbase.h>
 
-
-
 // «book.h» больше не нужен: реестр работает с разобранным документом.
 #include "settings.h"
+
+// Последними: реестр и хранилище импортируют wxl.core.
+#include "library.h"
 #include "store.h"
 
 // После своих заголовков: document.h тянет import wxl.core, а стандартный
@@ -31,6 +30,11 @@ std::wstring_view coverExtension(std::string_view contentType) {
 /// Один атрибут: имя, значение, экранирование. Отдельной функцией, потому что
 /// в реестре их семь на запись, и повторять xmlValue() семь раз — значит однажды
 /// забыть.
+void attribute(wxl::core::text_builder<wxl::core::sta_allocator>& out, std::string_view name, wxl::core::u16_view value) {
+    out.format(" {}=\"{}\"", name, xmlValue(value));
+}
+
+/// То же для путей и имён файлов: их xmlValue() чинит.
 void attribute(wxl::core::text_builder<wxl::core::sta_allocator>& out, std::string_view name, std::wstring_view value) {
     out.format(" {}=\"{}\"", name, xmlValue(value));
 }
@@ -72,10 +76,10 @@ void Library::loadFrom(std::string xml) {
 
         for (const wxl::xml::node& element : root.children_named("book")) {
             BookEntry entry;
-            entry.guid = attributeOf(element, "guid");
-            entry.path = attributeOf(element, "path");
-            entry.bookId = attributeOf(element, "bookId");
-            entry.cover = attributeOf(element, "cover");
+            entry.guid = attributeOf(element, "guid").wchars();
+            entry.path = attributeOf(element, "path").wchars();
+            entry.bookId = attributeOf(element, "bookId").wchars();
+            entry.cover = attributeOf(element, "cover").wchars();
             entry.title = attributeOf(element, "title");
             entry.authors = attributeOf(element, "authors");
             entry.fileSize = numberOf(element, "size");
@@ -199,8 +203,8 @@ BookEntry describe(const fb3::Document& document, const std::filesystem::path& p
     // Ни одного assume_valid: модель книги отдаёт проверенный текст, потому
     // что документ проверила wxl.xml, когда его открывала.
     entry.bookId = description.id.to_utf16().wchars();
-    entry.title = description.title.to_utf16().wchars();
-    entry.authors = description.authorsLine().to_utf16().wchars();
+    entry.title = description.title.to_utf16();
+    entry.authors = description.authorsLine().to_utf16();
     entry.characterCount = document.characterCount();
 
     // Размер файла приходит снаружи: узнать его -- обращение к диску, а на
@@ -209,7 +213,8 @@ BookEntry describe(const fb3::Document& document, const std::filesystem::path& p
     entry.fileSize = fileSize;
 
     // Книга без названия бывает: в витрине лучше имя файла, чем пустая строка.
-    if (entry.title.empty()) entry.title = path.filename().wstring();
+    // Имя файла Windows не обязано быть правильным UTF-16.
+    if (entry.title.empty()) entry.title = wxl::core::repaired(path.filename().native());
 
     return entry;
 }
