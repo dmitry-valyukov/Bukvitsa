@@ -120,6 +120,23 @@ private:
     /// секции, каким бы путём тот ни попал в список.
     std::uint8_t pendingSection_ = 0;
 
+    /// Где в тексте блока начинаются буквы. Прогон стиля и знак сноски,
+    /// поставленный вёрсткой, начинаются только с буквы: разметка внутри
+    /// буквы (`и<em>◌̆</em>`) иначе отдала бы знак шейперу отдельным прогоном,
+    /// без основы.
+    wxl::core::grapheme_breaker letters_;
+
+    /// Знак сноски, который ставит вёрстка, ждёт начала следующей буквы:
+    /// `<note>` мог встать между буквой и её знаком, и знак сноски там
+    /// разорвал бы букву.
+    struct PendingMarker {
+        std::size_t anchor = 0;           ///< индекс в Paragraph::notes
+        std::wstring text;
+        FontStyle style;
+        std::uint32_t charOffset = 0;
+    };
+    std::vector<PendingMarker> pendingMarkers_;
+
     /* ---------------- блоки ---------------- */
 
     void beginBlock(BlockKind kind, const fb3::Node& source, const Context& context) {
@@ -136,11 +153,16 @@ private:
         open_ = true;
         preformatted_ = kind == BlockKind::Preformatted;
         pendingSpace_ = false;
+        letters_ = {};
         ++blockSerial_;
     }
 
     void finishBlock() {
         if (!open_) return;
+
+        // Буква, после которой ждали знаки сносок, кончилась вместе с блоком.
+        flushMarkers();
+
         open_ = false;
         pendingSpace_ = false;
 
@@ -206,10 +228,14 @@ private:
     /// новый прогон начинается там, где сменилось начертание. Так шейперу
     /// не приходится разбирать перекрытия, а `<strong><em>` — это просто
     /// прогон, у которого стоят оба флага.
-    void appendUnit(wchar_t unit, std::uint32_t charOffset) {
+    ///
+    /// Но только с начала буквы: продолжение буквы, размеченное иначе, берёт
+    /// начертание её начала — буква набирается одним прогоном.
+    void appendUnit(wchar_t unit, std::uint32_t charOffset, bool startsLetter) {
         Paragraph& paragraph = block_.paragraph;
 
-        if (paragraph.spans.empty() || !(paragraph.spans.back().style == styles_.back()))
+        if (paragraph.spans.empty() ||
+            (startsLetter && !(paragraph.spans.back().style == styles_.back())))
             paragraph.spans.push_back(
                 StyleSpan{static_cast<std::uint32_t>(paragraph.text.size()), 0, styles_.back()});
 
@@ -218,33 +244,84 @@ private:
         ++block_.paragraph.spans.back().length;
     }
 
+    /// Всё, что попадает в текст блока, идёт сюда: автомат букв должен
+    /// увидеть каждый символ, иначе его границы разойдутся с текстом.
     void appendCodePoint(char32_t code, std::uint32_t charOffset) {
+        // Знаки сносок встают перед буквой, которая начинается здесь. Проба —
+        // на копии автомата: сам он должен увидеть сперва знаки, потом символ.
+        if (!pendingMarkers_.empty()) {
+            wxl::core::grapheme_breaker probe = letters_;
+            if (probe.breaks_before(code))
+                flushMarkers();
+        }
+
+        const bool startsLetter = letters_.breaks_before(code);
+
         if (code >= 0x10000u) {
             const char32_t rest = code - 0x10000u;
-            appendUnit(static_cast<wchar_t>(0xD800u + (rest >> 10)), charOffset);
-            appendUnit(static_cast<wchar_t>(0xDC00u + (rest & 0x3FFu)), charOffset);
+            appendUnit(static_cast<wchar_t>(0xD800u + (rest >> 10)), charOffset, startsLetter);
+            appendUnit(static_cast<wchar_t>(0xDC00u + (rest & 0x3FFu)), charOffset, false);
         } else {
-            appendUnit(static_cast<wchar_t>(code), charOffset);
+            appendUnit(static_cast<wchar_t>(code), charOffset, startsLetter);
         }
     }
 
-    void flushPendingSpace() {
+    void flushMarkers() {
+        std::vector<PendingMarker> markers = std::move(pendingMarkers_);
+        pendingMarkers_.clear();
+
+        for (const PendingMarker& marker : markers) {
+            const auto position = static_cast<std::uint32_t>(block_.paragraph.text.size());
+
+            styles_.push_back(marker.style);
+            for (const wchar_t sign : marker.text)
+                appendCodePoint(sign, marker.charOffset);
+            styles_.pop_back();
+
+            NoteAnchor& note = block_.paragraph.notes[marker.anchor];
+            note.position = position;
+            note.length = static_cast<std::uint32_t>(block_.paragraph.text.size()) - position;
+        }
+    }
+
+    /// Прикреплён ли символ к пробелу перед ним. Знак ударения после пробела —
+    /// буква из двух символов, и пробел в ней основа: выбросить его значит
+    /// оставить знак без буквы.
+    static bool extendsSpace(char32_t code) {
+        wxl::core::grapheme_breaker letters;
+        letters.breaks_before(U' ');
+        return !letters.breaks_before(code);
+    }
+
+    /// Свёрнутый пробел, за которым идёт не символ текста, а элемент.
+    void flushPendingSpace() { appendPendingSpace(false); }
+
+    /// Свёрнутый пробел перед символом `next`.
+    void flushPendingSpace(char32_t next) {
+        if (pendingSpace_) appendPendingSpace(extendsSpace(next));
+    }
+
+    void appendPendingSpace(bool isLetterBase) {
         if (!pendingSpace_) return;
         pendingSpace_ = false;
 
-        // В начале абзаца свёрнутый пробел исчезает вовсе.
-        if (block_.paragraph.text.empty())
-            return;
+        if (block_.paragraph.text.empty()) {
+            // В начале абзаца свёрнутый пробел исчезает вовсе — если он не
+            // основа буквы.
+            if (!isLetterBase)
+                return;
+        } else {
+            // И не удваивается: между двумя текстовыми узлами бывает
+            // инлайновый элемент, который сам ничего не написал (пустая
+            // ссылка, знак сноски без текста), — и тогда пробелы по обе
+            // стороны от него схлопываются здесь, а не остаются двумя. После
+            // перевода строки пробел, который служит основой буквы, остаётся.
+            const wchar_t last = block_.paragraph.text.back();
+            if (last == L' ' || (last == L'\n' && !isLetterBase))
+                return;
+        }
 
-        // И не удваивается: между двумя текстовыми узлами бывает инлайновый
-        // элемент, который сам ничего не написал (пустая ссылка, знак сноски
-        // без текста), — и тогда пробелы по обе стороны от него схлопываются
-        // здесь, а не остаются двумя.
-        const wchar_t last = block_.paragraph.text.back();
-        if (last == L' ' || last == L'\n')
-            return;
-
-        appendUnit(L' ', pendingSpaceAt_);
+        appendCodePoint(U' ', pendingSpaceAt_);
     }
 
     void appendText(wxl::core::u8_view utf8, std::uint32_t firstCharOffset) {
@@ -261,7 +338,7 @@ private:
                     pendingSpaceAt_ = offset;
                 }
             } else {
-                flushPendingSpace();
+                flushPendingSpace(code);
                 appendCodePoint(code, offset);
             }
 
@@ -328,14 +405,15 @@ private:
             for (const fb3::Node& child : node.children())
                 walkInline(child, context);
 
-            // Автор знака не поставил — ставим сами и нумеруем по порядку.
+            // Автор знака не поставил — ставим сами и нумеруем по порядку. Но
+            // не сразу, а перед следующей буквой: `<note>` мог встать между
+            // буквой и её знаком. Место и длину знака запишет flushMarkers.
             if (serial == blockSerial_ && block_.paragraph.text.size() == before) {
                 const fb3::NoteRefData* data = node.noteRef();
-                const std::wstring marker = noteMarker(
-                    data ? data->numbering : fb3::NoteNumbering::Arabic, ++noteNumber_);
-
-                for (const wchar_t sign : marker)
-                    appendUnit(sign, node.charOffset());
+                pendingMarkers_.push_back(PendingMarker{
+                    anchor,
+                    noteMarker(data ? data->numbering : fb3::NoteNumbering::Arabic, ++noteNumber_),
+                    styles_.back(), node.charOffset()});
             }
 
             popStyle();
@@ -360,7 +438,7 @@ private:
 
         case NodeKind::Break:
             flushPendingSpace();
-            appendUnit(L'\n', node.charOffset());
+            appendCodePoint(U'\n', node.charOffset());
             return;
 
         default:
@@ -410,6 +488,7 @@ private:
             open_ = true;
             preformatted_ = kind == BlockKind::Preformatted;
             pendingSpace_ = false;
+            letters_ = {};
             ++blockSerial_;
         }
     }

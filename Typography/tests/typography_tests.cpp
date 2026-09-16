@@ -281,13 +281,17 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     std::printf("  начало книги:\n");
     for (std::size_t i = 0; i < blocks.size() && i < 6; ++i) {
         const typography::Block& block = blocks[i];
-        const std::string text = toUtf8(block.paragraph.text);
+        // Обрезка по букве, а не по байтам UTF-8: `%.100s` резал букву пополам
+        // прямо в выводе теста.
+        const std::wstring_view whole(block.paragraph.text);
+        const std::size_t cut = wxl::core::floor_grapheme_boundary(whole, 50);
+        const std::string text = toUtf8(whole.substr(0, cut));
 
         std::string label = nameOf(block.kind);
         if (block.kind == typography::BlockKind::Title) label += std::to_string(block.level);
 
-        std::printf("    [%s @%u] %.100s%s\n", label.c_str(), block.charOffset, text.c_str(),
-                    text.size() > 100 ? "..." : "");
+        std::printf("    [%s @%u] %s%s\n", label.c_str(), block.charOffset, text.c_str(),
+                    cut < whole.size() ? "..." : "");
     }
 
     // Ширина полосы книжного разворота при кегле 20: около 60 знаков в строке,
@@ -835,74 +839,290 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
     check(paginator.pageCount() >= 1, "разделитель у низа полосы не зацикливает набор");
 }
 
-/// Вёрстка не режет символ: ни строка, ни прогон глифов не начинаются с
-/// второй половины суррогатной пары или со знака, приставленного к букве.
-/// Половину пары шрифт не рисует — на месте иероглифа встали бы два
-/// прямоугольника, — а знак ударения без буквы повис бы в начале строки.
-///
-/// Мест, где вёрстка сама выбирает, где резать, два, и оба здесь. Прогон
-/// длиннее ёмкости кластерной карты делится у пробела, а пробела может не
-/// быть вовсе — китайский текст без них обходится. Слово шире полосы рубится
-/// по символам, и на узкой полосе кусок бывает уже одного глифа.
-void testClustersStayWhole(typography::Engine& engine) {
-    std::printf("\n=== символ не режется ===\n");
-
-    const auto paragraphOf = [](std::wstring text) {
-        typography::Paragraph paragraph;
-        paragraph.text = std::move(text);
-        paragraph.charOffsets.resize(paragraph.text.size());
-        for (std::uint32_t i = 0; i < paragraph.charOffsets.size(); ++i)
-            paragraph.charOffsets[i] = i;
-        return paragraph;
+/// ZIP без сжатия: пакету OPC этого хватает, а тест держит разметку книги у
+/// себя в тексте, а не в двоичном файле рядом.
+std::string storedZip(std::span<const std::pair<std::string_view, std::string_view>> parts) {
+    const auto crc32 = [](std::string_view data) {
+        std::uint32_t crc = 0xFFFFFFFFu;
+        for (const char byte : data) {
+            crc ^= static_cast<unsigned char>(byte);
+            for (int bit = 0; bit < 8; ++bit)
+                crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+        return ~crc;
+    };
+    const auto put16 = [](std::string& out, std::uint32_t value) {
+        out.push_back(static_cast<char>(value & 0xFF));
+        out.push_back(static_cast<char>((value >> 8) & 0xFF));
+    };
+    const auto put32 = [&](std::string& out, std::uint32_t value) {
+        put16(out, value & 0xFFFF);
+        put16(out, value >> 16);
+    };
+    // Сигнатура, версия, флаги, метод 0, время, дата 1980-01-01, CRC, размеры.
+    const auto header = [&](std::string& out, std::uint32_t signature, bool central,
+                            std::string_view name, std::string_view data) {
+        put32(out, signature);
+        if (central) put16(out, 20);
+        put16(out, 20);
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 0);
+        put16(out, 0x21);
+        put32(out, crc32(data));
+        put32(out, static_cast<std::uint32_t>(data.size()));
+        put32(out, static_cast<std::uint32_t>(data.size()));
+        put16(out, static_cast<std::uint32_t>(name.size()));
+        put16(out, 0);
     };
 
-    const auto startsWhole = [&](const typography::Paragraph& paragraph, float width) {
-        typography::ParagraphStyle style;
-        style.fontSize = 20.0f;
+    std::string zip;
+    std::string directory;
+    for (const auto& [name, data] : parts) {
+        const auto offset = static_cast<std::uint32_t>(zip.size());
+        header(zip, 0x04034B50u, false, name, data);
+        zip += name;
+        zip += data;
 
-        const std::wstring& text = paragraph.text;
-        const auto whole = [&](std::uint32_t at) {
-            if (at == 0 || at >= text.size()) return true;
-            const bool insidePair =
-                wxl::core::is_low_surrogate(text[at]) && wxl::core::is_high_surrogate(text[at - 1]);
-            return !insidePair && text[at] != L'\x0306';
-        };
+        header(directory, 0x02014B50u, true, name, data);
+        put16(directory, 0);      // комментарий
+        put16(directory, 0);      // диск
+        put16(directory, 0);      // внутренние атрибуты
+        put32(directory, 0);      // внешние атрибуты
+        put32(directory, offset);
+        directory += name;
+    }
 
-        const auto lines = engine.layout(paragraph, width, style);
-        std::printf("       строк %zu\n", lines.size());
+    const auto directoryOffset = static_cast<std::uint32_t>(zip.size());
+    zip += directory;
+    put32(zip, 0x06054B50u);
+    put16(zip, 0);
+    put16(zip, 0);
+    put16(zip, static_cast<std::uint32_t>(parts.size()));
+    put16(zip, static_cast<std::uint32_t>(parts.size()));
+    put32(zip, static_cast<std::uint32_t>(directory.size()));
+    put32(zip, directoryOffset);
+    put16(zip, 0);
+    return zip;
+}
 
-        bool result = !lines.empty();
-        for (const typography::Line& line : lines) {
-            if (!whole(line.textStart)) {
-                std::printf("       строка начинается внутри символа: %u\n", line.textStart);
-                result = false;
-            }
-            for (const typography::GlyphRun& run : line.runs) {
-                if (!whole(run.textStart)) {
-                    std::printf("       прогон начинается внутри символа: %u\n", run.textStart);
-                    result = false;
-                }
+/// Книга FB3 из одного тела: остальные части пакета — минимум, который
+/// требует формат.
+std::string fb3Of(std::string_view body) {
+    const std::pair<std::string_view, std::string_view> parts[] = {
+        {"[Content_Types].xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/fb3/description.xml" ContentType="application/fb3-description+xml"/><Override PartName="/fb3/body.xml" ContentType="application/fb3-body+xml"/></Types>)"},
+        {"_rels/.rels",
+         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/Book" Target="fb3/description.xml"/></Relationships>)"},
+        {"fb3/description.xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><fb3-description xmlns="http://www.fictionbook.org/FictionBook3/description" id="00000000-0000-0000-0000-000000000001" version="1.0"><title><main>Буквы</main></title></fb3-description>)"},
+        {"fb3/_rels/description.xml.rels",
+         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/body" Target="body.xml"/></Relationships>)"},
+        {"fb3/body.xml", body},
+    };
+    return storedZip(parts);
+}
+
+/// Буквы из нескольких кодовых точек — то, на чём проверяется всякое место,
+/// где вёрстка сама выбирает позицию в тексте.
+struct CorpusLetter {
+    const char* name;
+    std::wstring_view text;
+    wchar_t filler;   ///< буква той же письменности: прогон длиннее ёмкости должен быть одним
+};
+
+constexpr CorpusLetter kLetters[] = {
+    {"и + краткая", L"\x0438\x0306", L'\x0436'},
+    {"е + диерезис + акут", L"\x0435\x0308\x0301", L'\x0436'},
+    {"иероглиф вне BMP", L"\xD842\xDFB7", L'\x4E2D'},
+    {"деванагари кша", L"\x0915\x094D\x0937", L'\x0915'},
+    {"хангыль L V T", L"\x1100\x1161\x11A8", L'\xAC00'},
+    {"флаг", L"\xD83C\xDDEF\xD83C\xDDF5", 0},
+    {"эмодзи с цветом кожи", L"\xD83D\xDC4D\xD83C\xDFFD", 0},
+    {"семья через ZWJ", L"\xD83D\xDC68\x200D\xD83D\xDC69\x200D\xD83D\xDC67", 0},
+};
+
+bool isLetterStart(std::wstring_view text, std::uint32_t at) {
+    return at >= text.size() || wxl::core::floor_grapheme_boundary(text, at) == at;
+}
+
+typography::Paragraph paragraphOf(std::wstring text) {
+    typography::Paragraph paragraph;
+    paragraph.text = std::move(text);
+    paragraph.charOffsets.resize(paragraph.text.size());
+    for (std::uint32_t i = 0; i < paragraph.charOffsets.size(); ++i)
+        paragraph.charOffsets[i] = i;
+    return paragraph;
+}
+
+/// Ни строка, ни прогон глифов не начинаются внутри буквы.
+bool linesStartAtLetters(const typography::Paragraph& paragraph,
+                         std::span<const typography::Line> lines, const char* what) {
+    bool whole = !lines.empty();
+    for (const typography::Line& line : lines) {
+        if (!isLetterStart(paragraph.text, line.textStart)) {
+            std::printf("       %s: строка начинается внутри буквы на %u\n", what, line.textStart);
+            whole = false;
+        }
+        for (const typography::GlyphRun& run : line.runs) {
+            if (!isLetterStart(paragraph.text, run.textStart)) {
+                std::printf("       %s: прогон начинается внутри буквы на %u\n", what, run.textStart);
+                whole = false;
             }
         }
-        return result;
-    };
+    }
+    return whole;
+}
 
-    // U+20BB7 — иероглиф из дополнительной плоскости, в UTF-16 это пара. Её
-    // первая половина стоит там, где прогон без пробелов делится, когда
-    // пробела не нашлось: на восьмую долю ёмкости раньше её конца.
-    std::wstring chinese(3499, L'\x4E2D');
-    chinese += L"\U00020BB7";
-    chinese.append(1000, L'\x4E2D');
-    check(startsWhole(paragraphOf(std::move(chinese)), 400.0f),
-          "длинный прогон без пробелов не делится посреди суррогатной пары");
+/// Где у второго глифа строки начало относительно первого: знак, посаженный
+/// на букву, стоит там, куда его поставил шрифт, и никуда не уезжает.
+float markOffset(const typography::GlyphRun& run) {
+    return run.advances[0] + run.offsets[1].advanceOffset - run.offsets[0].advanceOffset;
+}
 
-    // Полоса в два кегля рубит слово кусками по полкегля — уже любого глифа.
-    // Пары — иероглиф и математическая буква; «й» записана буквой «и» и
-    // отдельным знаком краткой, то есть кластером без всякой пары.
-    const std::wstring word = L"\U00020BB7\U00020BB7\U0001D400\U0001D401"
-                              L"\x0438\x0306\x0438\x0306\x0438\x0306";
-    check(startsWhole(paragraphOf(word), 40.0f),
-          "слово шире полосы рубится между символами, а не внутри них");
+/// Вёрстка не рвёт букву — закон. Буква здесь — графемный кластер Unicode:
+/// «й» из «и» и знака краткой, флаг из двух региональных индикаторов, семья
+/// эмодзи через ZWJ. Разрез между её кодовыми точками кодировку не портит,
+/// а букву рвёт: знак уходит к шейперу без основы и повисает, конъюнкт
+/// распадается, пара становится двумя прямоугольниками.
+///
+/// Места, где вёрстка сама выбирает позицию в тексте: деление прогона
+/// длиннее ёмкости кластерной карты, рубка слова шире полосы, строка с места
+/// чтения, разрядка и равномерное сжатие строки, которые двигают глифы.
+void testClustersStayWhole(typography::Engine& engine) {
+    std::printf("\n=== буква не режется ===\n");
+
+    // Разбор книги: разметка внутри буквы, пробел — основа знака в начале
+    // абзаца, сноска без знака между буквой и её знаком.
+    {
+        const fb3::Document document(fb3Of(R"(<?xml version="1.0" encoding="UTF-8"?>
+<fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" xmlns:xlink="http://www.w3.org/1999/xlink" id="00000000-0000-0000-0000-000000000002">
+<section id="s1">
+<p>ж&#x438;<em>&#x306;</em>ж</p>
+<p> &#x301;ж</p>
+<p>ж&#x438;<note href="n1" xlink:role="footnote"/>&#x306;ж</p>
+</section>
+<notes show="0"><notebody id="n1"><p>сноска</p></notebody></notes>
+</fb3-body>)"));
+        const std::vector<typography::Block> blocks = typography::flatten(document.body());
+        check(blocks.size() == 3, "книга из трёх абзацев развёрнута в три блока");
+
+        if (blocks.size() == 3) {
+            for (const typography::Block& block : blocks) {
+                for (const typography::StyleSpan& span : block.paragraph.spans)
+                    check(isLetterStart(block.paragraph.text, span.start),
+                          "прогон стиля начинается с буквы, а не с её знака");
+                for (const typography::NoteAnchor& note : block.paragraph.notes)
+                    check(isLetterStart(block.paragraph.text, note.position),
+                          "знак сноски стоит между буквами");
+            }
+
+            check(blocks[0].paragraph.text == L"\x0436\x0438\x0306\x0436",
+                  "знак, размеченный отдельно, остаётся при своей букве");
+            check(blocks[1].paragraph.text.starts_with(L" \x0301"),
+                  "пробел — основа знака в начале абзаца — не выбрасывается");
+            check(blocks[2].paragraph.text == L"\x0436\x0438\x0306" L"1" L"\x0436",
+                  "знак сноски, поставленный вёрсткой, встаёт после буквы, а не внутри неё");
+        }
+    }
+
+    typography::ParagraphStyle style;
+    style.fontSize = 20.0f;
+
+    // Прогон без пробелов делится на восьмую долю ёмкости раньше её конца —
+    // на 3500-й единице. Буква начинается на единицу раньше, и разрез
+    // приходится внутрь неё. Филлер — той же письменности, иначе прогон
+    // кончился бы сам на смене письменности.
+    for (const CorpusLetter& letter : kLetters) {
+        if (!letter.filler) continue;
+
+        std::wstring text(3499, letter.filler);
+        text += letter.text;
+        text.append(1000, letter.filler);
+
+        const typography::Paragraph paragraph = paragraphOf(std::move(text));
+        check(linesStartAtLetters(paragraph, engine.layout(paragraph, 400.0f, style), letter.name),
+              std::string("длинный прогон делится между буквами: ") + letter.name);
+    }
+
+    // Полоса в два кегля рубит слово кусками по полкегля — уже любой буквы.
+    std::wstring word;
+    for (int round = 0; round < 3; ++round)
+        for (const CorpusLetter& letter : kLetters)
+            word += letter.text;
+
+    const typography::Paragraph chopped = paragraphOf(word);
+    check(linesStartAtLetters(chopped, engine.layout(chopped, 40.0f, style), "рубка"),
+          "слово шире полосы рубится между буквами");
+
+    // Строка с места чтения: место указывает на знак краткой, строка
+    // начинается с его буквы.
+    const typography::Paragraph reading = paragraphOf(L"\x0436\x0436\x0438\x0306\x0436\x0436");
+    const typography::ShapedParagraphPtr shaped = engine.shape(reading, style);
+    const auto fromMark = engine.layoutFrom(*shaped, 3, 400.0f, style);
+    check(!fromMark.empty() && fromMark.front().textStart == 2,
+          "строка с места чтения начинается с буквы, а не с её знака");
+
+    // Знаки сажает на букву не всякий шрифт: Georgia, шрифт читалки по
+    // умолчанию, рисует знак ударения отдельным глифом со своей шириной.
+    // Проверки сдвига знака берут Segoe UI, где знак посажен на букву.
+    const typography::TextStyle previous = engine.textStyle();
+    typography::TextStyle segoe = previous;
+    segoe.fontFamily = L"Segoe UI";
+    engine.setTextStyle(segoe);
+
+    // Разрядка раздвигает буквы, а не глифы: знак ударения остаётся над своей
+    // буквой.
+    typography::ParagraphStyle ragged = style;
+    ragged.alignment = typography::Alignment::Left;
+
+    typography::Paragraph plain = paragraphOf(L"\x0436\x0301\x0436\x0301");
+    typography::Paragraph spaced = plain;
+    typography::FontStyle spacing;
+    spacing.spaced = true;
+    spaced.spans.push_back(typography::StyleSpan{0, 4, spacing});
+
+    const auto plainLines = engine.layout(plain, 1000.0f, ragged);
+    const auto spacedLines = engine.layout(spaced, 1000.0f, ragged);
+    const bool twoGlyphs = !plainLines.empty() && !spacedLines.empty() &&
+                           plainLines[0].runs.size() == 1 && spacedLines[0].runs.size() == 1 &&
+                           plainLines[0].runs[0].advances.size() == 4 &&
+                           spacedLines[0].runs[0].advances.size() == 4;
+    check(twoGlyphs, "«ж» и знак ударения — два глифа, иначе разрядку не на чем проверить");
+    if (twoGlyphs) {
+        const float before = markOffset(plainLines[0].runs[0]);
+        const float after = markOffset(spacedLines[0].runs[0]);
+        std::printf("       знак от буквы: %.3f без разрядки, %.3f с разрядкой\n", before, after);
+        check(std::abs(before - after) < 0.01f, "разрядка не отодвигает знак от буквы");
+    }
+
+    // Сжатие переполненной строки: одна буква со знаком шире полосы на десять
+    // процентов — больше, чем DirectWrite сжимает сам, так что остаток
+    // снимает равномерное сжатие. Ширины сжимаются, глиф буквы — нет, и знак
+    // обязан остаться там, где его посадил шрифт.
+    const typography::Paragraph single = paragraphOf(L"\x0436\x0301");
+    const auto natural = engine.layout(single, 1000.0f, ragged);
+    const bool attached = !natural.empty() && natural[0].runs.size() == 1 &&
+                          natural[0].runs[0].advances.size() == 2 &&
+                          natural[0].runs[0].advances[1] == 0.0f;
+    check(attached, "в Segoe UI знак ударения посажен на «ж»: глиф без ширины");
+    if (attached) {
+        const typography::GlyphRun& wide = natural[0].runs[0];
+        const auto squeezed = engine.layout(single, wide.advances[0] * 0.9f, style);
+        const bool oneRun = squeezed.size() == 1 && squeezed[0].runs.size() == 1 &&
+                            squeezed[0].runs[0].advances.size() == 2;
+        check(oneRun, "переполненная строка из одной буквы — одна строка из двух глифов");
+        if (oneRun) {
+            const typography::GlyphRun& narrow = squeezed[0].runs[0];
+            std::printf("       ширина буквы %.3f -> %.3f, знак от буквы %.3f -> %.3f\n",
+                        wide.advances[0], narrow.advances[0], markOffset(wide), markOffset(narrow));
+            check(narrow.advances[0] < wide.advances[0] - 0.5f, "строка и правда сжата");
+            check(std::abs(markOffset(narrow) - markOffset(wide)) < 0.01f,
+                  "сжатие строки не сдвигает знак с буквы");
+        }
+    }
+
+    engine.setTextStyle(previous);
 }
 /// Смена кегля через сохранённый шейпинг должна давать ровно то же, что
 /// шейпинг заново на новом кегле.

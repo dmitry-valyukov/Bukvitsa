@@ -438,17 +438,27 @@ struct Engine::Impl {
                 // и лучше потерять их на пробеле, чем в середине слова.
                 //
                 // Пробела рядом может и не быть — китайскому тексту они не
-                // нужны, — и тогда граница падает куда придётся. Туда, где
-                // кончается символ: половину суррогатной пары шейпер получил
-                // бы отдельно и нарисовал бы на месте иероглифа два
-                // прямоугольника.
+                // нужны, — а за пробелом может стоять знак, для которого он
+                // основа. Поэтому разрез в любом случае отодвигается к началу
+                // буквы: знак, отданный шейперу без основы, повисает, а
+                // конъюнкт распадается. Прогон начинается с буквы, так что
+                // границы считаются от него, а не от начала абзаца.
+                //
+                // Буква длиннее самого предела — основа с тысячами знаков —
+                // остаётся целой и выходит за предел: разорвать её нельзя, а
+                // шейпер отвергает только прогон, чьих глифов не вмещает карта.
                 if (end - at > kMaxRunLength) {
                     std::uint32_t cut = at + kMaxRunLength;
                     const std::uint32_t limit = cut - std::min<std::uint32_t>(kMaxRunLength / 8, cut - at - 1);
                     while (cut > limit && paragraph.text[cut - 1] != L' ')
                         --cut;
-                    end = static_cast<std::uint32_t>(
-                        wxl::core::floor_code_point_boundary(paragraph.text, cut));
+
+                    const std::wstring_view rest = std::wstring_view(paragraph.text).substr(at);
+                    std::size_t letters = wxl::core::floor_grapheme_boundary(rest, cut - at);
+                    if (letters == 0)
+                        letters = wxl::core::next_grapheme_boundary(rest, 0);
+
+                    end = at + static_cast<std::uint32_t>(letters);
                 }
 
                 // Начертание блока и начертание разметки складываются: курсив
@@ -552,10 +562,29 @@ struct Engine::Impl {
         }
 
         // Разрядка — не возможность шрифта, а типографский приём: раздвигаем
-        // глифы сами. И вертикальный сдвиг над- и подстрочных.
-        if (format.style.spaced)
-            for (float& advance : shaped.advances)
-                advance += format.fontSize * kSpacedTracking;
+        // сами. Раздвигаются буквы, а не глифы: просвет прибавляется к
+        // последнему глифу буквы, и знак, посаженный на неё, остаётся на
+        // месте. ApplyCharacterSpacing из DirectWrite тоже не трогает знаки,
+        // но раздвигает по своим кластерам, а кластер уже буквы — чамо
+        // хангыля без готового слога шрифт держит отдельными кластерами.
+        // Буквы, слитые шрифтом в одну лигатуру, раздвинуть нечем: у
+        // границы между ними нет своего глифа.
+        if (format.style.spaced) {
+            const float spacing = format.fontSize * kSpacedTracking;
+            const std::wstring_view letters(text, length);
+
+            for (std::size_t letter = 0; letter < length;) {
+                const std::size_t next = wxl::core::next_grapheme_boundary(letters, letter);
+                const std::uint32_t glyphEnd = next < length ? shaped.clusterMap[next] : actualGlyphs;
+
+                if (glyphEnd > shaped.clusterMap[next - 1])
+                    shaped.advances[glyphEnd - 1] += spacing;
+
+                letter = next;
+            }
+        }
+
+        // И вертикальный сдвиг над- и подстрочных.
 
         if (format.ascenderOffset != 0.0f)
             for (DWRITE_GLYPH_OFFSET& offset : shaped.offsets)
@@ -689,6 +718,13 @@ struct Engine::Impl {
         const float chunkWidth = std::max(maxWidth * 0.25f, 1.0f);
         bool chopWord = false;
 
+        // Граница буквы, до которой уже дошли внутри рубимого слова. Идёт
+        // только вперёд и только в словах, которые рубятся, — то есть почти
+        // никогда: весь остальной текст рвётся по переломам DirectWrite, а
+        // внутри буквы их не бывает.
+        const std::wstring_view text(paragraph.text);
+        std::size_t letter = 0;
+
         float pending = 0.0f;
         float pendingShrink = 0.0f;
         bool pendingIsGlue = false;
@@ -789,6 +825,8 @@ struct Engine::Impl {
                     for (std::uint32_t at = i; at < textLength && points[at].isWhitespace == 0; ++at)
                         wordWidth += metrics.width[at];
                     chopWord = wordWidth > maxWidth;
+                    if (chopWord)
+                        letter = i;
                 }
             }
 
@@ -799,13 +837,20 @@ struct Engine::Impl {
             // здесь всё равно ничего не спасает, поэтому рвём по символу — и
             // только здесь, когда иначе строка не поместится никак.
             //
-            // По символу, а не по единице текста: рвать можно только перед
-            // кластером, а у второй и следующих единиц кластера ширины нет —
-            // её несёт первая. Без этого условия глиф шире куска разрывал бы
-            // сам себя: вторую половину суррогатной пары или знак краткой
-            // отдельно от «и».
+            // По букве, а не по единице текста, и не внутри кластера. Рвать
+            // можно только там, где начинается и буква, и кластер: у второй и
+            // следующих единиц кластера ширины нет — её несёт первая, — а
+            // кластер DirectWrite бывает уже буквы: чамо хангыля без готового
+            // слога шрифт держит отдельными кластерами, и рубка по кластеру
+            // отрезала бы от слога его конечную согласную.
+            const auto startsLetter = [&](std::uint32_t at) {
+                while (letter < at)
+                    letter = wxl::core::next_grapheme_boundary(text, letter);
+                return letter == at;
+            };
+
             if (chopWord && !pendingIsGlue && pending > 0.0f && metrics.width[i] > 0.0f &&
-                pending + metrics.width[i] > chunkWidth) {
+                pending + metrics.width[i] > chunkWidth && startsLetter(i)) {
                 flush(i);
 
                 // Клей нулевой ширины: место, где рвать можно, но ничего не
@@ -976,10 +1021,24 @@ struct Engine::Impl {
         for (const float advance : justified)
             total += advance;
 
+        // Сжимаются ширины, а глиф буквы не сжимается — поэтому знак,
+        // посаженный на букву, не должен уехать вместе с сократившейся
+        // шириной. У такого знака ширины нет, и стоит он сдвигом от пера после
+        // своей основы: насколько сократилась ширина основы, настолько его
+        // сдвиг и возвращается назад. Знак с собственной шириной — отдельный
+        // глиф в строке и сжимается как буква.
         if (total > available && total <= available * 1.08f && total > 0.0f) {
             const float squeeze = available / total;
-            for (float& advance : justified)
-                advance *= squeeze;
+            float drift = 0.0f;   // на сколько сократилась ширина последней основы
+
+            for (std::size_t i = 0; i < justified.size(); ++i) {
+                if (justified[i] == 0.0f) {
+                    justifiedOffsets[i].advanceOffset += drift;
+                } else {
+                    drift = justified[i] * (1.0f - squeeze);
+                    justified[i] -= drift;
+                }
+            }
         }
 
         UINT32 read = 0;
@@ -1067,6 +1126,12 @@ pool_vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_
     if (textLength == 0 || firstChar >= textLength || width <= 0.0f ||
         data->referenceFontSize <= 0.0f)
         return {};
+
+    // Место чтения — позиция символа, и она может указывать на знак внутри
+    // буквы. Строка начинается с самой буквы.
+    if (firstChar > 0)
+        firstChar = static_cast<std::uint32_t>(
+            wxl::core::floor_grapheme_boundary(paragraph.text, firstChar));
 
     /* 1-3. Анализ, прогоны формата и шейпинг уже сделаны — берём готовое.
        Кегль подгоняется отношением: метрики шейпинга линейны по нему. */
