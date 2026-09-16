@@ -107,5 +107,9 @@ else()
         "Reader упадёт при создании окна, пока она не окажется рядом с ним.")
 endif()
 
+if(BUKVITSA_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
+
 # TODO: витрина хранилища, наблюдаемые каталоги, второй вариант листания.
 # Мастер обложек сделан -- его план остался в doc/skin-wizard-plan.txt.
