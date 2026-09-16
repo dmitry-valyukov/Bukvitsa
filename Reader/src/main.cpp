@@ -272,6 +272,63 @@ managed_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
     leaveWizard();
 }
 
+/// Убрать обложку: из реестра, из полосы тем и с диска.
+///
+/// Порядок здесь и есть решение. Сперва реестр без неё уходит на диск, потом
+/// полоса встаёт на тему, которая точно есть, и только последним исчезает
+/// снимок: если удалить файл не выйдет, в `skins\` останется лишний файл —
+/// мусор, который никого не касается, — а не обложка, показывающая пустоту.
+///
+/// Тема после удаления ищется по имени, а не по номеру: номера всех обложек
+/// за удаляемой сдвигаются, и «остаться на своей» значит найти её заново.
+/// Удалили ту, что была на экране, — читатель возвращается на встроенную
+/// тему, номер которой читалка держит в настройках ровно на этот случай.
+managed_task deleteSkinFlow(App app, std::wstring name) {
+    Io& io = *app.io;
+
+    const Skin* doomed = app.skins->find(name);
+
+    if (!doomed) co_return;   // реестр успел перемениться под руками
+
+    const std::wstring image = doomed->image;
+
+    // Спрашиваем, пока старый список цел: activeSkin() смотрит в него номером.
+    const Skin* active = app.view->activeSkin();
+    const std::wstring activeName = active ? active->name : std::wstring{};
+    const bool leavingActive = activeName == name;
+
+    app.skins->remove(name);
+
+    co_await io.writeFile(skinsPath(), app.skins->toXml());
+
+    app.view->setSkins(app.skins->list());
+
+    int theme = app.view->theme();   // встроенная тема удалением не двигается
+
+    if (leavingActive) {
+        theme = app.settings->theme;
+    } else if (!activeName.empty()) {
+        const std::vector<Skin>& list = app.skins->list();
+
+        for (std::size_t index = 0; index < list.size(); ++index) {
+            if (list[index].name == activeName) {
+                theme = kThemeCount + static_cast<int>(index);
+                break;
+            }
+        }
+    }
+
+    app.view->setTheme(theme);
+    app.panel->refreshThemes();
+
+    if (leavingActive) {
+        app.settings->skin.clear();
+        co_await io.writeFile(settingsPath(), settingsXml(*app.settings));
+    }
+
+    if (!image.empty()) co_await io.removeFile(skinDirectory() / image);
+}
+
 /// «Продолжить чтение»: найти книгу, которую читали, и открыть её.
 ///
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого

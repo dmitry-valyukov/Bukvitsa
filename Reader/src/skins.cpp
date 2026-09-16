@@ -179,6 +179,16 @@ void Skins::put(Skin skin) {
     skins_.push_back(std::move(skin));
 }
 
+bool Skins::remove(std::wstring_view name) {
+    for (auto it = skins_.begin(); it != skins_.end(); ++it) {
+        if (it->name == name) {
+            skins_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
 std::filesystem::path skinsPath() {
     const std::filesystem::path directory = dataDirectory();
 

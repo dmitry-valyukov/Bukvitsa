@@ -91,6 +91,10 @@ public:
     /// Есть ли такой файл. Каталог -- не файл и отвечает `false`.
     wxl::async::awaitable<bool> fileExists(const std::filesystem::path& path);
 
+    /// Убирает файл. Файла и так нет -- это успех: звавший хотел, чтобы его не
+    /// было, и это уже так.
+    wxl::async::awaitable<bool> removeFile(const std::filesystem::path& path);
+
     /// Размер файла, или ноль, если его не удалось узнать.
     wxl::async::awaitable<std::uint64_t> fileSize(const std::filesystem::path& path);
 
