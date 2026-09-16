@@ -53,8 +53,6 @@ wxl_add_doxygen_site(docs_wxl
         "${BUKVITSA_WXL_ROOT}/wxl.ui/src"
         "${BUKVITSA_WXL_ROOT}/wxl.ui/doc"
     EXCLUDE
-        "*/CLAUDE.md"
-        "*/next-session-prompt.md"
         "*/tests/*"
         "*/test/*"
         "*/bench/*"
@@ -63,9 +61,7 @@ wxl_add_doxygen_site(docs_wxl
         "*/tools/*"
 )
 
-# Сайт Буквицы: API из заголовков и статьи из Reader/doc. Журнал решений
-# (decisions.md), описание читалки (reader.md) и модель книги (fb3_model.md)
-# живут в приватном репозитории .claude и в сайт не входят.
+# Сайт Буквицы: API из заголовков и статьи из Reader/doc.
 wxl_add_doxygen_site(docs
     PROJECT_NAME "Буквица"
     BRIEF        "читалка FB3 под Windows"
@@ -85,7 +81,6 @@ wxl_add_doxygen_site(docs
         "${PROJECT_SOURCE_DIR}/Reader/src"
         "${PROJECT_SOURCE_DIR}/Reader/doc"
     EXCLUDE
-        "*/CLAUDE.md"
         "*/tests/*"
         "*/testdata/*"
         "*/demo/*"
