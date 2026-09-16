@@ -188,7 +188,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
 
     progress_.insert_or_assign(guid, progress);
 
-    return Button{
+    return Button {
         hAlign.stretch,
         // Содержимое кнопки по умолчанию стоит по центру -- для карточки это
         // значит текст посреди пустоты. Растянуть его надо явно, и это

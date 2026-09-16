@@ -24,6 +24,20 @@ constexpr uint32_t kActive = 0x22FFFFFF;
 
 constexpr double kWidth = 380;
 
+/// Подпись над группой настроек: тише текста и с отбивкой сверху. Не лямбда
+/// внутри одного строителя, потому что групп теперь две и собирают их разные
+/// функции — вкладка «Вид» и пересборка списка тем.
+TextBlock groupCaption(std::wstring_view said) {
+    using namespace wxl::dsl;
+
+    return TextBlock{
+        said,
+        fontSize = 13,
+        foreground = SolidColorBrush{ARGB{kDim}},
+        Margin{0, 12, 0, 2},
+    };
+}
+
 // Выезд: короткий, потому что панель открывают между двумя строчками текста и
 // ждать её не должны. Двести миллисекунд — предел, за которым появление
 // читается как задержка.
@@ -260,15 +274,6 @@ UIElement ReaderPanel::buildBookmarks() {
 UIElement ReaderPanel::buildSettings() {
     using namespace wxl::dsl;
 
-    auto caption = [](std::wstring_view said) {
-        return TextBlock{
-            said,
-            fontSize = 13,
-            foreground = SolidColorBrush{ARGB{kDim}},
-            Margin{0, 12, 0, 2},
-        };
-    };
-
     themesPanel_ = StackPanel{};
     refreshThemes();
 
@@ -306,13 +311,15 @@ UIElement ReaderPanel::buildSettings() {
     return ScrollViewer{
         horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
         content = StackPanel{
-            caption(L"Тема"),
+            // Подписи «Тема» и «Обложки» ставит сама полоса набора: она знает,
+            // где кончается одна группа и начинается другая, а собирается
+            // заново при каждой смене реестра.
             themesPanel_.value(),
-            caption(L"Кегль"),
+            groupCaption(L"Кегль"),
             fontSize_.value(),
-            caption(L"Интерлиньяж"),
+            groupCaption(L"Интерлиньяж"),
             lineHeight_.value(),
-            caption(L"Поля"),
+            groupCaption(L"Поля"),
             margin_.value(),
             TextBlock{
                 L"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
@@ -505,7 +512,10 @@ void ReaderPanel::refreshThemes() {
         };
     };
 
-    // Встроенные — в строчку, как и были: их четыре, и они короткие.
+    // Тема — это ровный цвет бумаги, и таких три. Они коротки и помещаются в
+    // строчку; фотография среди них не стоит больше — снимок носит обложка.
+    themesPanel_.value().children().append(groupCaption(L"Тема"));
+
     auto builtins = StackPanel{Orientation::Horizontal};
     for (int index = 0; index < kThemeCount; ++index) {
         auto button = themeButton(kThemes[index].name, index, Thickness{0, 0, 6, 0});
@@ -514,22 +524,15 @@ void ReaderPanel::refreshThemes() {
     }
     themesPanel_.value().children().append(builtins);
 
-    // Обложки — по строке на каждую: имя даёт читатель, и в строчку они не
-    // помещаются. Рядом с каждой — шестерёнка: обложку не только выбирают,
-    // но и правят, и дорога к правке стоит у самой обложки.
-    const std::vector<Skin>& skins = view_.skins();
-    for (std::size_t index = 0; index < skins.size(); ++index) {
-        auto button = themeButton(skins[index].name, kThemeCount + static_cast<int>(index),
-                                  Thickness{0, 6, 0, 0});
-        themeButtons_.push_back(button);
-
-        // Кнопка без текста обязана иметь тултип (правило
-        // дизайна) — и он называет конкретную обложку, а не действие
-        // вообще.
-        const std::wstring tip = L"Настроить подложку «" + skins[index].name + L"»";
-
-        auto gear = Button{
-            L"",   // шестерёнка Segoe Fluent Icons
+    // Кнопка-глиф рядом с обложкой. Их две, и обе одинаковы во всём, кроме
+    // глифа, подсказки и того, что делают, — поэтому одно описание на двоих,
+    // а не два одинаковых подряд.
+    //
+    // Кнопка без текста обязана иметь тултип (правило дизайна) — и он
+    // называет конкретную обложку, а не действие вообще.
+    auto iconButton = [](std::wstring_view glyph, const std::wstring& tip, auto action) {
+        return Button{
+            glyph,
             fontFamily = FontFamily{L"Segoe Fluent Icons"},
             toolTip = tip.c_str(),
             fontSize = 13,
@@ -540,17 +543,51 @@ void ReaderPanel::refreshThemes() {
             borderBrush = SolidColorBrush{ARGB{kEdge}},
             BorderThickness{1},
             CornerRadius{4},
-            onClick =
-                [this, name = skins[index].name](Object const&, RoutedEventArgs&) {
-                    if (onEditSkin) onEditSkin(name);
-                },
+            onClick = [action](Object const&, RoutedEventArgs&) { action(); },
         };
+    };
 
-        themesPanel_.value().children().append(StackPanel{
+    // Обложки — по строке на каждую: имя даёт читатель, и в строчку они не
+    // помещаются. Сперва системные, приехавшие с программой, потом заведённые
+    // читателем; порядок задаёт не панель, а сам список (BookView::setSkins).
+    //
+    // Рядом с каждой шестерёнка: обложку не только выбирают, но и правят, и
+    // дорога к правке стоит у самой обложки. Корзина — только у своей:
+    // системной в реестре нет, удалять нечего, и кнопка вела бы к тому, чего
+    // не бывает.
+    //
+    // Спросить «точно ли» панель не может и не должна: окна у неё нет, а
+    // удаление необратимо — вопрос задаёт приложение, которому принадлежат и
+    // окно, и реестр.
+    themesPanel_.value().children().append(groupCaption(L"Обложки"));
+
+    const std::vector<Skin>& skins = view_.skins();
+    for (std::size_t index = 0; index < skins.size(); ++index) {
+        auto button = themeButton(skins[index].name, kThemeCount + static_cast<int>(index),
+                                  Thickness{0, 6, 0, 0});
+        themeButtons_.push_back(button);
+
+        const std::wstring name = skins[index].name;
+
+        auto row = StackPanel{
             Orientation::Horizontal,
             button,
-            gear,
-        });
+            iconButton(L"",   // шестерёнка Segoe Fluent Icons
+                       L"Настроить подложку «" + name + L"»",
+                       [this, name] {
+                           if (onEditSkin) onEditSkin(name);
+                       }),
+        };
+
+        if (!skins[index].system) {
+            row.children().append(iconButton(L"",   // корзина оттуда же
+                                             L"Удалить обложку «" + name + L"»",
+                                             [this, name] {
+                                                 if (onDeleteSkin) onDeleteSkin(name);
+                                             }));
+        }
+
+        themesPanel_.value().children().append(row);
     }
 
     // Дорога в мастер — последней строкой, после всех тем.
