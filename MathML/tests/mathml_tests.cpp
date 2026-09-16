@@ -66,7 +66,6 @@ bool fails(std::u8string_view mathml) {
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    wxl::core::sta_memory_pool pool;
 
     golden("E=mc^2",
            u8"<math xmlns=\"http://www.w3.org/1998/Math/MathML\">"

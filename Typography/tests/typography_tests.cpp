@@ -888,8 +888,6 @@ int main() {
     // оставить на экране всё, что успел сказать, — иначе падение немое.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
-    wxl::core::sta_memory_pool pool;
-
     Microsoft::WRL::ComPtr<IDWriteFactory> dwrite;
     if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                    reinterpret_cast<IUnknown**>(dwrite.GetAddressOf())))) {

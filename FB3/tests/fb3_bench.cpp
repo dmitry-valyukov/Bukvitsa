@@ -150,9 +150,6 @@ void benchBook(const std::filesystem::path& path) {
 }  // namespace
 
 int main() {
-    // Пул строится один раз на процесс и переживает всё, что из него берёт.
-    wxl::core::sta_memory_pool pool;
-
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
 
     for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3",
