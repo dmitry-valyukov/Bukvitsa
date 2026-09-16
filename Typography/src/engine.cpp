@@ -257,8 +257,11 @@ struct ShapedParagraph::Data {
     pool_vector<ShapedRun> runs;
     pool_vector<DWRITE_LINE_BREAKPOINT> breakpoints;
 
-    /// Места переноса: байт на символ, единица — «перед этим символом слово
-    /// можно разорвать». Считается один раз здесь, а не при каждой вёрстке:
+    /// Места переноса: байт на символ. Ноль — разрыва здесь нет; иначе это
+    /// число букв слова, которые перенос унесёт на следующую строку (не больше
+    /// 255), — по нему разбивка дороже берёт перенос с коротким хвостом, и
+    /// считаются именно буквы: «фер-му»,» уносит две, а не четыре знака до
+    /// пробела. Считается один раз здесь, а не при каждой вёрстке:
     /// перенос — свойство слова, а не полосы, и переживает и смену окна, и
     /// смену кегля.
     pool_vector<std::uint8_t> hyphens;
@@ -697,7 +700,7 @@ struct Engine::Impl {
                 hyphenate(std::wstring_view(text).substr(at, end - at));
             for (std::size_t i = 0; i < end - at; ++i)
                 if ((points >> i) & 1)
-                    hyphens[at + i] = 1;
+                    hyphens[at + i] = static_cast<std::uint8_t>(std::min<std::size_t>(end - at - i, 255));
 
             at = end;
         }
@@ -957,7 +960,7 @@ struct Engine::Impl {
                 // Место переноса по образцам. Стоит оно ширины дефиса, и платит
                 // её только та строка, которая здесь и кончится.
                 flush(i);
-                penalty(i, wordEnd - i == 2 ? kShortTailHyphenPenalty : kHyphenPenalty, true,
+                penalty(i, hyphens[i] == 2 ? kShortTailHyphenPenalty : kHyphenPenalty, true,
                         metrics.hyphen[i]);
             }
 
@@ -967,15 +970,34 @@ struct Engine::Impl {
                 pendingIsGlue = space;
                 pendingStart = i;
 
-                // Начинается слово — сразу смотрим, поместится ли оно в полосу
-                // целиком. Просмотр вперёд проходит по каждому символу ровно
-                // один раз за слово, то есть по книге — один раз.
-                if (!space) {
-                    float wordWidth = 0.0f;
+                // Начинается слово — сразу смотрим, поместится ли оно в полосу.
+                // Не целиком, а кусками между его собственными местами разрыва:
+                // переносами и разрывами после дефиса. Слово шире полосы, но
+                // с переносами, которые делят его на помещающиеся куски, рубить
+                // нельзя — иначе разбивка получит бесплатные места рубки и
+                // предпочтёт их честному переносу с дефисом.
+                //
+                // Только в начале слова, а не после каждого разрыва внутри
+                // него: это то же слово, и просмотр вперёд так проходит по
+                // каждому символу ровно один раз за слово, то есть по книге —
+                // один раз.
+                if (!space && (i == from || points[i - 1].isWhitespace != 0)) {
+                    float piece = 0.0f;
+                    float widest = 0.0f;
                     std::uint32_t at = i;
-                    for (; at < textLength && points[at].isWhitespace == 0; ++at)
-                        wordWidth += metrics.width[at];
-                    chopWord = wordWidth > maxWidth;
+                    for (; at < textLength && points[at].isWhitespace == 0; ++at) {
+                        const bool breaksHere =
+                            at > i && (points[at].breakConditionBefore == DWRITE_BREAK_CONDITION_CAN_BREAK ||
+                                       (at < hyphens.size() && hyphens[at] != 0));
+                        if (breaksHere) {
+                            widest = std::max(widest, piece + metrics.hyphen[at]);
+                            piece = 0.0f;
+                        }
+                        piece += metrics.width[at];
+                    }
+                    widest = std::max(widest, piece);
+
+                    chopWord = widest > maxWidth;
                     wordEnd = at;
                     if (chopWord)
                         letter = i;

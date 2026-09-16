@@ -23,6 +23,7 @@
 // а стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/formula.h"
+#include "bukvitsa/typography/glyph_painter.h"
 #include "bukvitsa/typography/hyphenation.h"
 #include "bukvitsa/typography/layout.h"
 #include "bukvitsa/typography/page.h"
@@ -1178,8 +1179,15 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
 /// Строка корпуса — UTF-8, а текст вёрстки UTF-16. Переводит wxl::core: своих
 /// переводчиков в дереве нет.
 std::wstring widen(std::string_view utf8) {
-    const std::optional<wxl::core::u8_view> text = wxl::core::checked(utf8);
+    const auto text = wxl::core::checked(utf8);
     return text ? std::wstring{text->to_utf16().wchars()} : std::wstring{};
+}
+
+/// Слово, ожидание и итог — одной строкой отчёта. В UTF-8 и с длиной: `%ls`
+/// в локали «C» на кириллице обрывает печать молча.
+void reportHyphenation(std::wstring_view word, std::wstring_view expected, std::wstring_view got) {
+    const std::string line = toUtf8(word) + ": ждали " + toUtf8(expected) + ", вышло " + toUtf8(got);
+    std::printf("       %.*s\n", static_cast<int>(line.size()), line.data());
 }
 
 /// Слово, размеченное переносами, — «до-сто-при-ме-ча-тель-ность».
@@ -1198,8 +1206,7 @@ bool hyphenatedIs(std::wstring_view word, std::wstring_view expected) {
     const std::wstring marked = hyphenated(word);
     if (marked == expected) return true;
 
-    std::printf("       %ls: ждали %ls, вышло %ls\n", std::wstring(word).c_str(),
-                std::wstring(expected).c_str(), marked.c_str());
+    reportHyphenation(word, expected, marked);
     return false;
 }
 
@@ -1248,7 +1255,8 @@ void testHyphenation() {
 
     std::ifstream file(corpus);
     if (!file) {
-        std::printf("FAILED не открылся корпус %s\n", corpus.string().c_str());
+        const std::string path = toUtf8(corpus.native());
+        std::printf("FAILED не открылся корпус %.*s\n", static_cast<int>(path.size()), path.data());
         ++failures;
         return;
     }
@@ -1264,9 +1272,9 @@ void testHyphenation() {
             if (character != L'-') word += character;
 
         ++words;
-        if (hyphenated(word) != expected && ++wrong <= 10)
-            std::printf("       %ls: ждали %ls, вышло %ls\n", word.c_str(), expected.c_str(),
-                        hyphenated(word).c_str());
+        const std::wstring got = hyphenated(word);
+        if (got != expected && ++wrong <= 10)
+            reportHyphenation(word, expected, got);
     }
 
     std::printf("  корпус: %zu слов\n", words);
@@ -1326,13 +1334,43 @@ void testHyphenationInLayout(typography::Engine& engine) {
     check(measured && std::abs(plain[0].width - soft[0].width) < 0.01f,
           "мягкий перенос не занимает места посреди строки");
 
+    const auto printLines = [](const auto& lines) {
+        for (const typography::Line& line : lines)
+            std::printf("       строка с %u длиной %u, ширина %.1f%s\n", line.textStart,
+                        line.textLength, line.width, endsWithHyphen(line) ? ", дефис" : "");
+    };
+
     // Он же — место разрыва: слово из одних согласных образцы не разорвут, и
-    // единственный перенос в нём тот, что стоит в книге.
-    const auto broken = engine.layout(paragraphOf(L"\x0444\x0444\x0444\x0444\x0444\x00AD"
-                                                 L"\x0444\x0444\x0444\x0444\x0444"),
-                                      60.0f, style);
-    check(broken.size() == 2 && endsWithHyphen(broken[0]),
-          "строка кончилась на мягком переносе, и дефис появился");
+    // единственный перенос в нём тот, что стоит в книге. Полоса такая, что
+    // половина слова в неё помещается, а слово целиком — нет; набор без
+    // выключки, чтобы строке без пробелов не приходилось тянуться.
+    typography::ParagraphStyle ragged = style;
+    ragged.alignment = typography::Alignment::Left;
+
+    const typography::Paragraph consonants = paragraphOf(
+        L"\x0444\x0444\x0444\x0444\x0444\x00AD" L"\x0444\x0444\x0444\x0444\x0444");
+    const float half = engine.layout(paragraphOf(L"\x0444\x0444\x0444\x0444\x0444"), 1000.0f, ragged)
+                           .front()
+                           .width;
+
+    const auto broken = engine.layout(consonants, half * 1.5f, ragged);
+    const bool atSoftHyphen = broken.size() == 2 && endsWithHyphen(broken[0]) &&
+                              broken[0].textLength == 6 && broken[1].textStart == 6;
+    if (!atSoftHyphen) printLines(broken);
+    check(atSoftHyphen, "строка кончилась на мягком переносе, и дефис появился");
+
+    // Слово шире полосы, но с переносами, которые делят его на помещающиеся
+    // куски, переносится, а не рубится: каждая строка, кроме последней,
+    // кончается дефисом.
+    const auto split = engine.layout(paragraphOf(L"\x0434\x043E\x0441\x0442\x043E\x043F\x0440\x0438"
+                                                 L"\x043C\x0435\x0447\x0430\x0442\x0435\x043B\x044C"
+                                                 L"\x043D\x043E\x0441\x0442\x044C"),
+                                     90.0f, ragged);
+    bool hyphenatedNotChopped = split.size() > 1;
+    for (std::size_t at = 0; at + 1 < split.size(); ++at)
+        if (!endsWithHyphen(split[at])) hyphenatedNotChopped = false;
+    if (!hyphenatedNotChopped) printLines(split);
+    check(hyphenatedNotChopped, "слово шире полосы переносится по слогам, а не рубится");
 
     // Неразрывный пробел: строка не вправе начаться сразу после него, какой бы
     // ширины ни была полоса.
@@ -1349,6 +1387,138 @@ void testHyphenationInLayout(typography::Engine& engine) {
             }
 
     check(kept, "по неразрывному пробелу строка не рвётся");
+}
+
+/// Диагностический снимок, когда набор просят показать глазами: одни и те же
+/// абзацы «Отцов и детей» в узкой колонке без переносов и с ними, рядом, в PNG
+/// по пути из BUKVITSA_HYPHEN_SHOT. Без переменной не делает ничего.
+void shootHyphenation(typography::Engine& engine, const std::filesystem::path& testdata) {
+    wchar_t shot[MAX_PATH]{};
+    const DWORD shotLength = GetEnvironmentVariableW(L"BUKVITSA_HYPHEN_SHOT", shot, MAX_PATH);
+    const std::filesystem::path book = testdata / "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
+    if (shotLength == 0 || shotLength >= MAX_PATH || !std::filesystem::exists(book)) return;
+
+    std::printf("\n=== снимок переносов ===\n");
+
+    const fb3::Document document(book);
+    const std::vector<typography::Block> blocks = typography::flatten(document.body());
+
+    // Абзацы подряд с первого длинного: заголовки и эпиграф набираются без
+    // выключки и о переносах ничего не скажут.
+    std::vector<const typography::Block*> chosen;
+    for (const typography::Block& block : blocks) {
+        if (block.kind != typography::BlockKind::Paragraph) continue;
+        if (chosen.empty() && block.paragraph.text.size() < 400) continue;
+        chosen.push_back(&block);
+        if (chosen.size() == 9) break;
+    }
+
+    // Колонка — самая узкая из тех, что строит читалка: две колонки идут, пока
+    // строка не короче 43 знаков, и на деле приходят около 45. Средний знак
+    // меряется по той же панграмме, что у читалки, тем же шрифтом и кеглем.
+    typography::ParagraphStyle measure;
+    measure.alignment = typography::Alignment::Left;
+    const std::wstring_view pangram = L"съешь же ещё этих мягких французских булок, да выпей чаю";
+    const float pangramWidth =
+        engine.layout(paragraphOf(std::wstring(pangram)), 10000.0f, measure).front().width;
+
+    const float kColumn = std::round(45.0f * pangramWidth / static_cast<float>(pangram.size()));
+    constexpr float kGap = 40.0f, kMargin = 24.0f;
+    std::printf("  колонка: 45 знаков, %.0f DIP\n", kColumn);
+
+    const typography::TextStyle original = engine.textStyle();
+
+    struct Column {
+        std::vector<typography::pool_vector<typography::Line>> paragraphs;
+        float height = 0.0f;
+        std::size_t lines = 0, hyphens = 0, hyphensInARow = 0;
+    };
+
+    Column columns[2];
+    for (int side = 0; side < 2; ++side) {
+        typography::TextStyle textStyle = original;
+        textStyle.hyphenation = side == 1;
+        engine.setTextStyle(textStyle);
+
+        Column& column = columns[side];
+        std::size_t row = 0;
+        for (const typography::Block* block : chosen) {
+            column.paragraphs.push_back(engine.layout(block->paragraph, kColumn, styleFor(*block, 20.0f)));
+            for (const typography::Line& line : column.paragraphs.back()) {
+                column.height += line.height;
+                ++column.lines;
+                row = endsWithHyphen(line) ? row + 1 : 0;
+                column.hyphens += row != 0;
+                column.hyphensInARow = std::max(column.hyphensInARow, row);
+            }
+        }
+    }
+    engine.setTextStyle(original);
+
+    std::printf("  без переносов: %zu строк\n", columns[0].lines);
+    std::printf("  с переносами:  %zu строк, переносов %zu, подряд не больше %zu\n", columns[1].lines,
+                columns[1].hyphens, columns[1].hyphensInARow);
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
+    Microsoft::WRL::ComPtr<ID2D1Factory1> d2d;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) ||
+        FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1), nullptr, &d2d)))
+        return;
+
+    const auto width = static_cast<UINT>(kMargin * 2 + kColumn * 2 + kGap);
+    const auto height = static_cast<UINT>(kMargin * 2 + std::max(columns[0].height, columns[1].height));
+
+    Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
+    Microsoft::WRL::ComPtr<ID2D1RenderTarget> target;
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext> context;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ink, rule;
+    if (FAILED(wic->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand,
+                                 &bitmap)) ||
+        FAILED(d2d->CreateWicBitmapRenderTarget(
+            bitmap.Get(),
+            D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                                         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                                           D2D1_ALPHA_MODE_PREMULTIPLIED)),
+            &target)) ||
+        FAILED(target.As(&context)))
+        return;
+
+    context->CreateSolidColorBrush(D2D1::ColorF(0x202020), &ink);
+    context->CreateSolidColorBrush(D2D1::ColorF(0xD8D0C0), &rule);
+    context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
+    context->BeginDraw();
+    context->Clear(D2D1::ColorF(0xFBF8F1));
+    for (int side = 0; side < 2; ++side) {
+        const float left = kMargin + static_cast<float>(side) * (kColumn + kGap);
+        const float bottom = static_cast<float>(height) - kMargin;
+
+        // Края полосы: по ним видно, что выключка ровная и ничего не вылезло.
+        context->DrawLine({left, kMargin}, {left, bottom}, rule.Get(), 0.5f);
+        context->DrawLine({left + kColumn, kMargin}, {left + kColumn, bottom}, rule.Get(), 0.5f);
+
+        float y = kMargin;
+        for (const auto& lines : columns[side].paragraphs)
+            for (const typography::Line& line : lines) {
+                typography::drawLine(context.Get(), line, left, y + line.ascent, ink.Get());
+                y += line.height;
+            }
+    }
+    if (FAILED(context->EndDraw())) return;
+
+    Microsoft::WRL::ComPtr<IWICStream> stream;
+    Microsoft::WRL::ComPtr<IWICBitmapEncoder> encoder;
+    Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> frame;
+    if (SUCCEEDED(wic->CreateStream(&stream)) &&
+        SUCCEEDED(stream->InitializeFromFilename(shot, GENERIC_WRITE)) &&
+        SUCCEEDED(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+        SUCCEEDED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) && SUCCEEDED(frame->Initialize(nullptr)) &&
+        SUCCEEDED(frame->WriteSource(bitmap.Get(), nullptr)) && SUCCEEDED(frame->Commit()) &&
+        SUCCEEDED(encoder->Commit())) {
+        const std::string path = toUtf8(std::wstring_view(shot, shotLength));
+        std::printf("  снимок: %.*s\n", static_cast<int>(path.size()), path.data());
+    }
 }
 
 }  // namespace
@@ -1374,6 +1544,7 @@ int main() {
     testHyphenationInLayout(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
+    shootHyphenation(engine, testdata);
 
     for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3",
                              "hardcore_file_structure.fb3",
