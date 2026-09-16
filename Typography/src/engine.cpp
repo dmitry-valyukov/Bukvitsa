@@ -472,10 +472,10 @@ struct Engine::Impl {
                 if (end - at > kMaxRunLength) {
                     std::uint32_t cut = at + kMaxRunLength;
                     const std::uint32_t limit = cut - std::min<std::uint32_t>(kMaxRunLength / 8, cut - at - 1);
-                    while (cut > limit && paragraph.text[cut - 1] != L' ')
+                    while (cut > limit && paragraph.text.plain()[cut - 1] != u' ')
                         --cut;
 
-                    const std::wstring_view rest = std::wstring_view(paragraph.text).substr(at);
+                    const wxl::core::u16_view rest = wxl::core::u16_view(paragraph.text).substr(at);
                     std::size_t letters = wxl::core::floor_grapheme_boundary(rest, cut - at);
                     if (letters == 0)
                         letters = wxl::core::next_grapheme_boundary(rest, 0);
@@ -593,7 +593,8 @@ struct Engine::Impl {
         // границы между ними нет своего глифа.
         if (format.style.spaced) {
             const float spacing = format.fontSize * kSpacedTracking;
-            const std::wstring_view letters(text, length);
+            const wxl::core::u16_view letters =
+                wxl::core::u16_view(paragraph.text).substr(format.start, length);
 
             for (std::size_t letter = 0; letter < length;) {
                 const std::size_t next = wxl::core::next_grapheme_boundary(letters, letter);
@@ -683,21 +684,24 @@ struct Engine::Impl {
     /// слово не входит (иначе «слова,» не нашлось бы в образцах вовсе), а
     /// дефис делит его надвое, и половины размечаются порознь — как они и
     /// переносятся.
-    static pool_vector<std::uint8_t> hyphenPointsOf(const std::wstring& text) {
-        pool_vector<std::uint8_t> hyphens(text.size(), std::uint8_t{0});
+    ///
+    /// Слово вырезается проверенным `substr`: половина суррогатной пары буквой
+    /// алфавита не бывает, так что граница слова — всегда граница кодовой точки.
+    static pool_vector<std::uint8_t> hyphenPointsOf(const wxl::core::u16_view text) {
+        const std::u16string_view units = text.plain();
+        pool_vector<std::uint8_t> hyphens(units.size(), std::uint8_t{0});
 
-        for (std::size_t at = 0; at < text.size();) {
-            if (!isHyphenLetter(text[at])) {
+        for (std::size_t at = 0; at < units.size();) {
+            if (!isHyphenLetter(units[at])) {
                 ++at;
                 continue;
             }
 
             std::size_t end = at;
-            while (end < text.size() && isHyphenLetter(text[end]))
+            while (end < units.size() && isHyphenLetter(units[end]))
                 ++end;
 
-            const HyphenPoints points =
-                hyphenate(std::wstring_view(text).substr(at, end - at));
+            const HyphenPoints points = hyphenate(text.substr(at, end - at));
             for (std::size_t i = 0; i < end - at; ++i)
                 if ((points >> i) & 1)
                     hyphens[at + i] = static_cast<std::uint8_t>(std::min<std::size_t>(end - at - i, 255));
@@ -844,7 +848,7 @@ struct Engine::Impl {
         // только вперёд и только в словах, которые рубятся, — то есть почти
         // никогда: весь остальной текст рвётся по переломам DirectWrite, а
         // внутри буквы их не бывает.
-        const std::wstring_view text(paragraph.text);
+        const wxl::core::u16_view text = paragraph.text;
         std::size_t letter = 0;
 
         float pending = 0.0f;
@@ -952,7 +956,8 @@ struct Engine::Impl {
                 flush(i);
 
                 const bool soft = points[i - 1].isSoftHyphen != 0;
-                const bool afterHyphen = text[i - 1] == L'-' || text[i - 1] == L'\x2010';
+                const char16_t before = text.plain()[i - 1];
+                const bool afterHyphen = before == u'-' || before == u'\x2010';
 
                 penalty(i, soft || afterHyphen ? kHyphenPenalty : 0.0f, soft || afterHyphen,
                         soft ? metrics.hyphen[i - 1] : 0.0f);

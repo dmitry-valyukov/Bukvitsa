@@ -41,7 +41,7 @@ Settings parseSettings(std::string xml) {
         const wxl::xml::node& root = document.load(std::move(xml));
 
         if (const wxl::xml::node* window = root.child("window")) {
-            settings.windowPlacement = attributeOf(*window, "placement");
+            settings.windowPlacement = attributeOf(*window, "placement").wchars();
         }
         if (const wxl::xml::node* reading = root.child("reading")) {
             settings.continueReading = reading->attribute("continue") == "true";
@@ -53,17 +53,17 @@ Settings parseSettings(std::string xml) {
         // чем выставить заново. Что не прочиталось, берётся умолчанием, и
         // первое же закрытие окна перепишет файл начисто.
         if (const wxl::xml::node* text = root.child("text")) {
-            settings.theme = attributeOf(*text, "theme");
+            settings.theme = attributeOf(*text, "theme").wchars();
             settings.fontSize = static_cast<float>(realOf(*text, "fontSize", 20.0));
             settings.lineHeight = static_cast<float>(realOf(*text, "lineHeight", 1.45));
             settings.margin = static_cast<float>(realOf(*text, "margin", 0.075));
         }
         if (const wxl::xml::node* skin = root.child("skin")) {
-            settings.skin = attributeOf(*skin, "name");
+            settings.skin = attributeOf(*skin, "name").wchars();
         }
         if (const wxl::xml::node* book = root.child("lastBook")) {
-            settings.lastBookGuid = attributeOf(*book, "guid");
-            settings.lastBookPath = attributeOf(*book, "path");
+            settings.lastBookGuid = attributeOf(*book, "guid").wchars();
+            settings.lastBookPath = attributeOf(*book, "path").wchars();
         }
     } catch (...) {
         // Битый файл, файл от будущей версии, файл, который правили руками, —

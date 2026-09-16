@@ -35,7 +35,7 @@ std::uint32_t offsetAt(const typography::Block& block, std::size_t index) {
 ///
 /// Края считаются в единицах UTF-16 и потому сдвигаются к началу буквы: знак
 /// краткой без своей «и» или половина пары на краю отрывка — порченая буква.
-std::wstring contextAround(std::wstring_view text, std::size_t at, std::size_t length) {
+wxl::core::u16_text contextAround(wxl::core::u16_view text, std::size_t at, std::size_t length) {
     constexpr std::size_t kBefore = 30;
     constexpr std::size_t kAfter = 70;
 
@@ -43,10 +43,11 @@ std::wstring contextAround(std::wstring_view text, std::size_t at, std::size_t l
     const std::size_t to =
         wxl::core::floor_grapheme_boundary(text, std::min(text.size(), at + length + kAfter));
 
-    std::wstring out;
-    if (from > 0) out += L"…";
-    out.append(text.substr(from, to - from));
-    if (to < text.size()) out += L"…";
+    wxl::core::u16_text out;
+    out.reserve(to - from + 2);
+    if (from > 0) out += u"…";
+    out += text.substr(from, to - from);
+    if (to < text.size()) out += u"…";
     return out;
 }
 
@@ -78,7 +79,7 @@ std::vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
         // Абзац приводится к строчным целиком и один раз: искать в нём будут
         // столько раз, сколько в нём находок, а копия всё равно нужна — регистр
         // менять в исходном тексте нельзя, из него берётся отрывок для показа.
-        const std::wstring haystack = lowered(block.paragraph.text);
+        const std::wstring haystack = lowered(block.paragraph.text.wchars());
 
         std::size_t at = haystack.find(wanted);
         while (at != std::wstring::npos) {
@@ -93,7 +94,7 @@ std::vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
     return hits;
 }
 
-std::wstring hintAt(std::span<const typography::Block> blocks, std::uint32_t charOffset) {
+wxl::core::u16_text hintAt(std::span<const typography::Block> blocks, std::uint32_t charOffset) {
     constexpr std::size_t kWords = 60;
 
     // Последний блок, начинающийся не позже искомой позиции: блоки идут по
@@ -107,11 +108,11 @@ std::wstring hintAt(std::span<const typography::Block> blocks, std::uint32_t cha
 
     // Граница в kWords единиц может прийтись на середину буквы — тогда
     // подсказка на эту букву короче, зато без её обрубка.
-    const std::wstring& text = found->paragraph.text;
+    const wxl::core::u16_view text = found->paragraph.text;
     const std::size_t cut = wxl::core::floor_grapheme_boundary(text, kWords);
 
-    std::wstring hint = text.substr(0, cut);
-    if (cut < text.size()) hint += L"…";
+    wxl::core::u16_text hint(text.substr(0, cut));
+    if (cut < text.size()) hint += u"…";
     return hint;
 }
 

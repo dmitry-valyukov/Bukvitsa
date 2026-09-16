@@ -25,8 +25,8 @@ namespace {
 /// Регистр складывается самой таблицей: прописной букве в ней стоит номер
 /// строчной. Ничего, кроме латиницы, кириллицы и точки с дефисом, номера не
 /// имеет — см. hyphenate() о том, почему это к лучшему.
-constexpr std::uint8_t symbolOf(const wchar_t character) noexcept {
-    const auto code_point = static_cast<std::uint32_t>(character);
+constexpr std::uint8_t symbolOf(const char16_t unit) noexcept {
+    const auto code_point = static_cast<std::uint32_t>(unit);
 
     if (code_point >= 0x0020 && code_point < 0x007F)
         return hyphenSymbolAscii[code_point - 0x0020];
@@ -44,7 +44,7 @@ struct Symbols {
     bool complete = false;                       ///< все буквы нашлись в алфавите
 };
 
-Symbols symbolsOf(const std::wstring_view word) noexcept {
+Symbols symbolsOf(const std::u16string_view word) noexcept {
     Symbols symbols;
     if (word.empty() || word.size() > kMaxHyphenatedWord)
         return symbols;
@@ -68,7 +68,7 @@ Symbols symbolsOf(const std::wstring_view word) noexcept {
 /// сам.
 constexpr std::size_t kLanguageNone = static_cast<std::size_t>(-1);
 
-std::size_t languageOf(const std::wstring_view word) noexcept {
+std::size_t languageOf(const std::u16string_view word) noexcept {
     const auto first = static_cast<std::uint32_t>(word.front());
 
     if (first >= 0x0400 && first < 0x0460) return 0;  // Russian
@@ -150,12 +150,15 @@ bool exceptionFor(const Symbols& symbols, const std::size_t language,
 
 }  // namespace
 
-bool isHyphenLetter(const wchar_t character) noexcept {
-    const std::uint8_t symbol = symbolOf(character);
-    return symbol != 0 && symbol != hyphenBoundarySymbol && character != L'-';
+bool isHyphenLetter(const char16_t unit) noexcept {
+    const std::uint8_t symbol = symbolOf(unit);
+    return symbol != 0 && symbol != hyphenBoundarySymbol && unit != u'-';
 }
 
-HyphenPoints hyphenate(const std::wstring_view word) noexcept {
+HyphenPoints hyphenate(const wxl::core::u16_view checked) noexcept {
+    // Дальше — по единицам: переводить их в номера символов проверенность
+    // текста не нужна, а слово с чем-либо вне алфавита отпадает целиком.
+    const std::u16string_view word = checked.plain();
     if (word.empty())
         return 0;
 

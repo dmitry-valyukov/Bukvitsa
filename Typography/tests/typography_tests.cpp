@@ -277,7 +277,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     bool collapsed = true;
     for (const typography::Block& block : blocks) {
         if (block.kind == typography::BlockKind::Preformatted) continue;
-        const std::wstring_view text = block.paragraph.text;
+        const std::wstring_view text = block.paragraph.text.wchars();
         if (!text.empty() && (text.front() == L' ' || text.back() == L' ')) collapsed = false;
         if (text.find(L"  ") != std::wstring::npos) collapsed = false;
     }
@@ -288,7 +288,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
         const typography::Block& block = blocks[i];
         // Обрезка по букве, а не по байтам UTF-8: `%.100s` резал букву пополам
         // прямо в выводе теста.
-        const std::wstring_view whole(block.paragraph.text);
+        const std::wstring_view whole = block.paragraph.text.wchars();
         const std::size_t cut = wxl::core::floor_grapheme_boundary(whole, 50);
         const std::string text = toUtf8(whole.substr(0, cut));
 
@@ -389,9 +389,9 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
             // добавку в float и вправе промахнуться на последний разряд.
             if (line.width > width + 0.15f && line.width - width > worstOverflow) {
                 worstOverflow = line.width - width;
-                worstLine = block.paragraph.text.substr(line.textStart, line.textLength);
+                worstLine = block.paragraph.text.wchars().substr(line.textStart, line.textLength);
                 worstStart = line.textStart;
-                worstNeighbours = block.paragraph.text.substr(
+                worstNeighbours = block.paragraph.text.wchars().substr(
                     line.textStart >= 6 ? line.textStart - 6 : 0,
                     line.textLength + 12);
                 worstKind = nameOf(block.kind);
@@ -427,7 +427,7 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
 
         if (firstMarker.empty() && !block.paragraph.notes.empty()) {
             const typography::NoteAnchor& note = block.paragraph.notes.front();
-            firstMarker = block.paragraph.text.substr(note.position, note.length);
+            firstMarker = block.paragraph.text.wchars().substr(note.position, note.length);
         }
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
@@ -480,7 +480,7 @@ void showFirstLines(typography::Engine& engine, const std::vector<typography::Bl
         std::printf("  абзац на полосе %.0f (отступ %.0f):\n", width, style.firstLineIndent);
         for (std::size_t i = 0; i < lines.size() && i < 8; ++i) {
             const typography::Line& line = lines[i];
-            const std::wstring text = block.paragraph.text.substr(line.textStart, line.textLength);
+            const std::wstring text(block.paragraph.text.wchars().substr(line.textStart, line.textLength));
             std::printf("    %6.1f |%s\n", line.width, toUtf8(text).c_str());
         }
         ++shown;
@@ -799,7 +799,7 @@ void testChapterFirstPage(typography::Engine& engine,
             const typography::Block& b = blocks[i];
             std::printf("    [%s @%u sect%u lvl%u] %.70s\n", nameOf(b.kind), b.charOffset,
                         static_cast<unsigned>(b.startsSection), static_cast<unsigned>(b.level),
-                        toUtf8(b.paragraph.text).c_str());
+                        toUtf8(b.paragraph.text.wchars()).c_str());
         }
     }
 
@@ -823,7 +823,7 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
 
     typography::Block paragraph;
     paragraph.kind = typography::BlockKind::Paragraph;
-    paragraph.paragraph.text = L"Строка, которой уже не хватает места на полосе.";
+    paragraph.paragraph.text = wxl::core::u16_text{u"Строка, которой уже не хватает места на полосе."};
     paragraph.paragraph.charOffsets.resize(paragraph.paragraph.text.size());
     for (std::uint32_t i = 0; i < paragraph.paragraph.charOffsets.size(); ++i)
         paragraph.paragraph.charOffsets[i] = i;
@@ -932,28 +932,28 @@ std::string fb3Of(std::string_view body) {
 /// где вёрстка сама выбирает позицию в тексте.
 struct CorpusLetter {
     const char* name;
-    std::wstring_view text;
-    wchar_t filler;   ///< буква той же письменности: прогон длиннее ёмкости должен быть одним
+    wxl::core::u16_view text;
+    char32_t filler;   ///< буква той же письменности: прогон длиннее ёмкости должен быть одним
 };
 
 constexpr CorpusLetter kLetters[] = {
-    {"и + краткая", L"\x0438\x0306", L'\x0436'},
-    {"е + диерезис + акут", L"\x0435\x0308\x0301", L'\x0436'},
-    {"иероглиф вне BMP", L"\xD842\xDFB7", L'\x4E2D'},
-    {"деванагари кша", L"\x0915\x094D\x0937", L'\x0915'},
-    {"хангыль L V T", L"\x1100\x1161\x11A8", L'\xAC00'},
-    {"флаг", L"\xD83C\xDDEF\xD83C\xDDF5", 0},
-    {"эмодзи с цветом кожи", L"\xD83D\xDC4D\xD83C\xDFFD", 0},
-    {"семья через ZWJ", L"\xD83D\xDC68\x200D\xD83D\xDC69\x200D\xD83D\xDC67", 0},
+    {"и + краткая", u"\x0438\x0306", U'\x0436'},
+    {"е + диерезис + акут", u"\x0435\x0308\x0301", U'\x0436'},
+    {"иероглиф вне BMP", u"\xD842\xDFB7", U'\x4E2D'},
+    {"деванагари кша", u"\x0915\x094D\x0937", U'\x0915'},
+    {"хангыль L V T", u"\x1100\x1161\x11A8", U'\xAC00'},
+    {"флаг", u"\xD83C\xDDEF\xD83C\xDDF5", 0},
+    {"эмодзи с цветом кожи", u"\xD83D\xDC4D\xD83C\xDFFD", 0},
+    {"семья через ZWJ", u"\xD83D\xDC68\x200D\xD83D\xDC69\x200D\xD83D\xDC67", 0},
 };
 
-bool isLetterStart(std::wstring_view text, std::uint32_t at) {
+bool isLetterStart(wxl::core::u16_view text, std::uint32_t at) {
     return at >= text.size() || wxl::core::floor_grapheme_boundary(text, at) == at;
 }
 
-typography::Paragraph paragraphOf(std::wstring text) {
+typography::Paragraph paragraphOf(wxl::core::u16_view text) {
     typography::Paragraph paragraph;
-    paragraph.text = std::move(text);
+    paragraph.text = wxl::core::u16_text(text);
     paragraph.charOffsets.resize(paragraph.text.size());
     for (std::uint32_t i = 0; i < paragraph.charOffsets.size(); ++i)
         paragraph.charOffsets[i] = i;
@@ -1024,7 +1024,7 @@ void testClustersStayWhole(typography::Engine& engine) {
 
             check(blocks[0].paragraph.text == L"\x0436\x0438\x0306\x0436",
                   "знак, размеченный отдельно, остаётся при своей букве");
-            check(blocks[1].paragraph.text.starts_with(L" \x0301"),
+            check(blocks[1].paragraph.text.wchars().starts_with(L" \x0301"),
                   "пробел — основа знака в начале абзаца — не выбрасывается");
             check(blocks[2].paragraph.text == L"\x0436\x0438\x0306" L"1" L"\x0436",
                   "знак сноски, поставленный вёрсткой, встаёт после буквы, а не внутри неё");
@@ -1041,17 +1041,18 @@ void testClustersStayWhole(typography::Engine& engine) {
     for (const CorpusLetter& letter : kLetters) {
         if (!letter.filler) continue;
 
-        std::wstring text(3499, letter.filler);
+        wxl::core::u16_text text;
+        for (int i = 0; i < 3499; ++i) text.push_back(letter.filler);
         text += letter.text;
-        text.append(1000, letter.filler);
+        for (int i = 0; i < 1000; ++i) text.push_back(letter.filler);
 
-        const typography::Paragraph paragraph = paragraphOf(std::move(text));
+        const typography::Paragraph paragraph = paragraphOf(text);
         check(linesStartAtLetters(paragraph, engine.layout(paragraph, 400.0f, style), letter.name),
               std::string("длинный прогон делится между буквами: ") + letter.name);
     }
 
     // Полоса в два кегля рубит слово кусками по полкегля — уже любой буквы.
-    std::wstring word;
+    wxl::core::u16_text word;
     for (int round = 0; round < 3; ++round)
         for (const CorpusLetter& letter : kLetters)
             word += letter.text;
@@ -1062,7 +1063,7 @@ void testClustersStayWhole(typography::Engine& engine) {
 
     // Строка с места чтения: место указывает на знак краткой, строка
     // начинается с его буквы.
-    const typography::Paragraph reading = paragraphOf(L"\x0436\x0436\x0438\x0306\x0436\x0436");
+    const typography::Paragraph reading = paragraphOf(u"\x0436\x0436\x0438\x0306\x0436\x0436");
     const typography::ShapedParagraphPtr shaped = engine.shape(reading, style);
     const auto fromMark = engine.layoutFrom(*shaped, 3, 400.0f, style);
     check(!fromMark.empty() && fromMark.front().textStart == 2,
@@ -1081,7 +1082,7 @@ void testClustersStayWhole(typography::Engine& engine) {
     typography::ParagraphStyle ragged = style;
     ragged.alignment = typography::Alignment::Left;
 
-    typography::Paragraph plain = paragraphOf(L"\x0436\x0301\x0436\x0301");
+    typography::Paragraph plain = paragraphOf(u"\x0436\x0301\x0436\x0301");
     typography::Paragraph spaced = plain;
     typography::FontStyle spacing;
     spacing.spaced = true;
@@ -1105,7 +1106,7 @@ void testClustersStayWhole(typography::Engine& engine) {
     // процентов — больше, чем DirectWrite сжимает сам, так что остаток
     // снимает равномерное сжатие. Ширины сжимаются, глиф буквы — нет, и знак
     // обязан остаться там, где его посадил шрифт.
-    const typography::Paragraph single = paragraphOf(L"\x0436\x0301");
+    const typography::Paragraph single = paragraphOf(u"\x0436\x0301");
     const auto natural = engine.layout(single, 1000.0f, ragged);
     const bool attached = !natural.empty() && natural[0].runs.size() == 1 &&
                           natural[0].runs[0].advances.size() == 2 &&
@@ -1176,37 +1177,40 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
     check(worstWidth < 0.05f, "ширины строк совпадают");
 }
 
-/// Строка корпуса — UTF-8, а текст вёрстки UTF-16. Переводит wxl::core: своих
-/// переводчиков в дереве нет.
-std::wstring widen(std::string_view utf8) {
-    const auto text = wxl::core::checked(utf8);
-    return text ? std::wstring{text->to_utf16().wchars()} : std::wstring{};
-}
-
-/// Слово, ожидание и итог — одной строкой отчёта. В UTF-8 и с длиной: `%ls`
+/// Слово, ожидание и итог — одной строкой отчёта. С длиной и в UTF-8: `%ls`
 /// в локали «C» на кириллице обрывает печать молча.
-void reportHyphenation(std::wstring_view word, std::wstring_view expected, std::wstring_view got) {
-    const std::string line = toUtf8(word) + ": ждали " + toUtf8(expected) + ", вышло " + toUtf8(got);
+void reportHyphenation(wxl::core::u8_view word, wxl::core::u8_view expected, wxl::core::u8_view got) {
+    std::string line(word.chars());
+    line += ": ждали ";
+    line += expected.chars();
+    line += ", вышло ";
+    line += got.chars();
     std::printf("       %.*s\n", static_cast<int>(line.size()), line.data());
 }
 
 /// Слово, размеченное переносами, — «до-сто-при-ме-ча-тель-ность».
-std::wstring hyphenated(std::wstring_view word) {
+///
+/// Разметку получает только слово из букв алфавита образцов, а там каждая
+/// единица UTF-16 — целая кодовая точка из BMP; слово без разметки отдаётся
+/// как есть.
+wxl::core::u8_text hyphenated(wxl::core::u16_view word) {
     const typography::HyphenPoints points = typography::hyphenate(word);
+    if (points == 0) return word.to_utf8();
 
-    std::wstring marked;
-    for (std::size_t at = 0; at < word.size(); ++at) {
-        if (at != 0 && (points >> at) & 1) marked += L'-';
-        marked += word[at];
+    const std::u16string_view units = word.plain();
+    wxl::core::u8_text marked;
+    for (std::size_t at = 0; at < units.size(); ++at) {
+        if ((points >> at) & 1) marked.push_back(U'-');
+        marked.push_back(static_cast<char32_t>(units[at]));
     }
     return marked;
 }
 
-bool hyphenatedIs(std::wstring_view word, std::wstring_view expected) {
-    const std::wstring marked = hyphenated(word);
-    if (marked == expected) return true;
+bool hyphenatedIs(wxl::core::u16_view word, wxl::core::u8_view expected) {
+    const wxl::core::u8_text marked = hyphenated(word);
+    if (marked.chars() == expected.chars()) return true;
 
-    reportHyphenation(word, expected, marked);
+    reportHyphenation(word.to_utf8(), expected, marked);
     return false;
 }
 
@@ -1222,30 +1226,31 @@ void testHyphenation() {
 
     // Слова, ради которых образцы и выбраны: правило «гласная — согласная —
     // гласная» разорвало бы их по-другому и неверно.
-    check(hyphenatedIs(L"достопримечательность", L"до-сто-при-ме-ча-тель-ность"),
+    check(hyphenatedIs(u"достопримечательность", u8"до-сто-при-ме-ча-тель-ность"),
           "достопримечательность");
-    check(hyphenatedIs(L"подъезд", L"подъ-езд"), "приставка не отрывается от ъ");
-    check(hyphenatedIs(L"разбить", L"раз-бить"), "морфемная граница");
-    check(hyphenatedIs(L"ванна", L"ван-на"), "удвоенная согласная");
-    check(hyphenatedIs(L"асбест", L"ас-бест"), "слово из списка исключений");
-    check(hyphenatedIs(L"associate", L"as-so-ciate"), "английское исключение");
-    check(hyphenatedIs(L"hyphenation", L"hy-phen-ation"), "английское слово");
+    check(hyphenatedIs(u"подъезд", u8"подъ-езд"), "приставка не отрывается от ъ");
+    check(hyphenatedIs(u"разбить", u8"раз-бить"), "морфемная граница");
+    check(hyphenatedIs(u"ванна", u8"ван-на"), "удвоенная согласная");
+    check(hyphenatedIs(u"асбест", u8"ас-бест"), "слово из списка исключений");
+    check(hyphenatedIs(u"associate", u8"as-so-ciate"), "английское исключение");
+    check(hyphenatedIs(u"hyphenation", u8"hy-phen-ation"), "английское слово");
 
-    check(hyphenatedIs(L"мама", L"ма-ма"), "две буквы с каждой стороны — можно");
-    check(typography::hyphenate(L"оса") == 0, "одну букву не отрывают");
-    check(typography::hyphenate(L"под") == 0, "трёх букв мало");
+    check(hyphenatedIs(u"мама", u8"ма-ма"), "две буквы с каждой стороны — можно");
+    check(typography::hyphenate(u"оса") == 0, "одну букву не отрывают");
+    check(typography::hyphenate(u"под") == 0, "трёх букв мало");
 
     // Слово, где есть хоть что-то помимо букв алфавита, не переносится вовсе —
     // и это то, отчего перенос не может попасть внутрь буквы.
-    check(typography::hyphenate(L"досто\x0301примечательность") == 0, "слово со знаком ударения");
-    check(typography::hyphenate(L"страница5") == 0, "слово с цифрой");
-    check(typography::hyphenate(L"привет\xD83D\xDC4D") == 0, "слово с эмодзи");
-    check(typography::hyphenate(L"") == 0, "пустое слово");
+    check(typography::hyphenate(u"досто\x0301примечательность") == 0, "слово со знаком ударения");
+    check(typography::hyphenate(u"страница5") == 0, "слово с цифрой");
+    check(typography::hyphenate(u"привет\xD83D\xDC4D") == 0, "слово с эмодзи");
+    check(typography::hyphenate(u"") == 0, "пустое слово");
 
     for (const CorpusLetter& letter : kLetters) {
-        std::wstring word = L"досто";
+        wxl::core::u16_text word;
+        word += u"досто";
         word += letter.text;
-        word += L"примечательность";
+        word += u"примечательность";
         check(typography::hyphenate(word) == 0, letter.name);
     }
 
@@ -1266,15 +1271,21 @@ void testHyphenation() {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
 
-        const std::wstring expected = widen(line);
-        std::wstring word;
-        for (const wchar_t character : expected)
-            if (character != L'-') word += character;
-
         ++words;
-        const std::wstring got = hyphenated(word);
-        if (got != expected && ++wrong <= 10)
-            reportHyphenation(word, expected, got);
+        const auto expected = wxl::core::checked(line);
+        if (!expected) {
+            std::printf("FAILED строка корпуса %zu — не UTF-8\n", words);
+            ++wrong;
+            continue;
+        }
+
+        wxl::core::u16_text word;
+        for (const char32_t code : wxl::core::code_points(*expected))
+            if (code != U'-') word.push_back(code);
+
+        const wxl::core::u8_text got = hyphenated(word);
+        if (got.chars() != expected->chars() && ++wrong <= 10)
+            reportHyphenation(word.to_utf8(), *expected, got);
     }
 
     std::printf("  корпус: %zu слов\n", words);
@@ -1310,9 +1321,9 @@ void testHyphenationInLayout(typography::Engine& engine) {
 
     // Длинные слова в узкую полосу: без переносов строка была бы одним словом
     // и дырой в пол-полосы.
-    std::wstring text;
-    for (int at = 0; at < 12; ++at) text += L"достопримечательность ";
-    typography::Paragraph long_ = paragraphOf(text);
+    wxl::core::u16_text text;
+    for (int at = 0; at < 12; ++at) text += u"достопримечательность ";
+    const typography::Paragraph long_ = paragraphOf(text);
 
     const auto lines = engine.layout(long_, 200.0f, style);
     std::size_t hyphenated = 0;
@@ -1323,10 +1334,8 @@ void testHyphenationInLayout(typography::Engine& engine) {
     check(hyphenated > 0, "слово переносится, и дефис нарисован");
 
     // Мягкий перенос из книги невидим, пока строка на нём не кончилась.
-    const typography::Paragraph whole =
-        paragraphOf(L"\x043D\x0435\x0441\x043A\x043E\x043B\x044C\x043A\x043E");
-    const typography::Paragraph marked =
-        paragraphOf(L"\x043D\x0435\x00AD" L"\x0441\x043A\x043E\x043B\x044C\x043A\x043E");
+    const typography::Paragraph whole = paragraphOf(u"несколько");
+    const typography::Paragraph marked = paragraphOf(u"не­сколько");
 
     const auto plain = engine.layout(whole, 1000.0f, style);
     const auto soft = engine.layout(marked, 1000.0f, style);
@@ -1347,11 +1356,8 @@ void testHyphenationInLayout(typography::Engine& engine) {
     typography::ParagraphStyle ragged = style;
     ragged.alignment = typography::Alignment::Left;
 
-    const typography::Paragraph consonants = paragraphOf(
-        L"\x0444\x0444\x0444\x0444\x0444\x00AD" L"\x0444\x0444\x0444\x0444\x0444");
-    const float half = engine.layout(paragraphOf(L"\x0444\x0444\x0444\x0444\x0444"), 1000.0f, ragged)
-                           .front()
-                           .width;
+    const typography::Paragraph consonants = paragraphOf(u"ффффф­ффффф");
+    const float half = engine.layout(paragraphOf(u"ффффф"), 1000.0f, ragged).front().width;
 
     const auto broken = engine.layout(consonants, half * 1.5f, ragged);
     const bool atSoftHyphen = broken.size() == 2 && endsWithHyphen(broken[0]) &&
@@ -1362,10 +1368,7 @@ void testHyphenationInLayout(typography::Engine& engine) {
     // Слово шире полосы, но с переносами, которые делят его на помещающиеся
     // куски, переносится, а не рубится: каждая строка, кроме последней,
     // кончается дефисом.
-    const auto split = engine.layout(paragraphOf(L"\x0434\x043E\x0441\x0442\x043E\x043F\x0440\x0438"
-                                                 L"\x043C\x0435\x0447\x0430\x0442\x0435\x043B\x044C"
-                                                 L"\x043D\x043E\x0441\x0442\x044C"),
-                                     90.0f, ragged);
+    const auto split = engine.layout(paragraphOf(u"достопримечательность"), 90.0f, ragged);
     bool hyphenatedNotChopped = split.size() > 1;
     for (std::size_t at = 0; at + 1 < split.size(); ++at)
         if (!endsWithHyphen(split[at])) hyphenatedNotChopped = false;
@@ -1374,14 +1377,14 @@ void testHyphenationInLayout(typography::Engine& engine) {
 
     // Неразрывный пробел: строка не вправе начаться сразу после него, какой бы
     // ширины ни была полоса.
-    std::wstring tied;
-    for (int at = 0; at < 20; ++at) tied += L"\x0430\x0430 \x0431\x0431\x00A0\x0432\x0432 ";
+    wxl::core::u16_text tied;
+    for (int at = 0; at < 20; ++at) tied += u"аа бб вв ";
     const typography::Paragraph paragraph = paragraphOf(tied);
 
     bool kept = true;
     for (float width = 40.0f; width <= 400.0f; width += 7.0f)
         for (const typography::Line& line : engine.layout(paragraph, width, style))
-            if (line.textStart > 0 && tied[line.textStart - 1] == L'\x00A0') {
+            if (line.textStart > 0 && tied.plain()[line.textStart - 1] == u' ') {
                 std::printf("       полоса %.0f: строка начата после неразрывного пробела\n", width);
                 kept = false;
             }
@@ -1418,9 +1421,8 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
     // меряется по той же панграмме, что у читалки, тем же шрифтом и кеглем.
     typography::ParagraphStyle measure;
     measure.alignment = typography::Alignment::Left;
-    const std::wstring_view pangram = L"съешь же ещё этих мягких французских булок, да выпей чаю";
-    const float pangramWidth =
-        engine.layout(paragraphOf(std::wstring(pangram)), 10000.0f, measure).front().width;
+    const wxl::core::u16_view pangram = u"съешь же ещё этих мягких французских булок, да выпей чаю";
+    const float pangramWidth = engine.layout(paragraphOf(pangram), 10000.0f, measure).front().width;
 
     const float kColumn = std::round(45.0f * pangramWidth / static_cast<float>(pangram.size()));
     constexpr float kGap = 40.0f, kMargin = 24.0f;

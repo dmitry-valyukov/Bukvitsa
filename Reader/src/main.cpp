@@ -13,19 +13,19 @@
 
 #include "file_dialog.h"
 #include "imaging.h"
-#include "library.h"
 #include "settings.h"
 
 #include "CompositionWindow.h"
-#include "library_screen.h"
 #include "skin_wizard.h"
 #include "start_screen.h"
 
-// Последним: он ведёт к модели книги, а она импортирует wxl.core, после чего
-// стандартный заголовок MSVC уже не принимает.
+// Последними: они ведут к модели книги и реестру, а те импортируют wxl.core,
+// после чего стандартный заголовок MSVC уже не принимает.
 #include "book.h"
 #include "book_view.h"
 #include "io.h"
+#include "library.h"
+#include "library_screen.h"
 #include "reader_panel.h"
 #include "store.h"
 
@@ -729,7 +729,7 @@ wxl::Teardown wxl_launched() {
         // показе, потому что последняя открытая книга могла смениться, пока
         // экрана не было видно; при запуске реестр к этому моменту прочитан.
         if (const BookEntry* entry = library->find(settings->lastBookGuid)) {
-            screen->setContinueBook(entry->title, entry->authors,
+            screen->setContinueBook(entry->title.wchars(), entry->authors.wchars(),
                                     entry->cover.empty() ? std::filesystem::path{}
                                                          : coverDirectory() / entry->cover);
         }

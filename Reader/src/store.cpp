@@ -23,9 +23,9 @@ std::string xmlValue(const std::wstring_view value) {
     return xmlValue(wxl::core::u16_view(wxl::core::repaired(value)));
 }
 
-std::wstring attributeOf(const wxl::xml::node& element, std::string_view name) {
+wxl::core::u16_text attributeOf(const wxl::xml::node& element, std::string_view name) {
     const auto value = element.attribute(name);
-    return value ? std::wstring(value->to_utf16().wchars()) : std::wstring{};
+    return value ? value->to_utf16() : wxl::core::u16_text{};
 }
 
 std::uint64_t numberOf(const wxl::xml::node& element, std::string_view name,
