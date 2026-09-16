@@ -50,8 +50,8 @@ wxl_add_doxygen_site(docs_wxl
         "${BUKVITSA_WXL_ROOT}/wxl.html/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.bb/src"
         "${BUKVITSA_WXL_ROOT}/wxl.rsdn/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.winui/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.winui/doc"
+        "${BUKVITSA_WXL_ROOT}/wxl.ui/src"
+        "${BUKVITSA_WXL_ROOT}/wxl.ui/doc"
     EXCLUDE
         "*/tests/*"
         "*/test/*"
@@ -61,9 +61,7 @@ wxl_add_doxygen_site(docs_wxl
         "*/tools/*"
 )
 
-# Сайт Буквицы. Обзорные статьи из docs/ и API из заголовков — вместе, потому
-# что порознь ни то, ни другое не читается: решения в decisions.md называют
-# типы, а типы без причины, по которой они такие, — просто список полей.
+# Сайт Буквицы: API из заголовков и статьи из Reader/doc.
 wxl_add_doxygen_site(docs
     PROJECT_NAME "Буквица"
     BRIEF        "читалка FB3 под Windows"

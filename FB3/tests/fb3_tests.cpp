@@ -98,9 +98,6 @@ void testBook(const std::filesystem::path& path) {
 }  // namespace
 
 int main() {
-    // Пул строится один раз на процесс и переживает всё, что из него берёт.
-    wxl::core::sta_memory_pool pool;
-
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
 
     // Три официальных примера из репозитория спецификации плюс, если он лежит

@@ -1,6 +1,6 @@
-# Reader — читалка на wxl.winui.
+# Reader — читалка на wxl.ui.
 #
-# Линкуется с wxl::winui и больше ни с чем из wxl: доступ к декларативной
+# Линкуется с wxl::ui и больше ни с чем из wxl: доступ к декларативной
 # поверхности не должен стоить приложению разбора проекции cppwinrt, и
 # отсутствие её include-пути здесь — то, что это гарантирует.
 #
@@ -49,7 +49,7 @@ add_executable(Reader WIN32
 # разложила. windowscodecs -- декодирование картинок книги (WIC),
 # dxguid -- CLSID встроенных эффектов D2D (изгиб страницы на подложке).
 target_link_libraries(Reader PRIVATE
-    wxl::winui
+    wxl::ui
     wxl::async
     wxl::xml
     wxl::core
@@ -91,7 +91,7 @@ endif()
 
 # Win2D (Microsoft.Graphics.Canvas) активируется неупакованно из своей нативной
 # DLL — CompositionWindow грузит ею текстуры (TextureCache), и без неё окно
-# падает при создании. Как загрузчик выше: путь объявляет wxl.winui, копируем
+# падает при создании. Как загрузчик выше: путь объявляет wxl.ui, копируем
 # рядом с исполняемым файлом.
 set(_reader_win2d_dll
     "${WXL_WIN2D_DIR}/runtimes/win-x64/native/Microsoft.Graphics.Canvas.dll")

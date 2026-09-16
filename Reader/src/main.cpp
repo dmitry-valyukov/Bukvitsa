@@ -1,4 +1,4 @@
-// Reader — читалка Буквицы на wxl.winui.
+// Reader — читалка Буквицы на wxl.ui.
 //
 // Здесь нет ни wWinMain, ни поднятия Windows App Runtime, ни наследника
 // Application, ни XAML: всё это делает wxl и потом зовёт эту функцию.

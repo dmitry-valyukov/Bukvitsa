@@ -18,7 +18,7 @@ endif()
 
 set(BUKVITSA_WXL_CMAKE_DIR "${BUKVITSA_WXL_ROOT}/cmake")
 
-# vcpkg — ради cppwinrt, из которого собрана проекция WinUI 3 под wxl.winui,
+# vcpkg — ради cppwinrt, из которого собрана проекция WinUI 3 под wxl.ui,
 # и ради fmt, которым форматирует wxl.core. Тоже до project(), потому что
 # ставит CMAKE_TOOLCHAIN_FILE, а его после первого project() уже никто не
 # читает. Манифеста у Буквицы нет: из всего пакета берутся эти два, и оба —
@@ -81,7 +81,7 @@ endif()
 # встраивается в вызывающего и теряет своё распределение регистров. Платится же
 # за него распухшее дерево сборки: /GL-объект несёт промежуточное представление
 # вместо машинного кода, отчего microtex.lib идёт 233 МБ вместо 31, а
-# wxl.winui.lib — 1.67 ГБ вместо 26.
+# wxl.ui.lib — 1.67 ГБ вместо 26.
 
 # Ключи, задающие язык, — до подключения wxl и для всего дерева сразу.
 #
@@ -112,7 +112,7 @@ endif()
 #
 # Берём два подкаталога с исходниками, а не корневые CMakeLists модулей: те
 # устроены как самостоятельные проекты и тянут vcpkg, Boost, GTest, cppwinrt и
-# FetchContent winmd — всё это нужно генератору wxl.winui и не нужно читалке.
+# FetchContent winmd — всё это нужно генератору wxl.ui и не нужно читалке.
 # wxl.core/src и wxl.xml/src обходятся своими скриптами-помощниками.
 #
 # EXCLUDE_FROM_ALL: собирается только то, что действительно связывается с
@@ -139,7 +139,7 @@ if(NOT TARGET wxl::async)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.async/src" "${CMAKE_BINARY_DIR}/wxl.async" EXCLUDE_FROM_ALL)
 endif()
 
-# Семейство разметок — их требует wxl.winui: контролы HtmlBlock, BbBlock и
+# Семейство разметок — их требует wxl.ui: контролы HtmlBlock, BbBlock и
 # RsdnBlock линкуют свои парсеры. Той же формой, что модули выше.
 if(NOT TARGET wxl::html)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.html/src" "${CMAKE_BINARY_DIR}/wxl.html" EXCLUDE_FROM_ALL)
@@ -155,13 +155,13 @@ if(NOT TARGET wxl::rsdn)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.rsdn/src" "${CMAKE_BINARY_DIR}/wxl.rsdn" EXCLUDE_FROM_ALL)
 endif()
 
-# wxl.winui — проекция WinUI 3, на которой стоит Reader. Здесь, в отличие от
+# wxl.ui — проекция WinUI 3, на которой стоит Reader. Здесь, в отличие от
 # тех, что выше, берётся корневой CMakeLists модуля: он и есть весь модуль, а
 # генератор с его winmd и FetchContent живёт отдельной целью в дереве wxl и
 # сюда не приезжает. Собирается из профиля rich, уже выпущенного в
-# wxl.winui/src/generated — сборка генератор не запускает, это отдельный шаг.
-if(WIN32 AND NOT TARGET wxl::winui)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.winui" "${CMAKE_BINARY_DIR}/wxl.winui" EXCLUDE_FROM_ALL)
+# wxl.ui/src/generated — сборка генератор не запускает, это отдельный шаг.
+if(WIN32 AND NOT TARGET wxl::ui)
+    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.ui" "${CMAKE_BINARY_DIR}/wxl.ui" EXCLUDE_FROM_ALL)
 endif()
 
 # Цель, чьи исходники видят заголовки wxl, компилирует их `import std;` сама:
