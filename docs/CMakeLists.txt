@@ -50,8 +50,8 @@ wxl_add_doxygen_site(docs_wxl
         "${BUKVITSA_WXL_ROOT}/wxl.html/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.bb/src"
         "${BUKVITSA_WXL_ROOT}/wxl.rsdn/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.winui/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.winui/doc"
+        "${BUKVITSA_WXL_ROOT}/wxl.ui/src"
+        "${BUKVITSA_WXL_ROOT}/wxl.ui/doc"
     EXCLUDE
         "*/CLAUDE.md"
         "*/next-session-prompt.md"
