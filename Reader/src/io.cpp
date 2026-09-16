@@ -158,16 +158,6 @@ awaitable<bool> Io::fileExists(const std::filesystem::path& file_path) {
     });
 }
 
-awaitable<bool> Io::removeFile(const std::filesystem::path& file_path) {
-    return wxl::async::sta_loop::async_call([p = poolPath(file_path)] {
-        if (::DeleteFileW(p.c_str())) return true;
-
-        const DWORD error = ::GetLastError();
-
-        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
-    });
-}
-
 awaitable<std::uint64_t> Io::fileSize(const std::filesystem::path& file_path) {
     return wxl::async::sta_loop::async_call([p = poolPath(file_path)]() -> std::uint64_t {
         file source = file::open_read(p.c_str());

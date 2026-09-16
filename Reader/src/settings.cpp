@@ -46,40 +46,17 @@ Settings parseSettings(std::string xml) {
         if (const wxl::xml::node* reading = root.child("reading")) {
             settings.continueReading = reading->attribute("continue") == "true";
         }
-        const auto version = static_cast<int>(numberOf(root, "version", Settings::kVersion));
-
+        // Файл читается как есть, какую бы версию он о себе ни объявил:
+        // прежние написания не переводятся. Настройки вида — кегль,
+        // интерлиньяж, поля, тема — это то, что читатель выставил за минуту
+        // ползунками, и восстанавливать их из позапрошлого формата дороже,
+        // чем выставить заново. Что не прочиталось, берётся умолчанием, и
+        // первое же закрытие окна перепишет файл начисто.
         if (const wxl::xml::node* text = root.child("text")) {
-            settings.theme = static_cast<int>(numberOf(*text, "theme", 0));
+            settings.theme = attributeOf(*text, "theme");
             settings.fontSize = static_cast<float>(realOf(*text, "fontSize", 20.0));
             settings.lineHeight = static_cast<float>(realOf(*text, "lineHeight", 1.45));
-
-            // Поле по умолчанию читается в единицах своей версии: до третьей —
-            // долей кегля (3 кегля), с третьей — долей ширины страницы. Иначе
-            // пропущенный в старом файле атрибут пришёл бы уже в новых единицах,
-            // и приведение ниже его бы испортило.
-            const double marginDefault = version < 3 ? 3.0 : 0.075;
-            settings.margin = static_cast<float>(realOf(*text, "margin", marginDefault));
-
-            // Первая версия писала интерлиньяж и поля сотыми долями целым
-            // числом — обходом разбора дробного, который зависел бы от
-            // локали. Обхода больше нет: ни запись, ни разбор локали не знают.
-            // А файлы с ним остались — их ровно столько, сколько машин, где
-            // читалка уже запускалась, и молча сбрасывать на них вид не за что.
-            if (version < 2) {
-                settings.lineHeight /= 100.0f;
-                settings.margin /= 100.0f;
-            }
-
-            // Вторая версия писала поле долей кегля; с третьей это доля ширины
-            // страницы, от кегля не зависящая. Точного пересчёта нет — прежнее
-            // значение ширины не помнило, — поэтому приводим при опорной ширине
-            // и запомненном кегле: для обычного окна попадание точное, а
-            // разойдётся лишь у того, кто читал в сильно другом. Первое же
-            // закрытие окна перепишет поле тем, что стоит на ползунке.
-            if (version < 3) {
-                constexpr float kNominalWidth = 800.0f;
-                settings.margin = settings.margin * settings.fontSize / kNominalWidth;
-            }
+            settings.margin = static_cast<float>(realOf(*text, "margin", 0.075));
         }
         if (const wxl::xml::node* skin = root.child("skin")) {
             settings.skin = attributeOf(*skin, "name");
@@ -111,7 +88,7 @@ std::string settingsXml(const Settings& settings) {
     out.format("  <window placement=\"{}\"/>\n", xmlValue(settings.windowPlacement));
     out.format("  <reading continue=\"{}\"/>\n", settings.continueReading ? "true" : "false");
     out.format("  <text theme=\"{}\" fontSize=\"{}\" lineHeight=\"{}\" margin=\"{}\"/>\n",
-               settings.theme, settings.fontSize, settings.lineHeight, settings.margin);
+               xmlValue(settings.theme), settings.fontSize, settings.lineHeight, settings.margin);
 
     if (!settings.skin.empty()) {
         out.format("  <skin name=\"{}\"/>\n", xmlValue(settings.skin));

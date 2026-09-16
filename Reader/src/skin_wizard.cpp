@@ -289,13 +289,24 @@ bool SkinWizard::openNew(std::filesystem::path image) {
 }
 
 bool SkinWizard::openEdit(const Skin& skin) {
-    std::filesystem::path image = skinDirectory() / skin.image;
+    std::filesystem::path image = skinImagePath(skin);
     if (!decodeImage(image)) return false;
 
     image_ = std::move(image);
     skin_ = skin;
     dragging_ = false;
     namePanel_.value().visibility(Visibility::Collapsed);
+
+    // Системную правят «на основе», а не поверх: записать поверх нечего — в
+    // реестре её нет, она часть программы, и удалить такую запись потом было
+    // бы нечем. Поэтому здесь она становится новой обложкой: пустое `image`
+    // заставит сохранение скопировать снимок в skinDirectory(), а пустое имя —
+    // спросить его, как у новой. Своя обложка правится молча, под своим именем.
+    if (skin.system) {
+        skin_.system = false;
+        skin_.image.clear();
+        skin_.name.clear();
+    }
 
     redraw();
     return true;

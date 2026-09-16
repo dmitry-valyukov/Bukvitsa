@@ -2,7 +2,6 @@
 #include <cmath>
 #include <filesystem>
 #include <format>
-#include <numbers>
 #include <vector>
 
 // dwrite.h первым: он приводит guiddef.h с DEFINE_GUID, без которого
@@ -49,10 +48,20 @@ namespace {
 /// дробить страницу там, где читателю удобнее целая.
 constexpr float kMaxLineChars = 85.0f;
 
-/// Нижняя граница новой колонки. Уже шестидесяти знаков выключенная строка без
-/// переносов начинает рваться дырами между словами — переносов у нас пока нет,
-/// и узкая колонка обошлась бы дороже широкой.
-constexpr float kMinLineChars = 60.0f;
+/// Нижняя граница новой колонки. Сорок три — половина верхней, округлённая
+/// вверх (85 / 2 = 42,5): мера остаётся одна, и строка, переросшая восемьдесят
+/// пять знаков, делится на колонки, которые попадают в ту же меру. Стоявшие
+/// здесь прежде шестьдесят оставляли провал — окно между 85 и 130 знаками было
+/// широко для одной колонки и узко для двух, и читатель получал строку в
+/// полтораста знаков там, где просил разворот. Цена известна: пока нет
+/// переносов, выключенная строка в сорок с небольшим знаков идёт с широкими
+/// пробелами, — но провал в мере обходился дороже.
+///
+/// Точно сомкнуть границы константой нельзя: средник вычитается до деления, и
+/// половина строки выходит короче половины — при полях 7,5 % это 0,46 целой
+/// строки, при 25 % четверть. Провал поэтому не исчезает, а сжимается: при
+/// обычных полях вторая колонка приходит на 94 знаках вместо 85.
+constexpr float kMinLineChars = 43.0f;
 
 /// Гистерезис в знаках. Один знак и только для окна, которое тянут мышью:
 /// см. обработчик sizeChanged.
@@ -68,14 +77,6 @@ constexpr float kGutterOfMargin = 1.0f;
 /// горизонтальные поля: ими читатель выбирает ширину строки, а высоте полосы
 /// выбирать нечего — она и так вся, что осталось от окна.
 constexpr float kVerticalMargin = 50.0f;
-
-/// Прогиб страницы на фотографии-подложке, в DIP: насколько верхняя строка в
-/// середине страницы поднимается, а нижняя опускается. Модель — вертикальное
-/// «брюхо» выпуклой бумаги: смещение равно произведению купола по X (ноль у
-/// корешка и наружных краёв, максимум в середине каждой страницы) на глубину
-/// по Y (ноль в середине полосы, максимум у верха и низа). У корешка и краёв
-/// строки прямые — там бумага снимка прижата.
-constexpr float kBulge = 8.0f;
 
 /// Размытие набора под конфигуратором изгиба, в DIP. Лёгкое, не туман:
 /// тексту достаточно отступить на второй план, чтобы направляющие мастера
@@ -663,7 +664,14 @@ void BookView::setTheme(int index) {
 }
 
 void BookView::setSkins(std::vector<Skin> skins) {
-    skins_ = std::move(skins);
+    // Системные — первыми и всегда: они есть и на машине, где реестра ещё не
+    // заводили. Склейка здесь, а не у вызывающего, потому что номер темы
+    // считается по этому списку, и двух его версий быть не должно.
+    const std::span<const Skin> system = systemSkins();
+
+    skins_.assign(system.begin(), system.end());
+    skins_.insert(skins_.end(), std::make_move_iterator(skins.begin()),
+                  std::make_move_iterator(skins.end()));
 
     // Реестр мог и похудеть: тема, показывающая исчезнувшую обложку, честно
     // возвращается к первой встроенной.
@@ -702,8 +710,7 @@ void BookView::setPreview(const Skin* skin, const std::filesystem::path& image) 
 
 std::filesystem::path BookView::backdropFile() const {
     if (preview_) return previewImage_;
-    if (const Skin* skin = activeSkin()) return skinDirectory() / skin->image;
-    if (paper().backdrop) return exeDirectory() / paper().backdrop;
+    if (const Skin* skin = activeSkin()) return skinImagePath(*skin);
     return {};
 }
 
@@ -2061,39 +2068,34 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     if (warpFlat_) return false;
 
     if (!warpMap_) {
-        // Отклонения краёв от их прямых начальных линий, в долях высоты
-        // полосы, по значению на столбец карты. Встроенная тема — идеализация:
-        // купол синуса, вверх у верхнего края и вниз у нижнего. У обложки
-        // вместо синуса — четыре кривые, снятые мастером с самого снимка:
-        // у каждой границы каждого листа изгиб свой, и середина разворота —
-        // граница между левой парой и правой.
-        const int columns = static_cast<int>(pixels.width);
-        std::vector<float> topEdge;
-        std::vector<float> bottomEdge;
+        // Чьи кривые гнут полосу: предпросмотр мастера или выбранная обложка.
+        // Формулы здесь больше нет. Купол синуса, стоявший за «Антиквариат»,
+        // был одинаков для любого снимка, а у настоящей фотографии каждая из
+        // четырёх границ своя — и «Антиквариат» теперь описан точками, как
+        // всякая другая обложка, только описание лежит в коде (skins.h).
+        const Skin* skin = preview_ ? &*preview_ : activeSkin();
 
-        if (const Skin* skin = preview_ ? &*preview_ : activeSkin()) {
-            topEdge.resize(static_cast<std::size_t>(columns));
-            bottomEdge.resize(static_cast<std::size_t>(columns));
-            for (int x = 0; x < columns; ++x) {
-                const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
-                const bool left = u < 0.5f;
-                topEdge[static_cast<std::size_t>(x)] =
-                    edgeAt(left ? skin->topLeft : skin->topRight, u) - kEdgeInset;
-                bottomEdge[static_cast<std::size_t>(x)] =
-                    edgeAt(left ? skin->bottomLeft : skin->bottomRight, u) -
-                    (1.0f - kEdgeInset);
-            }
-        } else {
-            topEdge.resize(static_cast<std::size_t>(columns));
-            bottomEdge.resize(static_cast<std::size_t>(columns));
-            const float amplitude = kBulge / height_;
-            for (int x = 0; x < columns; ++x) {
-                const float across = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
-                const float dome =
-                    std::sin(std::numbers::pi_v<float> * std::abs(across - 0.5f) * 2.0f);
-                topEdge[static_cast<std::size_t>(x)] = -dome * amplitude;
-                bottomEdge[static_cast<std::size_t>(x)] = dome * amplitude;
-            }
+        // Выбрана тема, а не обложка: бумаги на экране нет, гнуть нечего.
+        if (!skin) {
+            warpFlat_ = true;
+            return false;
+        }
+
+        // Отклонения краёв от их прямых начальных линий, в долях высоты
+        // полосы, по значению на столбец карты. У каждой границы каждого листа
+        // изгиб свой, и середина разворота — граница между левой парой кривых
+        // и правой.
+        const int columns = static_cast<int>(pixels.width);
+        std::vector<float> topEdge(static_cast<std::size_t>(columns));
+        std::vector<float> bottomEdge(static_cast<std::size_t>(columns));
+
+        for (int x = 0; x < columns; ++x) {
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
+            const bool left = u < 0.5f;
+            topEdge[static_cast<std::size_t>(x)] =
+                edgeAt(left ? skin->topLeft : skin->topRight, u) - kEdgeInset;
+            bottomEdge[static_cast<std::size_t>(x)] =
+                edgeAt(left ? skin->bottomLeft : skin->bottomRight, u) - (1.0f - kEdgeInset);
         }
 
         float amplitude = 0.0f;

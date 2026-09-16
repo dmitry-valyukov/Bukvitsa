@@ -258,7 +258,9 @@ managed_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
     app.view->setSkins(app.skins->list());
     app.panel->refreshThemes();
 
-    const std::vector<Skin>& list = app.skins->list();
+    // По полному списку полосы, а не по реестру: номера считаются вместе с
+    // системными обложками, которые стоят впереди реестровых.
+    const std::vector<Skin>& list = app.view->skins();
     for (std::size_t index = 0; index < list.size(); ++index) {
         if (list[index].name == skinName) {
             app.view->setTheme(kThemeCount + static_cast<int>(index));
@@ -272,12 +274,14 @@ managed_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
     leaveWizard();
 }
 
-/// Убрать обложку: из реестра, из полосы тем и с диска.
+/// Убрать обложку из реестра и из полосы тем.
 ///
-/// Порядок здесь и есть решение. Сперва реестр без неё уходит на диск, потом
-/// полоса встаёт на тему, которая точно есть, и только последним исчезает
-/// снимок: если удалить файл не выйдет, в `skins\` останется лишний файл —
-/// мусор, который никого не касается, — а не обложка, показывающая пустоту.
+/// **Снимок при этом остаётся лежать в `skins\`.** Копия картинки не
+/// принадлежит той обложке, которая её привела: мастер, открыв обложку и
+/// сохранив её под другим именем, заводит вторую с тем же именем файла, — и
+/// удаление одной унесло бы снимок из-под другой. Ссылок на файл никто не
+/// считает, а цена ошибки несимметрична: лишний файл на диске — мусор,
+/// который никого не касается, отсутствующий — сломанная обложка.
 ///
 /// Тема после удаления ищется по имени, а не по номеру: номера всех обложек
 /// за удаляемой сдвигаются, и «остаться на своей» значит найти её заново.
@@ -286,11 +290,7 @@ managed_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
 managed_task deleteSkinFlow(App app, std::wstring name) {
     Io& io = *app.io;
 
-    const Skin* doomed = app.skins->find(name);
-
-    if (!doomed) co_return;   // реестр успел перемениться под руками
-
-    const std::wstring image = doomed->image;
+    if (!app.skins->find(name)) co_return;   // реестр успел перемениться под руками
 
     // Спрашиваем, пока старый список цел: activeSkin() смотрит в него номером.
     const Skin* active = app.view->activeSkin();
@@ -306,9 +306,9 @@ managed_task deleteSkinFlow(App app, std::wstring name) {
     int theme = app.view->theme();   // встроенная тема удалением не двигается
 
     if (leavingActive) {
-        theme = app.settings->theme;
+        theme = themeById(app.settings->theme);
     } else if (!activeName.empty()) {
-        const std::vector<Skin>& list = app.skins->list();
+        const std::vector<Skin>& list = app.view->skins();
 
         for (std::size_t index = 0; index < list.size(); ++index) {
             if (list[index].name == activeName) {
@@ -325,8 +325,6 @@ managed_task deleteSkinFlow(App app, std::wstring name) {
         app.settings->skin.clear();
         co_await io.writeFile(settingsPath(), settingsXml(*app.settings));
     }
-
-    if (!image.empty()) co_await io.removeFile(skinDirectory() / image);
 }
 
 /// «Продолжить чтение»: найти книгу, которую читали, и открыть её.
@@ -563,10 +561,12 @@ managed_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     app.view->setSkins(app.skins->list());
     app.panel->refreshThemes();
 
-    int theme = app.settings->theme;
+    int theme = themeById(app.settings->theme);
 
     if (!app.settings->skin.empty()) {
-        const std::vector<Skin>& list = app.skins->list();
+        // По полному списку полосы, а не по реестру: номера считаются вместе с
+        // системными обложками, которые стоят впереди реестровых.
+        const std::vector<Skin>& list = app.view->skins();
         for (std::size_t index = 0; index < list.size(); ++index) {
             if (list[index].name == app.settings->skin) {
                 theme = kThemeCount + static_cast<int>(index);
@@ -835,7 +835,7 @@ wxl::Teardown wxl_launched() {
             settings->skin = active->name;
         } else {
             settings->skin.clear();
-            settings->theme = view->theme();
+            settings->theme = themeIdAt(view->theme());
         }
         settings->fontSize = view->fontSize();
         settings->lineHeight = view->lineHeight();
@@ -898,6 +898,27 @@ wxl::Teardown wxl_launched() {
         closePanel();
         wizard->show();
         previewSkin();
+    };
+
+    // Удаление спрашивает: точки по снимку читатель расставлял руками, вернуть
+    // их нечем, а корзина стоит вплотную к шестерёнке. Ответ по умолчанию —
+    // «нет»: промах по соседней кнопке не должен ничего стоить.
+    //
+    // Вопрос говорит ровно то, что произойдёт: снимок остаётся в `skins\`, и
+    // обещать его пропажу значило бы соврать про собственное поведение.
+    panel->onDeleteSkin = [window, io, app, skins](std::wstring skinName) {
+        if (!skins->find(skinName)) return;   // реестр успел перемениться
+
+        const std::wstring question = L"Удалить обложку «" + skinName +
+                                      L"»?\n\nРасставленные по снимку точки пропадут; "
+                                      L"сам снимок останется.";
+
+        if (::MessageBoxW(window->handle(), question.c_str(), L"Буквица",
+                          MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+            return;
+        }
+
+        io->spawn(deleteSkinFlow(app, std::move(skinName)));
     };
 
     wizard->onCurvesChanged = previewSkin;

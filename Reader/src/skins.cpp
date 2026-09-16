@@ -6,6 +6,7 @@
 // стандартный заголовок MSVC уже не принимает. Свой первым.
 #include "skins.h"
 
+#include "imaging.h"   // exeDirectory(): у системной обложки снимок в Assets
 #include "settings.h"
 #include "store.h"
 
@@ -64,6 +65,61 @@ Skin defaultSkin() {
     skin.bottomLeft = straightCurve(kEdgeInset, 0.5f - kEdgeInset, 1.0f - kEdgeInset);
     skin.bottomRight = straightCurve(0.5f + kEdgeInset, 1.0f - kEdgeInset, 1.0f - kEdgeInset);
     return skin;
+}
+
+std::span<const Skin> systemSkins() {
+    // Точки ровно те, что мастер записал в skins.xml для этих фотографий, —
+    // перенесённые оттуда как есть, вместе с их неровностью. Округлять их
+    // «покрасивее» нельзя: они описывают конкретный снимок, а не идею изгиба,
+    // и подогнанное число увело бы строку мимо края бумаги.
+    static const std::vector<Skin> list = [] {
+        Skin antique;
+        antique.name = L"Антиквариат";
+        antique.image = L"book-1.png";
+        antique.system = true;
+        antique.topLeft = {{0.0453125f, 0.13645834f, 0.25677082f, 0.43489584f, 0.5f},
+                           {0.0074074073f, 0.013888889f, 0.011111111f, 0.0074074073f,
+                            0.023148147f}};
+        antique.topRight = {{0.5f, 0.5494792f, 0.7375f, 0.8567708f, 0.95677084f},
+                            {0.023148147f, 0.014814815f, 0.0129629625f, 0.016666668f,
+                             0.016666668f}};
+        antique.bottomLeft = {{0.041145835f, 0.29947916f, 0.38489583f, 0.45625f, 0.49947917f},
+                              {0.97037035f, 0.9759259f, 0.9861111f, 0.98333335f, 0.9712963f}};
+        antique.bottomRight = {{0.50208336f, 0.5541667f, 0.6015625f, 0.69947916f, 0.95677084f},
+                               {0.9722222f, 0.9851852f, 0.98796296f, 0.9861111f, 0.9759259f}};
+
+        // Томик — снимок с прямыми краями: точки стоят на начальных местах, и
+        // это не недоделка, а ответ. Гнуть тут нечего, и вёрстка это увидит
+        // сама — размах выйдет нулевым, полоса нарисуется без изгиба вовсе.
+        Skin tome = defaultSkin();
+        tome.name = L"Томик";
+        tome.image = L"tom-1.png";
+        tome.system = true;
+
+        Skin booklet;
+        booklet.name = L"Брошюра";
+        booklet.image = L"Брошюра.png";
+        booklet.system = true;
+        booklet.topLeft = {{0.043335162f, 0.14920461f, 0.33790454f, 0.43938562f, 0.5f},
+                           {0.07692308f, 0.054626532f, 0.005574136f, 0.0011148272f,
+                            0.072463766f}};
+        booklet.topRight = {{0.50082284f, 0.56939113f, 0.63960505f, 0.81130004f, 0.9511794f},
+                            {0.06800446f, 0.0f, 0.0011148272f, 0.04793757f, 0.0780379f}};
+        booklet.bottomLeft = {{0.036752604f, 0.15469007f, 0.29072955f, 0.3609435f, 0.49643445f},
+                              {0.9531773f, 0.9319955f, 0.9632107f, 0.8361204f, 0.942029f}};
+        booklet.bottomRight = {{0.5f, 0.5485464f, 0.6544158f, 0.7778387f, 0.9478881f},
+                               {0.94091415f, 0.89966553f, 0.8573021f, 0.9509476f, 0.9587514f}};
+
+        return std::vector<Skin>{std::move(antique), std::move(tome), std::move(booklet)};
+    }();
+
+    return list;
+}
+
+std::filesystem::path skinImagePath(const Skin& skin) {
+    if (skin.image.empty()) return {};
+
+    return skin.system ? exeDirectory() / L"Assets" / skin.image : skinDirectory() / skin.image;
 }
 
 float edgeAt(const EdgeCurve& curve, float u) {
