@@ -401,7 +401,7 @@ void ReaderPanel::setState(BookState* state) {
 void ReaderPanel::fillContents() {
     contentsList_.value().children().clear();
 
-    const std::vector<ContentsEntry> contents = contentsOf(view_.blocks());
+    const wxl::core::sta_vector<ContentsEntry> contents = contentsOf(view_.blocks());
     if (contents.empty()) {
         contentsList_.value().children().append(listItem(L"В этой книге нет заголовков", {}, 0,
                                                          {}));
@@ -443,7 +443,7 @@ void ReaderPanel::runSearch() {
         return;
     }
 
-    const std::vector<SearchHit> hits = searchBook(view_.blocks(), needle);
+    const wxl::core::sta_vector<SearchHit> hits = searchBook(view_.blocks(), needle);
     if (hits.empty()) {
         searchNote_.value().text(std::format(L"«{}» в книге не нашлось.", needle));
         return;
