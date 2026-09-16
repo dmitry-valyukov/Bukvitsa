@@ -20,14 +20,13 @@
 #include <functional>
 #include <vector>
 
-#include "library.h"
-
 #include "Object.h"
 #include "pch.h"
 
-// Последним: он ведёт к модели книги, а она импортирует wxl.core, после чего
-// стандартный заголовок MSVC уже не принимает.
+// Последними: они ведут к модели книги и реестру, а те импортируют wxl.core,
+// после чего стандартный заголовок MSVC уже не принимает.
 #include "book_view.h"
+#include "library.h"
 
 namespace bukvitsa::reader {
 

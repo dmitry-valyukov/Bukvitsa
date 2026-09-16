@@ -41,8 +41,9 @@ std::string xmlValue(wxl::core::u16_view value);
 std::string xmlValue(std::wstring_view value);
 
 /// Значение атрибута или пустая строка. Ни одно из полей, которые мы читаем,
-/// не обязательно: файл мог быть написан другой версией.
-std::wstring attributeOf(const wxl::xml::node& element, std::string_view name);
+/// не обязательно: файл мог быть написан другой версией. Текст проверенный:
+/// wxl.xml проверяет файл целиком, прежде чем разбирать.
+wxl::core::u16_text attributeOf(const wxl::xml::node& element, std::string_view name);
 
 /// Целое из атрибута; нет атрибута или в нём не число — вернётся fallback.
 std::uint64_t numberOf(const wxl::xml::node& element, std::string_view name,

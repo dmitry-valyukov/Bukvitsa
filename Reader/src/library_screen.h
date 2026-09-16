@@ -17,10 +17,11 @@
 #include <map>
 #include <string>
 
-#include "library.h"
-
 #include "Object.h"
 #include "pch.h"
+
+// Последним: реестр импортирует wxl.core.
+#include "library.h"
 
 namespace bukvitsa::reader {
 

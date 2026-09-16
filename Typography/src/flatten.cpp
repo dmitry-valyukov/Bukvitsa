@@ -169,10 +169,9 @@ private:
         // Хвостовой пробел абзаца не значит ничего: он появился от того, как
         // файл разложен по строкам.
         if (!preformatted_) {
-            while (!block_.paragraph.text.empty() && block_.paragraph.text.back() == L' ') {
-                block_.paragraph.text.pop_back();
-                block_.paragraph.charOffsets.pop_back();
-            }
+            const std::size_t kept = block_.paragraph.text.plain().find_last_not_of(u' ') + 1;
+            block_.paragraph.text.erase(kept);
+            block_.paragraph.charOffsets.resize(kept);
         }
 
         trimSpans();
@@ -231,19 +230,7 @@ private:
     ///
     /// Но только с начала буквы: продолжение буквы, размеченное иначе, берёт
     /// начертание её начала — буква набирается одним прогоном.
-    void appendUnit(wchar_t unit, std::uint32_t charOffset, bool startsLetter) {
-        Paragraph& paragraph = block_.paragraph;
-
-        if (paragraph.spans.empty() ||
-            (startsLetter && !(paragraph.spans.back().style == styles_.back())))
-            paragraph.spans.push_back(
-                StyleSpan{static_cast<std::uint32_t>(paragraph.text.size()), 0, styles_.back()});
-
-        block_.paragraph.text.push_back(unit);
-        block_.paragraph.charOffsets.push_back(charOffset);
-        ++block_.paragraph.spans.back().length;
-    }
-
+    ///
     /// Всё, что попадает в текст блока, идёт сюда: автомат букв должен
     /// увидеть каждый символ, иначе его границы разойдутся с текстом.
     void appendCodePoint(char32_t code, std::uint32_t charOffset) {
@@ -256,14 +243,17 @@ private:
         }
 
         const bool startsLetter = letters_.breaks_before(code);
+        Paragraph& paragraph = block_.paragraph;
+        const std::size_t at = paragraph.text.size();
 
-        if (code >= 0x10000u) {
-            const char32_t rest = code - 0x10000u;
-            appendUnit(static_cast<wchar_t>(0xD800u + (rest >> 10)), charOffset, startsLetter);
-            appendUnit(static_cast<wchar_t>(0xDC00u + (rest & 0x3FFu)), charOffset, false);
-        } else {
-            appendUnit(static_cast<wchar_t>(code), charOffset, startsLetter);
-        }
+        if (paragraph.spans.empty() ||
+            (startsLetter && !(paragraph.spans.back().style == styles_.back())))
+            paragraph.spans.push_back(StyleSpan{static_cast<std::uint32_t>(at), 0, styles_.back()});
+
+        // Символ вне BMP — пара единиц, и позицию в книге несут обе.
+        paragraph.text.push_back(code);
+        paragraph.charOffsets.resize(paragraph.text.size(), charOffset);
+        paragraph.spans.back().length += static_cast<std::uint32_t>(paragraph.text.size() - at);
     }
 
     void flushMarkers() {
@@ -316,8 +306,8 @@ private:
             // ссылка, знак сноски без текста), — и тогда пробелы по обе
             // стороны от него схлопываются здесь, а не остаются двумя. После
             // перевода строки пробел, который служит основой буквы, остаётся.
-            const wchar_t last = block_.paragraph.text.back();
-            if (last == L' ' || (last == L'\n' && !isLetterBase))
+            const char16_t last = block_.paragraph.text.plain().back();
+            if (last == u' ' || (last == u'\n' && !isLetterBase))
                 return;
         }
 

@@ -1,6 +1,6 @@
-#include "library_screen.h"
-
 #include <format>
+
+#include "library_screen.h"
 
 namespace bukvitsa::reader {
 
@@ -221,7 +221,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                 column = 1,
                 vAlign.center,
                 TextBlock{
-                    entry.title,
+                    entry.title.wchars(),
                     fontSize = 18,
                     FontWeight{600},
                     foreground = SolidColorBrush{ARGB{kInk}},
@@ -230,7 +230,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                     textTrimming.characterEllipsis,
                 },
                 TextBlock{
-                    entry.authors,
+                    entry.authors.wchars(),
                     fontSize = 14,
                     foreground = SolidColorBrush{ARGB{kDim}},
                     Margin{0, 4, 0, 0},

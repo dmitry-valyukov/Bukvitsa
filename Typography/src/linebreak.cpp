@@ -54,8 +54,19 @@ struct Node {
     double demerits = 0.0;
     std::uint32_t previous = kNone;
 
+    /// Сколько строк подряд, считая эту, кончаются переносом. Входит в то, чем
+    /// узел отличается от соседа на том же месте, наравне с плотностью: иначе
+    /// дешёвый узел с длинной серией вытеснил бы чуть более дорогой без неё, и
+    /// там, где дальше без переноса не обойтись, решение пропало бы вместе с
+    /// вытесненным.
+    std::uint8_t hyphens = 0;
+
     static constexpr std::uint32_t kNone = 0xFFFFFFFFu;
 };
+
+/// Сколько различных длин серии переносов различает разбивка: 0, 1, 2 и «три
+/// и больше» — последняя бывает только в проходах, где потолок серии снят.
+inline constexpr std::size_t kHyphenSeries = 4;
 
 class Breaker {
 public:
@@ -77,18 +88,26 @@ public:
         const float relaxedShrink = -3.0f;
 
         // Как задумано.
-        if (auto result = attempt(settings_.tolerance, settings_.minAdjustmentRatio, false);
+        if (auto result = attempt(settings_.tolerance, settings_.minAdjustmentRatio, true, false);
             !result.empty())
             return result;
 
         // Плотнее, чем хотелось бы: строка сжата сильнее, чем обещали пробелы.
         // Из двух зол это меньшее — слишком плотная строка читается, слишком
         // растянутая рассыпается на слова.
-        if (auto result = attempt(settings_.tolerance, relaxedShrink, false); !result.empty())
+        if (auto result = attempt(settings_.tolerance, relaxedShrink, true, false); !result.empty())
             return result;
 
         // Свободнее, чем хотелось бы.
-        if (auto result = attempt(kInfinitePenalty, relaxedShrink, false); !result.empty())
+        if (auto result = attempt(kInfinitePenalty, relaxedShrink, true, false); !result.empty())
+            return result;
+
+        // С длинной серией переносов. Она некрасива, но строка за полем ломает
+        // страницу, так что потолок серии снимается раньше, чем строке
+        // разрешают вылезти. Бывает на слове шире полосы, которое переносы
+        // делят на помещающиеся куски, но только тремя разрывами подряд, —
+        // например, на заголовке из слов, склеенных подчёркиванием.
+        if (auto result = attempt(kInfinitePenalty, relaxedShrink, false, false); !result.empty())
             return result;
 
         // Со строкой, вылезающей за поле. Так бывает, когда слово, которое в
@@ -100,11 +119,11 @@ public:
         // Разбивка при этом честно берёт ровно одну плохую строку там, где
         // иначе никак, а не разваливает из-за неё весь абзац: скверность
         // растёт кубом и не упирается ни в какой потолок, см. badness().
-        if (auto result = attempt(kInfinitePenalty, -kInfinitePenalty, false); !result.empty())
+        if (auto result = attempt(kInfinitePenalty, -kInfinitePenalty, false, false); !result.empty())
             return result;
 
         // Аварийный проход: терпим любую строку, лишь бы абзац появился.
-        return attempt(kInfinitePenalty, -kInfinitePenalty, true);
+        return attempt(kInfinitePenalty, -kInfinitePenalty, false, true);
     }
 
 private:
@@ -228,7 +247,10 @@ private:
         return running;
     }
 
-    std::vector<std::uint32_t> attempt(float tolerance, float minRatio, bool desperate) {
+    /// @param limitSeries держать ли потолок серии переносов
+    ///        (BreakSettings::maxHyphensInARow).
+    std::vector<std::uint32_t> attempt(float tolerance, float minRatio, bool limitSeries,
+                                       bool desperate) {
         nodes_.clear();
         active_.clear();
 
@@ -241,7 +263,8 @@ private:
 
         for (std::size_t at = 0; at < items_.size(); ++at) {
             if (isBreakpoint(at))
-                considerBreak(at, running, tolerance, minRatio, desperate, stillActive, born);
+                considerBreak(at, running, tolerance, minRatio, limitSeries, desperate, stillActive,
+                              born);
 
             const BreakItem& item = items_[at];
             if (item.kind != BreakItem::Kind::Penalty) {
@@ -255,7 +278,7 @@ private:
     }
 
     void considerBreak(std::size_t at, const Totals& running, float tolerance, float minRatio,
-                       bool desperate,
+                       bool limitSeries, bool desperate,
                        std::vector<std::uint32_t>& stillActive, std::vector<std::uint32_t>& born) {
         const bool forced = items_[at].kind == BreakItem::Kind::Penalty &&
                             items_[at].penalty <= -kInfinitePenalty;
@@ -263,17 +286,27 @@ private:
         stillActive.clear();
         born.clear();
 
-        // Лучший предок для каждого класса плотности: узлы одной плотности
-        // взаимозаменяемы, и хранить стоит только дешёвый.
+        // Лучший предок для каждого класса плотности и каждой длины серии
+        // переносов: узлы, совпадающие в том и другом, взаимозаменяемы, и
+        // хранить стоит только дешёвый. Серия — в ключе, а не только плотность,
+        // см. Node::hyphens.
         constexpr std::size_t kClasses = 4;
-        double bestDemerits[kClasses];
-        std::uint32_t bestFrom[kClasses];
-        float bestRatio[kClasses];
+        double bestDemerits[kClasses][kHyphenSeries];
+        std::uint32_t bestFrom[kClasses][kHyphenSeries];
+        float bestRatio[kClasses][kHyphenSeries];
         for (std::size_t i = 0; i < kClasses; ++i) {
-            bestDemerits[i] = std::numeric_limits<double>::max();
-            bestFrom[i] = Node::kNone;
-            bestRatio[i] = 0.0f;
+            for (std::size_t j = 0; j < kHyphenSeries; ++j) {
+                bestDemerits[i][j] = std::numeric_limits<double>::max();
+                bestFrom[i][j] = Node::kNone;
+                bestRatio[i][j] = 0.0f;
+            }
         }
+
+        // Строка, кончающаяся здесь, кончается переносом, если здесь флагированный
+        // штраф: и перенос по слогам, и разрыв после дефиса в самом слове
+        // оставляют дефис на краю полосы одинаково.
+        const bool hyphenLine =
+            items_[at].kind == BreakItem::Kind::Penalty && items_[at].flagged;
 
         bool anyFeasible = false;
 
@@ -294,16 +327,24 @@ private:
             if (!feasible)
                 continue;
 
+            // Серия длиннее дозволенной — не строка, пока проход держит потолок.
+            // Узел при этом остаётся активным: запрещена лишь эта строка от
+            // него, а не всякая следующая.
+            const unsigned hyphens = hyphenLine ? node.hyphens + 1u : 0u;
+            if (limitSeries && hyphens > settings_.maxHyphensInARow)
+                continue;
+
             const float clamped = desperate ? std::clamp(ratio, -1.0f, 10.0f) : ratio;
             const Fitness fitness = fitnessOf(clamped);
             const double demerits = demeritsFor(node, at, clamped, fitness);
             const std::size_t klass = static_cast<std::size_t>(fitness);
+            const std::size_t series = std::min<std::size_t>(hyphens, kHyphenSeries - 1);
 
             anyFeasible = true;
-            if (demerits < bestDemerits[klass]) {
-                bestDemerits[klass] = demerits;
-                bestFrom[klass] = index;
-                bestRatio[klass] = clamped;
+            if (demerits < bestDemerits[klass][series]) {
+                bestDemerits[klass][series] = demerits;
+                bestFrom[klass][series] = index;
+                bestRatio[klass][series] = clamped;
             }
         }
 
@@ -311,18 +352,21 @@ private:
             const Totals after = totalsAfterBreak(at, running);
 
             for (std::size_t klass = 0; klass < kClasses; ++klass) {
-                if (bestFrom[klass] == Node::kNone) continue;
+                for (std::size_t series = 0; series < kHyphenSeries; ++series) {
+                    if (bestFrom[klass][series] == Node::kNone) continue;
 
-                Node child;
-                child.position = static_cast<std::uint32_t>(at);
-                child.line = nodes_[bestFrom[klass]].line + 1;
-                child.fitness = static_cast<Fitness>(klass);
-                child.totals = after;
-                child.demerits = bestDemerits[klass];
-                child.previous = bestFrom[klass];
+                    Node child;
+                    child.position = static_cast<std::uint32_t>(at);
+                    child.line = nodes_[bestFrom[klass][series]].line + 1;
+                    child.fitness = static_cast<Fitness>(klass);
+                    child.totals = after;
+                    child.demerits = bestDemerits[klass][series];
+                    child.previous = bestFrom[klass][series];
+                    child.hyphens = static_cast<std::uint8_t>(series);
 
-                nodes_.push_back(child);
-                born.push_back(static_cast<std::uint32_t>(nodes_.size() - 1));
+                    nodes_.push_back(child);
+                    born.push_back(static_cast<std::uint32_t>(nodes_.size() - 1));
+                }
             }
         }
 

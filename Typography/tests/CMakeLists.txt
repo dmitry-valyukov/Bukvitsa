@@ -10,6 +10,7 @@ add_test(NAME typography_tests COMMAND typography_tests)
 
 target_compile_definitions(typography_tests PRIVATE
     BUKVITSA_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../FB3/testdata"
+    BUKVITSA_TYPOGRAPHY_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
     BUKVITSA_MICROTEX_RES="${CMAKE_CURRENT_SOURCE_DIR}/../../external/MicroTeX/res")
 
 # windowscodecs — CLSID фабрики WIC для растеризации формулы в тесте.
