@@ -1,6 +1,7 @@
 add_library(bukvitsa_typography STATIC
     src/flatten.cpp
     src/linebreak.cpp
+    src/hyphenation.cpp
     src/engine.cpp
     src/formula.cpp
     src/glyph_painter.cpp
@@ -25,9 +26,6 @@ bukvitsa_consumes_wxl(bukvitsa_typography)
 if(WIN32)
     target_link_libraries(bukvitsa_typography PUBLIC dwrite d2d1)
 endif()
-
-# TODO: переносы (hunspell-hyphen + словари hyph_ru_RU/hyph_en_US в external/) —
-# в первой версии их нет по решению.
 
 if(BUKVITSA_BUILD_TESTS)
     add_subdirectory(tests)

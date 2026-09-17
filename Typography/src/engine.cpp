@@ -27,6 +27,7 @@
 
 // Свои заголовки после всех стандартных: они ведут к импорту модуля книги, а
 // стандартный заголовок после импорта MSVC уже не принимает.
+#include "bukvitsa/typography/hyphenation.h"
 #include "bukvitsa/typography/layout.h"
 #include "bukvitsa/typography/linebreak.h"
 
@@ -215,6 +216,13 @@ struct ShapedRun {
     sta_vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
     float ascent = 0.0f;
     float descent = 0.0f;
+
+    /// Дефис переноса — глиф того же шрифта, что и прогон, и его ширина при
+    /// опорном кегле. Меряется один раз здесь: строка, кончившаяся переносом,
+    /// дописывает этот глиф к себе, а разбивка знает наперёд, во что ей
+    /// обойдётся перенос в этом месте.
+    std::uint16_t hyphenGlyph = 0;
+    float hyphenAdvance = 0.0f;
 };
 
 /// Прогон, попавший в строку. Возможности выключки едут вместе с глифами:
@@ -222,6 +230,11 @@ struct ShapedRun {
 struct LineRun {
     GlyphRun glyphs;
     sta_vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
+
+    /// Дефис шрифта этого прогона, в кегле строки: его дописывает к себе
+    /// строка, кончившаяся переносом.
+    std::uint16_t hyphenGlyph = 0;
+    float hyphenAdvance = 0.0f;
 };
 
 /// Ключ кэша шрифтов: семейство плюс начертание.
@@ -247,6 +260,15 @@ struct ShapedParagraph::Data {
 
     sta_vector<ShapedRun> runs;
     sta_vector<DWRITE_LINE_BREAKPOINT> breakpoints;
+
+    /// Места переноса: байт на символ. Ноль — разрыва здесь нет; иначе это
+    /// число букв слова, которые перенос унесёт на следующую строку (не больше
+    /// 255), — по нему разбивка дороже берёт перенос с коротким хвостом, и
+    /// считаются именно буквы: «фер-му»,» уносит две, а не четыре знака до
+    /// пробела. Считается один раз здесь, а не при каждой вёрстке:
+    /// перенос — свойство слова, а не полосы, и переживает и смену окна, и
+    /// смену кегля.
+    sta_vector<std::uint8_t> hyphens;
 
     /// Кегль, на котором посчитаны метрики прогонов.
     float referenceFontSize = 0.0f;
@@ -600,6 +622,23 @@ struct Engine::Impl {
         shaped.ascent = fontMetrics.ascent * scale;
         shaped.descent = fontMetrics.descent * scale;
 
+        // Дефис переноса — глиф этого же шрифта: строка, кончившаяся переносом,
+        // дописывает его к себе. U+2010 — дефис типографский, и берётся он
+        // первым; в шрифте его может не быть, и тогда идёт минус-дефис, который
+        // есть везде.
+        for (const UINT32 code : {0x2010u, 0x002Du}) {
+            UINT16 glyph = 0;
+            if (FAILED(format.fontFace->GetGlyphIndices(&code, 1, &glyph)) || glyph == 0)
+                continue;
+
+            DWRITE_GLYPH_METRICS hyphen{};
+            if (SUCCEEDED(format.fontFace->GetDesignGlyphMetrics(&glyph, 1, &hyphen))) {
+                shaped.hyphenGlyph = glyph;
+                shaped.hyphenAdvance = static_cast<float>(hyphen.advanceWidth) * scale;
+            }
+            break;
+        }
+
         return shaped;
     }
 
@@ -626,6 +665,7 @@ struct Engine::Impl {
         check(analyzer->AnalyzeLineBreakpoints(&source, 0, textLength, &analysis));
 
         into.breakpoints = analysis.breakpoints();
+        into.hyphens = hyphenPointsOf(paragraph.text);
 
         const sta_vector<FormatRun> formats = formatRuns(paragraph, blockStyle, analysis);
         into.runs.reserve(formats.size());
@@ -637,6 +677,67 @@ struct Engine::Impl {
             if (format.length == 0 || format.fontFace == nullptr || format.fontSize <= 0.0f)
                 continue;
             into.runs.push_back(shape(paragraph, format));
+        }
+
+        hideSoftHyphens(into);
+    }
+
+    /// Места переноса во всём абзаце, слово за словом.
+    ///
+    /// Слово здесь — подряд идущие буквы, которые знают образцы: запятая в
+    /// слово не входит (иначе «слова,» не нашлось бы в образцах вовсе), а
+    /// дефис делит его надвое, и половины размечаются порознь — как они и
+    /// переносятся.
+    ///
+    /// Слово вырезается проверенным `substr`: половина суррогатной пары буквой
+    /// алфавита не бывает, так что граница слова — всегда граница кодовой точки.
+    static sta_vector<std::uint8_t> hyphenPointsOf(const wxl::core::u16_view text) {
+        const std::u16string_view units = text.plain();
+        sta_vector<std::uint8_t> hyphens(units.size(), std::uint8_t{0});
+
+        for (std::size_t at = 0; at < units.size();) {
+            if (!isHyphenLetter(units[at])) {
+                ++at;
+                continue;
+            }
+
+            std::size_t end = at;
+            while (end < units.size() && isHyphenLetter(units[end]))
+                ++end;
+
+            const HyphenPoints points = hyphenate(text.substr(at, end - at));
+            for (std::size_t i = 0; i < end - at; ++i)
+                if ((points >> i) & 1)
+                    hyphens[at + i] = static_cast<std::uint8_t>(std::min<std::size_t>(end - at - i, 255));
+
+            at = end;
+        }
+
+        return hyphens;
+    }
+
+    /// Мягкий перенос, стоящий в самой книге, не виден, пока строка на нём не
+    /// кончилась: шрифт даёт ему обычный дефис, и «сло-во» показало бы его
+    /// посреди строки. Ширину снимаем у глифа здесь, один раз; разрыв в этом
+    /// месте разбивка получит штрафом, как и всякий другой перенос.
+    static void hideSoftHyphens(ShapedParagraph::Data& into) {
+        for (ShapedRun& run : into.runs) {
+            for (std::uint32_t i = 0; i < run.format.length; ++i) {
+                if (into.breakpoints[run.format.start + i].isSoftHyphen == 0)
+                    continue;
+
+                // Только если знак — кластер сам по себе: иначе ноль достался
+                // бы букве, с которой шейпер его склеил.
+                const std::uint16_t glyph = run.clusterMap[i];
+                if (i > 0 && run.clusterMap[i - 1] == glyph)
+                    continue;
+
+                const auto end = i + 1 < run.format.length
+                                     ? run.clusterMap[i + 1]
+                                     : static_cast<std::uint16_t>(run.glyphIndices.size());
+                for (std::uint16_t at = glyph; at < end; ++at)
+                    run.advances[at] = 0.0f;
+            }
         }
     }
 
@@ -655,16 +756,25 @@ struct Engine::Impl {
     struct CharacterMetrics {
         sta_vector<float> width;
         sta_vector<float> shrink;
+
+        /// Во что обойдётся перенос на этом месте: ширина дефиса того шрифта,
+        /// каким набран сам символ. Разбивке она нужна наперёд — штраф на
+        /// переломе занимает место только на той строке, где перелом взят.
+        sta_vector<float> hyphen;
     };
 
     static CharacterMetrics characterMetrics(const sta_vector<ShapedRun>& runs,
                                              std::uint32_t textLength, float scale) {
         CharacterMetrics metrics{sta_vector<float>(textLength, 0.0f),
+                                 sta_vector<float>(textLength, 0.0f),
                                  sta_vector<float>(textLength, 0.0f)};
 
         for (const ShapedRun& run : runs) {
             const std::uint32_t start = run.format.start;
             const std::uint32_t length = run.format.length;
+
+            for (std::uint32_t i = 0; i < length; ++i)
+                metrics.hyphen[start + i] = run.hyphenAdvance * scale;
 
             for (std::uint32_t i = 0; i < length; ++i) {
                 const std::uint16_t glyph = run.clusterMap[i];
@@ -697,12 +807,23 @@ struct Engine::Impl {
 
     /* ---------------- боксы, клей и штрафы ---------------- */
 
+    /// Цена переноса. У Кнута 50, и здесь она та же: перенос — не изъян
+    /// набора, а обычное его средство, и дороже он ровно настолько, чтобы при
+    /// прочих равных строка предпочла кончиться на пробеле.
+    static constexpr float kHyphenPenalty = 50.0f;
+
+    /// Перенос, уносящий на следующую строку всего две буквы, дороже вшестеро.
+    /// Запрещать его нельзя — в трудном абзаце он бывает единственным, и запрет
+    /// вернул бы нас к строке с дырой, — но пусть разбивка берёт его последним.
+    static constexpr float kShortTailHyphenPenalty = 300.0f;
+
     /// @param from символ, с которого начинается набор. Не ноль тогда, когда
     ///        страница начата с середины абзаца: мгновенная вёрстка ставит
     ///        первую строку ровно с места чтения, а не с красной строки.
     static sta_vector<BreakItem> breakItems(const Paragraph& paragraph,
                                             const CharacterMetrics& metrics,
                                             const sta_vector<DWRITE_LINE_BREAKPOINT>& points,
+                                            std::span<const std::uint8_t> hyphens,
                                             bool ragged, float maxWidth, std::uint32_t from) {
         const auto textLength = static_cast<std::uint32_t>(paragraph.text.size());
 
@@ -723,6 +844,10 @@ struct Engine::Impl {
         const float chunkWidth = std::max(maxWidth * 0.25f, 1.0f);
         bool chopWord = false;
 
+        // Конец слова, которое набирается сейчас: по нему видно, сколько букв
+        // перенос унесёт на следующую строку.
+        std::uint32_t wordEnd = 0;
+
         // Граница буквы, до которой уже дошли внутри рубимого слова. Идёт
         // только вперёд и только в словах, которые рубятся, — то есть почти
         // никогда: весь остальной текст рвётся по переломам DirectWrite, а
@@ -736,6 +861,18 @@ struct Engine::Impl {
         bool pendingStarted = false;
         std::uint32_t pendingStart = 0;
 
+        const auto penalty = [&](std::uint32_t at, float value, bool flagged = false,
+                                 float width = 0.0f) {
+            BreakItem item;
+            item.kind = BreakItem::Kind::Penalty;
+            item.penalty = value;
+            item.flagged = flagged;
+            item.width = width;
+            item.textPosition = at;
+            item.textEnd = at;
+            items.push_back(item);
+        };
+
         const auto flush = [&](std::uint32_t endPosition) {
             if (!pendingStarted)
                 return;
@@ -746,6 +883,18 @@ struct Engine::Impl {
             item.textEnd = endPosition;
 
             if (pendingIsGlue) {
+                // Неразрывный пробел: издатель расставил их там, где строка
+                // рваться не должна, — «И. И. Иванов», «в 1860 г.», «стр. 5»;
+                // в «Отцах и детях» их полторы тысячи. Разрешён ли разрыв после
+                // пробельной череды, говорит символ за ней: перед самим
+                // пробелом разрыва не бывает никогда, и спрашивать надо не о
+                // нём. Запрет ставится штрафом перед клеем, как `~` у Кнута:
+                // клей, перед которым стоит штраф, а не бокс, местом разрыва
+                // уже не считается, но растяжимость строке отдаёт по-прежнему.
+                if (endPosition < textLength &&
+                    points[endPosition].breakConditionBefore == DWRITE_BREAK_CONDITION_MAY_NOT_BREAK)
+                    penalty(pendingStart, kInfinitePenalty);
+
                 item.kind = BreakItem::Kind::Glue;
                 item.width = pending;
 
@@ -777,15 +926,6 @@ struct Engine::Impl {
             pendingShrink = 0.0f;
         };
 
-        const auto penalty = [&](std::uint32_t at, float value) {
-            BreakItem item;
-            item.kind = BreakItem::Kind::Penalty;
-            item.penalty = value;
-            item.textPosition = at;
-            item.textEnd = at;
-            items.push_back(item);
-        };
-
         for (std::uint32_t i = from; i < textLength; ++i) {
             const DWRITE_LINE_BREAKPOINT& point = points[i];
             const bool space = point.isWhitespace != 0;
@@ -810,10 +950,27 @@ struct Engine::Impl {
                 penalty(i, -kInfinitePenalty);
             } else if (i > from && point.breakConditionBefore == DWRITE_BREAK_CONDITION_CAN_BREAK &&
                        !space && (points[i - 1].isWhitespace == 0)) {
-                // Разрыв внутри непробельного текста: после дефиса, между
-                // иероглифами. Штраф нулевой — место разрешено, но не желанно.
+                // Разрыв внутри непробельного текста: после дефиса, после
+                // мягкого переноса из книги, между иероглифами.
+                //
+                // Мягкий перенос дефис печатает, настоящий дефис уже напечатан;
+                // оба помечаются флагом, чтобы два переноса подряд обошлись
+                // дороже. Между иероглифами не перенос вовсе: место разрешено,
+                // ничем не помечено и ничего не стоит.
                 flush(i);
-                penalty(i, 0.0f);
+
+                const bool soft = points[i - 1].isSoftHyphen != 0;
+                const char16_t before = text.plain()[i - 1];
+                const bool afterHyphen = before == u'-' || before == u'\x2010';
+
+                penalty(i, soft || afterHyphen ? kHyphenPenalty : 0.0f, soft || afterHyphen,
+                        soft ? metrics.hyphen[i - 1] : 0.0f);
+            } else if (i > from && !space && i < hyphens.size() && hyphens[i] != 0) {
+                // Место переноса по образцам. Стоит оно ширины дефиса, и платит
+                // её только та строка, которая здесь и кончится.
+                flush(i);
+                penalty(i, hyphens[i] == 2 ? kShortTailHyphenPenalty : kHyphenPenalty, true,
+                        metrics.hyphen[i]);
             }
 
             if (!pendingStarted || space != pendingIsGlue) {
@@ -822,14 +979,35 @@ struct Engine::Impl {
                 pendingIsGlue = space;
                 pendingStart = i;
 
-                // Начинается слово — сразу смотрим, поместится ли оно в полосу
-                // целиком. Просмотр вперёд проходит по каждому символу ровно
-                // один раз за слово, то есть по книге — один раз.
-                if (!space) {
-                    float wordWidth = 0.0f;
-                    for (std::uint32_t at = i; at < textLength && points[at].isWhitespace == 0; ++at)
-                        wordWidth += metrics.width[at];
-                    chopWord = wordWidth > maxWidth;
+                // Начинается слово — сразу смотрим, поместится ли оно в полосу.
+                // Не целиком, а кусками между его собственными местами разрыва:
+                // переносами и разрывами после дефиса. Слово шире полосы, но
+                // с переносами, которые делят его на помещающиеся куски, рубить
+                // нельзя — иначе разбивка получит бесплатные места рубки и
+                // предпочтёт их честному переносу с дефисом.
+                //
+                // Только в начале слова, а не после каждого разрыва внутри
+                // него: это то же слово, и просмотр вперёд так проходит по
+                // каждому символу ровно один раз за слово, то есть по книге —
+                // один раз.
+                if (!space && (i == from || points[i - 1].isWhitespace != 0)) {
+                    float piece = 0.0f;
+                    float widest = 0.0f;
+                    std::uint32_t at = i;
+                    for (; at < textLength && points[at].isWhitespace == 0; ++at) {
+                        const bool breaksHere =
+                            at > i && (points[at].breakConditionBefore == DWRITE_BREAK_CONDITION_CAN_BREAK ||
+                                       (at < hyphens.size() && hyphens[at] != 0));
+                        if (breaksHere) {
+                            widest = std::max(widest, piece + metrics.hyphen[at]);
+                            piece = 0.0f;
+                        }
+                        piece += metrics.width[at];
+                    }
+                    widest = std::max(widest, piece);
+
+                    chopWord = widest > maxWidth;
+                    wordEnd = at;
                     if (chopWord)
                         letter = i;
                 }
@@ -927,6 +1105,8 @@ struct Engine::Impl {
         into.glyphs.style = run.format.style;
         into.glyphs.textStart = runStart + localFrom;
         into.glyphs.textLength = localTo - localFrom;
+        into.hyphenGlyph = run.hyphenGlyph;
+        into.hyphenAdvance = run.hyphenAdvance * scale;
 
         for (std::uint32_t g = firstGlyph; g < lastGlyph; ++g) {
             const float advance = run.advances[g] * scale;
@@ -1146,8 +1326,14 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_t
     /* 4-5. Переломы. */
     const bool ragged = style.alignment != Alignment::Justify;
     const Impl::CharacterMetrics metrics = Impl::characterMetrics(shaped, textLength, scale);
+    // Переносы выключены — разбивка их просто не видит; перешейпливать абзац
+    // при этом не надо, место переноса от настроек не зависит.
+    const std::span<const std::uint8_t> hyphens =
+        impl.style.hyphenation ? std::span<const std::uint8_t>(data->hyphens)
+                               : std::span<const std::uint8_t>();
+
     const sta_vector<BreakItem> items =
-        Impl::breakItems(paragraph, metrics, data->breakpoints, ragged, width, firstChar);
+        Impl::breakItems(paragraph, metrics, data->breakpoints, hyphens, ragged, width, firstChar);
 
     // Отступ первой строки — свойство начала абзаца, а не начала полосы.
     // Страница, начатая с середины абзаца, его продолжает, и красная строка
@@ -1158,6 +1344,14 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_t
     const float lineWidths[2] = {firstWidth, width};
 
     BreakSettings settings;
+
+    // С переносами разбивке есть из чего выбирать, и терпеть растянутую строку
+    // больше незачем: порог возвращается к тому, что у Кнута. Без переносов он
+    // остаётся прежним — строгий порог тогда означал бы не красивый набор, а
+    // отказ разбить абзац и аварийный проход, где не соблюдается уже ничего.
+    if (impl.style.hyphenation)
+        settings.tolerance = 3.0f;
+
     if (ragged) {
         // Свободный правый край: строка вправе кончиться где угодно, и выбор
         // переломов идёт по штрафам, а не по плотности набора.
@@ -1196,6 +1390,25 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, std::uint32_t
             runs.push_back(std::move(piece));
             line.ascent = std::max(line.ascent, run.ascent * scale);
             line.descent = std::max(line.descent, run.descent * scale);
+        }
+
+        // Строка кончилась переносом — дописываем дефис в последний по тексту
+        // прогон: до перестановки по направлению письма, чтобы он уехал вместе
+        // со своим прогоном, и до выключки, чтобы вошёл в ширину строки. Место
+        // ему разбивка уже оставила: ширину штрафа она считает частью строки,
+        // на которой этот перелом взят.
+        //
+        // Возможность выключки у него нулевая: дефис на краю полосы не
+        // раздвигают и не сжимают, как бы ни требовалось строке.
+        if (at.kind == BreakItem::Kind::Penalty && at.flagged && at.width > 0.0f &&
+            !runs.empty() && runs.back().hyphenGlyph != 0) {
+            LineRun& last = runs.back();
+
+            last.glyphs.glyphIndices.push_back(last.hyphenGlyph);
+            last.glyphs.advances.push_back(last.hyphenAdvance);
+            last.glyphs.offsets.push_back(DWRITE_GLYPH_OFFSET{});
+            last.opportunities.push_back(DWRITE_JUSTIFICATION_OPPORTUNITY{});
+            last.glyphs.width += last.hyphenAdvance;
         }
 
         Impl::reorderVisually(runs);
