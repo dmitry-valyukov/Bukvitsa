@@ -883,13 +883,20 @@ wxl::Teardown wxl_launched() {
         previewSkin();
     };
 
-    panel->onEditSkin = [window, wizard, skins, closePanel, badImage,
-                         previewSkin](std::wstring skinName) {
-        const Skin* known = skins->find(skinName);
-        if (!known) return;   // реестр успел перемениться под руками
+    panel->onEditSkin = [view, wizard, closePanel, badImage, previewSkin](std::wstring skinName) {
+        // По полному списку полосы, а не по реестру: системные обложки живут
+        // только в нём, а шестерёнка есть и у них — правка «на основе».
+        const Skin* known = nullptr;
+        for (const Skin& skin : view->skins()) {
+            if (skin.name == skinName) {
+                known = &skin;
+                break;
+            }
+        }
+        if (!known) return;   // список успел перемениться под руками
 
         if (!wizard->openEdit(*known)) {
-            badImage(skinDirectory() / known->image);
+            badImage(skinImagePath(*known));
             return;
         }
 

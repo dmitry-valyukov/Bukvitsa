@@ -50,9 +50,11 @@ constexpr float kCurveStep = 4.0f;    ///< шаг ломаной, которой
 /// соседями, иначе сегмент вырождается.
 constexpr float kMinGap = 0.02f;
 
-/// Сколько линий-подсказок между верхней и нижней кривыми листа, считая их
-/// самих.
+/// Сколько линий-подсказок между верхней и нижней кривыми, считая их самих.
 constexpr int kGuideRows = 9;
+
+/// Кривых у обложки две: верхняя и нижняя.
+constexpr int kCurves = 2;
 
 /// Пусто ли имя — пробелы не в счёт.
 bool blank(std::wstring_view text) {
@@ -67,12 +69,7 @@ SkinWizard::SkinWizard(const Compositor& compositor) : compositor_(compositor) {
 }
 
 EdgeCurve& SkinWizard::curve(int index) {
-    switch (index) {
-        case 0: return skin_.topLeft;
-        case 1: return skin_.topRight;
-        case 2: return skin_.bottomLeft;
-        default: return skin_.bottomRight;
-    }
+    return index == 0 ? skin_.top : skin_.bottom;
 }
 
 const EdgeCurve& SkinWizard::curve(int index) const {
@@ -224,40 +221,46 @@ void SkinWizard::buildTree() {
     tree.add_onPointerMoved([this](Object const&, PointerRoutedEventArgs& args) {
         const Point point = args.getCurrentPoint(root_.value()).position();
 
+        constexpr size_t spine = static_cast<size_t>(EdgeCurve::kSpine);
+
         bool overGrip = dragging_;
+        size_t pointIndex = dragPoint_;
         if (dragging_) {
             EdgeCurve& edited = curve(dragCurve_);
             const size_t at = dragPoint_;
             constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
 
             // Точка ходит в обе оси. По вертикали — от кромки до четверти
-            // высоты; по горизонтали — между соседками, не выходя со своей
-            // половины разворота: середина — граница листов.
-            // Не top/left: это имена тегов DSL, и локальная переменная их
-            // прятала бы.
-            const bool onTop = dragCurve_ < 2;
-            const bool onLeft = dragCurve_ % 2 == 0;
+            // высоты; по горизонтали — между соседками, крайние — до кромок.
+            // Точка корешка по горизонтали не ходит: корешок — середина
+            // разворота, там режутся страницы и лежит тень шва, и излом
+            // кромки обязан стоять там же.
+            // Не top: это имя тега DSL, и локальная переменная его прятала бы.
+            const bool onTop = dragCurve_ == 0;
 
             edited.y[at] = onTop ? std::clamp(point.y / height_, 0.0f, kEdgeReach)
                                  : std::clamp(point.y / height_, 1.0f - kEdgeReach, 1.0f);
 
-            const float low = at == 0 ? (onLeft ? 0.0f : 0.5f) : edited.x[at - 1] + kMinGap;
-            const float high = at == last ? (onLeft ? 0.5f : 1.0f) : edited.x[at + 1] - kMinGap;
-            edited.x[at] = std::clamp(point.x / width_, low, high);
+            if (at != spine) {
+                const float low = at == 0 ? 0.0f : edited.x[at - 1] + kMinGap;
+                const float high = at == last ? 1.0f : edited.x[at + 1] - kMinGap;
+                edited.x[at] = std::clamp(point.x / width_, low, high);
+            }
 
             redraw();
             args.handled(true);
         } else {
             int curveIndex = 0;
-            size_t pointIndex = 0;
             overGrip = gripAt(point, curveIndex, pointIndex);
         }
 
         // Курсор — каждое движение заново: WinUI возвращает свою стрелку, а
         // задать курсор элементу проекция не умеет. Макрос ресурса Windows
-        // допустим здесь — спрашиваем саму Windows. Все четыре стрелки:
-        // точка ходит в обе оси.
-        if (overGrip) ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEALL));
+        // допустим здесь — спрашиваем саму Windows. Четыре стрелки у точки,
+        // которая ходит в обе оси, две — у точки корешка.
+        if (overGrip) {
+            ::SetCursor(::LoadCursorW(nullptr, pointIndex == spine ? IDC_SIZENS : IDC_SIZEALL));
+        }
     });
 
     tree.add_onPointerReleased([this](Object const&, PointerRoutedEventArgs& args) {
@@ -387,48 +390,46 @@ void SkinWizard::redraw() {
         // масштаб: рисуем в DIP, а пиксель хотим физический.
         const float pixel = 1.0f / scale_;
 
-        // Линии-подсказки: у каждого листа свои, от его верхней кривой к его
-        // нижней, и только между крайними точками — за ними кривая всё равно
-        // держит их значение, и линия во всю ширину лишь мешала бы снимку.
-        for (int half = 0; half < 2; ++half) {
-            // Не top/bottom: это имена тегов DSL.
-            const EdgeCurve& upper = curve(half);
-            const EdgeCurve& lower = curve(half + 2);
-            constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
+        // Линии-подсказки: от верхней кривой к нижней, и только между крайними
+        // точками — за ними кривая всё равно держит их значение, и линия во
+        // всю ширину лишь мешала бы снимку. Корешок линия проходит насквозь:
+        // точка там у обоих листов одна, и край в нём непрерывен.
+        // Не top/bottom: это имена тегов DSL.
+        const EdgeCurve& upper = skin_.top;
+        const EdgeCurve& lower = skin_.bottom;
+        constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
 
-            for (int row = 0; row < kGuideRows; ++row) {
-                const float share = static_cast<float>(row) / (kGuideRows - 1);
-                const float base = kEdgeInset + share * (1.0f - 2.0f * kEdgeInset);
-                const float from = upper.x[0] + (lower.x[0] - upper.x[0]) * share;
-                const float to = upper.x[last] + (lower.x[last] - upper.x[last]) * share;
+        for (int row = 0; row < kGuideRows; ++row) {
+            const float share = static_cast<float>(row) / (kGuideRows - 1);
+            const float base = kEdgeInset + share * (1.0f - 2.0f * kEdgeInset);
+            const float from = upper.x[0] + (lower.x[0] - upper.x[0]) * share;
+            const float to = upper.x[last] + (lower.x[last] - upper.x[last]) * share;
 
-                const int steps =
-                    std::max(2, static_cast<int>((to - from) * width_ / kCurveStep));
-                D2D1_POINT_2F previous{};
+            const int steps = std::max(2, static_cast<int>((to - from) * width_ / kCurveStep));
+            D2D1_POINT_2F previous{};
 
-                for (int step = 0; step <= steps; ++step) {
-                    const float u =
-                        from + (to - from) * static_cast<float>(step) / static_cast<float>(steps);
-                    const float deviation = (edgeAt(upper, u) - kEdgeInset) * (1.0f - share) +
-                                            (edgeAt(lower, u) - (1.0f - kEdgeInset)) * share;
-                    const D2D1_POINT_2F point{u * width_, (base + deviation) * height_};
+            for (int step = 0; step <= steps; ++step) {
+                const float u =
+                    from + (to - from) * static_cast<float>(step) / static_cast<float>(steps);
+                const float deviation = (edgeAt(upper, u) - kEdgeInset) * (1.0f - share) +
+                                        (edgeAt(lower, u) - (1.0f - kEdgeInset)) * share;
+                const D2D1_POINT_2F point{u * width_, (base + deviation) * height_};
 
-                    // Линия рисуется тройкой: тёмная в пиксель выше, тёмная в
-                    // пиксель ниже и основная поверх — тень отбивает её и от
-                    // светлой бумаги, и от текста.
-                    if (step > 0) {
-                        context->DrawLine({previous.x, previous.y - pixel},
-                                          {point.x, point.y - pixel}, shade.Get(), 1.5f);
-                        context->DrawLine({previous.x, previous.y + pixel},
-                                          {point.x, point.y + pixel}, shade.Get(), 1.5f);
-                        context->DrawLine(previous, point, curveBrush.Get(), 1.5f);
-                    }
-                    previous = point;
+                // Линия рисуется тройкой: тёмная в пиксель выше, тёмная в
+                // пиксель ниже и основная поверх — тень отбивает её и от
+                // светлой бумаги, и от текста.
+                if (step > 0) {
+                    context->DrawLine({previous.x, previous.y - pixel},
+                                      {point.x, point.y - pixel}, shade.Get(), 1.5f);
+                    context->DrawLine({previous.x, previous.y + pixel},
+                                      {point.x, point.y + pixel}, shade.Get(), 1.5f);
+                    context->DrawLine(previous, point, curveBrush.Get(), 1.5f);
                 }
+                previous = point;
             }
         }
 
-        for (int index = 0; index < 4; ++index) {
+        for (int index = 0; index < kCurves; ++index) {
             const EdgeCurve& edited = curve(index);
             for (size_t at = 0; at < static_cast<size_t>(EdgeCurve::kPoints); ++at) {
                 const D2D1_ELLIPSE circle{{edited.x[at] * width_, edited.y[at] * height_},
@@ -445,7 +446,7 @@ bool SkinWizard::gripAt(Point point, int& curveIndex, size_t& pointIndex) const 
 
     const float reach = kGripReach * kGripReach;
 
-    for (int index = 0; index < 4; ++index) {
+    for (int index = 0; index < kCurves; ++index) {
         const EdgeCurve& edited = curve(index);
         for (size_t at = 0; at < static_cast<size_t>(EdgeCurve::kPoints); ++at) {
             const float dx = point.x - edited.x[at] * width_;
