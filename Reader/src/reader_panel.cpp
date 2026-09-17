@@ -109,10 +109,24 @@ void ReaderPanel::buildTree() {
                                                  });
     settings_ = box(HorizontalAlignment::Right, buildSettings());
 
-    // Оба ящика — в одном холсте без кисти: такой не участвует в проверке
-    // попадания, и страница между ящиками остаётся страницей, а полосе
-    // отдаётся один элемент, а не два.
-    root_ = Grid{navigation_.value(), settings_.value()};
+    // Оба ящика — в одном холсте с прозрачной, но настоящей кистью: без неё
+    // холст не участвует в проверке попадания, а с ней ловит щелчок мимо
+    // ящиков и закрывает оба, съедая щелчок, — как свет-дисмисс у Flyout.
+    // Сам Flyout не подошёл: попапов со свет-дисмиссом у WinUI в один момент
+    // один, второй закрывает первый. Пока панель закрыта, холст свёрнут, и
+    // страница между ящиками остаётся страницей.
+    root_ = Grid{
+        visibility = Visibility::Collapsed,
+        background = SolidColorBrush{ARGB{0x00000000}},
+        navigation_.value(),
+        settings_.value(),
+    };
+    root_.value().add_onPointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
+        // Сюда доходят только щелчки по самому холсту: щелчки по ящикам они
+        // же и гасят.
+        close();
+        args.handled(true);
+    });
 
     linear_ = compositor_.createLinearEasingFunction();
     navigationVisual_ = slidingVisual(navigation_.value(), -static_cast<float>(kWidth));
@@ -130,17 +144,27 @@ Border ReaderPanel::box(HorizontalAlignment side, const UIElement& inside) {
     const bool onLeft = side == HorizontalAlignment::Left;
     const double pad = onLeft ? 0.0 : 12.0;
 
-    return Border{
+    auto border = Border{
         horizontalAlignment = side,
         vAlign.stretch,
         width = kWidth,
-        visibility = Visibility::Collapsed,
         background = SolidColorBrush{ARGB{kChrome}},
         borderBrush = SolidColorBrush{ARGB{kEdge}},
         BorderThickness{onLeft ? 0.0 : 1.0, 0.0, onLeft ? 1.0 : 0.0, 0.0},
         Padding{pad, pad},
         child = inside,
     };
+
+    // Ящик — не страница: щелчок и колесо по его пустому месту здесь и
+    // кончаются, иначе они всплыли бы к полосе, и та листала бы книгу под
+    // открытой панелью и закрывала её правой кнопкой.
+    border.add_onPointerPressed([](Object const&, PointerRoutedEventArgs& args) {
+        args.handled(true);
+    });
+    border.add_onPointerWheelChanged([](Object const&, PointerRoutedEventArgs& args) {
+        args.handled(true);
+    });
+    return border;
 }
 
 Visual ReaderPanel::slidingVisual(const UIElement& box, float offscreen) {
@@ -407,8 +431,7 @@ void ReaderPanel::show() {
     // время, пока панель открыта, а настройки меняют и мимо неё, клавишами.
     syncSettings();
 
-    navigation_.value().visibility(Visibility::Visible);
-    settings_.value().visibility(Visibility::Visible);
+    root_.value().visibility(Visibility::Visible);
     slide(navigationVisual_.value(), 0.0f);
     slide(settingsVisual_.value(), 0.0f);
 }
@@ -417,18 +440,17 @@ void ReaderPanel::close() {
     if (!open_) return;
     open_ = false;
 
-    // Уехавшие ящики надо ещё и спрятать, иначе они продолжат ловить щелчки
-    // за краями экрана. Конец анимации узнаётся пакетом, а не таймером: пакет
-    // сам скажет, когда последняя из двух анимаций в нём закончилась.
+    // Уехавшие ящики надо ещё и спрятать вместе с холстом, иначе они
+    // продолжат ловить щелчки: ящики за краями экрана, холст — на странице.
+    // Конец анимации узнаётся пакетом, а не таймером: пакет сам скажет, когда
+    // последняя из двух анимаций в нём закончилась.
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
 
     slide(navigationVisual_.value(), -static_cast<float>(kWidth));
     slide(settingsVisual_.value(), static_cast<float>(kWidth));
 
     batch.add_onCompleted([this](Object const&, CompositionBatchCompletedEventArgs&) {
-        if (open_) return;
-        navigation_.value().visibility(Visibility::Collapsed);
-        settings_.value().visibility(Visibility::Collapsed);
+        if (!open_) root_.value().visibility(Visibility::Collapsed);
     });
     batch.end();
 }
