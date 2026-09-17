@@ -59,7 +59,7 @@ ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view)
 void ReaderPanel::buildTree() {
     using namespace wxl::dsl;
 
-    tabPages_ = {buildContents(), buildSearch(), buildBookmarks(), buildSettings()};
+    tabPages_ = {buildContents(), buildSearch(), buildBookmarks()};
 
     // Выход на полку — первым, отдельной строкой над вкладками. Вкладки
     // говорят о книге, которая открыта; эта кнопка — о том, чтобы открыть
@@ -90,8 +90,7 @@ void ReaderPanel::buildTree() {
     };
     for (auto&& [caption, tab] : {std::pair{L"Оглавление", Tab::Contents},
                                   std::pair{L"Поиск", Tab::Search},
-                                  std::pair{L"Закладки", Tab::Bookmarks},
-                                  std::pair{L"Вид", Tab::Settings}}) {
+                                  std::pair{L"Закладки", Tab::Bookmarks}}) {
         auto button = tabButton(caption, tab);
         tabButtons_.push_back(button);
         strip.children().append(button);
@@ -102,30 +101,86 @@ void ReaderPanel::buildTree() {
         pages_.value().children().append(page);
     }
 
-    root_ = Border{
-        hAlign.left,
-        vAlign.stretch,
-        width = kWidth,
-        visibility = Visibility::Collapsed,
-        background = SolidColorBrush{ARGB{kChrome}},
-        borderBrush = SolidColorBrush{ARGB{kEdge}},
-        BorderThickness{0, 0, 1, 0},
-        Grid{
-            rowDefinitions = L"auto,auto,*",
-            shelf,
-            strip,
-            pages_.value(),
-        },
-    };
+    navigation_ = box(HorizontalAlignment::Left, Grid{
+                                                     rowDefinitions = L"auto,auto,*",
+                                                     shelf,
+                                                     strip,
+                                                     pages_.value(),
+                                                 });
+    settings_ = box(HorizontalAlignment::Right, buildSettings());
 
-    // Выезд идёт по Translation, а не по Offset: Offset — это то, чем XAML
-    // расставляет элементы при разметке, и анимация его отобрала бы.
-    ElementCompositionPreview::setIsTranslationEnabled(root_.value(), true);
-    visual_ = ElementCompositionPreview::getElementVisual(root_.value());
-    visual_.value().properties().insertVector3(L"Translation",
-                                               Vector3{-static_cast<float>(kWidth), 0.0f, 0.0f});
+    // Оба ящика — в одном холсте с прозрачной, но настоящей кистью: без неё
+    // холст не участвует в проверке попадания, а с ней ловит щелчок мимо
+    // ящиков и закрывает оба, съедая щелчок, — как свет-дисмисс у Flyout.
+    // Сам Flyout не подошёл: попапов со свет-дисмиссом у WinUI в один момент
+    // один, второй закрывает первый. Пока панель закрыта, холст свёрнут, и
+    // страница между ящиками остаётся страницей.
+    root_ = Grid{
+        visibility = Visibility::Collapsed,
+        background = SolidColorBrush{ARGB{0x00000000}},
+        navigation_.value(),
+        settings_.value(),
+    };
+    root_.value().add_onPointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
+        // Сюда доходят только щелчки по самому холсту: щелчки по ящикам они
+        // же и гасят.
+        close();
+        args.handled(true);
+    });
+
+    linear_ = compositor_.createLinearEasingFunction();
+    navigationVisual_ = slidingVisual(navigation_.value(), -static_cast<float>(kWidth));
+    settingsVisual_ = slidingVisual(settings_.value(), static_cast<float>(kWidth));
 
     showTab(Tab::Contents);
+}
+
+Border ReaderPanel::box(HorizontalAlignment side, const UIElement& inside) {
+    using namespace wxl::dsl;
+
+    // Кромка у ящика одна — та, что смотрит на страницу. Отбивку от стенок
+    // правому ящику даёт сам ящик; у левого её несут его ряды.
+    // Не left: это имя тега DSL, и локальная переменная его прятала бы.
+    const bool onLeft = side == HorizontalAlignment::Left;
+    const double pad = onLeft ? 0.0 : 12.0;
+
+    auto border = Border{
+        horizontalAlignment = side,
+        vAlign.stretch,
+        width = kWidth,
+        background = SolidColorBrush{ARGB{kChrome}},
+        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        BorderThickness{onLeft ? 0.0 : 1.0, 0.0, onLeft ? 1.0 : 0.0, 0.0},
+        Padding{pad, pad},
+        child = inside,
+    };
+
+    // Ящик — не страница: щелчок и колесо по его пустому месту здесь и
+    // кончаются, иначе они всплыли бы к полосе, и та листала бы книгу под
+    // открытой панелью и закрывала её правой кнопкой.
+    border.add_onPointerPressed([](Object const&, PointerRoutedEventArgs& args) {
+        args.handled(true);
+    });
+    border.add_onPointerWheelChanged([](Object const&, PointerRoutedEventArgs& args) {
+        args.handled(true);
+    });
+    return border;
+}
+
+Visual ReaderPanel::slidingVisual(const UIElement& box, float offscreen) {
+    // Выезд идёт по Translation, а не по Offset: Offset — это то, чем XAML
+    // расставляет элементы при разметке, и анимация его отобрала бы.
+    ElementCompositionPreview::setIsTranslationEnabled(box, true);
+    Visual visual = ElementCompositionPreview::getElementVisual(box);
+    visual.properties().insertVector3(L"Translation", Vector3{offscreen, 0.0f, 0.0f});
+    return visual;
+}
+
+void ReaderPanel::slide(Visual& visual, float x) {
+    auto animation = compositor_.createVector3KeyFrameAnimation();
+    animation.duration(kSlide);
+    animation.insertKeyFrame(1.0f, Vector3{x, 0.0f, 0.0f}, linear_.value());
+    visual.startAnimation(L"Translation", animation);
 }
 
 Button ReaderPanel::tabButton(std::wstring_view caption, Tab tab) {
@@ -352,38 +407,47 @@ void ReaderPanel::open(Tab tab) {
     switch (tab) {
         case Tab::Contents: fillContents(); break;
         case Tab::Bookmarks: fillBookmarks(); break;
-        case Tab::Settings: syncSettings(); break;
         case Tab::Search: break;   // список остаётся от прошлого поиска
     }
 
-    if (!open_) {
-        open_ = true;
-        root_.value().visibility(Visibility::Visible);
-
-        auto slide = compositor_.createVector3KeyFrameAnimation();
-        slide.duration(kSlide);
-        slide.insertKeyFrame(1.0f, Vector3{0.0f, 0.0f, 0.0f},
-                             compositor_.createLinearEasingFunction());
-        visual_.value().startAnimation(L"Translation", slide);
-    }
+    show();
 
     if (tab == Tab::Search) searchBox_.value().focus(FocusState::Programmatic);
+}
+
+void ReaderPanel::toggle() {
+    if (open_) {
+        close();
+    } else {
+        open(tab_);
+    }
+}
+
+void ReaderPanel::show() {
+    if (open_) return;
+    open_ = true;
+
+    // Ползунки и отметка темы — при каждом появлении: правый ящик виден всё
+    // время, пока панель открыта, а настройки меняют и мимо неё, клавишами.
+    syncSettings();
+
+    root_.value().visibility(Visibility::Visible);
+    slide(navigationVisual_.value(), 0.0f);
+    slide(settingsVisual_.value(), 0.0f);
 }
 
 void ReaderPanel::close() {
     if (!open_) return;
     open_ = false;
 
-    // Уехавшую панель надо ещё и спрятать, иначе она продолжит ловить щелчки
-    // за краем экрана. Конец анимации узнаётся пакетом, а не таймером: пакет
-    // сам скажет, когда последняя анимация в нём закончилась.
+    // Уехавшие ящики надо ещё и спрятать вместе с холстом, иначе они
+    // продолжат ловить щелчки: ящики за краями экрана, холст — на странице.
+    // Конец анимации узнаётся пакетом, а не таймером: пакет сам скажет, когда
+    // последняя из двух анимаций в нём закончилась.
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
 
-    auto slide = compositor_.createVector3KeyFrameAnimation();
-    slide.duration(kSlide);
-    slide.insertKeyFrame(1.0f, Vector3{-static_cast<float>(kWidth), 0.0f, 0.0f},
-                         compositor_.createLinearEasingFunction());
-    visual_.value().startAnimation(L"Translation", slide);
+    slide(navigationVisual_.value(), -static_cast<float>(kWidth));
+    slide(settingsVisual_.value(), static_cast<float>(kWidth));
 
     batch.add_onCompleted([this](Object const&, CompositionBatchCompletedEventArgs&) {
         if (!open_) root_.value().visibility(Visibility::Collapsed);
