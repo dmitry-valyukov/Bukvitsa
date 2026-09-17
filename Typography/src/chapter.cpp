@@ -24,13 +24,16 @@
 // стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/page.h"
 
+using wxl::core::sta_deque;
+using wxl::core::sta_vector;
+
 namespace bukvitsa::typography {
 namespace {
 
 /// Блок, разложенный на строки, вместе с отбивками.
 struct LaidOutBlock {
     const Block* source = nullptr;
-    pool_vector<Line> lines;
+    sta_vector<Line> lines;
     float indent = 0.0f;        ///< втяжка блока слева
     float spaceBefore = 0.0f;
     float spaceAfter = 0.0f;
@@ -172,17 +175,22 @@ Spacing spacingFor(const Block& block) {
 /// адресов уже поставленных строк; оба места, откуда набор зовут, это
 /// обеспечивают.
 struct PageBuilder {
-    const pool_vector<LaidOutBlock>* source = nullptr;
+    const sta_vector<LaidOutBlock>* source = nullptr;
     PageStyle style;
 
-    pool_deque<Page> pages;
+    /// Дек, а не вектор: страница не переезжает при росте. На страницы смотрит
+    /// читалка (лента колонок разворота), пока фоновый досчёт дописывает
+    /// следующие, и у вектора дописанная страница переселила бы весь набор.
+    /// Строки внутри страницы стабильны по той же причине: laidOut заводится
+    /// на всю главу разом и не растёт.
+    sta_deque<Page> pages;
     Page current;
     float used = 0.0f;              ///< сколько полосы занято сверху
     std::uint32_t lastOffset = 0;   ///< позиция последнего поставленного
     std::size_t block = 0;          ///< блок, который ставится следующим
     std::size_t line = 0;           ///< строка внутри него
 
-    void reset(const pool_vector<LaidOutBlock>& blocks, const PageStyle& pageStyle) {
+    void reset(const sta_vector<LaidOutBlock>& blocks, const PageStyle& pageStyle) {
         source = &blocks;
         style = pageStyle;
         pages.clear();
@@ -252,7 +260,7 @@ struct PageBuilder {
     /// то, что за ним, — и заглянуть в несвёрстанное значило бы принять
     /// решение по пустому месту.
     void place(std::size_t limit) {
-        const pool_vector<LaidOutBlock>& blocks = *source;
+        const sta_vector<LaidOutBlock>& blocks = *source;
 
         while (block < limit) {
             const LaidOutBlock& item = blocks[block];
@@ -337,7 +345,7 @@ struct PageBuilder {
 /// За какой блок набору заходить нельзя: индекс последнего непустого в списке.
 /// Ноль означает «пока некуда» — и это верно и для пустого списка, и для
 /// списка из одних разделителей.
-std::size_t nonEmptyLimit(const pool_vector<LaidOutBlock>& blocks) {
+std::size_t nonEmptyLimit(const sta_vector<LaidOutBlock>& blocks) {
     for (std::size_t i = blocks.size(); i > 0; --i) {
         if (blocks[i - 1].occupies())
             return i - 1;
@@ -361,14 +369,14 @@ struct Chapter::Impl {
     /// столько же, сколько книга: от кегля и полосы он не зависит, а стоит
     /// почти всей вёрстки — 253 мс из 267 на романе в 650 тысяч знаков.
     /// Ради этого и разделены shape и layout.
-    pool_vector<ShapedParagraphPtr> shaped;
+    sta_vector<ShapedParagraphPtr> shaped;
 
     /* ---------------- порционная вёрстка книги ---------------- */
 
     /// Свёрстанные блоки книги, по индексу в blocks. Заводится сразу на всю
     /// книгу и не растёт: страницы держат указатели на строки, и всякое
     /// перевыделение сделало бы их недействительными.
-    pool_vector<LaidOutBlock> laidOut;
+    sta_vector<LaidOutBlock> laidOut;
     PageBuilder book;
     std::size_t layoutCursor = 0;    ///< блок, который верстается следующим
     std::size_t lastNonEmpty = 0;    ///< за него набору заходить нельзя
@@ -561,7 +569,7 @@ bool Chapter::advance(std::chrono::steady_clock::duration budget) {
 }
 
 bool Chapter::advanceTo(std::uint32_t charOffset) {
-    const pool_deque<Page>& pages = impl_->book.pages;
+    const sta_deque<Page>& pages = impl_->book.pages;
 
     // Страница с этим символом окончательна, только когда набор ушёл за неё:
     // пока она последняя, на ней ещё будет место.
@@ -570,7 +578,7 @@ bool Chapter::advanceTo(std::uint32_t charOffset) {
 }
 
 bool Chapter::advanceToPage(std::size_t index) {
-    const pool_deque<Page>& pages = impl_->book.pages;
+    const sta_deque<Page>& pages = impl_->book.pages;
     return impl_->runUntil([&] { return pages.size() > index; });
 }
 
@@ -593,14 +601,14 @@ const Page& nowhere() {
 }  // namespace
 
 const Page& Chapter::page(std::size_t index) const {
-    const pool_deque<Page>& pages = impl_->book.pages;
+    const sta_deque<Page>& pages = impl_->book.pages;
     if (pages.empty())
         return nowhere();
     return pages[std::min(index, pages.size() - 1)];
 }
 
 std::size_t Chapter::pageForCharOffset(std::uint32_t charOffset) const {
-    const pool_deque<Page>& pages = impl_->book.pages;
+    const sta_deque<Page>& pages = impl_->book.pages;
 
     // Страницы упорядочены по позиции в книге, поэтому — двоичный поиск
     // последней, начинающейся не позже искомого символа.

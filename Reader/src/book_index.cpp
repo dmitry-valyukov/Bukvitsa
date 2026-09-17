@@ -53,8 +53,8 @@ wxl::core::u16_text contextAround(wxl::core::u16_view text, std::size_t at, std:
 
 }  // namespace
 
-std::vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks) {
-    std::vector<ContentsEntry> contents;
+wxl::core::sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks) {
+    wxl::core::sta_vector<ContentsEntry> contents;
 
     for (const typography::Block& block : blocks) {
         if (block.kind != typography::BlockKind::Title) continue;
@@ -66,9 +66,9 @@ std::vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks)
     return contents;
 }
 
-std::vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
-                                  std::wstring_view needle, std::size_t limit) {
-    std::vector<SearchHit> hits;
+wxl::core::sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
+                                            std::wstring_view needle, std::size_t limit) {
+    wxl::core::sta_vector<SearchHit> hits;
     if (needle.empty() || limit == 0) return hits;
 
     const std::wstring wanted = lowered(needle);

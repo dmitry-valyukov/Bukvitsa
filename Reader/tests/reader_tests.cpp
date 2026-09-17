@@ -92,7 +92,7 @@ void testSearchContextKeepsLetters() {
         text.append(20, L'\x0436');
 
         const typography::Block blocks[] = {blockOf(text)};
-        const std::vector<reader::SearchHit> hits = reader::searchBook(blocks, L"q");
+        const wxl::core::sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, L"q");
 
         check(hits.size() == 1, "находка одна");
         if (hits.size() != 1) continue;
@@ -114,7 +114,7 @@ void testContentsBorrowTitles() {
     title.kind = typography::BlockKind::Title;
     const typography::Block blocks[] = {title, blockOf(L"Текст главы.")};
 
-    const std::vector<reader::ContentsEntry> contents = reader::contentsOf(blocks);
+    const wxl::core::sta_vector<reader::ContentsEntry> contents = reader::contentsOf(blocks);
     check(contents.size() == 1, "в оглавлении один заголовок");
     if (contents.size() != 1) return;
 
