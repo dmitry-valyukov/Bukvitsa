@@ -2083,19 +2083,19 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
 
         // Отклонения краёв от их прямых начальных линий, в долях высоты
         // полосы, по значению на столбец карты. У каждой границы каждого листа
-        // изгиб свой, и середина разворота — граница между левой парой кривых
-        // и правой.
+        // изгиб свой; какой лист под столбцом, кривая решает сама — по своей
+        // точке корешка.
         const int columns = static_cast<int>(pixels.width);
         std::vector<float> topEdge(static_cast<size_t>(columns));
         std::vector<float> bottomEdge(static_cast<size_t>(columns));
 
+        // Касательные считаются один раз на обе кромки, а не на каждый столбец.
+        const EdgeSpline upper{skin->top};
+        const EdgeSpline lower{skin->bottom};
         for (int x = 0; x < columns; ++x) {
             const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
-            const bool left = u < 0.5f;
-            topEdge[static_cast<size_t>(x)] =
-                edgeAt(left ? skin->topLeft : skin->topRight, u) - kEdgeInset;
-            bottomEdge[static_cast<size_t>(x)] =
-                edgeAt(left ? skin->bottomLeft : skin->bottomRight, u) - (1.0f - kEdgeInset);
+            topEdge[static_cast<size_t>(x)] = upper.at(u) - kEdgeInset;
+            bottomEdge[static_cast<size_t>(x)] = lower.at(u) - (1.0f - kEdgeInset);
         }
 
         float amplitude = 0.0f;
