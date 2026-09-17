@@ -813,13 +813,7 @@ wxl::Teardown wxl_launched() {
 
     // Правая кнопка по странице открывает ящик. Другой дороги к нему у мыши
     // нет: у страницы книги нет ни полосы меню, ни кнопок — и не должно быть.
-    view->onPanelRequested = [panel] {
-        if (panel->isOpen()) {
-            panel->close();
-        } else {
-            panel->open(ReaderPanel::Tab::Contents);
-        }
-    };
+    view->onPanelRequested = [panel] { panel->toggle(); };
 
     // Сохранить настройки вида по текущему состоянию полосы. Одна лямбда на два
     // источника: панель зовёт её из своих ползунков, а сама полоса — из
@@ -1006,11 +1000,7 @@ wxl::Teardown wxl_launched() {
             switch (args.key()) {
                 case VirtualKey::F2:
                     if (!reading) return;
-                    if (panel->isOpen()) {
-                        panel->close();
-                    } else {
-                        panel->open(ReaderPanel::Tab::Settings);
-                    }
+                    panel->toggle();
                     break;
                 case VirtualKey::F11:
                     setFullScreen(!isFullScreen());
