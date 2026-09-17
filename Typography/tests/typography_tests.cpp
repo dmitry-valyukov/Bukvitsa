@@ -1466,7 +1466,7 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
     const typography::TextStyle original = engine.textStyle();
 
     struct Column {
-        std::vector<typography::pool_vector<typography::Line>> paragraphs;
+        std::vector<wxl::core::sta_vector<typography::Line>> paragraphs;
         float height = 0.0f;
         std::size_t lines = 0, hyphens = 0, hyphensInARow = 0;
     };

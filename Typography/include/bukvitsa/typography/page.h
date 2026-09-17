@@ -59,8 +59,8 @@ struct PlacedImage {
 };
 
 struct Page {
-    pool_vector<PlacedLine> lines;
-    pool_vector<PlacedImage> images;
+    wxl::core::sta_vector<PlacedLine> lines;
+    wxl::core::sta_vector<PlacedImage> images;
     std::uint32_t firstCharOffset = 0;
     std::uint32_t lastCharOffset = 0;
 };

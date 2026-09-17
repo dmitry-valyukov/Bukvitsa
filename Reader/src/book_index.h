@@ -10,6 +10,9 @@
 // (свёртка пробелов сделана), а рядом с каждым символом лежит его позиция в
 // книге. Обходить дерево заново значило бы повторить эту работу и получить
 // другие индексы.
+//
+// Зовут их из потока окна, и живёт результат недолго — пока заполняется
+// вкладка панели, — поэтому списки берут память из STA-пула.
 
 #include <cstdint>
 #include <span>
@@ -33,7 +36,7 @@ struct ContentsEntry {
 /// Книга без заголовков бывает — тогда оглавление пустое, и показывать нечего.
 /// Выдумывать вместо него список абзацев не нужно: пустое оглавление честнее
 /// длинного списка ни о чём.
-std::vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks);
+wxl::core::sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks);
 
 /// Находка поиска: место и кусок текста вокруг него.
 struct SearchHit {
@@ -46,8 +49,8 @@ struct SearchHit {
 /// @param limit сколько находок вернуть. Ограничение не от лени: «а» в романе
 ///        встречается десятки тысяч раз, и список из них бесполезен читателю
 ///        ровно так же, как дорог приложению.
-std::vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
-                                  std::wstring_view needle, std::size_t limit = 200);
+wxl::core::sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
+                                            std::wstring_view needle, std::size_t limit = 200);
 
 /// Первые слова абзаца, в котором стоит эта позиция, — подсказка для закладки.
 wxl::core::u16_text hintAt(std::span<const typography::Block> blocks, std::uint32_t charOffset);
