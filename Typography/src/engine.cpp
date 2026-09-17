@@ -479,9 +479,9 @@ struct Engine::Impl {
                         --cut;
 
                     const u16_view rest = u16_view(paragraph.text).substr(at);
-                    size_t letters = floor_grapheme_boundary(rest, cut - at);
+                    size_t letters = unicode::floor_grapheme_boundary(rest, cut - at);
                     if (letters == 0)
-                        letters = next_grapheme_boundary(rest, 0);
+                        letters = unicode::next_grapheme_boundary(rest, 0);
 
                     end = at + static_cast<uint32_t>(letters);
                 }
@@ -600,7 +600,7 @@ struct Engine::Impl {
                 u16_view(paragraph.text).substr(format.start, length);
 
             for (size_t letter = 0; letter < length;) {
-                const size_t next = next_grapheme_boundary(letters, letter);
+                const size_t next = unicode::next_grapheme_boundary(letters, letter);
                 const uint32_t glyphEnd = next < length ? shaped.clusterMap[next] : actualGlyphs;
 
                 if (glyphEnd > shaped.clusterMap[next - 1])
@@ -1027,7 +1027,7 @@ struct Engine::Impl {
             // отрезала бы от слога его конечную согласную.
             const auto startsLetter = [&](uint32_t at) {
                 while (letter < at)
-                    letter = next_grapheme_boundary(text, letter);
+                    letter = unicode::next_grapheme_boundary(text, letter);
                 return letter == at;
             };
 
@@ -1315,7 +1315,7 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, uint32_t firs
     // буквы. Строка начинается с самой буквы.
     if (firstChar > 0)
         firstChar = static_cast<uint32_t>(
-            floor_grapheme_boundary(paragraph.text, firstChar));
+            unicode::floor_grapheme_boundary(paragraph.text, firstChar));
 
     /* 1-3. Анализ, прогоны формата и шейпинг уже сделаны — берём готовое.
        Кегль подгоняется отношением: метрики шейпинга линейны по нему. */

@@ -476,7 +476,7 @@ managed_task openBookFlow(App app, std::filesystem::path path) {
         } catch (std::exception const& failure) {
             // Разговор с читателем, а не запись в лог: он только что выбрал этот
             // файл и вправе узнать, что с ним не так.
-            u16_text const reason = assume_valid(failure.what()).to_utf16();
+            u16_text const reason = unicode::assume_valid(failure.what()).to_utf16();
             std::wstring const complaint = L"Не удалось открыть книгу:\n" + path.wstring() +
                                            L"\n\n" + std::wstring(reason.wchars());
             ::MessageBoxW(app.window->handle(), complaint.c_str(), L"Буквица",

@@ -113,9 +113,9 @@ u16_text contextAround(u16_view text, size_t at, size_t length) {
     constexpr size_t kBefore = 30;
     constexpr size_t kAfter = 70;
 
-    const size_t from = floor_grapheme_boundary(text, at > kBefore ? at - kBefore : 0);
+    const size_t from = unicode::floor_grapheme_boundary(text, at > kBefore ? at - kBefore : 0);
     const size_t to =
-        floor_grapheme_boundary(text, std::min(text.size(), at + length + kAfter));
+        unicode::floor_grapheme_boundary(text, std::min(text.size(), at + length + kAfter));
 
     u16_text out;
     out.reserve(to - from + 2);
@@ -189,7 +189,7 @@ u16_text hintAt(std::span<const typography::Block> blocks, uint32_t charOffset) 
     // Граница в kWords единиц может прийтись на середину буквы — тогда
     // подсказка на эту букву короче, зато без её обрубка.
     const u16_view text = found->paragraph.text;
-    const size_t cut = floor_grapheme_boundary(text, kWords);
+    const size_t cut = unicode::floor_grapheme_boundary(text, kWords);
 
     u16_text hint(text.substr(0, cut));
     if (cut < text.size()) hint += u"…";

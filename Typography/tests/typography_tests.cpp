@@ -155,7 +155,7 @@ void testFormulas(IDWriteFactory* dwrite) {
     // Вся цепочка EPUB: MathML → TeX → MicroTeX. Формула квадратного
     // уравнения в том виде, в каком её пишут конвертеры издателей.
     {
-        const std::optional<u8_view> mathml = checked(
+        const std::optional<u8_view> mathml = unicode::checked(
             "<math display=\"block\"><mi>x</mi><mo>=</mo><mfrac>"
             "<mrow><mo>\xE2\x88\x92</mo><mi>b</mi><mo>\xC2\xB1</mo><msqrt>"
             "<msup><mi>b</mi><mn>2</mn></msup><mo>\xE2\x88\x92</mo><mn>4</mn><mi>a</mi>"
@@ -289,7 +289,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
         // Обрезка по букве, а не по байтам UTF-8: `%.100s` резал букву пополам
         // прямо в выводе теста.
         const std::wstring_view whole = block.paragraph.text.wchars();
-        const size_t cut = floor_grapheme_boundary(whole, 50);
+        const size_t cut = unicode::floor_grapheme_boundary(whole, 50);
         const std::string text = toUtf8(whole.substr(0, cut));
 
         std::string label = nameOf(block.kind);
@@ -948,7 +948,7 @@ constexpr CorpusLetter kLetters[] = {
 };
 
 bool isLetterStart(u16_view text, uint32_t at) {
-    return at >= text.size() || floor_grapheme_boundary(text, at) == at;
+    return at >= text.size() || unicode::floor_grapheme_boundary(text, at) == at;
 }
 
 typography::Paragraph paragraphOf(u16_view text) {
@@ -1272,7 +1272,7 @@ void testHyphenation() {
         if (line.empty()) continue;
 
         ++words;
-        const auto expected = checked(line);
+        const auto expected = unicode::checked(line);
         if (!expected) {
             std::printf("FAILED строка корпуса %zu — не UTF-8\n", words);
             ++wrong;
@@ -1280,7 +1280,7 @@ void testHyphenation() {
         }
 
         u16_text word;
-        for (const char32_t code : code_points(*expected))
+        for (const char32_t code : unicode::code_points(*expected))
             if (code != U'-') word.push_back(code);
 
         const u8_text got = hyphenated(word);

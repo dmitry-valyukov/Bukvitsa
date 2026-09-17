@@ -234,7 +234,7 @@ struct OpcPackage::Impl {
         // Пакет пишет Windows, а не мы, и обещать за неё правильный UTF-16
         // нечего: repaired() ставит U+FFFD там, где обещать было бы нельзя.
         // По спецификации это в любом случае ASCII.
-        return PackagePart{name.str(), wxl::core::repaired(contentType.view()).to_utf8()};
+        return PackagePart{name.str(), wxl::core::unicode::repaired(contentType.view()).to_utf8()};
     }
 
     /// Часть, на которую ведёт связь: цель связи задана относительно её
@@ -387,7 +387,7 @@ std::vector<std::pair<wxl::core::u8_text, PackagePart>> OpcPackage::relationship
         relationship->GetId(id.put());
 
         if (auto part = impl_->resolve(relationship.get()))
-            found.emplace_back(wxl::core::repaired(id.view()).to_utf8(), std::move(*part));
+            found.emplace_back(wxl::core::unicode::repaired(id.view()).to_utf8(), std::move(*part));
     }
 
     return found;

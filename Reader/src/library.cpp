@@ -214,7 +214,7 @@ BookEntry describe(const fb3::Document& document, const std::filesystem::path& p
 
     // Книга без названия бывает: в витрине лучше имя файла, чем пустая строка.
     // Имя файла Windows не обязано быть правильным UTF-16.
-    if (entry.title.empty()) entry.title = repaired(path.filename().native());
+    if (entry.title.empty()) entry.title = unicode::repaired(path.filename().native());
 
     return entry;
 }

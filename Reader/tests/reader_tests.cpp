@@ -25,14 +25,14 @@ void check(bool condition, std::string_view what) {
 }
 
 bool isLetterStart(std::wstring_view text, size_t at) {
-    return at >= text.size() || floor_grapheme_boundary(text, at) == at;
+    return at >= text.size() || unicode::floor_grapheme_boundary(text, at) == at;
 }
 
 /// Текст собран тестом из кусков, поэтому проверяется, как всякий чужой.
 typography::Block blockOf(std::wstring_view text) {
     typography::Block block;
     block.kind = typography::BlockKind::Paragraph;
-    block.paragraph.text = u16_text(checked(text).value());
+    block.paragraph.text = u16_text(unicode::checked(text).value());
     block.paragraph.charOffsets.resize(block.paragraph.text.size());
     for (uint32_t i = 0; i < block.paragraph.charOffsets.size(); ++i)
         block.paragraph.charOffsets[i] = i;

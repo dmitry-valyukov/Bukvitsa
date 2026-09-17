@@ -124,7 +124,7 @@ private:
     /// поставленный вёрсткой, начинаются только с буквы: разметка внутри
     /// буквы (`и<em>◌̆</em>`) иначе отдала бы знак шейперу отдельным прогоном,
     /// без основы.
-    grapheme_breaker letters_;
+    unicode::grapheme_breaker letters_;
 
     /// Знак сноски, который ставит вёрстка, ждёт начала следующей буквы:
     /// `<note>` мог встать между буквой и её знаком, и знак сноски там
@@ -237,7 +237,7 @@ private:
         // Знаки сносок встают перед буквой, которая начинается здесь. Проба —
         // на копии автомата: сам он должен увидеть сперва знаки, потом символ.
         if (!pendingMarkers_.empty()) {
-            grapheme_breaker probe = letters_;
+            unicode::grapheme_breaker probe = letters_;
             if (probe.breaks_before(code))
                 flushMarkers();
         }
@@ -278,7 +278,7 @@ private:
     /// буква из двух символов, и пробел в ней основа: выбросить его значит
     /// оставить знак без буквы.
     static bool extendsSpace(char32_t code) {
-        grapheme_breaker letters;
+        unicode::grapheme_breaker letters;
         letters.breaks_before(U' ');
         return !letters.breaks_before(code);
     }
@@ -321,7 +321,7 @@ private:
         // чем его разбирать, и её дерево — а за ним и модель книги — отдаёт
         // u8_view. Обход кодовых точек берёт этот довод готовым и не
         // спрашивает заново на каждом байте.
-        for (const char32_t code : code_points(utf8)) {
+        for (const char32_t code : unicode::code_points(utf8)) {
             if (!preformatted_ && code < 0x80u && isSpace(static_cast<char>(code))) {
                 if (!pendingSpace_) {
                     pendingSpace_ = true;

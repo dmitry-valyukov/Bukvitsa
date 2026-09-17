@@ -20,7 +20,7 @@ std::string xmlValue(const std::wstring_view value) {
     // превратился бы в три байта, которых UTF-8 не знает, и при следующем
     // запуске wxl.xml отвергла бы весь файл — то есть реестр книг или настройки
     // пропали бы целиком из-за одного дурного имени.
-    return xmlValue(u16_view(repaired(value)));
+    return xmlValue(u16_view(unicode::repaired(value)));
 }
 
 u16_text attributeOf(const wxl::xml::node& element, std::string_view name) {
