@@ -15,25 +15,27 @@ using namespace std::chrono_literals;
 
 namespace {
 
+// Ящик, а не бумага: свои цвета при любой теме страницы.
+constexpr uint32_t kChrome = 0xF21E1E22;   ///< слегка прозрачный — под ним текст
+constexpr uint32_t kInk = 0xFFE8E4DC;
+constexpr uint32_t kDim = 0xFF9A968E;
+constexpr uint32_t kEdge = 0x33FFFFFF;
+constexpr uint32_t kActive = 0x22FFFFFF;
+
 constexpr double kWidth = 380;
 
 /// Подпись над группой настроек: тише текста и с отбивкой сверху. Не лямбда
 /// внутри одного строителя, потому что групп теперь две и собирают их разные
-/// функции — правый ящик и пересборка списка тем.
-TextBlock groupCaption(std::wstring_view said, Chrome& chrome) {
+/// функции — вкладка «Вид» и пересборка списка тем.
+TextBlock groupCaption(std::wstring_view said) {
     using namespace wxl::dsl;
 
     return TextBlock{
         said,
         fontSize = 13,
-        foreground = Bind{chrome.dim},
+        foreground = SolidColorBrush{ARGB{kDim}},
         Margin{0, 12, 0, 2},
     };
-}
-
-/// Ничем не крашенная кисть: чем снимается отметка с вкладки или темы.
-Brush clear() {
-    return SolidColorBrush{ARGB{0x00000000}};
 }
 
 // Выезд: короткий, потому что панель открывают между двумя строчками текста и
@@ -49,8 +51,8 @@ bool blank(std::wstring_view text) {
 
 }  // namespace
 
-ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Chrome& chrome)
-    : compositor_(compositor), view_(view), chrome_(chrome) {
+ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view)
+    : compositor_(compositor), view_(view) {
     buildTree();
 }
 
@@ -70,9 +72,9 @@ void ReaderPanel::buildTree() {
         fontSize = 14,
         Margin{12, 12, 12, 0},
         Padding{12, 8},
-        foreground = Bind{chrome_.ink},
-        background = clear(),
-        borderBrush = Bind{chrome_.edge},
+        foreground = SolidColorBrush{ARGB{kInk}},
+        background = SolidColorBrush{ARGB{0x00000000}},
+        borderBrush = SolidColorBrush{ARGB{kEdge}},
         BorderThickness{1},
         CornerRadius{4},
         onClick =
@@ -146,8 +148,8 @@ Border ReaderPanel::box(HorizontalAlignment side, const UIElement& inside) {
         horizontalAlignment = side,
         vAlign.stretch,
         width = kWidth,
-        background = Bind{chrome_.face},
-        borderBrush = Bind{chrome_.edge},
+        background = SolidColorBrush{ARGB{kChrome}},
+        borderBrush = SolidColorBrush{ARGB{kEdge}},
         BorderThickness{onLeft ? 0.0 : 1.0, 0.0, onLeft ? 1.0 : 0.0, 0.0},
         Padding{pad, pad},
         child = inside,
@@ -189,9 +191,9 @@ Button ReaderPanel::tabButton(std::wstring_view caption, Tab tab) {
         fontSize = 14,
         Margin{0, 0, 6, 0},
         Padding{12, 6},
-        foreground = Bind{chrome_.ink},
-        background = clear(),
-        borderBrush = Bind{chrome_.edge},
+        foreground = SolidColorBrush{ARGB{kInk}},
+        background = SolidColorBrush{ARGB{0x00000000}},
+        borderBrush = SolidColorBrush{ARGB{kEdge}},
         BorderThickness{1},
         CornerRadius{4},
         onClick = [this, tab](Object const&, RoutedEventArgs&) { open(tab); },
@@ -206,7 +208,7 @@ Button ReaderPanel::listItem(std::wstring_view caption, std::wstring_view under,
         TextBlock{
             caption,
             fontSize = 14,
-            foreground = Bind{chrome_.ink},
+            foreground = SolidColorBrush{ARGB{kInk}},
             textWrapping.wrap,
             maxLines = 2,
             textTrimming.characterEllipsis,
@@ -217,7 +219,7 @@ Button ReaderPanel::listItem(std::wstring_view caption, std::wstring_view under,
         lines.children().append(TextBlock{
             under,
             fontSize = 12,
-            foreground = Bind{chrome_.dim},
+            foreground = SolidColorBrush{ARGB{kDim}},
             Margin{0, 2, 0, 0},
             maxLines = 1,
             textTrimming.characterEllipsis,
@@ -229,8 +231,8 @@ Button ReaderPanel::listItem(std::wstring_view caption, std::wstring_view under,
         horizontalContentAlignment = HorizontalAlignment::Stretch,
         Margin{indent, 1, 0, 1},
         Padding{8, 6},
-        background = clear(),
-        borderBrush = clear(),
+        background = SolidColorBrush{ARGB{0x00000000}},
+        borderBrush = SolidColorBrush{ARGB{0x00000000}},
         BorderThickness{0},
         CornerRadius{4},
         onClick = [action](Object const&, RoutedEventArgs&) { if (action) action(); },
@@ -271,7 +273,7 @@ UIElement ReaderPanel::buildSearch() {
         row = 1,
         L"Введите слово и нажмите Enter.",
         fontSize = 13,
-        foreground = Bind{chrome_.dim},
+        foreground = SolidColorBrush{ARGB{kDim}},
         textWrapping.wrap,
     };
 
@@ -295,7 +297,7 @@ UIElement ReaderPanel::buildBookmarks() {
     bookmarkNote_ = TextBlock{
         row = 1,
         fontSize = 13,
-        foreground = Bind{chrome_.dim},
+        foreground = SolidColorBrush{ARGB{kDim}},
         textWrapping.wrap,
     };
 
@@ -308,9 +310,9 @@ UIElement ReaderPanel::buildBookmarks() {
             L"Заложить эту страницу",
             hAlign.stretch,
             Margin{0, 0, 0, 8},
-            foreground = Bind{chrome_.ink},
-            background = Bind{chrome_.active},
-            borderBrush = Bind{chrome_.edge},
+            foreground = SolidColorBrush{ARGB{kInk}},
+            background = SolidColorBrush{ARGB{kActive}},
+            borderBrush = SolidColorBrush{ARGB{kEdge}},
             BorderThickness{1},
             CornerRadius{4},
             onClick = [this](Object const&, RoutedEventArgs&) { toggleBookmark(); },
@@ -368,16 +370,16 @@ UIElement ReaderPanel::buildSettings() {
             // где кончается одна группа и начинается другая, а собирается
             // заново при каждой смене реестра.
             themesPanel_.value(),
-            groupCaption(L"Кегль", chrome_),
+            groupCaption(L"Кегль"),
             fontSize_.value(),
-            groupCaption(L"Интерлиньяж", chrome_),
+            groupCaption(L"Интерлиньяж"),
             lineHeight_.value(),
-            groupCaption(L"Поля", chrome_),
+            groupCaption(L"Поля"),
             margin_.value(),
             TextBlock{
                 L"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
                 fontSize = 12,
-                foreground = Bind{chrome_.dim},
+                foreground = SolidColorBrush{ARGB{kDim}},
                 Margin{0, 16, 0, 0},
                 textWrapping.wrap,
             },
@@ -394,13 +396,9 @@ void ReaderPanel::showTab(Tab tab) {
                                                                   : Visibility::Collapsed);
     }
     for (size_t i = 0; i < tabButtons_.size(); ++i) {
-        tabButtons_[i].background(static_cast<size_t>(tab) == i ? chrome_.active.get() : clear());
+        tabButtons_[i].background(
+            SolidColorBrush{ARGB{static_cast<size_t>(tab) == i ? kActive : 0x00000000u}});
     }
-}
-
-void ReaderPanel::remark() {
-    showTab(tab_);
-    markTheme();
 }
 
 void ReaderPanel::open(Tab tab) {
@@ -564,25 +562,23 @@ void ReaderPanel::refreshThemes() {
             fontSize = 13,
             Margin{margin},
             Padding{12, 6},
-            foreground = Bind{chrome_.ink},
-            background = clear(),
-            borderBrush = Bind{chrome_.edge},
+            foreground = SolidColorBrush{ARGB{kInk}},
+            background = SolidColorBrush{ARGB{0x00000000}},
+            borderBrush = SolidColorBrush{ARGB{kEdge}},
             BorderThickness{1},
             CornerRadius{4},
-            // Отметка ставится после того, как приложение перекрасит
-            // обстановку под новую тему: иначе она осталась бы в старом тоне.
             onClick =
                 [this, index](Object const&, RoutedEventArgs&) {
                     view_.setTheme(index);
-                    if (onSettingsChanged) onSettingsChanged();
                     markTheme();
+                    if (onSettingsChanged) onSettingsChanged();
                 },
         };
     };
 
     // Тема — это ровный цвет бумаги, и таких три. Они коротки и помещаются в
     // строчку; фотография среди них не стоит больше — снимок носит обложка.
-    themesPanel_.value().children().append(groupCaption(L"Тема", chrome_));
+    themesPanel_.value().children().append(groupCaption(L"Тема"));
 
     auto builtins = StackPanel{Orientation::Horizontal};
     for (int index = 0; index < kThemeCount; ++index) {
@@ -598,7 +594,7 @@ void ReaderPanel::refreshThemes() {
     //
     // Кнопка без текста обязана иметь тултип (правило дизайна) — и он
     // называет конкретную обложку, а не действие вообще.
-    auto iconButton = [this](std::wstring_view glyph, const std::wstring& tip, auto action) {
+    auto iconButton = [](std::wstring_view glyph, const std::wstring& tip, auto action) {
         return Button{
             glyph,
             fontFamily = FontFamily{L"Segoe Fluent Icons"},
@@ -606,9 +602,9 @@ void ReaderPanel::refreshThemes() {
             fontSize = 13,
             Margin{6, 6, 0, 0},
             Padding{8, 6},
-            foreground = Bind{chrome_.dim},
-            background = clear(),
-            borderBrush = Bind{chrome_.edge},
+            foreground = SolidColorBrush{ARGB{kDim}},
+            background = SolidColorBrush{ARGB{0x00000000}},
+            borderBrush = SolidColorBrush{ARGB{kEdge}},
             BorderThickness{1},
             CornerRadius{4},
             onClick = [action](Object const&, RoutedEventArgs&) { action(); },
@@ -627,7 +623,7 @@ void ReaderPanel::refreshThemes() {
     // Спросить «точно ли» панель не может и не должна: окна у неё нет, а
     // удаление необратимо — вопрос задаёт приложение, которому принадлежат и
     // окно, и реестр.
-    themesPanel_.value().children().append(groupCaption(L"Обложки", chrome_));
+    themesPanel_.value().children().append(groupCaption(L"Обложки"));
 
     const std::vector<Skin>& skins = view_.skins();
     for (size_t index = 0; index < skins.size(); ++index) {
@@ -664,9 +660,9 @@ void ReaderPanel::refreshThemes() {
         fontSize = 13,
         Margin{0, 6, 0, 0},
         Padding{12, 6},
-        foreground = Bind{chrome_.dim},
-        background = clear(),
-        borderBrush = Bind{chrome_.edge},
+        foreground = SolidColorBrush{ARGB{kDim}},
+        background = SolidColorBrush{ARGB{0x00000000}},
+        borderBrush = SolidColorBrush{ARGB{kEdge}},
         BorderThickness{1},
         CornerRadius{4},
         onClick =
@@ -684,7 +680,7 @@ void ReaderPanel::markTheme() {
     // и та же мысль — «вот это сейчас».
     for (int index = 0; index < static_cast<int>(themeButtons_.size()); ++index) {
         themeButtons_[static_cast<size_t>(index)].background(
-            index == view_.theme() ? chrome_.active.get() : clear());
+            SolidColorBrush{ARGB{index == view_.theme() ? kActive : 0x00000000u}});
     }
 }
 

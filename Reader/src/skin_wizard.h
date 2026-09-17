@@ -26,15 +26,13 @@
 
 #include "DrawingSurface.h"
 #include "Object.h"
-#include "chrome.h"
 #include "pch.h"
 
 namespace bukvitsa::reader {
 
 class SkinWizard {
 public:
-    /// @param chrome обстановка: ею красятся карточка кнопок и диалог имени.
-    SkinWizard(const wxl::Compositor& compositor, Chrome& chrome);
+    explicit SkinWizard(const wxl::Compositor& compositor);
 
     /// Оверлей, который кладётся поверх полосы набора.
     const wxl::UIElement& root() const { return root_.value(); }
@@ -100,7 +98,6 @@ private:
     void finishNaming(bool save);
 
     wxl::Compositor compositor_;
-    Chrome& chrome_;
     nullable<wxl::Grid> root_ = nullptr;
     nullable<wxl::Grid> surfaceHost_ = nullptr;   ///< несёт визуал сетки
     nullable<wxl::SpriteVisual> visual_ = nullptr;

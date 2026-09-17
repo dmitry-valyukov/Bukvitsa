@@ -28,6 +28,7 @@
 #include "skins.h"
 #include "theme.h"
 
+#include "CompositionWindow.h"
 #include "DrawingSurface.h"
 #include "Object.h"
 #include "pch.h"
@@ -37,8 +38,6 @@
 #include "book.h"
 #include "note_popup.h"
 
-namespace wxl { class CompositionWindow; }
-
 namespace bukvitsa::reader {
 
 class BookView {
@@ -46,7 +45,7 @@ public:
     /// @param window окно: его сцена несёт страницу — визуалы на композиторе
     ///        окна, привешенные к contentVisual(), — а его очередь откладывает
     ///        и мгновенную вёрстку, и порции, которыми считается книга.
-    BookView(wxl::CompositionWindow& window);
+    BookView(const wxl::CompositionWindow& window);
 
     /// Корень, который отдаётся окну как содержимое.
     const wxl::UIElement& root() const { return root_.value(); }
@@ -55,10 +54,6 @@ public:
     /// что «поверх страницы» — это внутри полосы, а не рядом с ней: страница
     /// занимает её целиком, и никакого другого места нет.
     void addOverlay(const wxl::UIElement& element);
-
-    /// Тема контролов острова над полосой — панели, мастера, сноски. Бумага в
-    /// ней не участвует: её красит paper().
-    void requestedTheme(wxl::ElementTheme theme) { root_.value().requestedTheme(theme); }
 
     /// Полоса стала текущим экраном — или перестала им быть. Страница живёт на
     /// сцене окна, и вне чтения её быть видно не должно: `setActive(false)`
@@ -99,15 +94,6 @@ public:
 
     void setTheme(int index);
     int theme() const { return theme_; }
-
-    /// Цвета текущей темы. Имя не theme(): так зовётся её номер, а перегрузка
-    /// по одному лишь типу возврата в C++ невозможна. У всякой обложки цвета
-    /// одни и те же (`kSkinTheme`): мастер задаёт снимок и кривые, а не цвета.
-    /// Публично: по ней приложение красит обстановку и рамку окна.
-    const Theme& paper() const {
-        if (preview_) return kSkinTheme;
-        return theme_ < kThemeCount ? kThemes[theme_] : kSkinTheme;
-    }
 
     /// Обложки читателя из реестра. Они продолжают список тем: индексы идут
     /// сперва по `kThemes`, затем по обложкам, и `setTheme` листает всех
@@ -430,6 +416,14 @@ private:
     /// создался, предпросмотр идёт резким: блюр — подспорье, а не условие.
     bool ensureBlur();
 
+    /// Цвета текущей темы. Имя не theme(): так зовётся её номер, а перегрузка
+    /// по одному лишь типу возврата в C++ невозможна. У всякой обложки цвета
+    /// одни и те же (`kSkinTheme`): мастер задаёт снимок и кривые, а не цвета.
+    const Theme& paper() const {
+        if (preview_) return kSkinTheme;
+        return theme_ < kThemeCount ? kThemes[theme_] : kSkinTheme;
+    }
+
     /// Сколько всего тем: встроенные плюс обложки.
     int themeCount() const { return kThemeCount + static_cast<int>(skins_.size()); }
 
@@ -438,7 +432,7 @@ private:
     /// `skinImagePath()`, и знает только оно.
     std::filesystem::path backdropFile() const;
 
-    wxl::CompositionWindow* window_ = nullptr;   ///< сцена и очередь окна
+    wxl::CompositionWindow window_;              ///< ручка окна: его сцена и очередь
     wxl::Compositor compositor_;                 ///< композитор окна: на нём визуалы страницы
     nullable<wxl::Grid> root_ = nullptr;    ///< прозрачный остров: ввод и оверлеи поверх сцены
     bool active_ = false;                        ///< полоса — текущий экран, её сцена показана
