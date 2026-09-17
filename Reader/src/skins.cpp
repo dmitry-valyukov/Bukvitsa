@@ -167,6 +167,7 @@ EdgeSpline::EdgeSpline(const EdgeCurve& curve) : curve_(curve) {
     // У каждого листа свои пять точек и четыре хорды; корешок входит в оба
     // листа и получает две касательные — по одной с каждой стороны. Так
     // кромка в нём непрерывна, но вольна ломаться: бумага там сгибается.
+    // Иксы строго возрастают — это держат мастер и чтение реестра.
     for (size_t leaf = 0; leaf < 2; ++leaf) {
         const float* const x = &curve.x[leaf * (kLeaf - 1)];
         const float* const y = &curve.y[leaf * (kLeaf - 1)];
@@ -179,26 +180,34 @@ EdgeSpline::EdgeSpline(const EdgeCurve& curve) : curve_(curve) {
             chord[k] = (y[k + 1] - y[k]) / step[k];
         }
 
-        // Крайние точки — по хорде крайнего отрезка: касательная не длиннее
-        // хорды, и отрезок остаётся монотонным.
-        slope[0] = chord[0];
-        slope[kLeaf - 1] = chord[kLeaf - 2];
-
-        // Внутренние — по Фричу и Батленду: взвешенное гармоническое среднее
-        // наклонов соседних хорд, где короткая хорда весит больше. Между
-        // хордами разного знака или рядом с горизонтальной — ноль: точка и
-        // есть экстремум, кривая ложится в неё горизонтально и не перелетает.
+        // Вторые производные естественного сплайна: на концах листа ноль,
+        // внутренние — из трёхдиагональной системы
+        //   h[k-1]·M[k-1] + 2(h[k-1]+h[k])·M[k] + h[k]·M[k+1] = 6(d[k]-d[k-1]),
+        // прогонкой: у системы диагональное преобладание, прогонка устойчива.
+        float curvature[kLeaf] = {};
+        float diagonal[kLeaf - 1];
+        float right[kLeaf - 1];
         for (size_t k = 1; k + 1 < kLeaf; ++k) {
-            const float before = chord[k - 1];
-            const float after = chord[k];
-            if (before * after <= 0.0f) {
-                slope[k] = 0.0f;
-                continue;
+            diagonal[k] = 2.0f * (step[k - 1] + step[k]);
+            right[k] = 6.0f * (chord[k] - chord[k - 1]);
+            if (k > 1) {
+                const float factor = step[k - 1] / diagonal[k - 1];
+                diagonal[k] -= factor * step[k - 1];
+                right[k] -= factor * right[k - 1];
             }
-            const float w1 = 2.0f * step[k] + step[k - 1];
-            const float w2 = step[k] + 2.0f * step[k - 1];
-            slope[k] = (w1 + w2) / (w1 / before + w2 / after);
         }
+        for (size_t k = kLeaf - 2; k > 0; --k) {
+            curvature[k] = (right[k] - step[k] * curvature[k + 1]) / diagonal[k];
+        }
+
+        // Касательные — производные сплайна в точках: у каждого отрезка в
+        // левом конце, у последней точки — в правом конце последнего отрезка.
+        for (size_t k = 0; k + 1 < kLeaf; ++k) {
+            slope[k] = chord[k] - step[k] * (2.0f * curvature[k] + curvature[k + 1]) / 6.0f;
+        }
+        slope[kLeaf - 1] = chord[kLeaf - 2] + step[kLeaf - 2] *
+                                                  (curvature[kLeaf - 2] + 2.0f * curvature[kLeaf - 1]) /
+                                                  6.0f;
     }
 }
 
@@ -216,17 +225,18 @@ float EdgeSpline::at(float u) const {
     const size_t s = leaf * kLeaf + (k - leaf * (kLeaf - 1));
 
     // Кубический Эрмит на отрезке: базисные многочлены от доли t, касательные
-    // приведены к длине отрезка.
+    // приведены к длине отрезка. Записан как «начало плюс приращения», а не
+    // как сумма h00·y0 + h01·y1: так прямая остаётся прямой без ошибки
+    // округления, а в точке кривая равна точке.
     const float step = curve_.x[k + 1] - curve_.x[k];
     const float t = (u - curve_.x[k]) / step;
     const float t2 = t * t;
     const float t3 = t2 * t;
-    const float h00 = 2.0f * t3 - 3.0f * t2 + 1.0f;
     const float h10 = t3 - 2.0f * t2 + t;
     const float h01 = -2.0f * t3 + 3.0f * t2;
     const float h11 = t3 - t2;
-    return h00 * curve_.y[k] + h10 * step * slope_[s] + h01 * curve_.y[k + 1] +
-           h11 * step * slope_[s + 1];
+    return curve_.y[k] + (curve_.y[k + 1] - curve_.y[k]) * h01 +
+           step * (h10 * slope_[s] + h11 * slope_[s + 1]);
 }
 
 void Skins::loadFrom(std::string xml) {

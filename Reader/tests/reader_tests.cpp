@@ -165,9 +165,9 @@ void testSearchMatchesWhatTheReaderMeans() {
 }
 
 /// Кромка — два листа с общей точкой на корешке, посередине. Она проходит
-/// через каждую точку, между соседними точками не выходит за их значения,
-/// в корешке непрерывна с обеих сторон, а точки другого листа на лист не
-/// влияют.
+/// через каждую точку, в корешке непрерывна с обеих сторон, точки другого
+/// листа на лист не влияют, прямая остаётся прямой, а утянутая точка уводит
+/// кромку за собой без большого размаха у соседок.
 void testEdgeThroughPoints() {
     std::printf("\n=== кромка через точки ===\n");
 
@@ -191,8 +191,7 @@ void testEdgeThroughPoints() {
     check(bent.at(0.0f) == 0.02f && bent.at(1.0f) == 0.1f,
           "за крайними точками кромка держит их значение");
 
-    // Низ «Брошюры» как он снят с фотографии: точки скачут вверх-вниз, и
-    // многочлен через них перелетал бы на девять сотых высоты.
+    // Низ «Брошюры» как он снят с фотографии: точки скачут вверх-вниз.
     reader::EdgeCurve booklet;
     booklet.x = {0.036752604f, 0.15469007f, 0.29072955f, 0.3609435f, 0.5f,
                  0.5485464f,   0.6544158f,  0.7778387f,  0.9478881f};
@@ -206,18 +205,28 @@ void testEdgeThroughPoints() {
     }
     check(through, "кромка проходит через каждую точку");
 
-    bool within = true;
-    for (size_t index = 0; index + 1 < points; ++index) {
-        const float low = std::min(booklet.y[index], booklet.y[index + 1]);
-        const float high = std::max(booklet.y[index], booklet.y[index + 1]);
-        for (int step = 1; step < 200; ++step) {
-            const float u = booklet.x[index] +
-                            (booklet.x[index + 1] - booklet.x[index]) * static_cast<float>(step) / 200.0f;
-            const float value = edge.at(u);
-            within = within && value >= low - 1e-6f && value <= high + 1e-6f;
-        }
+    // Начальная прямая — прямая и есть, без единого отклонения.
+    const reader::Skin fresh = reader::defaultSkin();
+    const reader::EdgeSpline flat{fresh.top};
+    bool straight = true;
+    for (int step = 0; step <= 100; ++step) {
+        straight = straight && flat.at(static_cast<float>(step) / 100.0f) == reader::kEdgeInset;
     }
-    check(within, "между соседними точками кромка не выходит за их значения");
+    check(straight, "прямая остаётся прямой");
+
+    // Одна точка «Томика» утянута с 0,025 до 0,11: сплайн перелетает её не
+    // выше 0,111, а соседок уводит в противоход не ниже 0,014.
+    reader::EdgeCurve pulled = fresh.top;
+    pulled.y[3] = 0.11f;
+    const reader::EdgeSpline tugged{pulled};
+    float lowest = 1.0f;
+    float highest = 0.0f;
+    for (int step = 0; step <= 1000; ++step) {
+        const float value = tugged.at(0.5f * static_cast<float>(step) / 1000.0f);
+        lowest = std::min(lowest, value);
+        highest = std::max(highest, value);
+    }
+    check(highest < 0.111f && lowest > 0.014f, "утянутая точка ведёт кромку без большого размаха");
 }
 
 /// Реестр второй версии — листы порознь, по пять точек, — читается в кривые

@@ -1111,5 +1111,5 @@ wxl::Teardown wxl_launched() {
     // моменту уже не принимает заданий, и операции, не успевшие вернуться,
     // возобновлять некому и незачем.
     return [io, window, screen, shelf, view, library, settings, skins, wizard, saveTimer,
-            positionTimer, splashTimer](Reason) { io->stop(); };
+            positionTimer, splashTimer](TeardownReason) { io->stop(); };
 }
