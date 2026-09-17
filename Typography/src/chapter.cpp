@@ -85,7 +85,7 @@ ParagraphStyle styleFor(const Block& block, const PageStyle& page) {
         break;
 
     case BlockKind::Verse:
-        // Стих не выключают и не переносят: строка кончается там, где её
+        // Стих выключают влево и не переносят: строка кончается там, где её
         // кончил поэт, а не там, где кончилась полоса.
         style.alignment = Alignment::Left;
         break;

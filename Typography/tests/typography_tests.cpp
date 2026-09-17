@@ -385,8 +385,9 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
             for (const typography::GlyphRun& run : line.runs)
                 glyphCount += run.glyphIndices.size();
 
-            // Полторы десятых доли пикселя запаса: выключка распределяет
-            // добавку в float и вправе промахнуться на последний разряд.
+            // Полторы десятых доли пикселя запаса: выключка по формату
+            // распределяет добавку в float и вправе промахнуться на последний
+            // разряд.
             if (line.width > width + 0.15f && line.width - width > worstOverflow) {
                 worstOverflow = line.width - width;
                 worstLine = block.paragraph.text.wchars().substr(line.textStart, line.textLength);
@@ -1351,8 +1352,8 @@ void testHyphenationInLayout(typography::Engine& engine) {
 
     // Он же — место разрыва: слово из одних согласных образцы не разорвут, и
     // единственный перенос в нём тот, что стоит в книге. Полоса такая, что
-    // половина слова в неё помещается, а слово целиком — нет; набор без
-    // выключки, чтобы строке без пробелов не приходилось тянуться.
+    // половина слова в неё помещается, а слово целиком — нет; набор с
+    // выключкой влево, чтобы строке без пробелов не приходилось тянуться.
     typography::ParagraphStyle ragged = style;
     ragged.alignment = typography::Alignment::Left;
 
@@ -1441,8 +1442,8 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
     const fb3::Document document(book);
     const std::vector<typography::Block> blocks = typography::flatten(document.body());
 
-    // Абзацы подряд с первого длинного: заголовки и эпиграф набираются без
-    // выключки и о переносах ничего не скажут.
+    // Обычные абзацы подряд с первого длинного: заголовки выключены по центру
+    // и о переносах ничего не скажут.
     std::vector<const typography::Block*> chosen;
     for (const typography::Block& block : blocks) {
         if (block.kind != typography::BlockKind::Paragraph) continue;
@@ -1530,7 +1531,8 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
         const float left = kMargin + static_cast<float>(side) * (kColumn + kGap);
         const float bottom = static_cast<float>(height) - kMargin;
 
-        // Края полосы: по ним видно, что выключка ровная и ничего не вылезло.
+        // Края полосы: по ним видно, что выключка по формату ровная и ничего
+        // не вылезло.
         context->DrawLine({left, kMargin}, {left, bottom}, rule.Get(), 0.5f);
         context->DrawLine({left + kColumn, kMargin}, {left + kColumn, bottom}, rule.Get(), 0.5f);
 
