@@ -13,6 +13,10 @@ std::string xmlValue(const u16_view value) {
     return xml_escaped(value.to_utf8().chars());
 }
 
+std::string xmlValue(const u16_text& value) {
+    return xmlValue(u16_view(value));
+}
+
 std::string xmlValue(const std::wstring_view value) {
     // Здесь чинят по-настоящему, а не для порядка: через этот вызов уходят в
     // файл пути и имена файлов, а имя файла в Windows — просто последовательность

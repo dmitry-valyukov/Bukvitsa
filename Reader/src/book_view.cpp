@@ -15,13 +15,9 @@
 #include <wincodec.h>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
-// а стандартный заголовок после импорта MSVC уже не принимает. CompositionWindow
-// первым из них: у него свои стандартные заголовки, а после импорта их не
-// подключить; сам он к импорту не ведёт.
-#include "CompositionWindow.h"
-
-// Свой следующим: он единственный тянет за собой стандартные заголовки,
-// которых нет здесь, — и уже он ведёт к импорту модуля книги.
+// а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
+// он единственный тянет за собой стандартные заголовки, которых нет здесь, —
+// и уже он ведёт к импорту модуля книги.
 #include "book_view.h"
 
 #include "imaging.h"
@@ -329,8 +325,8 @@ bool controlHeld() {
 
 }  // namespace
 
-BookView::BookView(CompositionWindow& window)
-    : window_(&window),
+BookView::BookView(const CompositionWindow& window)
+    : window_(window),
       compositor_(window.compositor()),
       queue_(window.dispatcherQueue()),
       releaseTimer_(window.dispatcherQueue().createTimer()),
@@ -383,7 +379,7 @@ Grid BookView::buildTree() {
     // вызова (applySize их не трогает, своего Size у них нет). Половина ширины
     // — это и есть корешок: поля симметричны (см. spine()). Задник окна под
     // ними без кисти (setActive): красить под страницами нечего.
-    ContainerVisual const scene = window_->contentVisual();
+    ContainerVisual const scene = window_.contentVisual();
     ExpressionAnimation const sizeOfScene = compositor_.createExpressionAnimation(L"scene.Size");
     sizeOfScene.setReferenceParameter(L"scene", scene);
 
@@ -422,13 +418,19 @@ Grid BookView::buildTree() {
     // contentVisual() (над задником, под островом), а не всунуты в дерево XAML
     // через setElementChildVisual. Пока полоса не стала текущим экраном, её
     // сцена скрыта — setActive(true) покажет при входе.
-    window_->contentVisual().children().insertAtTop(sheets_.value());
+    window_.contentVisual().children().insertAtTop(sheets_.value());
     sheets_.value().isVisible(false);
 
     auto tree = Grid{
         // Корень берёт фокус на себя: событие клавиши начинается у того, на
         // чём фокус, и пока фокуса нет ни на чём, ловить нечего.
         isTabStop = true,
+
+        // Остров — в родной тёмной теме WinUI, при любой теме бумаги: панель,
+        // мастер и сноска над страницей тёмные, и контролы в них — ползунки,
+        // поле поиска, подсказки — должны быть той же породы. Тема бумаги
+        // красит только полосу.
+        requestedTheme = ElementTheme::Dark,
 
         // Кисть прозрачная, но она есть: без кисти Grid не участвует в проверке
         // попадания вовсе, и щелчок по полосе не доходил бы никуда — ни до знака
@@ -639,13 +641,13 @@ void BookView::setActive(bool active) {
     // рисует разворот и одевает их. Уходя — наоборот: страницы прячутся, а
     // задник на промежуток до фона следующего экрана (заставка приходит
     // асинхронно) берёт осевший разворот сам — иначе окно сквозило бы на стол.
-    if (active && window_) {
-        window_->clearBackground();
+    if (active) {
+        window_.clearBackground();
         updateBackdrop();
         redraw();
-    } else if (window_ && settled_) {
+    } else if (settled_) {
         cancelTurn();   // летящие садятся: заднику положен нынешний разворот, а не прошлый
-        window_->background(*settled_);
+        window_.background(*settled_);
     }
     for (auto const& page : pages_)
         if (page) page.value().isVisible(active);

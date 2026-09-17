@@ -18,13 +18,18 @@ using namespace wxl;
 
 namespace {
 
+// Обстановка мастера — те же цвета, что у панели читалки: диалог имени и
+// кнопки не бумага, а инструмент.
+constexpr uint32_t kChrome = 0xF21E1E22;
+constexpr uint32_t kInk = 0xFFE8E4DC;
+constexpr uint32_t kEdge = 0x33FFFFFF;
+
 // Кнопки — как на стартовом экране: та же ширина, та же полупрозрачность,
 // под ними должна просвечивать страница; где им стоять, сказано у самой
-// карточки. Отмена — чуть серее остальных, она уводит, а не ведёт. Цвета
-// карточки и диалога имени — обстановки: диалог и кнопки не бумага, а
-// инструмент, и красятся вместе с панелью.
+// карточки. Отмена — чуть серее остальных, она уводит, а не ведёт.
 constexpr float kButtonWidth = 300.0f;
 constexpr float kRestingOpacity = 0.92f;
+constexpr uint32_t kCancelFace = 0xFFD9D6D2;
 
 // Сетка поверх страницы — подсказка, а не занавес: все линии сильно
 // полупрозрачны, центральная ярче тоном, чтобы читаться сквозь текст.
@@ -59,8 +64,7 @@ bool blank(std::wstring_view text) {
 
 }  // namespace
 
-SkinWizard::SkinWizard(const Compositor& compositor, Chrome& chrome)
-    : compositor_(compositor), chrome_(chrome) {
+SkinWizard::SkinWizard(const Compositor& compositor) : compositor_(compositor) {
     buildTree();
 }
 
@@ -86,7 +90,7 @@ Button SkinWizard::overlayButton(std::wstring_view caption, float tall, float ke
         onClick = [this, handler](Object const&, RoutedEventArgs&) { (this->*handler)(); },
     };
 
-    if (cancel) Apply{button, background = Bind{chrome_.subtle}};
+    if (cancel) button.background(SolidColorBrush{ARGB{kCancelFace}});
 
     // Полупрозрачность — визуалом, как у стартового экрана, только без
     // анимации появления: мастер открывают действием, ждать ему нечего.
@@ -107,10 +111,6 @@ void SkinWizard::buildTree() {
         hAlign.right,
         vAlign.top,
         Margin{0, 64, 72, 0},
-        // Не тёмная плёнка карточки над картинкой, а обстановка: карточка
-        // лежит над страницей и красится вместе с ящиками панели.
-        background = Bind{chrome_.face},
-        borderBrush = Bind{chrome_.edge},
         StackPanel{
             overlayButton(L"Сохранить", 72.0f, 19.0f, false, &SkinWizard::saveRequested),
             overlayButton(L"Выбрать другое изображение", 46.0f, 15.0f, false,
@@ -126,8 +126,8 @@ void SkinWizard::buildTree() {
         hAlign.center,
         vAlign.center,
         visibility = Visibility::Collapsed,
-        background = Bind{chrome_.face},
-        borderBrush = Bind{chrome_.edge},
+        background = SolidColorBrush{ARGB{kChrome}},
+        borderBrush = SolidColorBrush{ARGB{kEdge}},
         BorderThickness{1},
         CornerRadius{6},
         Padding{20, 16},
@@ -135,7 +135,7 @@ void SkinWizard::buildTree() {
             TextBlock{
                 L"Название обложки",
                 fontSize = 13,
-                foreground = Bind{chrome_.ink},
+                foreground = SolidColorBrush{ARGB{kInk}},
                 Margin{0, 0, 0, 8},
             },
             nameBox_.value(),

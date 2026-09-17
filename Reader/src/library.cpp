@@ -29,13 +29,9 @@ std::wstring_view coverExtension(std::string_view contentType) {
 
 /// Один атрибут: имя, значение, экранирование. Отдельной функцией, потому что
 /// в реестре их семь на запись, и повторять xmlValue() семь раз — значит однажды
-/// забыть.
-void attribute(text_builder<sta_allocator>& out, std::string_view name, u16_view value) {
-    out.format(" {}=\"{}\"", name, xmlValue(value));
-}
-
-/// То же для путей и имён файлов: их xmlValue() чинит.
-void attribute(text_builder<sta_allocator>& out, std::string_view name, std::wstring_view value) {
+/// забыть. Проверенный текст перед нами или путь, который надо чинить, --
+/// разбирает xmlValue() по типу значения.
+void attribute(text_builder<sta_allocator>& out, std::string_view name, const auto& value) {
     out.format(" {}=\"{}\"", name, xmlValue(value));
 }
 
