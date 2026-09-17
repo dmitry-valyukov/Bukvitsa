@@ -1,6 +1,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
+#include <vector>
 
 // Свой заголовок после всех стандартных: он ведёт к импорту модуля книги, а
 // стандартный заголовок после импорта MSVC уже не принимает.
@@ -11,17 +13,89 @@ import wxl.core;
 namespace bukvitsa::reader {
 namespace {
 
-/// Строчными — средствами Windows, а не `std::towlower`.
+/// Чем единица текста считается при поиске: строчной буквой, «ё» — «е»,
+/// неразрывный пробел — обычным, а мягкий перенос — нулём, то есть «пропустить».
 ///
-/// `towlower` смотрит в текущую локаль C, а она по умолчанию «C», где кириллицы
-/// нет вовсе: поиск «Прометей» перестал бы находить «прометей». `CharLowerBuffW`
-/// знает Unicode целиком и от локали процесса не зависит.
-std::wstring lowered(std::wstring_view text) {
-    std::wstring copy{text};
-    if (!copy.empty()) {
-        ::CharLowerBuffW(copy.data(), static_cast<DWORD>(copy.size()));
+/// Строчные — средствами Windows, а не `std::towlower`: тот смотрит в локаль C,
+/// а она по умолчанию «C», где кириллицы нет вовсе. `CharLowerBuffW` знает
+/// Unicode целиком и от локали процесса не зависит.
+///
+/// Поиск сравнивает текст абзаца как он есть, по единице, и звать Windows на
+/// каждую не может, поэтому ответы собраны в таблицу один раз. Хранится сдвиг
+/// от самой единицы, страницами по 256: у почти всех страниц Unicode регистра
+/// нет, их сдвиги нулевые, и такая страница одна на всех.
+class SearchFolding {
+public:
+    SearchFolding() {
+        storage_.assign(256, 0);
+        std::array<std::size_t, 256> starts{};
+
+        std::array<wchar_t, 256> units{};
+        std::array<std::uint16_t, 256> shifts{};
+
+        for (unsigned high = 0; high < 256; ++high) {
+            for (unsigned low = 0; low < 256; ++low)
+                units[low] = static_cast<wchar_t>(high << 8 | low);
+
+            // Половины суррогатных пар не буквы, и их страницы остаются как есть.
+            if (high < 0xD8 || high > 0xDF)
+                ::CharLowerBuffW(units.data(), static_cast<DWORD>(units.size()));
+
+            bool same = true;
+            for (unsigned low = 0; low < 256; ++low) {
+                const auto unit = static_cast<wchar_t>(high << 8 | low);
+                shifts[low] = static_cast<std::uint16_t>(forSearch(units[low]) - unit);
+                same = same && shifts[low] == 0;
+            }
+
+            if (!same) {
+                starts[high] = storage_.size();
+                storage_.insert(storage_.end(), shifts.begin(), shifts.end());
+            }
+        }
+
+        for (unsigned high = 0; high < 256; ++high)
+            pages_[high] = storage_.data() + starts[high];
     }
-    return copy;
+
+    wchar_t operator()(wchar_t unit) const noexcept {
+        return static_cast<wchar_t>(unit + pages_[unit >> 8][unit & 0xFF]);
+    }
+
+private:
+    /// Что сверх строчных: то, что читатель пишет иначе, чем набрано в книге.
+    static wchar_t forSearch(wchar_t lower) noexcept {
+        switch (lower) {
+        case L'\x0451': return L'\x0435';   // ё — е
+        case L'\x00A0':                      // неразрывный пробел
+        case L'\x202F': return L' ';         // узкий неразрывный пробел
+        case L'\x00AD': return 0;            // мягкий перенос
+        default: return lower;
+        }
+    }
+
+    std::vector<std::uint16_t> storage_;
+    std::array<const std::uint16_t*, 256> pages_{};
+};
+
+const SearchFolding& searchFolding() {
+    static const SearchFolding folding;
+    return folding;
+}
+
+/// Сколько единиц абзаца с `at` занимает ключ, или ноль, если ключа там нет.
+/// Мягкий перенос внутри совпадения пропускается и в длину входит.
+std::size_t matchLength(const SearchFolding& fold, std::wstring_view text, std::size_t at,
+                        std::wstring_view key) noexcept {
+    std::size_t end = at;
+    for (const wchar_t wanted : key) {
+        wchar_t folded = 0;
+        while (end < text.size() && (folded = fold(text[end])) == 0)
+            ++end;
+        if (end == text.size() || folded != wanted) return 0;
+        ++end;
+    }
+    return end - at;
 }
 
 /// Позиция символа абзаца в книге. Таблица позиций может быть короче текста —
@@ -71,23 +145,29 @@ wxl::core::sta_vector<SearchHit> searchBook(std::span<const typography::Block> b
     wxl::core::sta_vector<SearchHit> hits;
     if (needle.empty() || limit == 0) return hits;
 
-    const std::wstring wanted = lowered(needle);
+    const SearchFolding& fold = searchFolding();
 
+    wxl::core::sta_wstring key;
+    key.reserve(needle.size());
+    for (const wchar_t unit : needle)
+        if (const wchar_t folded = fold(unit)) key.push_back(folded);
+    if (key.empty()) return hits;
+
+    // Абзац не копируется: сравнение идёт по его тексту как есть, так что место
+    // находки — сразу место в абзаце, а пропущенный мягкий перенос его не сдвигает.
     for (const typography::Block& block : blocks) {
-        if (block.paragraph.text.empty()) continue;
+        const std::wstring_view text = block.paragraph.text.wchars();
 
-        // Абзац приводится к строчным целиком и один раз: искать в нём будут
-        // столько раз, сколько в нём находок, а копия всё равно нужна — регистр
-        // менять в исходном тексте нельзя, из него берётся отрывок для показа.
-        const std::wstring haystack = lowered(block.paragraph.text.wchars());
+        for (std::size_t at = 0; at < text.size(); ++at) {
+            if (fold(text[at]) != key.front()) continue;
 
-        std::size_t at = haystack.find(wanted);
-        while (at != std::wstring::npos) {
-            hits.push_back({contextAround(block.paragraph.text, at, wanted.size()),
-                            offsetAt(block, at)});
+            const std::size_t length = matchLength(fold, text, at, key);
+            if (length == 0) continue;
+
+            hits.push_back({contextAround(block.paragraph.text, at, length), offsetAt(block, at)});
             if (hits.size() >= limit) return hits;
 
-            at = haystack.find(wanted, at + wanted.size());
+            at += length - 1;
         }
     }
 

@@ -123,6 +123,38 @@ void testContentsBorrowTitles() {
           "заголовок взят из блока, а не скопирован");
 }
 
+/// Что поиск считает совпадением: регистр не важен, «ё» равна «е»,
+/// неразрывный пробел — обычному, а мягкий перенос внутри слова не мешает.
+/// Место находки — в тексте абзаца как он есть.
+void testSearchMatchesWhatTheReaderMeans() {
+    std::printf("\n=== что поиск считает совпадением ===\n");
+
+    struct Case {
+        const char* what;
+        std::wstring_view text;
+        std::wstring_view needle;
+        std::uint32_t at;
+    };
+
+    const Case found[] = {
+        {"регистр", L"Сказал Прометей.", L"прометей", 7},
+        {"«ё» в тексте, «е» в запросе", L"Ну, ещё раз.", L"ЕЩЕ", 4},
+        {"«е» в тексте, «ё» в запросе", L"еще раз", L"ещё", 0},
+        {"мягкий перенос внутри слова", L"О Про\x00ADме\x00ADтее", L"прометее", 2},
+        {"неразрывный пробел", L"за 10\x00A0лет", L"10 лет", 3},
+    };
+
+    for (const Case& test : found) {
+        const typography::Block blocks[] = {blockOf(test.text)};
+        const wxl::core::sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, test.needle);
+        check(hits.size() == 1 && hits[0].charOffset == test.at,
+              std::string("находка на своём месте: ") + test.what);
+    }
+
+    const typography::Block hyphen[] = {blockOf(L"Про-метей")};
+    check(reader::searchBook(hyphen, L"прометей").empty(), "обычный дефис — не мягкий перенос");
+}
+
 }  // namespace
 
 int main() {
@@ -131,6 +163,7 @@ int main() {
     testHintKeepsLetters();
     testSearchContextKeepsLetters();
     testContentsBorrowTitles();
+    testSearchMatchesWhatTheReaderMeans();
 
     std::printf("\n%s\n", failures == 0 ? "OK" : "ЕСТЬ ОШИБКИ");
     return failures;
