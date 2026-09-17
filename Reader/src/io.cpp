@@ -11,9 +11,6 @@ namespace bukvitsa::reader {
 
 using wxl::async::awaitable;
 using wxl::async::managed_task;
-using wxl::core::directory;
-using wxl::core::file;
-using wxl::core::path;
 
 namespace {
 
@@ -23,13 +20,13 @@ std::optional<std::string> readWhole(const path& p) {
 
     if (!source.opened()) return std::nullopt;
 
-    const wxl::core::nullable<std::uint64_t> length = source.size();
+    const nullable<uint64_t> length = source.size();
 
     if (!length) return std::nullopt;
 
-    std::string bytes(static_cast<std::size_t>(*length), '\0');
+    std::string bytes(static_cast<size_t>(*length), '\0');
 
-    const std::size_t read =
+    const size_t read =
         source.read({reinterpret_cast<std::byte*>(bytes.data()), bytes.size()});
 
     bytes.resize(read);
@@ -56,7 +53,7 @@ bool writeWhole(const path& p, path& parent, const path& temporary, std::string_
 
         if (!out.opened()) return false;
 
-        const std::size_t written =
+        const size_t written =
             out.write({reinterpret_cast<const std::byte*>(content.data()), content.size()});
 
         if (written != content.size() || !out.flush()) return false;
@@ -70,8 +67,8 @@ bool writeWhole(const path& p, path& parent, const path& temporary, std::string_
 
 }  // namespace
 
-path poolPath(const std::filesystem::path& path) {
-    return wxl::core::path(std::wstring_view(path.native()));
+path poolPath(const std::filesystem::path& system) {
+    return path(std::wstring_view(system.native()));
 }
 
 Io::Io() = default;
@@ -158,8 +155,8 @@ awaitable<bool> Io::fileExists(const std::filesystem::path& file_path) {
     });
 }
 
-awaitable<std::uint64_t> Io::fileSize(const std::filesystem::path& file_path) {
-    return wxl::async::sta_loop::async_call([p = poolPath(file_path)]() -> std::uint64_t {
+awaitable<uint64_t> Io::fileSize(const std::filesystem::path& file_path) {
+    return wxl::async::sta_loop::async_call([p = poolPath(file_path)]() -> uint64_t {
         file source = file::open_read(p.c_str());
 
         return source.size().value_or(0);

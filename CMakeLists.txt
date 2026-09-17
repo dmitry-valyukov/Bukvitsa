@@ -172,6 +172,9 @@ function(bukvitsa_consumes_wxl target)
         CXX_MODULE_STD ON
         CXX_SCAN_FOR_MODULES ON
     )
+    # Общий предкомпилированный заголовок: стандартные и системные заголовки
+    # до любого импорта и имена wxl::core без квалификатора (см. pch.h).
+    target_precompile_headers(${target} PRIVATE "${PROJECT_SOURCE_DIR}/pch.h")
 endfunction()
 
 # Вендоренные зависимости — до /W4 и определений ниже по той же причине, по

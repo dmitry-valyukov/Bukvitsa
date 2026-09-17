@@ -9,8 +9,8 @@ import wxl.core;
 
 namespace bukvitsa::reader {
 
-std::string xmlValue(const wxl::core::u16_view value) {
-    return wxl::core::xml_escaped(value.to_utf8().chars());
+std::string xmlValue(const u16_view value) {
+    return xml_escaped(value.to_utf8().chars());
 }
 
 std::string xmlValue(const std::wstring_view value) {
@@ -20,24 +20,24 @@ std::string xmlValue(const std::wstring_view value) {
     // превратился бы в три байта, которых UTF-8 не знает, и при следующем
     // запуске wxl.xml отвергла бы весь файл — то есть реестр книг или настройки
     // пропали бы целиком из-за одного дурного имени.
-    return xmlValue(wxl::core::u16_view(wxl::core::repaired(value)));
+    return xmlValue(u16_view(repaired(value)));
 }
 
-wxl::core::u16_text attributeOf(const wxl::xml::node& element, std::string_view name) {
+u16_text attributeOf(const wxl::xml::node& element, std::string_view name) {
     const auto value = element.attribute(name);
-    return value ? value->to_utf16() : wxl::core::u16_text{};
+    return value ? value->to_utf16() : u16_text{};
 }
 
-std::uint64_t numberOf(const wxl::xml::node& element, std::string_view name,
-                       std::uint64_t fallback) {
+uint64_t numberOf(const wxl::xml::node& element, std::string_view name,
+                  uint64_t fallback) {
     const auto value = element.attribute(name);
     if (!value) return fallback;
 
     // Числом должно быть всё значение: разобралось не до конца — значит там не
     // число, и лучше умолчание, чем половина прочитанного. try_parse не трогает
     // результат, пока не разберёт весь текст, — умолчание и остаётся.
-    std::uint64_t number = fallback;
-    wxl::core::try_parse(value->chars(), number);
+    uint64_t number = fallback;
+    try_parse(value->chars(), number);
     return number;
 }
 
@@ -46,7 +46,7 @@ double realOf(const wxl::xml::node& element, std::string_view name, double fallb
     if (!value) return fallback;
 
     double number = fallback;
-    wxl::core::try_parse(value->chars(), number);
+    try_parse(value->chars(), number);
     return number;
 }
 

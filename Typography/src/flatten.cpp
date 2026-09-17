@@ -29,7 +29,7 @@ constexpr bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c 
 /// обозначить — дело того, кто набирает. Официальный пример `nightmare_example`
 /// именно такой, и без этого знака его сноски были бы недостижимы — щёлкать
 /// не по чему.
-std::wstring noteMarker(fb3::NoteNumbering numbering, std::uint32_t number) {
+std::wstring noteMarker(fb3::NoteNumbering numbering, uint32_t number) {
     switch (numbering) {
     case fb3::NoteNumbering::Asterisk:
         // Звёздочки растут числом, а не значением: *, **, ***. Дальше третьей
@@ -44,14 +44,14 @@ std::wstring noteMarker(fb3::NoteNumbering numbering, std::uint32_t number) {
         break;
 
     case fb3::NoteNumbering::Roman: {
-        static constexpr std::pair<std::uint32_t, const wchar_t*> kRoman[] = {
+        static constexpr std::pair<uint32_t, const wchar_t*> kRoman[] = {
             {1000, L"m"}, {900, L"cm"}, {500, L"d"}, {400, L"cd"}, {100, L"c"}, {90, L"xc"},
             {50, L"l"},   {40, L"xl"},  {10, L"x"},  {9, L"ix"},   {5, L"v"},   {4, L"iv"},
             {1, L"i"},
         };
 
         std::wstring result;
-        std::uint32_t rest = number;
+        uint32_t rest = number;
         for (const auto& [value, sign] : kRoman)
             while (rest >= value) {
                 result += sign;
@@ -92,8 +92,8 @@ private:
     /// заголовок, на какой глубине список.
     struct Context {
         BlockKind paragraphKind = BlockKind::Paragraph;
-        std::uint8_t level = 0;
-        std::uint8_t listDepth = 0;
+        uint8_t level = 0;
+        uint8_t listDepth = 0;
         bool ordered = false;
     };
 
@@ -102,38 +102,38 @@ private:
     bool open_ = false;
     bool preformatted_ = false;
     bool pendingSpace_ = false;      ///< свёрнутый пробел, ещё не записанный
-    std::uint32_t pendingSpaceAt_ = 0;
+    uint32_t pendingSpaceAt_ = 0;
     std::vector<FontStyle> styles_{FontStyle{}};
 
     /// Номер текущего блока. Нужен тем, кто уходит вглубь дерева и хочет
     /// вернуться к блоку, с которого начал: блок мог смениться под ними.
-    std::uint64_t blockSerial_ = 0;
+    uint64_t blockSerial_ = 0;
 
     /// Сквозной номер сноски по книге. Не по секции: секция в FB3 бывает
     /// вложена во что угодно, и «сноска 3» в двух местах книги смутила бы
     /// сильнее, чем «сноска 37».
-    std::uint32_t noteNumber_ = 0;
+    uint32_t noteNumber_ = 0;
 
     /// Глубина секции, открытой с прошлого положенного блока и ещё не
     /// отмеченной. Её понесёт первый же следующий блок (`markSectionStart`):
     /// вход в секцию сам блока не создаёт, а метка нужна на первом блоке
     /// секции, каким бы путём тот ни попал в список.
-    std::uint8_t pendingSection_ = 0;
+    uint8_t pendingSection_ = 0;
 
     /// Где в тексте блока начинаются буквы. Прогон стиля и знак сноски,
     /// поставленный вёрсткой, начинаются только с буквы: разметка внутри
     /// буквы (`и<em>◌̆</em>`) иначе отдала бы знак шейперу отдельным прогоном,
     /// без основы.
-    wxl::core::grapheme_breaker letters_;
+    grapheme_breaker letters_;
 
     /// Знак сноски, который ставит вёрстка, ждёт начала следующей буквы:
     /// `<note>` мог встать между буквой и её знаком, и знак сноски там
     /// разорвал бы букву.
     struct PendingMarker {
-        std::size_t anchor = 0;           ///< индекс в Paragraph::notes
+        size_t anchor = 0;           ///< индекс в Paragraph::notes
         std::wstring text;
         FontStyle style;
-        std::uint32_t charOffset = 0;
+        uint32_t charOffset = 0;
     };
     std::vector<PendingMarker> pendingMarkers_;
 
@@ -169,7 +169,7 @@ private:
         // Хвостовой пробел абзаца не значит ничего: он появился от того, как
         // файл разложен по строкам.
         if (!preformatted_) {
-            const std::size_t kept = block_.paragraph.text.plain().find_last_not_of(u' ') + 1;
+            const size_t kept = block_.paragraph.text.plain().find_last_not_of(u' ') + 1;
             block_.paragraph.text.erase(kept);
             block_.paragraph.charOffsets.resize(kept);
         }
@@ -186,7 +186,7 @@ private:
 
     /// Обрезка хвостовых пробелов укоротила текст — прогоны надо подтянуть.
     void trimSpans() {
-        const auto length = static_cast<std::uint32_t>(block_.paragraph.text.size());
+        const auto length = static_cast<uint32_t>(block_.paragraph.text.size());
 
         std::erase_if(block_.paragraph.spans, [&](const StyleSpan& span) { return span.start >= length; });
         for (StyleSpan& span : block_.paragraph.spans)
@@ -233,27 +233,27 @@ private:
     ///
     /// Всё, что попадает в текст блока, идёт сюда: автомат букв должен
     /// увидеть каждый символ, иначе его границы разойдутся с текстом.
-    void appendCodePoint(char32_t code, std::uint32_t charOffset) {
+    void appendCodePoint(char32_t code, uint32_t charOffset) {
         // Знаки сносок встают перед буквой, которая начинается здесь. Проба —
         // на копии автомата: сам он должен увидеть сперва знаки, потом символ.
         if (!pendingMarkers_.empty()) {
-            wxl::core::grapheme_breaker probe = letters_;
+            grapheme_breaker probe = letters_;
             if (probe.breaks_before(code))
                 flushMarkers();
         }
 
         const bool startsLetter = letters_.breaks_before(code);
         Paragraph& paragraph = block_.paragraph;
-        const std::size_t at = paragraph.text.size();
+        const size_t at = paragraph.text.size();
 
         if (paragraph.spans.empty() ||
             (startsLetter && !(paragraph.spans.back().style == styles_.back())))
-            paragraph.spans.push_back(StyleSpan{static_cast<std::uint32_t>(at), 0, styles_.back()});
+            paragraph.spans.push_back(StyleSpan{static_cast<uint32_t>(at), 0, styles_.back()});
 
         // Символ вне BMP — пара единиц, и позицию в книге несут обе.
         paragraph.text.push_back(code);
         paragraph.charOffsets.resize(paragraph.text.size(), charOffset);
-        paragraph.spans.back().length += static_cast<std::uint32_t>(paragraph.text.size() - at);
+        paragraph.spans.back().length += static_cast<uint32_t>(paragraph.text.size() - at);
     }
 
     void flushMarkers() {
@@ -261,7 +261,7 @@ private:
         pendingMarkers_.clear();
 
         for (const PendingMarker& marker : markers) {
-            const auto position = static_cast<std::uint32_t>(block_.paragraph.text.size());
+            const auto position = static_cast<uint32_t>(block_.paragraph.text.size());
 
             styles_.push_back(marker.style);
             for (const wchar_t sign : marker.text)
@@ -270,7 +270,7 @@ private:
 
             NoteAnchor& note = block_.paragraph.notes[marker.anchor];
             note.position = position;
-            note.length = static_cast<std::uint32_t>(block_.paragraph.text.size()) - position;
+            note.length = static_cast<uint32_t>(block_.paragraph.text.size()) - position;
         }
     }
 
@@ -278,7 +278,7 @@ private:
     /// буква из двух символов, и пробел в ней основа: выбросить его значит
     /// оставить знак без буквы.
     static bool extendsSpace(char32_t code) {
-        wxl::core::grapheme_breaker letters;
+        grapheme_breaker letters;
         letters.breaks_before(U' ');
         return !letters.breaks_before(code);
     }
@@ -314,14 +314,14 @@ private:
         appendCodePoint(U' ', pendingSpaceAt_);
     }
 
-    void appendText(wxl::core::u8_view utf8, std::uint32_t firstCharOffset) {
-        std::uint32_t offset = firstCharOffset;
+    void appendText(u8_view utf8, uint32_t firstCharOffset) {
+        uint32_t offset = firstCharOffset;
 
         // Текст пришёл проверенным: wxl.xml проверяет документ целиком, прежде
         // чем его разбирать, и её дерево — а за ним и модель книги — отдаёт
         // u8_view. Обход кодовых точек берёт этот довод готовым и не
         // спрашивает заново на каждом байте.
-        for (const char32_t code : wxl::core::code_points(utf8)) {
+        for (const char32_t code : code_points(utf8)) {
             if (!preformatted_ && code < 0x80u && isSpace(static_cast<char>(code))) {
                 if (!pendingSpace_) {
                     pendingSpace_ = true;
@@ -383,10 +383,10 @@ private:
             flushPendingSpace();
 
             const auto anchor = block_.paragraph.notes.size();
-            const std::uint64_t serial = blockSerial_;
+            const uint64_t serial = blockSerial_;
 
             block_.paragraph.notes.push_back(
-                NoteAnchor{static_cast<std::uint32_t>(block_.paragraph.text.size()), 0,
+                NoteAnchor{static_cast<uint32_t>(block_.paragraph.text.size()), 0,
                            node.noteRef() ? node.noteRef()->target : nullptr});
 
             pushStyle([](FontStyle& s) { s.script = 1; });
@@ -414,7 +414,7 @@ private:
             // некуда: тот список сносок уже уехал вместе со старым блоком.
             if (serial == blockSerial_ && anchor < block_.paragraph.notes.size()) {
                 NoteAnchor& note = block_.paragraph.notes[anchor];
-                const auto end = static_cast<std::uint32_t>(block_.paragraph.text.size());
+                const auto end = static_cast<uint32_t>(block_.paragraph.text.size());
                 note.length = end > note.position ? end - note.position : 0;
             }
             return;
@@ -457,8 +457,8 @@ private:
         // только свойства блока: текст уезжает вместе с ним.
         const BlockKind kind = block_.kind;
         const fb3::Node* const source = block_.source;
-        const std::uint8_t level = block_.level;
-        const std::uint8_t listDepth = block_.listDepth;
+        const uint8_t level = block_.level;
+        const uint8_t listDepth = block_.listDepth;
         const bool ordered = block_.ordered;
         const bool wasOpen = open_;
 
@@ -500,7 +500,7 @@ private:
             return;
 
         case NodeKind::Section: {
-            const auto depth = static_cast<std::uint8_t>(std::min(context.level + 1, 6));
+            const auto depth = static_cast<uint8_t>(std::min(context.level + 1, 6));
             context.level = depth;
             // Первый блок секции понесёт метку её начала. Открылись секции
             // подряд (вложенная сразу за родителем, без блока между) — метку
@@ -542,7 +542,7 @@ private:
             return;
 
         case NodeKind::List:
-            context.listDepth = static_cast<std::uint8_t>(std::min(context.listDepth + 1, 6));
+            context.listDepth = static_cast<uint8_t>(std::min(context.listDepth + 1, 6));
             context.ordered = node.list() && node.list()->ordered;
             context.paragraphKind = BlockKind::ListItem;
             walkChildren(node, context);

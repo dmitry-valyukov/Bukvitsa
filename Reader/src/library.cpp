@@ -30,18 +30,18 @@ std::wstring_view coverExtension(std::string_view contentType) {
 /// Один атрибут: имя, значение, экранирование. Отдельной функцией, потому что
 /// в реестре их семь на запись, и повторять xmlValue() семь раз — значит однажды
 /// забыть.
-void attribute(wxl::core::text_builder<wxl::core::sta_allocator>& out, std::string_view name, wxl::core::u16_view value) {
+void attribute(text_builder<sta_allocator>& out, std::string_view name, u16_view value) {
     out.format(" {}=\"{}\"", name, xmlValue(value));
 }
 
 /// То же для путей и имён файлов: их xmlValue() чинит.
-void attribute(wxl::core::text_builder<wxl::core::sta_allocator>& out, std::string_view name, std::wstring_view value) {
+void attribute(text_builder<sta_allocator>& out, std::string_view name, std::wstring_view value) {
     out.format(" {}=\"{}\"", name, xmlValue(value));
 }
 
 /// Определена ниже, рядом с тем, что делает, — а нужна уже в add().
 BookEntry describe(const fb3::Document& document, const std::filesystem::path& path,
-                   std::uint64_t fileSize);
+                   uint64_t fileSize);
 
 }  // namespace
 
@@ -83,7 +83,7 @@ void Library::loadFrom(std::string xml) {
             entry.title = attributeOf(element, "title");
             entry.authors = attributeOf(element, "authors");
             entry.fileSize = numberOf(element, "size");
-            entry.characterCount = static_cast<std::uint32_t>(numberOf(element, "characters"));
+            entry.characterCount = static_cast<uint32_t>(numberOf(element, "characters"));
 
             // Без guid запись бесполезна: под ним лежит место чтения, и
             // выдать ей новый значило бы потерять прочитанное. Такого в файле,
@@ -102,7 +102,7 @@ std::string Library::toXml() const {
     // Аллокатор -- STA-пул: и этот формирователь, и bookStateXml ниже зовутся
     // из корутин между двумя `co_await`, то есть в интерфейсном потоке (см.
     // io.h); на рабочий поток уходят только готовые байты.
-    wxl::core::text_builder<wxl::core::sta_allocator> out;
+    text_builder<sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<library version=\"{}\">\n", kVersion);
@@ -151,13 +151,13 @@ const BookEntry* Library::findSame(const BookEntry& candidate) const {
 }
 
 const BookEntry& Library::add(const fb3::Document& document, const std::filesystem::path& path,
-                              std::uint64_t fileSize) {
+                              uint64_t fileSize) {
     BookEntry entry = describe(document, path, fileSize);
 
     if (const BookEntry* known = findSame(entry)) {
         // Guid остаётся прежним: за ним место чтения, и книга, которую
         // переложили в другую папку, должна открыться там же, где закрылась.
-        BookEntry& stored = books_[static_cast<std::size_t>(known - books_.data())];
+        BookEntry& stored = books_[static_cast<size_t>(known - books_.data())];
         entry.guid = stored.guid;
         entry.cover = coverOf(document, entry.guid).name;
         stored = std::move(entry);
@@ -176,7 +176,7 @@ std::filesystem::path coverDirectory() {
 }
 
 CoverBytes coverOf(const fb3::Document& document, std::wstring_view guid) {
-    const std::optional<std::uint32_t> index = document.description().coverImageIndex;
+    const std::optional<uint32_t> index = document.description().coverImageIndex;
     if (!index || guid.empty()) return {};
 
     const fb3::ImagePart* part = document.image(*index);
@@ -195,7 +195,7 @@ CoverBytes coverOf(const fb3::Document& document, std::wstring_view guid) {
 namespace {
 
 BookEntry describe(const fb3::Document& document, const std::filesystem::path& path,
-                   std::uint64_t fileSize) {
+                   uint64_t fileSize) {
     const fb3::Description& description = document.description();
 
     BookEntry entry;
@@ -214,14 +214,14 @@ BookEntry describe(const fb3::Document& document, const std::filesystem::path& p
 
     // Книга без названия бывает: в витрине лучше имя файла, чем пустая строка.
     // Имя файла Windows не обязано быть правильным UTF-16.
-    if (entry.title.empty()) entry.title = wxl::core::repaired(path.filename().native());
+    if (entry.title.empty()) entry.title = repaired(path.filename().native());
 
     return entry;
 }
 
 }  // namespace
 
-bool BookState::hasBookmark(std::uint32_t offset) const {
+bool BookState::hasBookmark(uint32_t offset) const {
     for (const Bookmark& mark : bookmarks) {
         if (mark.charOffset == offset) return true;
     }
@@ -238,12 +238,12 @@ BookState parseBookState(std::string xml) {
         const wxl::xml::node& root = document.load(std::move(xml));
 
         if (const wxl::xml::node* reading = root.child("reading")) {
-            state.charOffset = static_cast<std::uint32_t>(numberOf(*reading, "charOffset"));
+            state.charOffset = static_cast<uint32_t>(numberOf(*reading, "charOffset"));
         }
         if (const wxl::xml::node* marks = root.child("bookmarks")) {
             for (const wxl::xml::node& mark : marks->children_named("bookmark")) {
                 Bookmark bookmark;
-                bookmark.charOffset = static_cast<std::uint32_t>(numberOf(mark, "charOffset"));
+                bookmark.charOffset = static_cast<uint32_t>(numberOf(mark, "charOffset"));
                 bookmark.hint = attributeOf(mark, "hint");
                 state.bookmarks.push_back(std::move(bookmark));
             }
@@ -257,7 +257,7 @@ BookState parseBookState(std::string xml) {
 }
 
 std::string bookStateXml(const BookState& state) {
-    wxl::core::text_builder<wxl::core::sta_allocator> out;
+    text_builder<sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<book version=\"{}\">\n", BookState::kVersion);

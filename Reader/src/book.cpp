@@ -37,14 +37,14 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
     // секцию верхнего уровня. По ним книга режется на главы.
     if (!blocks_.empty()) {
         chapterStarts_.push_back(0);
-        for (std::size_t i = 1; i < blocks_.size(); ++i)
+        for (size_t i = 1; i < blocks_.size(); ++i)
             if (blocks_[i].startsSection == 1)
                 chapterStarts_.push_back(i);
     }
 
     // Главы заводятся по требованию (ensureChapter); размеры картинок каждой из
     // них нужны у нас — вёрстка их не декодирует и про WIC не знает.
-    imageSize_ = [this](std::uint32_t index) {
+    imageSize_ = [this](uint32_t index) {
         if (index >= images_.size())
             return typography::ImageSize{};
         return typography::ImageSize{images_[index].width, images_[index].height};
@@ -53,24 +53,24 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
 
 Book::~Book() = default;
 
-bool Book::setCurrentChapter(std::uint32_t charOffset) {
+bool Book::setCurrentChapter(uint32_t charOffset) {
     if (chapterStarts_.empty())
         return false;
 
     // Блок, внутри которого лежит символ, — последний, начинающийся не позже.
     const auto blockIt = std::upper_bound(
         blocks_.begin(), blocks_.end(), charOffset,
-        [](std::uint32_t off, const typography::Block& b) { return off < b.charOffset; });
-    const std::size_t block =
+        [](uint32_t off, const typography::Block& b) { return off < b.charOffset; });
+    const size_t block =
         blockIt == blocks_.begin()
             ? 0
-            : static_cast<std::size_t>(std::distance(blocks_.begin(), blockIt) - 1);
+            : static_cast<size_t>(std::distance(blocks_.begin(), blockIt) - 1);
 
     // Глава — последнее её начало не позже этого блока.
     const auto chapterIt =
         std::upper_bound(chapterStarts_.begin(), chapterStarts_.end(), block);
-    const std::size_t chapter =
-        static_cast<std::size_t>(std::distance(chapterStarts_.begin(), chapterIt) - 1);
+    const size_t chapter =
+        static_cast<size_t>(std::distance(chapterStarts_.begin(), chapterIt) - 1);
 
     if (chapter == currentChapter_)
         return false;
@@ -82,14 +82,14 @@ bool Book::setCurrentChapter(std::uint32_t charOffset) {
     return true;
 }
 
-std::span<const typography::Block> Book::chapterSpan(std::size_t index) const {
-    const std::size_t first = chapterStarts_[index];
-    const std::size_t last =
+std::span<const typography::Block> Book::chapterSpan(size_t index) const {
+    const size_t first = chapterStarts_[index];
+    const size_t last =
         index + 1 < chapterStarts_.size() ? chapterStarts_[index + 1] : blocks_.size();
     return std::span<const typography::Block>(blocks_).subspan(first, last - first);
 }
 
-typography::Chapter& Book::chapterAt(std::size_t index) {
+typography::Chapter& Book::chapterAt(size_t index) {
     if (auto it = chapters_.find(index); it != chapters_.end())
         return *it->second;
 
@@ -102,14 +102,14 @@ typography::Chapter& Book::chapterAt(std::size_t index) {
     return *pos->second;
 }
 
-void Book::trimChapters(std::size_t keepRadius) {
+void Book::trimChapters(size_t keepRadius) {
     // До первой наводки текущей главы нет — трогать нечего, а расстояние до
     // npos переполнилось бы и вымело весь кэш.
-    if (currentChapter_ == static_cast<std::size_t>(-1))
+    if (currentChapter_ == static_cast<size_t>(-1))
         return;
 
     for (auto it = chapters_.begin(); it != chapters_.end();) {
-        const std::size_t dist = it->first > currentChapter_ ? it->first - currentChapter_
+        const size_t dist = it->first > currentChapter_ ? it->first - currentChapter_
                                                              : currentChapter_ - it->first;
         if (dist > keepRadius)
             it = chapters_.erase(it);
@@ -129,7 +129,7 @@ void Book::decodeImages() {
                                 IID_PPV_ARGS(&wic_))))
         return;   // без WIC книга читается, просто без иллюстраций
 
-    for (std::uint32_t index = 0; index < parts.size(); ++index) {
+    for (uint32_t index = 0; index < parts.size(); ++index) {
         // Именно image(), а не parts[index]: байты части читаются при первом
         // обращении, и в списке они ещё пусты. Вёрстке нужны размеры всех
         // картинок сразу — без них не построить страницу, — так что лениться
@@ -172,15 +172,15 @@ void Book::decodeImages() {
     }
 }
 
-const fb3::ImagePart* Book::image(std::uint32_t index) const {
+const fb3::ImagePart* Book::image(uint32_t index) const {
     return document_.image(index);
 }
 
-std::optional<std::uint32_t> Book::coverIndex() const {
+std::optional<uint32_t> Book::coverIndex() const {
     return document_.description().coverImageIndex;
 }
 
-ID2D1Bitmap1* Book::bitmap(std::uint32_t index, ID2D1DeviceContext* context) {
+ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
     if (index >= images_.size())
         return nullptr;
 

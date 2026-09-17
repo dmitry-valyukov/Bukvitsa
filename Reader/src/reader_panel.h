@@ -106,25 +106,25 @@ private:
     BookView& view_;
     BookState* state_ = nullptr;
 
-    wxl::core::nullable<wxl::Border> root_ = nullptr;
-    wxl::core::nullable<wxl::Visual> visual_ = nullptr;   ///< для выезда и ухода
+    nullable<wxl::Border> root_ = nullptr;
+    nullable<wxl::Visual> visual_ = nullptr;   ///< для выезда и ухода
 
-    wxl::core::nullable<wxl::Grid> pages_ = nullptr;
+    nullable<wxl::Grid> pages_ = nullptr;
     std::vector<wxl::UIElement> tabPages_;
     std::vector<wxl::Button> tabButtons_;
     std::vector<wxl::Button> themeButtons_;
-    wxl::core::nullable<wxl::StackPanel> themesPanel_ = nullptr;   ///< пересобирается
+    nullable<wxl::StackPanel> themesPanel_ = nullptr;   ///< пересобирается
 
-    wxl::core::nullable<wxl::StackPanel> contentsList_ = nullptr;
-    wxl::core::nullable<wxl::StackPanel> searchList_ = nullptr;
-    wxl::core::nullable<wxl::StackPanel> bookmarkList_ = nullptr;
-    wxl::core::nullable<wxl::TextBox> searchBox_ = nullptr;
-    wxl::core::nullable<wxl::TextBlock> searchNote_ = nullptr;
-    wxl::core::nullable<wxl::TextBlock> bookmarkNote_ = nullptr;
+    nullable<wxl::StackPanel> contentsList_ = nullptr;
+    nullable<wxl::StackPanel> searchList_ = nullptr;
+    nullable<wxl::StackPanel> bookmarkList_ = nullptr;
+    nullable<wxl::TextBox> searchBox_ = nullptr;
+    nullable<wxl::TextBlock> searchNote_ = nullptr;
+    nullable<wxl::TextBlock> bookmarkNote_ = nullptr;
 
-    wxl::core::nullable<wxl::Slider> fontSize_ = nullptr;
-    wxl::core::nullable<wxl::Slider> lineHeight_ = nullptr;
-    wxl::core::nullable<wxl::Slider> margin_ = nullptr;
+    nullable<wxl::Slider> fontSize_ = nullptr;
+    nullable<wxl::Slider> lineHeight_ = nullptr;
+    nullable<wxl::Slider> margin_ = nullptr;
 
     Tab tab_ = Tab::Contents;
     bool open_ = false;

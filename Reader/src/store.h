@@ -31,7 +31,7 @@ namespace bukvitsa::reader {
 ///
 /// Не `quoted`: у `std::quoted` то же имя и та же форма аргумента, и ADL
 /// находит её первой -- ошибка получается в глубине fmt и ни о чём не говорит.
-std::string xmlValue(wxl::core::u16_view value);
+std::string xmlValue(u16_view value);
 
 /// То же для текста, за который никто не поручился, -- а это пути и имена
 /// файлов, потому что их пишет файловая система, а не мы: непарный суррогат в
@@ -43,11 +43,11 @@ std::string xmlValue(std::wstring_view value);
 /// Значение атрибута или пустая строка. Ни одно из полей, которые мы читаем,
 /// не обязательно: файл мог быть написан другой версией. Текст проверенный:
 /// wxl.xml проверяет файл целиком, прежде чем разбирать.
-wxl::core::u16_text attributeOf(const wxl::xml::node& element, std::string_view name);
+u16_text attributeOf(const wxl::xml::node& element, std::string_view name);
 
 /// Целое из атрибута; нет атрибута или в нём не число — вернётся fallback.
-std::uint64_t numberOf(const wxl::xml::node& element, std::string_view name,
-                       std::uint64_t fallback = 0);
+uint64_t numberOf(const wxl::xml::node& element, std::string_view name,
+                  uint64_t fallback = 0);
 
 /// Дробное из атрибута; нет атрибута или в нём не число — вернётся fallback.
 ///

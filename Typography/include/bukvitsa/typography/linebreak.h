@@ -31,7 +31,7 @@ namespace bukvitsa::typography {
 inline constexpr float kInfinitePenalty = 10000.0f;
 
 struct BreakItem {
-    enum class Kind : std::uint8_t { Box, Glue, Penalty };
+    enum class Kind : uint8_t { Box, Glue, Penalty };
 
     Kind kind = Kind::Box;
     float width = 0.0f;
@@ -44,8 +44,8 @@ struct BreakItem {
     /// его не смотрит — он нужен тому, кто потом режет строки: строка кончается
     /// на textPosition, а следующая начинается с textEnd, и пробел, съеденный
     /// переводом строки, не достаётся никому.
-    std::uint32_t textPosition = 0;
-    std::uint32_t textEnd = 0;
+    uint32_t textPosition = 0;
+    uint32_t textEnd = 0;
 };
 
 struct BreakSettings {
@@ -96,7 +96,7 @@ struct BreakSettings {
     /// поле: длинная серия некрасива, а строка за полем ломает страницу, и
     /// абзац, у которого без третьего переноса подряд нет ни одного решения,
     /// набирается с ним.
-    std::uint8_t maxHyphensInARow = 2;
+    uint8_t maxHyphensInARow = 2;
 };
 
 /// Где рвать абзац: индексы элементов, на которых кончается каждая строка.
@@ -107,8 +107,8 @@ struct BreakSettings {
 /// @return индексы в items; последний всегда указывает на завершающий штраф.
 ///         Пустой результат означает, что абзац не удалось разбить даже с
 ///         послаблениями — такого не бывает, пока есть аварийный проход.
-std::vector<std::uint32_t> breakLines(std::span<const BreakItem> items,
-                                      std::span<const float> lineWidths,
-                                      const BreakSettings& settings = {});
+std::vector<uint32_t> breakLines(std::span<const BreakItem> items,
+                                 std::span<const float> lineWidths,
+                                 const BreakSettings& settings = {});
 
 }  // namespace bukvitsa::typography

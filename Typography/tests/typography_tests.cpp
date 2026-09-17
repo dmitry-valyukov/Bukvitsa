@@ -65,7 +65,7 @@ const char* nameOf(typography::BlockKind kind) {
 /// UTF-16 обратно в UTF-8 — только чтобы напечатать в консоль.
 std::string toUtf8(std::wstring_view text) {
     std::string out;
-    for (std::size_t i = 0; i < text.size(); ++i) {
+    for (size_t i = 0; i < text.size(); ++i) {
         char32_t code = text[i];
         if (code >= 0xD800 && code <= 0xDBFF && i + 1 < text.size())
             code = 0x10000 + ((code - 0xD800) << 10) + (text[++i] - 0xDC00);
@@ -94,13 +94,13 @@ void showFirstLines(typography::Engine& engine, const std::vector<typography::Bl
 void testScaledShaping(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                        float width);
 void testPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                    std::uint32_t characterCount);void testChunkedPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                           std::uint32_t characterCount);
+                    uint32_t characterCount);void testChunkedPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+                           uint32_t characterCount);
 void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                     std::uint32_t characterCount);
+                     uint32_t characterCount);
 void testChapterFirstPage(typography::Engine& engine,
                           const std::vector<typography::Block>& blocks,
-                          std::uint32_t characterCount);
+                          uint32_t characterCount);
 void testSeparatorAtPageBottom(typography::Engine& engine);
 void testClustersStayWhole(typography::Engine& engine);
 void testHyphenation();
@@ -155,7 +155,7 @@ void testFormulas(IDWriteFactory* dwrite) {
     // Вся цепочка EPUB: MathML → TeX → MicroTeX. Формула квадратного
     // уравнения в том виде, в каком её пишут конвертеры издателей.
     {
-        const std::optional<wxl::core::u8_view> mathml = wxl::core::checked(
+        const std::optional<u8_view> mathml = checked(
             "<math display=\"block\"><mi>x</mi><mo>=</mo><mfrac>"
             "<mrow><mo>\xE2\x88\x92</mo><mi>b</mi><mo>\xC2\xB1</mo><msqrt>"
             "<msup><mi>b</mi><mn>2</mn></msup><mo>\xE2\x88\x92</mo><mn>4</mn><mi>a</mi>"
@@ -212,10 +212,10 @@ void testFormulas(IDWriteFactory* dwrite) {
     check(SUCCEEDED(context->EndDraw()), "отрисовка завершилась");
 
     // Не белые пиксели — доказательство, что глифы дошли до битмапа.
-    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
     bitmap->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data());
-    std::size_t inked = 0;
-    for (std::size_t i = 0; i < pixels.size(); i += 4) {
+    size_t inked = 0;
+    for (size_t i = 0; i < pixels.size(); i += 4) {
         if (pixels[i] != 0xFF || pixels[i + 1] != 0xFF || pixels[i + 2] != 0xFF) ++inked;
     }
     std::printf("       закрашено пикселей: %zu из %u\n", inked, width * height);
@@ -251,7 +251,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
 
     // Блоки идут в порядке чтения: позиция каждого следующего не меньше.
     bool ordered = true;
-    for (std::size_t i = 1; i < blocks.size(); ++i)
+    for (size_t i = 1; i < blocks.size(); ++i)
         if (blocks[i].charOffset < blocks[i - 1].charOffset) ordered = false;
     check(ordered, "блоки в порядке чтения");
 
@@ -262,7 +262,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     for (const typography::Block& block : blocks) {
         if (block.paragraph.charOffsets.size() != block.paragraph.text.size()) offsetsMatchText = false;
 
-        std::uint32_t at = 0;
+        uint32_t at = 0;
         for (const typography::StyleSpan& span : block.paragraph.spans) {
             if (span.start != at) spansCoverText = false;
             at = span.start + span.length;
@@ -284,12 +284,12 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     check(collapsed, "пробелы свёрнуты");
 
     std::printf("  начало книги:\n");
-    for (std::size_t i = 0; i < blocks.size() && i < 6; ++i) {
+    for (size_t i = 0; i < blocks.size() && i < 6; ++i) {
         const typography::Block& block = blocks[i];
         // Обрезка по букве, а не по байтам UTF-8: `%.100s` резал букву пополам
         // прямо в выводе теста.
         const std::wstring_view whole = block.paragraph.text.wchars();
-        const std::size_t cut = wxl::core::floor_grapheme_boundary(whole, 50);
+        const size_t cut = floor_grapheme_boundary(whole, 50);
         const std::string text = toUtf8(whole.substr(0, cut));
 
         std::string label = nameOf(block.kind);
@@ -360,16 +360,16 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
                 float width) {
     const auto started = std::chrono::steady_clock::now();
 
-    std::size_t lineCount = 0;
-    std::size_t glyphCount = 0;
+    size_t lineCount = 0;
+    size_t glyphCount = 0;
     bool inOrder = true;
     bool haveHeight = true;
 
     float worstOverflow = 0.0f;
     std::wstring worstLine;
     const char* worstKind = "";
-    std::size_t worstRuns = 0, worstBlockLength = 0, worstSpans = 0;
-    std::uint32_t worstStart = 0;
+    size_t worstRuns = 0, worstBlockLength = 0, worstSpans = 0;
+    uint32_t worstStart = 0;
     std::wstring worstNeighbours;
 
     for (const typography::Block& block : blocks) {
@@ -379,7 +379,7 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
         const auto lines = engine.layout(block.paragraph, width, style);
 
-        std::uint32_t reached = 0;
+        uint32_t reached = 0;
         for (const typography::Line& line : lines) {
             ++lineCount;
             for (const typography::GlyphRun& run : line.runs)
@@ -419,7 +419,7 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
     // Сноски. Знак сноски — это то, по чему читатель щёлкает, поэтому он
     // обязан существовать (в FB3 <note> сплошь и рядом пуст, и знак ставит
     // вёрстка), обязан попасть на строку и обязан вести к телу сноски.
-    std::size_t anchors = 0, placed = 0, resolved = 0;
+    size_t anchors = 0, placed = 0, resolved = 0;
     std::wstring firstMarker;
 
     for (const typography::Block& block : blocks) {
@@ -478,7 +478,7 @@ void showFirstLines(typography::Engine& engine, const std::vector<typography::Bl
         const auto lines = engine.layout(block.paragraph, width, style);
 
         std::printf("  абзац на полосе %.0f (отступ %.0f):\n", width, style.firstLineIndent);
-        for (std::size_t i = 0; i < lines.size() && i < 8; ++i) {
+        for (size_t i = 0; i < lines.size() && i < 8; ++i) {
             const typography::Line& line = lines[i];
             const std::wstring text(block.paragraph.text.wchars().substr(line.textStart, line.textLength));
             std::printf("    %6.1f |%s\n", line.width, toUtf8(text).c_str());
@@ -494,7 +494,7 @@ void showFirstLines(typography::Engine& engine, const std::vector<typography::Bl
 /// подтормаживает» решается тем, какая доля этого времени приходится на
 /// шейпинг, а какая на саму раскладку.
 void testPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                    std::uint32_t characterCount) {
+                    uint32_t characterCount) {
     typography::PageStyle style;
     style.width = 620.0f;
     style.height = 800.0f;
@@ -530,7 +530,7 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     // означал бы, что читатель, листая, пропустил кусок книги.
     bool ordered = true;
     bool nonEmpty = true;
-    for (std::size_t i = 0; i < paginator.pageCount(); ++i) {
+    for (size_t i = 0; i < paginator.pageCount(); ++i) {
         const typography::Page& page = paginator.page(i);
         if (page.lines.empty() && page.images.empty()) nonEmpty = false;
         if (i > 0 && page.firstCharOffset < paginator.page(i - 1).firstCharOffset) ordered = false;
@@ -541,7 +541,7 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     // Обратный переход: по позиции чтения находится страница, на которой эта
     // позиция и лежит. На этом стоит сохранение места при смене кегля.
     bool roundTrip = true;
-    for (std::size_t i = 0; i < paginator.pageCount(); ++i) {
+    for (size_t i = 0; i < paginator.pageCount(); ++i) {
         const typography::Page& page = paginator.page(i);
         if (paginator.pageForCharOffset(page.firstCharOffset) != i) roundTrip = false;
     }
@@ -551,8 +551,8 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     // которого начинается её первый блок, обязан быть началом какой-то
     // страницы, а не серединой чужой. Подсекции (startsSection > 1) сюда не
     // входят — они текут внутри своей главы.
-    std::size_t chapters = 0;
-    std::size_t chaptersChecked = 0;
+    size_t chapters = 0;
+    size_t chaptersChecked = 0;
     bool chaptersStartPages = true;
     for (const typography::Block& block : blocks) {
         if (block.startsSection != 1) continue;
@@ -570,8 +570,8 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
         // Начало страницы — это первый поставленный на неё символ, а он у
         // текстового блока лежит в charOffsets (после свёрнутых пробелов), а не
         // в charOffset узла: у заголовка с отбивкой перед текстом они разные.
-        const std::uint32_t firstChar = block.paragraph.charOffsets.front();
-        const std::size_t at = paginator.pageForCharOffset(firstChar);
+        const uint32_t firstChar = block.paragraph.charOffsets.front();
+        const size_t at = paginator.pageForCharOffset(firstChar);
         if (paginator.page(at).firstCharOffset != firstChar) chaptersStartPages = false;
     }
     std::printf("  глав верхнего уровня: %zu (текстовых проверено: %zu)\n", chapters, chaptersChecked);
@@ -582,7 +582,7 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
     // позиции в них не убывают -- то, на что опирается поиск места по книге.
     const std::span<const typography::Block> exposed = paginator.blocks();
     bool offsetsRise = true;
-    for (std::size_t i = 1; i < exposed.size(); ++i) {
+    for (size_t i = 1; i < exposed.size(); ++i) {
         if (exposed[i].charOffset < exposed[i - 1].charOffset) offsetsRise = false;
     }
     check(exposed.size() == blocks.size(), "пагинатор отдаёт те же блоки, из которых верстал");
@@ -596,7 +596,7 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
 /// порции и заведены, — читалка показывает страницу, не дожидаясь конца
 /// счёта, и показанное потом не должно оказаться неправдой.
 void testChunkedPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                           std::uint32_t characterCount) {
+                           uint32_t characterCount) {
     typography::PageStyle style;
     style.width = 620.0f;
     style.height = 800.0f;
@@ -608,13 +608,13 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     // Снимок целой вёрстки. Именно снимок, а не ссылки: следующая вёрстка
     // перевернёт под ними страницы.
     struct Snapshot {
-        std::uint32_t first;
-        std::uint32_t last;
-        std::size_t lines;
-        std::size_t images;
+        uint32_t first;
+        uint32_t last;
+        size_t lines;
+        size_t images;
     };
     std::vector<Snapshot> whole;
-    for (std::size_t i = 0; i < paginator.pageCount(); ++i) {
+    for (size_t i = 0; i < paginator.pageCount(); ++i) {
         const typography::Page& page = paginator.page(i);
         whole.push_back({page.firstCharOffset, page.lastCharOffset, page.lines.size(),
                          page.images.size()});
@@ -623,7 +623,7 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     // Совпала ли набранная порциями книга с той, что вышла разом.
     const auto matches = [&] {
         if (paginator.pageCount() != whole.size()) return false;
-        for (std::size_t i = 0; i < whole.size(); ++i) {
+        for (size_t i = 0; i < whole.size(); ++i) {
             const typography::Page& page = paginator.page(i);
             if (page.firstCharOffset != whole[i].first || page.lastCharOffset != whole[i].last ||
                 page.lines.size() != whole[i].lines || page.images.size() != whole[i].images)
@@ -636,10 +636,10 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     // набранная страница окончательна и задним числом не переписывается.
     bool settled = true;
     bool grows = true;
-    std::size_t seen = 0;
+    size_t seen = 0;
     const auto watch = [&] {
         if (paginator.pageCount() < seen) grows = false;
-        for (std::size_t i = 0; i < seen && i < whole.size(); ++i) {
+        for (size_t i = 0; i < seen && i < whole.size(); ++i) {
             const typography::Page& page = paginator.page(i);
             if (page.firstCharOffset != whole[i].first || page.lines.size() != whole[i].lines)
                 settled = false;
@@ -709,7 +709,7 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
 /// листание назад и прыжок по закладке — ждать порций там нечего, но и считать
 /// главу целиком незачем.
 void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                         std::uint32_t characterCount) {
+                         uint32_t characterCount) {
     typography::PageStyle style;
     style.width = 620.0f;
     style.height = 800.0f;
@@ -724,12 +724,12 @@ void testEagerPagination(typography::Engine& engine, const std::vector<typograph
 
     // Место чтения где-то в середине — так оно и приходит из читалки: первым
     // символом страницы, на которой читатель стоял.
-    const std::uint32_t at = paginator.page(paginator.pageCount() / 2).firstCharOffset;
+    const uint32_t at = paginator.page(paginator.pageCount() / 2).firstCharOffset;
 
     typography::Chapter second(engine, blocks, characterCount);
     second.beginLayout(style);
     const bool more = second.advanceTo(at);
-    const std::size_t reached = second.pageForCharOffset(at);
+    const size_t reached = second.pageForCharOffset(at);
 
     check(second.page(reached).firstCharOffset <= at, "досчитано до места чтения");
     check(second.pageCount() > reached, "страница с этим символом окончательна");
@@ -749,9 +749,9 @@ void testEagerPagination(typography::Engine& engine, const std::vector<typograph
 /// что её страница 0 непуста и начинается ровно с её первого блока.
 void testChapterFirstPage(typography::Engine& engine,
                           const std::vector<typography::Block>& blocks,
-                          std::uint32_t characterCount) {
-    std::vector<std::size_t> starts;
-    for (std::size_t i = 0; i < blocks.size(); ++i)
+                          uint32_t characterCount) {
+    std::vector<size_t> starts;
+    for (size_t i = 0; i < blocks.size(); ++i)
         if (i == 0 || blocks[i].startsSection == 1) starts.push_back(i);
     if (starts.empty()) {
         check(true, "нет глав верхнего уровня — пропущено");
@@ -766,16 +766,16 @@ void testChapterFirstPage(typography::Engine& engine,
 
     // Проходим каждую главу верхнего уровня и ищем ту, у которой первая колонка
     // выходит пустой: читатель увидел бы её на стыке пустой страницей.
-    std::size_t emptyChapters = 0;
-    std::size_t firstEmpty = starts.size();
-    for (std::size_t c = 0; c < starts.size(); ++c) {
-        const std::size_t first = starts[c];
-        const std::size_t last = c + 1 < starts.size() ? starts[c + 1] : blocks.size();
+    size_t emptyChapters = 0;
+    size_t firstEmpty = starts.size();
+    for (size_t c = 0; c < starts.size(); ++c) {
+        const size_t first = starts[c];
+        const size_t last = c + 1 < starts.size() ? starts[c + 1] : blocks.size();
 
         const std::span<const typography::Block> span(blocks.data() + first, last - first);
         typography::Chapter chapter(engine, span, characterCount);
         chapter.beginLayout(style);
-        chapter.advanceToPage(static_cast<std::size_t>(-1));
+        chapter.advanceToPage(static_cast<size_t>(-1));
 
         // Глава без страниц — не беда: лента колонок её перешагивает (секция
         // из одного разделителя). Беда — глава, у которой страницы есть, а
@@ -790,12 +790,12 @@ void testChapterFirstPage(typography::Engine& engine,
     if (emptyChapters > 0) {
         // Показываем первую провинившуюся главу с её блоками — по ним видно, чем
         // она начинается.
-        const std::size_t first = starts[firstEmpty];
-        const std::size_t last =
+        const size_t first = starts[firstEmpty];
+        const size_t last =
             firstEmpty + 1 < starts.size() ? starts[firstEmpty + 1] : blocks.size();
         std::printf("\n=== пустая первая колонка: глава %zu из %zu (блоки %zu..%zu) ===\n",
                     firstEmpty, starts.size(), first, last);
-        for (std::size_t i = first; i < last && i < first + 6; ++i) {
+        for (size_t i = first; i < last && i < first + 6; ++i) {
             const typography::Block& b = blocks[i];
             std::printf("    [%s @%u sect%u lvl%u] %.70s\n", nameOf(b.kind), b.charOffset,
                         static_cast<unsigned>(b.startsSection), static_cast<unsigned>(b.level),
@@ -823,9 +823,9 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
 
     typography::Block paragraph;
     paragraph.kind = typography::BlockKind::Paragraph;
-    paragraph.paragraph.text = wxl::core::u16_text{u"Строка, которой уже не хватает места на полосе."};
+    paragraph.paragraph.text = u16_text{u"Строка, которой уже не хватает места на полосе."};
     paragraph.paragraph.charOffsets.resize(paragraph.paragraph.text.size());
-    for (std::uint32_t i = 0; i < paragraph.paragraph.charOffsets.size(); ++i)
+    for (uint32_t i = 0; i < paragraph.paragraph.charOffsets.size(); ++i)
         paragraph.paragraph.charOffsets[i] = i;
     blocks.push_back(paragraph);
 
@@ -837,7 +837,7 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
     style.height = 30.0f;
 
     typography::Chapter paginator(
-        engine, blocks, static_cast<std::uint32_t>(paragraph.paragraph.text.size()));
+        engine, blocks, static_cast<uint32_t>(paragraph.paragraph.text.size()));
     paginator.setStyle(style);
 
     std::printf("\n=== узкая полоса ===\n");
@@ -848,7 +848,7 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
 /// себя в тексте, а не в двоичном файле рядом.
 std::string storedZip(std::span<const std::pair<std::string_view, std::string_view>> parts) {
     const auto crc32 = [](std::string_view data) {
-        std::uint32_t crc = 0xFFFFFFFFu;
+        uint32_t crc = 0xFFFFFFFFu;
         for (const char byte : data) {
             crc ^= static_cast<unsigned char>(byte);
             for (int bit = 0; bit < 8; ++bit)
@@ -856,16 +856,16 @@ std::string storedZip(std::span<const std::pair<std::string_view, std::string_vi
         }
         return ~crc;
     };
-    const auto put16 = [](std::string& out, std::uint32_t value) {
+    const auto put16 = [](std::string& out, uint32_t value) {
         out.push_back(static_cast<char>(value & 0xFF));
         out.push_back(static_cast<char>((value >> 8) & 0xFF));
     };
-    const auto put32 = [&](std::string& out, std::uint32_t value) {
+    const auto put32 = [&](std::string& out, uint32_t value) {
         put16(out, value & 0xFFFF);
         put16(out, value >> 16);
     };
     // Сигнатура, версия, флаги, метод 0, время, дата 1980-01-01, CRC, размеры.
-    const auto header = [&](std::string& out, std::uint32_t signature, bool central,
+    const auto header = [&](std::string& out, uint32_t signature, bool central,
                             std::string_view name, std::string_view data) {
         put32(out, signature);
         if (central) put16(out, 20);
@@ -875,16 +875,16 @@ std::string storedZip(std::span<const std::pair<std::string_view, std::string_vi
         put16(out, 0);
         put16(out, 0x21);
         put32(out, crc32(data));
-        put32(out, static_cast<std::uint32_t>(data.size()));
-        put32(out, static_cast<std::uint32_t>(data.size()));
-        put16(out, static_cast<std::uint32_t>(name.size()));
+        put32(out, static_cast<uint32_t>(data.size()));
+        put32(out, static_cast<uint32_t>(data.size()));
+        put16(out, static_cast<uint32_t>(name.size()));
         put16(out, 0);
     };
 
     std::string zip;
     std::string directory;
     for (const auto& [name, data] : parts) {
-        const auto offset = static_cast<std::uint32_t>(zip.size());
+        const auto offset = static_cast<uint32_t>(zip.size());
         header(zip, 0x04034B50u, false, name, data);
         zip += name;
         zip += data;
@@ -898,14 +898,14 @@ std::string storedZip(std::span<const std::pair<std::string_view, std::string_vi
         directory += name;
     }
 
-    const auto directoryOffset = static_cast<std::uint32_t>(zip.size());
+    const auto directoryOffset = static_cast<uint32_t>(zip.size());
     zip += directory;
     put32(zip, 0x06054B50u);
     put16(zip, 0);
     put16(zip, 0);
-    put16(zip, static_cast<std::uint32_t>(parts.size()));
-    put16(zip, static_cast<std::uint32_t>(parts.size()));
-    put32(zip, static_cast<std::uint32_t>(directory.size()));
+    put16(zip, static_cast<uint32_t>(parts.size()));
+    put16(zip, static_cast<uint32_t>(parts.size()));
+    put32(zip, static_cast<uint32_t>(directory.size()));
     put32(zip, directoryOffset);
     put16(zip, 0);
     return zip;
@@ -932,7 +932,7 @@ std::string fb3Of(std::string_view body) {
 /// где вёрстка сама выбирает позицию в тексте.
 struct CorpusLetter {
     const char* name;
-    wxl::core::u16_view text;
+    u16_view text;
     char32_t filler;   ///< буква той же письменности: прогон длиннее ёмкости должен быть одним
 };
 
@@ -947,15 +947,15 @@ constexpr CorpusLetter kLetters[] = {
     {"семья через ZWJ", u"\xD83D\xDC68\x200D\xD83D\xDC69\x200D\xD83D\xDC67", 0},
 };
 
-bool isLetterStart(wxl::core::u16_view text, std::uint32_t at) {
-    return at >= text.size() || wxl::core::floor_grapheme_boundary(text, at) == at;
+bool isLetterStart(u16_view text, uint32_t at) {
+    return at >= text.size() || floor_grapheme_boundary(text, at) == at;
 }
 
-typography::Paragraph paragraphOf(wxl::core::u16_view text) {
+typography::Paragraph paragraphOf(u16_view text) {
     typography::Paragraph paragraph;
-    paragraph.text = wxl::core::u16_text(text);
+    paragraph.text = u16_text(text);
     paragraph.charOffsets.resize(paragraph.text.size());
-    for (std::uint32_t i = 0; i < paragraph.charOffsets.size(); ++i)
+    for (uint32_t i = 0; i < paragraph.charOffsets.size(); ++i)
         paragraph.charOffsets[i] = i;
     return paragraph;
 }
@@ -1041,7 +1041,7 @@ void testClustersStayWhole(typography::Engine& engine) {
     for (const CorpusLetter& letter : kLetters) {
         if (!letter.filler) continue;
 
-        wxl::core::u16_text text;
+        u16_text text;
         for (int i = 0; i < 3499; ++i) text.push_back(letter.filler);
         text += letter.text;
         for (int i = 0; i < 1000; ++i) text.push_back(letter.filler);
@@ -1052,7 +1052,7 @@ void testClustersStayWhole(typography::Engine& engine) {
     }
 
     // Полоса в два кегля рубит слово кусками по полкегля — уже любой буквы.
-    wxl::core::u16_text word;
+    u16_text word;
     for (int round = 0; round < 3; ++round)
         for (const CorpusLetter& letter : kLetters)
             word += letter.text;
@@ -1139,8 +1139,8 @@ void testClustersStayWhole(typography::Engine& engine) {
 /// разойдутся переломы — и разойдутся заметно, а не в последнем разряде.
 void testScaledShaping(typography::Engine& engine, const std::vector<typography::Block>& blocks,
                        float width) {
-    std::size_t compared = 0;
-    std::size_t sameBreaks = 0;
+    size_t compared = 0;
+    size_t sameBreaks = 0;
     float worstWidth = 0.0f;
 
     for (const typography::Block& block : blocks) {
@@ -1159,7 +1159,7 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
             continue;
 
         bool same = true;
-        for (std::size_t i = 0; i < scaled.size(); ++i) {
+        for (size_t i = 0; i < scaled.size(); ++i) {
             if (scaled[i].textStart != fresh[i].textStart ||
                 scaled[i].textLength != fresh[i].textLength)
                 same = false;
@@ -1179,7 +1179,7 @@ void testScaledShaping(typography::Engine& engine, const std::vector<typography:
 
 /// Слово, ожидание и итог — одной строкой отчёта. С длиной и в UTF-8: `%ls`
 /// в локали «C» на кириллице обрывает печать молча.
-void reportHyphenation(wxl::core::u8_view word, wxl::core::u8_view expected, wxl::core::u8_view got) {
+void reportHyphenation(u8_view word, u8_view expected, u8_view got) {
     std::string line(word.chars());
     line += ": ждали ";
     line += expected.chars();
@@ -1193,21 +1193,21 @@ void reportHyphenation(wxl::core::u8_view word, wxl::core::u8_view expected, wxl
 /// Разметку получает только слово из букв алфавита образцов, а там каждая
 /// единица UTF-16 — целая кодовая точка из BMP; слово без разметки отдаётся
 /// как есть.
-wxl::core::u8_text hyphenated(wxl::core::u16_view word) {
+u8_text hyphenated(u16_view word) {
     const typography::HyphenPoints points = typography::hyphenate(word);
     if (points == 0) return word.to_utf8();
 
     const std::u16string_view units = word.plain();
-    wxl::core::u8_text marked;
-    for (std::size_t at = 0; at < units.size(); ++at) {
+    u8_text marked;
+    for (size_t at = 0; at < units.size(); ++at) {
         if ((points >> at) & 1) marked.push_back(U'-');
         marked.push_back(static_cast<char32_t>(units[at]));
     }
     return marked;
 }
 
-bool hyphenatedIs(wxl::core::u16_view word, wxl::core::u8_view expected) {
-    const wxl::core::u8_text marked = hyphenated(word);
+bool hyphenatedIs(u16_view word, u8_view expected) {
+    const u8_text marked = hyphenated(word);
     if (marked.chars() == expected.chars()) return true;
 
     reportHyphenation(word.to_utf8(), expected, marked);
@@ -1247,7 +1247,7 @@ void testHyphenation() {
     check(typography::hyphenate(u"") == 0, "пустое слово");
 
     for (const CorpusLetter& letter : kLetters) {
-        wxl::core::u16_text word;
+        u16_text word;
         word += u"досто";
         word += letter.text;
         word += u"примечательность";
@@ -1266,24 +1266,24 @@ void testHyphenation() {
         return;
     }
 
-    std::size_t words = 0, wrong = 0;
+    size_t words = 0, wrong = 0;
     for (std::string line; std::getline(file, line);) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
 
         ++words;
-        const auto expected = wxl::core::checked(line);
+        const auto expected = checked(line);
         if (!expected) {
             std::printf("FAILED строка корпуса %zu — не UTF-8\n", words);
             ++wrong;
             continue;
         }
 
-        wxl::core::u16_text word;
-        for (const char32_t code : wxl::core::code_points(*expected))
+        u16_text word;
+        for (const char32_t code : code_points(*expected))
             if (code != U'-') word.push_back(code);
 
-        const wxl::core::u8_text got = hyphenated(word);
+        const u8_text got = hyphenated(word);
         if (got.chars() != expected->chars() && ++wrong <= 10)
             reportHyphenation(word.to_utf8(), *expected, got);
     }
@@ -1321,12 +1321,12 @@ void testHyphenationInLayout(typography::Engine& engine) {
 
     // Длинные слова в узкую полосу: без переносов строка была бы одним словом
     // и дырой в пол-полосы.
-    wxl::core::u16_text text;
+    u16_text text;
     for (int at = 0; at < 12; ++at) text += u"достопримечательность ";
     const typography::Paragraph long_ = paragraphOf(text);
 
     const auto lines = engine.layout(long_, 200.0f, style);
-    std::size_t hyphenated = 0;
+    size_t hyphenated = 0;
     for (const typography::Line& line : lines)
         if (endsWithHyphen(line)) ++hyphenated;
 
@@ -1370,14 +1370,14 @@ void testHyphenationInLayout(typography::Engine& engine) {
     // кончается дефисом.
     const auto split = engine.layout(paragraphOf(u"достопримечательность"), 90.0f, ragged);
     bool hyphenatedNotChopped = split.size() > 1;
-    for (std::size_t at = 0; at + 1 < split.size(); ++at)
+    for (size_t at = 0; at + 1 < split.size(); ++at)
         if (!endsWithHyphen(split[at])) hyphenatedNotChopped = false;
     if (!hyphenatedNotChopped) printLines(split);
     check(hyphenatedNotChopped, "слово шире полосы переносится по слогам, а не рубится");
 
     // Неразрывный пробел: строка не вправе начаться сразу после него, какой бы
     // ширины ни была полоса.
-    wxl::core::u16_text tied;
+    u16_text tied;
     for (int at = 0; at < 20; ++at) tied += u"аа бб вв ";
     const typography::Paragraph paragraph = paragraphOf(tied);
 
@@ -1408,11 +1408,11 @@ void testHyphenSeries(typography::Engine& engine, const std::filesystem::path& t
     const std::vector<typography::Block> blocks = typography::flatten(document.body());
 
     for (const float width : {460.0f, 300.0f}) {
-        std::size_t lines = 0, hyphens = 0, longest = 0;
+        size_t lines = 0, hyphens = 0, longest = 0;
         for (const typography::Block& block : blocks) {
             if (block.kind != typography::BlockKind::Paragraph || block.paragraph.text.empty()) continue;
 
-            std::size_t row = 0;
+            size_t row = 0;
             for (const typography::Line& line : engine.layout(block.paragraph, width, styleFor(block, 20.0f))) {
                 ++lines;
                 row = endsWithHyphen(line) ? row + 1 : 0;
@@ -1456,7 +1456,7 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
     // меряется по той же панграмме, что у читалки, тем же шрифтом и кеглем.
     typography::ParagraphStyle measure;
     measure.alignment = typography::Alignment::Left;
-    const wxl::core::u16_view pangram = u"съешь же ещё этих мягких французских булок, да выпей чаю";
+    const u16_view pangram = u"съешь же ещё этих мягких французских булок, да выпей чаю";
     const float pangramWidth = engine.layout(paragraphOf(pangram), 10000.0f, measure).front().width;
 
     const float kColumn = std::round(45.0f * pangramWidth / static_cast<float>(pangram.size()));
@@ -1466,9 +1466,9 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
     const typography::TextStyle original = engine.textStyle();
 
     struct Column {
-        std::vector<wxl::core::sta_vector<typography::Line>> paragraphs;
+        std::vector<sta_vector<typography::Line>> paragraphs;
         float height = 0.0f;
-        std::size_t lines = 0, hyphens = 0, hyphensInARow = 0;
+        size_t lines = 0, hyphens = 0, hyphensInARow = 0;
     };
 
     Column columns[2];
@@ -1478,7 +1478,7 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
         engine.setTextStyle(textStyle);
 
         Column& column = columns[side];
-        std::size_t row = 0;
+        size_t row = 0;
         for (const typography::Block* block : chosen) {
             column.paragraphs.push_back(engine.layout(block->paragraph, kColumn, styleFor(*block, 20.0f)));
             for (const typography::Line& line : column.paragraphs.back()) {

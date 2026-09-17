@@ -336,13 +336,13 @@ UIElement ReaderPanel::buildSettings() {
 
 void ReaderPanel::showTab(Tab tab) {
     tab_ = tab;
-    for (std::size_t i = 0; i < tabPages_.size(); ++i) {
-        tabPages_[i].visibility(static_cast<std::size_t>(tab) == i ? Visibility::Visible
+    for (size_t i = 0; i < tabPages_.size(); ++i) {
+        tabPages_[i].visibility(static_cast<size_t>(tab) == i ? Visibility::Visible
                                                                   : Visibility::Collapsed);
     }
-    for (std::size_t i = 0; i < tabButtons_.size(); ++i) {
+    for (size_t i = 0; i < tabButtons_.size(); ++i) {
         tabButtons_[i].background(
-            SolidColorBrush{ARGB{static_cast<std::size_t>(tab) == i ? kActive : 0x00000000u}});
+            SolidColorBrush{ARGB{static_cast<size_t>(tab) == i ? kActive : 0x00000000u}});
     }
 }
 
@@ -401,7 +401,7 @@ void ReaderPanel::setState(BookState* state) {
 void ReaderPanel::fillContents() {
     contentsList_.value().children().clear();
 
-    const wxl::core::sta_vector<ContentsEntry> contents = contentsOf(view_.blocks());
+    const sta_vector<ContentsEntry> contents = contentsOf(view_.blocks());
     if (contents.empty()) {
         contentsList_.value().children().append(listItem(L"В этой книге нет заголовков", {}, 0,
                                                          {}));
@@ -409,7 +409,7 @@ void ReaderPanel::fillContents() {
     }
 
     for (const ContentsEntry& entry : contents) {
-        const std::uint32_t offset = entry.charOffset;
+        const uint32_t offset = entry.charOffset;
         contentsList_.value().children().append(
             listItem(entry.title.wchars(), {}, std::min<float>(entry.level, 4) * 14.0f,
                      [this, offset] { view_.goToCharOffset(offset); }));
@@ -427,7 +427,7 @@ void ReaderPanel::fillBookmarks() {
     bookmarkNote_.value().text({});
 
     for (const Bookmark& mark : state_->bookmarks) {
-        const std::uint32_t offset = mark.charOffset;
+        const uint32_t offset = mark.charOffset;
         bookmarkList_.value().children().append(
             listItem(mark.hint.empty() ? L"Закладка" : mark.hint.wchars(), {}, 0,
                      [this, offset] { view_.goToCharOffset(offset); }));
@@ -443,7 +443,7 @@ void ReaderPanel::runSearch() {
         return;
     }
 
-    const wxl::core::sta_vector<SearchHit> hits = searchBook(view_.blocks(), needle);
+    const sta_vector<SearchHit> hits = searchBook(view_.blocks(), needle);
     if (hits.empty()) {
         searchNote_.value().text(std::format(L"«{}» в книге не нашлось.", needle));
         return;
@@ -452,7 +452,7 @@ void ReaderPanel::runSearch() {
     searchNote_.value().text(std::format(L"Нашлось: {}", hits.size()));
 
     for (const SearchHit& hit : hits) {
-        const std::uint32_t offset = hit.charOffset;
+        const uint32_t offset = hit.charOffset;
         searchList_.value().children().append(
             listItem(hit.context.wchars(), {}, 0, [this, offset] { view_.goToCharOffset(offset); }));
     }
@@ -461,7 +461,7 @@ void ReaderPanel::runSearch() {
 void ReaderPanel::toggleBookmark() {
     if (!state_ || !view_.isOpen()) return;
 
-    const std::uint32_t here = view_.readingPosition();
+    const uint32_t here = view_.readingPosition();
 
     const auto found = std::find_if(state_->bookmarks.begin(), state_->bookmarks.end(),
                                     [here](const Bookmark& mark) {
@@ -474,7 +474,7 @@ void ReaderPanel::toggleBookmark() {
         // приходится сортировать при показе.
         Bookmark mark{here, hintAt(view_.blocks(), here)};
         const auto after = std::lower_bound(state_->bookmarks.begin(), state_->bookmarks.end(),
-                                            here, [](const Bookmark& mark, std::uint32_t offset) {
+                                            here, [](const Bookmark& mark, uint32_t offset) {
                                                 return mark.charOffset < offset;
                                             });
         state_->bookmarks.insert(after, std::move(mark));
@@ -562,7 +562,7 @@ void ReaderPanel::refreshThemes() {
     themesPanel_.value().children().append(groupCaption(L"Обложки"));
 
     const std::vector<Skin>& skins = view_.skins();
-    for (std::size_t index = 0; index < skins.size(); ++index) {
+    for (size_t index = 0; index < skins.size(); ++index) {
         auto button = themeButton(skins[index].name, kThemeCount + static_cast<int>(index),
                                   Thickness{0, 6, 0, 0});
         themeButtons_.push_back(button);
@@ -615,7 +615,7 @@ void ReaderPanel::markTheme() {
     // отмечено. Отмечается тем же цветом, что и открытая вкладка: одна
     // и та же мысль — «вот это сейчас».
     for (int index = 0; index < static_cast<int>(themeButtons_.size()); ++index) {
-        themeButtons_[static_cast<std::size_t>(index)].background(
+        themeButtons_[static_cast<size_t>(index)].background(
             SolidColorBrush{ARGB{index == view_.theme() ? kActive : 0x00000000u}});
     }
 }

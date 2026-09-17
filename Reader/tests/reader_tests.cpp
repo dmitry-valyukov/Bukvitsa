@@ -24,17 +24,17 @@ void check(bool condition, std::string_view what) {
     if (!condition) ++failures;
 }
 
-bool isLetterStart(std::wstring_view text, std::size_t at) {
-    return at >= text.size() || wxl::core::floor_grapheme_boundary(text, at) == at;
+bool isLetterStart(std::wstring_view text, size_t at) {
+    return at >= text.size() || floor_grapheme_boundary(text, at) == at;
 }
 
 /// Текст собран тестом из кусков, поэтому проверяется, как всякий чужой.
 typography::Block blockOf(std::wstring_view text) {
     typography::Block block;
     block.kind = typography::BlockKind::Paragraph;
-    block.paragraph.text = wxl::core::u16_text(wxl::core::checked(text).value());
+    block.paragraph.text = u16_text(checked(text).value());
     block.paragraph.charOffsets.resize(block.paragraph.text.size());
-    for (std::uint32_t i = 0; i < block.paragraph.charOffsets.size(); ++i)
+    for (uint32_t i = 0; i < block.paragraph.charOffsets.size(); ++i)
         block.paragraph.charOffsets[i] = i;
     return block;
 }
@@ -68,7 +68,7 @@ void testHintKeepsLetters() {
         text.append(20, L'\x0436');
 
         const typography::Block blocks[] = {blockOf(text)};
-        const wxl::core::u16_text hint = reader::hintAt(blocks, 0);
+        const u16_text hint = reader::hintAt(blocks, 0);
         const std::wstring_view cut = withoutEllipses(hint.wchars());
 
         check(text.starts_with(cut) && isLetterStart(text, cut.size()),
@@ -92,13 +92,13 @@ void testSearchContextKeepsLetters() {
         text.append(20, L'\x0436');
 
         const typography::Block blocks[] = {blockOf(text)};
-        const wxl::core::sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, L"q");
+        const sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, L"q");
 
         check(hits.size() == 1, "находка одна");
         if (hits.size() != 1) continue;
 
         const std::wstring_view piece = withoutEllipses(hits[0].context.wchars());
-        const std::size_t from = text.find(piece);
+        const size_t from = text.find(piece);
         check(from != std::wstring::npos && isLetterStart(text, from) &&
                   isLetterStart(text, from + piece.size()),
               "отрывок начинается и кончается между буквами");
@@ -114,7 +114,7 @@ void testContentsBorrowTitles() {
     title.kind = typography::BlockKind::Title;
     const typography::Block blocks[] = {title, blockOf(L"Текст главы.")};
 
-    const wxl::core::sta_vector<reader::ContentsEntry> contents = reader::contentsOf(blocks);
+    const sta_vector<reader::ContentsEntry> contents = reader::contentsOf(blocks);
     check(contents.size() == 1, "в оглавлении один заголовок");
     if (contents.size() != 1) return;
 
@@ -133,7 +133,7 @@ void testSearchMatchesWhatTheReaderMeans() {
         const char* what;
         std::wstring_view text;
         std::wstring_view needle;
-        std::uint32_t at;
+        uint32_t at;
     };
 
     const Case found[] = {
@@ -146,7 +146,7 @@ void testSearchMatchesWhatTheReaderMeans() {
 
     for (const Case& test : found) {
         const typography::Block blocks[] = {blockOf(test.text)};
-        const wxl::core::sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, test.needle);
+        const sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, test.needle);
         check(hits.size() == 1 && hits[0].charOffset == test.at,
               std::string("находка на своём месте: ") + test.what);
     }

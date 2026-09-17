@@ -28,10 +28,10 @@ class SearchFolding {
 public:
     SearchFolding() {
         storage_.assign(256, 0);
-        std::array<std::size_t, 256> starts{};
+        std::array<size_t, 256> starts{};
 
         std::array<wchar_t, 256> units{};
-        std::array<std::uint16_t, 256> shifts{};
+        std::array<uint16_t, 256> shifts{};
 
         for (unsigned high = 0; high < 256; ++high) {
             for (unsigned low = 0; low < 256; ++low)
@@ -44,7 +44,7 @@ public:
             bool same = true;
             for (unsigned low = 0; low < 256; ++low) {
                 const auto unit = static_cast<wchar_t>(high << 8 | low);
-                shifts[low] = static_cast<std::uint16_t>(forSearch(units[low]) - unit);
+                shifts[low] = static_cast<uint16_t>(forSearch(units[low]) - unit);
                 same = same && shifts[low] == 0;
             }
 
@@ -74,8 +74,8 @@ private:
         }
     }
 
-    std::vector<std::uint16_t> storage_;
-    std::array<const std::uint16_t*, 256> pages_{};
+    std::vector<uint16_t> storage_;
+    std::array<const uint16_t*, 256> pages_{};
 };
 
 const SearchFolding& searchFolding() {
@@ -85,9 +85,9 @@ const SearchFolding& searchFolding() {
 
 /// Сколько единиц абзаца с `at` занимает ключ, или ноль, если ключа там нет.
 /// Мягкий перенос внутри совпадения пропускается и в длину входит.
-std::size_t matchLength(const SearchFolding& fold, std::wstring_view text, std::size_t at,
-                        std::wstring_view key) noexcept {
-    std::size_t end = at;
+size_t matchLength(const SearchFolding& fold, std::wstring_view text, size_t at,
+                   std::wstring_view key) noexcept {
+    size_t end = at;
     for (const wchar_t wanted : key) {
         wchar_t folded = 0;
         while (end < text.size() && (folded = fold(text[end])) == 0)
@@ -100,8 +100,8 @@ std::size_t matchLength(const SearchFolding& fold, std::wstring_view text, std::
 
 /// Позиция символа абзаца в книге. Таблица позиций может быть короче текста —
 /// у блоков без текста её нет вовсе, — и тогда отвечает начало блока.
-std::uint32_t offsetAt(const typography::Block& block, std::size_t index) {
-    const std::vector<std::uint32_t>& offsets = block.paragraph.charOffsets;
+uint32_t offsetAt(const typography::Block& block, size_t index) {
+    const std::vector<uint32_t>& offsets = block.paragraph.charOffsets;
     return index < offsets.size() ? offsets[index] : block.charOffset;
 }
 
@@ -109,15 +109,15 @@ std::uint32_t offsetAt(const typography::Block& block, std::size_t index) {
 ///
 /// Края считаются в единицах UTF-16 и потому сдвигаются к началу буквы: знак
 /// краткой без своей «и» или половина пары на краю отрывка — порченая буква.
-wxl::core::u16_text contextAround(wxl::core::u16_view text, std::size_t at, std::size_t length) {
-    constexpr std::size_t kBefore = 30;
-    constexpr std::size_t kAfter = 70;
+u16_text contextAround(u16_view text, size_t at, size_t length) {
+    constexpr size_t kBefore = 30;
+    constexpr size_t kAfter = 70;
 
-    const std::size_t from = wxl::core::floor_grapheme_boundary(text, at > kBefore ? at - kBefore : 0);
-    const std::size_t to =
-        wxl::core::floor_grapheme_boundary(text, std::min(text.size(), at + length + kAfter));
+    const size_t from = floor_grapheme_boundary(text, at > kBefore ? at - kBefore : 0);
+    const size_t to =
+        floor_grapheme_boundary(text, std::min(text.size(), at + length + kAfter));
 
-    wxl::core::u16_text out;
+    u16_text out;
     out.reserve(to - from + 2);
     if (from > 0) out += u"…";
     out += text.substr(from, to - from);
@@ -127,8 +127,8 @@ wxl::core::u16_text contextAround(wxl::core::u16_view text, std::size_t at, std:
 
 }  // namespace
 
-wxl::core::sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks) {
-    wxl::core::sta_vector<ContentsEntry> contents;
+sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks) {
+    sta_vector<ContentsEntry> contents;
 
     for (const typography::Block& block : blocks) {
         if (block.kind != typography::BlockKind::Title) continue;
@@ -140,14 +140,14 @@ wxl::core::sta_vector<ContentsEntry> contentsOf(std::span<const typography::Bloc
     return contents;
 }
 
-wxl::core::sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
-                                            std::wstring_view needle, std::size_t limit) {
-    wxl::core::sta_vector<SearchHit> hits;
+sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
+                                 std::wstring_view needle, size_t limit) {
+    sta_vector<SearchHit> hits;
     if (needle.empty() || limit == 0) return hits;
 
     const SearchFolding& fold = searchFolding();
 
-    wxl::core::sta_wstring key;
+    sta_wstring key;
     key.reserve(needle.size());
     for (const wchar_t unit : needle)
         if (const wchar_t folded = fold(unit)) key.push_back(folded);
@@ -158,10 +158,10 @@ wxl::core::sta_vector<SearchHit> searchBook(std::span<const typography::Block> b
     for (const typography::Block& block : blocks) {
         const std::wstring_view text = block.paragraph.text.wchars();
 
-        for (std::size_t at = 0; at < text.size(); ++at) {
+        for (size_t at = 0; at < text.size(); ++at) {
             if (fold(text[at]) != key.front()) continue;
 
-            const std::size_t length = matchLength(fold, text, at, key);
+            const size_t length = matchLength(fold, text, at, key);
             if (length == 0) continue;
 
             hits.push_back({contextAround(block.paragraph.text, at, length), offsetAt(block, at)});
@@ -174,8 +174,8 @@ wxl::core::sta_vector<SearchHit> searchBook(std::span<const typography::Block> b
     return hits;
 }
 
-wxl::core::u16_text hintAt(std::span<const typography::Block> blocks, std::uint32_t charOffset) {
-    constexpr std::size_t kWords = 60;
+u16_text hintAt(std::span<const typography::Block> blocks, uint32_t charOffset) {
+    constexpr size_t kWords = 60;
 
     // Последний блок, начинающийся не позже искомой позиции: блоки идут по
     // возрастанию, и это проверено тестом вёрстки.
@@ -188,10 +188,10 @@ wxl::core::u16_text hintAt(std::span<const typography::Block> blocks, std::uint3
 
     // Граница в kWords единиц может прийтись на середину буквы — тогда
     // подсказка на эту букву короче, зато без её обрубка.
-    const wxl::core::u16_view text = found->paragraph.text;
-    const std::size_t cut = wxl::core::floor_grapheme_boundary(text, kWords);
+    const u16_view text = found->paragraph.text;
+    const size_t cut = floor_grapheme_boundary(text, kWords);
 
-    wxl::core::u16_text hint(text.substr(0, cut));
+    u16_text hint(text.substr(0, cut));
     if (cut < text.size()) hint += u"…";
     return hint;
 }

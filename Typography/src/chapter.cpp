@@ -24,9 +24,6 @@
 // стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/page.h"
 
-using wxl::core::sta_deque;
-using wxl::core::sta_vector;
-
 namespace bukvitsa::typography {
 namespace {
 
@@ -185,10 +182,10 @@ struct PageBuilder {
     /// на всю главу разом и не растёт.
     sta_deque<Page> pages;
     Page current;
-    float used = 0.0f;              ///< сколько полосы занято сверху
-    std::uint32_t lastOffset = 0;   ///< позиция последнего поставленного
-    std::size_t block = 0;          ///< блок, который ставится следующим
-    std::size_t line = 0;           ///< строка внутри него
+    float used = 0.0f;         ///< сколько полосы занято сверху
+    uint32_t lastOffset = 0;   ///< позиция последнего поставленного
+    size_t block = 0;          ///< блок, который ставится следующим
+    size_t line = 0;           ///< строка внутри него
 
     void reset(const sta_vector<LaidOutBlock>& blocks, const PageStyle& pageStyle) {
         source = &blocks;
@@ -203,7 +200,7 @@ struct PageBuilder {
 
     /// Сколько места на полосе занимает строка с номером `index`, считая
     /// отбивку перед блоком, если строка первая.
-    float heightOf(const LaidOutBlock& item, std::size_t index) const {
+    float heightOf(const LaidOutBlock& item, size_t index) const {
         float height = item.lines[index].height;
         if (index == 0)
             height += item.spaceBefore;
@@ -212,17 +209,17 @@ struct PageBuilder {
 
     /// Помещаются ли на оставшейся высоте хотя бы `count` строк блока подряд,
     /// начиная с `from`.
-    bool fitsFromHere(const LaidOutBlock& item, std::size_t from, float available,
-                      std::size_t count) const {
+    bool fitsFromHere(const LaidOutBlock& item, size_t from, float available,
+                      size_t count) const {
         float needed = 0.0f;
-        for (std::size_t i = from; i < item.lines.size() && i < from + count; ++i)
+        for (size_t i = from; i < item.lines.size() && i < from + count; ++i)
             needed += heightOf(item, i);
         return needed <= available;
     }
 
     /// Влезет ли за заголовком хотя бы одна строка следующего блока.
-    bool nextBlockHasRoom(std::size_t index, float taken) const {
-        for (std::size_t next = index + 1; next < source->size(); ++next) {
+    bool nextBlockHasRoom(size_t index, float taken) const {
+        for (size_t next = index + 1; next < source->size(); ++next) {
             const LaidOutBlock& item = (*source)[next];
             if (item.isImage)
                 return taken + item.spaceBefore + item.image.height <= style.height;
@@ -248,7 +245,7 @@ struct PageBuilder {
         used = 0.0f;
     }
 
-    void startOfPage(std::uint32_t offset) {
+    void startOfPage(uint32_t offset) {
         if (current.lines.empty() && current.images.empty())
             current.firstCharOffset = offset;
     }
@@ -259,7 +256,7 @@ struct PageBuilder {
     /// ещё один непустой: набор заглядывает вперёд — заголовок держится за
     /// то, что за ним, — и заглянуть в несвёрстанное значило бы принять
     /// решение по пустому месту.
-    void place(std::size_t limit) {
+    void place(size_t limit) {
         const sta_vector<LaidOutBlock>& blocks = *source;
 
         while (block < limit) {
@@ -345,8 +342,8 @@ struct PageBuilder {
 /// За какой блок набору заходить нельзя: индекс последнего непустого в списке.
 /// Ноль означает «пока некуда» — и это верно и для пустого списка, и для
 /// списка из одних разделителей.
-std::size_t nonEmptyLimit(const sta_vector<LaidOutBlock>& blocks) {
-    for (std::size_t i = blocks.size(); i > 0; --i) {
+size_t nonEmptyLimit(const sta_vector<LaidOutBlock>& blocks) {
+    for (size_t i = blocks.size(); i > 0; --i) {
         if (blocks[i - 1].occupies())
             return i - 1;
     }
@@ -360,10 +357,10 @@ std::size_t nonEmptyLimit(const sta_vector<LaidOutBlock>& blocks) {
 struct Chapter::Impl {
     Engine& engine;
     std::span<const Block> blocks;   ///< книги: вид в мастер-список Book, не копия
-    std::function<ImageSize(std::uint32_t)> imageSize;
+    std::function<ImageSize(uint32_t)> imageSize;
 
     PageStyle style;
-    std::uint32_t characterCount = 0;
+    uint32_t characterCount = 0;
 
     /// Шейпинг каждого блока, по индексу в blocks. Делается один раз и живёт
     /// столько же, сколько книга: от кегля и полосы он не зависит, а стоит
@@ -378,12 +375,12 @@ struct Chapter::Impl {
     /// перевыделение сделало бы их недействительными.
     sta_vector<LaidOutBlock> laidOut;
     PageBuilder book;
-    std::size_t layoutCursor = 0;    ///< блок, который верстается следующим
-    std::size_t lastNonEmpty = 0;    ///< за него набору заходить нельзя
+    size_t layoutCursor = 0;         ///< блок, который верстается следующим
+    size_t lastNonEmpty = 0;         ///< за него набору заходить нельзя
     bool complete = true;
 
-    Impl(Engine& engine_, std::span<const Block> blocks_, std::uint32_t characterCount_,
-         std::function<ImageSize(std::uint32_t)> imageSize_)
+    Impl(Engine& engine_, std::span<const Block> blocks_, uint32_t characterCount_,
+         std::function<ImageSize(uint32_t)> imageSize_)
         : engine(engine_), blocks(blocks_), imageSize(std::move(imageSize_)),
           characterCount(characterCount_) {}
 
@@ -403,7 +400,7 @@ struct Chapter::Impl {
     /// Картинка вписывается в полосу с сохранением пропорций и не занимает
     /// больше двух третей высоты: страница, целиком отданная под иллюстрацию,
     /// рвёт чтение.
-    ImageSize fitImage(std::uint32_t index) const {
+    ImageSize fitImage(uint32_t index) const {
         ImageSize size = imageSize ? imageSize(index) : ImageSize{};
         if (size.width <= 0.0f || size.height <= 0.0f)
             return ImageSize{0.0f, 0.0f};
@@ -420,7 +417,7 @@ struct Chapter::Impl {
     /// @param firstChar символ внутри абзаца, с которого начинать. Не ноль
     ///        только у первого блока мгновенной страницы: она начинается с
     ///        места чтения, а не с красной строки.
-    LaidOutBlock layOut(std::size_t index, std::uint32_t firstChar) {
+    LaidOutBlock layOut(size_t index, uint32_t firstChar) {
         const Block& block = blocks[index];
 
         LaidOutBlock item;
@@ -549,8 +546,8 @@ struct Chapter::Impl {
 
 /* ================================================================== */
 
-Chapter::Chapter(Engine& engine, std::span<const Block> blocks, std::uint32_t characterCount,
-                     std::function<ImageSize(std::uint32_t)> imageSize)
+Chapter::Chapter(Engine& engine, std::span<const Block> blocks, uint32_t characterCount,
+                     std::function<ImageSize(uint32_t)> imageSize)
     : impl_(std::make_unique<Impl>(engine, blocks, characterCount, std::move(imageSize))) {}
 
 Chapter::~Chapter() = default;
@@ -568,7 +565,7 @@ bool Chapter::advance(std::chrono::steady_clock::duration budget) {
     return impl_->run(std::chrono::steady_clock::now() + budget);
 }
 
-bool Chapter::advanceTo(std::uint32_t charOffset) {
+bool Chapter::advanceTo(uint32_t charOffset) {
     const sta_deque<Page>& pages = impl_->book.pages;
 
     // Страница с этим символом окончательна, только когда набор ушёл за неё:
@@ -577,7 +574,7 @@ bool Chapter::advanceTo(std::uint32_t charOffset) {
         [&] { return !pages.empty() && pages.back().firstCharOffset > charOffset; });
 }
 
-bool Chapter::advanceToPage(std::size_t index) {
+bool Chapter::advanceToPage(size_t index) {
     const sta_deque<Page>& pages = impl_->book.pages;
     return impl_->runUntil([&] { return pages.size() > index; });
 }
@@ -586,7 +583,7 @@ bool Chapter::isComplete() const { return impl_->complete; }
 
 const PageStyle& Chapter::style() const { return impl_->style; }
 
-std::size_t Chapter::pageCount() const { return impl_->book.pages.size(); }
+size_t Chapter::pageCount() const { return impl_->book.pages.size(); }
 
 namespace {
 
@@ -600,29 +597,29 @@ const Page& nowhere() {
 
 }  // namespace
 
-const Page& Chapter::page(std::size_t index) const {
+const Page& Chapter::page(size_t index) const {
     const sta_deque<Page>& pages = impl_->book.pages;
     if (pages.empty())
         return nowhere();
     return pages[std::min(index, pages.size() - 1)];
 }
 
-std::size_t Chapter::pageForCharOffset(std::uint32_t charOffset) const {
+size_t Chapter::pageForCharOffset(uint32_t charOffset) const {
     const sta_deque<Page>& pages = impl_->book.pages;
 
     // Страницы упорядочены по позиции в книге, поэтому — двоичный поиск
     // последней, начинающейся не позже искомого символа.
     const auto found = std::upper_bound(pages.begin(), pages.end(), charOffset,
-                                        [](std::uint32_t offset, const Page& page) {
+                                        [](uint32_t offset, const Page& page) {
                                             return offset < page.firstCharOffset;
                                         });
 
     if (found == pages.begin())
         return 0;
-    return static_cast<std::size_t>(std::distance(pages.begin(), found) - 1);
+    return static_cast<size_t>(std::distance(pages.begin(), found) - 1);
 }
 
-std::uint32_t Chapter::characterCount() const { return impl_->characterCount; }
+uint32_t Chapter::characterCount() const { return impl_->characterCount; }
 
 std::span<const Block> Chapter::blocks() const { return impl_->blocks; }
 

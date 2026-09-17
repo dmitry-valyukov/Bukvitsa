@@ -90,7 +90,7 @@ enum class Screen { Start, Library, Book };
 struct WarmBook {
     std::filesystem::path wanted;   ///< чью книгу греем или уже прогрели
     std::shared_ptr<Book> book;     ///< она же разобранная; пусто, пока прогрев идёт
-    std::uint64_t fileSize = 0;     ///< размер файла: его записывает реестр
+    uint64_t fileSize = 0;          ///< размер файла: его записывает реестр
 };
 
 struct App {
@@ -187,7 +187,7 @@ managed_task addFolderFlow(App app, std::filesystem::path folder, std::function<
 
         if (!bytes) continue;
 
-        const std::uint64_t fileSize = bytes->size();
+        const uint64_t fileSize = bytes->size();
 
         // Разбор -- единственное место здесь, которое может бросить, и ловится
         // он вокруг разбора, а не вокруг всего шага: не книга, битая книга,
@@ -201,7 +201,7 @@ managed_task addFolderFlow(App app, std::filesystem::path folder, std::function<
             continue;
         }
 
-        const std::size_t knownBefore = app.library->books().size();
+        const size_t knownBefore = app.library->books().size();
 
         const BookEntry stored = app.library->add(*document, path, fileSize);
 
@@ -260,7 +260,7 @@ managed_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
     // По полному списку полосы, а не по реестру: номера считаются вместе с
     // системными обложками, которые стоят впереди реестровых.
     const std::vector<Skin>& list = app.view->skins();
-    for (std::size_t index = 0; index < list.size(); ++index) {
+    for (size_t index = 0; index < list.size(); ++index) {
         if (list[index].name == skinName) {
             app.view->setTheme(kThemeCount + static_cast<int>(index));
             break;
@@ -309,7 +309,7 @@ managed_task deleteSkinFlow(App app, std::wstring name) {
     } else if (!activeName.empty()) {
         const std::vector<Skin>& list = app.view->skins();
 
-        for (std::size_t index = 0; index < list.size(); ++index) {
+        for (size_t index = 0; index < list.size(); ++index) {
             if (list[index].name == activeName) {
                 theme = kThemeCount + static_cast<int>(index);
                 break;
@@ -385,7 +385,7 @@ managed_task warmBookFlow(App app, std::filesystem::path path) {
     // нечего, и вторая её копия в памяти никому не нужна.
     if (!bytes || app.warm->wanted != path) co_return;
 
-    const std::uint64_t fileSize = bytes->size();
+    const uint64_t fileSize = bytes->size();
 
     try {
         app.warm->book = std::make_shared<Book>(path, std::move(*bytes), dwriteFactory());
@@ -450,7 +450,7 @@ managed_task openBookFlow(App app, std::filesystem::path path) {
     const bool warmed = app.warm->wanted == path && app.warm->book;
 
     std::shared_ptr<Book> book = warmed ? std::move(app.warm->book) : nullptr;
-    std::uint64_t fileSize = warmed ? app.warm->fileSize : 0;
+    uint64_t fileSize = warmed ? app.warm->fileSize : 0;
 
     // Прогрев для этой же книги мог ещё идти — пусть, вернувшись, выбросит
     // своё: книга открывается и без него, а вторая её копия в памяти не нужна.
@@ -476,7 +476,7 @@ managed_task openBookFlow(App app, std::filesystem::path path) {
         } catch (std::exception const& failure) {
             // Разговор с читателем, а не запись в лог: он только что выбрал этот
             // файл и вправе узнать, что с ним не так.
-            wxl::core::u16_text const reason = wxl::core::assume_valid(failure.what()).to_utf16();
+            u16_text const reason = assume_valid(failure.what()).to_utf16();
             std::wstring const complaint = L"Не удалось открыть книгу:\n" + path.wstring() +
                                            L"\n\n" + std::wstring(reason.wchars());
             ::MessageBoxW(app.window->handle(), complaint.c_str(), L"Буквица",
@@ -566,7 +566,7 @@ managed_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
         // По полному списку полосы, а не по реестру: номера считаются вместе с
         // системными обложками, которые стоят впереди реестровых.
         const std::vector<Skin>& list = app.view->skins();
-        for (std::size_t index = 0; index < list.size(); ++index) {
+        for (size_t index = 0; index < list.size(); ++index) {
             if (list[index].name == app.settings->skin) {
                 theme = kThemeCount + static_cast<int>(index);
                 break;
@@ -691,7 +691,7 @@ wxl::Teardown wxl_launched() {
         rememberPosition();
     });
 
-    view->onPositionChanged = [positionTimer](std::uint32_t) {
+    view->onPositionChanged = [positionTimer](uint32_t) {
         positionTimer.stop();
         positionTimer.start();
     };

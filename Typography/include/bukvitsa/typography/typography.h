@@ -18,6 +18,6 @@
 
 namespace bukvitsa::typography {
 
-inline constexpr std::uint32_t kVersion = 0x0000'0100; // 0.1.0
+inline constexpr uint32_t kVersion = 0x0000'0100; // 0.1.0
 
 } // namespace bukvitsa::typography

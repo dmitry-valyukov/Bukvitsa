@@ -225,7 +225,7 @@ void StartScreen::reveal() {
         cardVisual_.value().startAnimation(L"Opacity", fade);
     }
 
-    for (std::size_t index = 0; index < revealing_.size(); ++index) {
+    for (size_t index = 0; index < revealing_.size(); ++index) {
         auto const delay = kStagger * static_cast<int>(index);
         const Visual& visual = revealing_[index];
 

@@ -51,7 +51,7 @@ struct PlacedLine {
 };
 
 struct PlacedImage {
-    std::uint32_t imageIndex = 0;
+    uint32_t imageIndex = 0;
     float x = 0.0f;
     float y = 0.0f;
     float width = 0.0f;
@@ -59,10 +59,10 @@ struct PlacedImage {
 };
 
 struct Page {
-    wxl::core::sta_vector<PlacedLine> lines;
-    wxl::core::sta_vector<PlacedImage> images;
-    std::uint32_t firstCharOffset = 0;
-    std::uint32_t lastCharOffset = 0;
+    sta_vector<PlacedLine> lines;
+    sta_vector<PlacedImage> images;
+    uint32_t firstCharOffset = 0;
+    uint32_t lastCharOffset = 0;
 };
 
 /// Верстает книгу и раскладывает её по страницам.
@@ -79,8 +79,8 @@ public:
     ///        выбрасывает пробелы между ними.
     /// @param imageSize размеры картинки по её индексу в книге; вёрстка
     ///        картинок не декодирует, поэтому спрашивает у приложения.
-    Chapter(Engine& engine, std::span<const Block> blocks, std::uint32_t characterCount,
-              std::function<ImageSize(std::uint32_t)> imageSize = {});
+    Chapter(Engine& engine, std::span<const Block> blocks, uint32_t characterCount,
+              std::function<ImageSize(uint32_t)> imageSize = {});
     ~Chapter();
 
     Chapter(const Chapter&) = delete;
@@ -100,12 +100,12 @@ public:
 
     /// Число страниц, уже набранных. Пока книга считается порциями, оно
     /// растёт; настоящим оно становится, когда `isComplete` скажет «да».
-    std::size_t pageCount() const;
+    size_t pageCount() const;
 
     /// Страница по номеру. Спрашивать имеет смысл, только если `pageCount`
     /// не ноль: посреди порционной вёрстки страниц может не быть ни одной, и
     /// тогда отдаётся пустая.
-    const Page& page(std::size_t index) const;
+    const Page& page(size_t index) const;
 
     /* ---------------- порционная вёрстка ---------------- */
     //
@@ -139,12 +139,12 @@ public:
     /// по-прежнему добирается порциями.
     ///
     /// @return false, когда книга досчитана до конца.
-    bool advanceTo(std::uint32_t charOffset);
+    bool advanceTo(uint32_t charOffset);
 
     /// То же, но до страницы с этим номером: разворот — это несколько
     /// страниц, и мало довести счёт до первой из них.
     /// @return false, когда книга досчитана до конца.
-    bool advanceToPage(std::size_t index);
+    bool advanceToPage(size_t index);
 
     /// Досчитана ли книга. Пока нет, `pageCount` и номера страниц —
     /// промежуточные.
@@ -152,10 +152,10 @@ public:
 
     /// Страница, на которой стоит этот символ книги, — обратный переход от
     /// позиции чтения к экрану.
-    std::size_t pageForCharOffset(std::uint32_t charOffset) const;
+    size_t pageForCharOffset(uint32_t charOffset) const;
 
     /// Полный размер книги в символах: знаменатель прогресса.
-    std::uint32_t characterCount() const;
+    uint32_t characterCount() const;
 
     /// Книга, развёрнутая в блоки, — то, из чего собрана вёрстка.
     ///

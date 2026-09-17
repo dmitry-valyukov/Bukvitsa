@@ -212,7 +212,7 @@ void SkinWizard::buildTree() {
         if (!touch.properties().isLeftButtonPressed()) return;
 
         int curveIndex = 0;
-        std::size_t pointIndex = 0;
+        size_t pointIndex = 0;
         if (!gripAt(touch.position(), curveIndex, pointIndex)) return;
 
         dragging_ = true;
@@ -227,8 +227,8 @@ void SkinWizard::buildTree() {
         bool overGrip = dragging_;
         if (dragging_) {
             EdgeCurve& edited = curve(dragCurve_);
-            const std::size_t at = dragPoint_;
-            constexpr std::size_t last = static_cast<std::size_t>(EdgeCurve::kPoints) - 1;
+            const size_t at = dragPoint_;
+            constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
 
             // Точка ходит в обе оси. По вертикали — от кромки до четверти
             // высоты; по горизонтали — между соседками, не выходя со своей
@@ -249,7 +249,7 @@ void SkinWizard::buildTree() {
             args.handled(true);
         } else {
             int curveIndex = 0;
-            std::size_t pointIndex = 0;
+            size_t pointIndex = 0;
             overGrip = gripAt(point, curveIndex, pointIndex);
         }
 
@@ -394,7 +394,7 @@ void SkinWizard::redraw() {
             // Не top/bottom: это имена тегов DSL.
             const EdgeCurve& upper = curve(half);
             const EdgeCurve& lower = curve(half + 2);
-            constexpr std::size_t last = static_cast<std::size_t>(EdgeCurve::kPoints) - 1;
+            constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
 
             for (int row = 0; row < kGuideRows; ++row) {
                 const float share = static_cast<float>(row) / (kGuideRows - 1);
@@ -430,7 +430,7 @@ void SkinWizard::redraw() {
 
         for (int index = 0; index < 4; ++index) {
             const EdgeCurve& edited = curve(index);
-            for (std::size_t at = 0; at < static_cast<std::size_t>(EdgeCurve::kPoints); ++at) {
+            for (size_t at = 0; at < static_cast<size_t>(EdgeCurve::kPoints); ++at) {
                 const D2D1_ELLIPSE circle{{edited.x[at] * width_, edited.y[at] * height_},
                                           kGripRadius, kGripRadius};
                 context->FillEllipse(circle, fill.Get());
@@ -440,14 +440,14 @@ void SkinWizard::redraw() {
     });
 }
 
-bool SkinWizard::gripAt(Point point, int& curveIndex, std::size_t& pointIndex) const {
+bool SkinWizard::gripAt(Point point, int& curveIndex, size_t& pointIndex) const {
     if (width_ <= 0.0f || height_ <= 0.0f) return false;
 
     const float reach = kGripReach * kGripReach;
 
     for (int index = 0; index < 4; ++index) {
         const EdgeCurve& edited = curve(index);
-        for (std::size_t at = 0; at < static_cast<std::size_t>(EdgeCurve::kPoints); ++at) {
+        for (size_t at = 0; at < static_cast<size_t>(EdgeCurve::kPoints); ++at) {
             const float dx = point.x - edited.x[at] * width_;
             const float dy = point.y - edited.y[at] * height_;
             if (dx * dx + dy * dy <= reach) {

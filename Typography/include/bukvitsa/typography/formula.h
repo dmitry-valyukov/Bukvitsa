@@ -87,7 +87,7 @@ public:
     ///         и тогда возвращает формулу с тем, что понял; исключений на
     ///         чужой вход не бывает в любом случае.
     std::unique_ptr<Formula> parse(std::wstring_view tex, float textSize, float maxWidth,
-                                   std::uint32_t argb = 0xFF000000);
+                                   uint32_t argb = 0xFF000000);
 
 private:
     struct Impl;

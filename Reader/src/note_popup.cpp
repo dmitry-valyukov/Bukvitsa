@@ -127,7 +127,7 @@ void NotePopup::draw(const Theme& theme, float width, float height, float scale)
         context->CreateSolidColorBrush(theme.text, &ink);
         if (!ink) return;
 
-        for (std::size_t i = 0; i < lines_.size(); ++i) {
+        for (size_t i = 0; i < lines_.size(); ++i) {
             typography::drawLine(context, lines_[i], 0.0f, baselines_[i], ink.Get());
         }
     });

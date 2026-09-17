@@ -23,9 +23,9 @@ void check(bool condition, std::string_view what) {
 }
 
 std::string toUtf8(std::wstring_view text) {
-    const std::optional<wxl::core::u16_view> checked = wxl::core::checked(text);
-    if (!checked) return "<не UTF-16>";
-    return std::string{checked->to_utf8().chars()};
+    const std::optional<u16_view> valid = checked(text);
+    if (!valid) return "<не UTF-16>";
+    return std::string{valid->to_utf8().chars()};
 }
 
 std::string_view bytes(std::u8string_view text) {
@@ -35,7 +35,7 @@ std::string_view bytes(std::u8string_view text) {
 // Перевод и сравнение с ожидаемой строкой; расхождение печатает обе.
 void golden(std::string_view what, std::u8string_view mathml, std::wstring_view expected,
             bool display = false) {
-    const std::optional<wxl::core::u8_view> input = wxl::core::checked(bytes(mathml));
+    const std::optional<u8_view> input = checked(bytes(mathml));
     if (!input) {
         check(false, what);
         return;
@@ -57,7 +57,7 @@ void golden(std::string_view what, std::u8string_view mathml, std::wstring_view 
 }
 
 bool fails(std::u8string_view mathml) {
-    const std::optional<wxl::core::u8_view> input = wxl::core::checked(bytes(mathml));
+    const std::optional<u8_view> input = checked(bytes(mathml));
     if (!input) return false;
     return !mathml::toTex(*input).has_value();
 }

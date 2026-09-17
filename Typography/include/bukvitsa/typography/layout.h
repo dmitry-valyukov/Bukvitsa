@@ -24,7 +24,7 @@
 namespace bukvitsa::typography {
 
 /// Как строка выключается по полосе.
-enum class Alignment : std::uint8_t { Left, Right, Center, Justify };
+enum class Alignment : uint8_t { Left, Right, Center, Justify };
 
 /// Шрифт и язык — то, что задаётся один раз на книгу.
 struct TextStyle {
@@ -56,18 +56,18 @@ struct ParagraphStyle {
 struct GlyphRun {
     IDWriteFontFace* fontFace = nullptr;   ///< живёт в Engine
     float fontSize = 0.0f;
-    std::uint8_t bidiLevel = 0;
+    uint8_t bidiLevel = 0;
     FontStyle style;                       ///< подчёркивание и зачёркивание рисует читалка
 
-    wxl::core::sta_vector<std::uint16_t> glyphIndices;
-    wxl::core::sta_vector<float> advances;
-    wxl::core::sta_vector<DWRITE_GLYPH_OFFSET> offsets;
+    sta_vector<uint16_t> glyphIndices;
+    sta_vector<float> advances;
+    sta_vector<DWRITE_GLYPH_OFFSET> offsets;
 
     /// Кусок Paragraph::text, из которого набран прогон. Нужен всем, кто
     /// связывает нарисованное с исходным текстом: знаку сноски, подсветке
     /// найденного, выделению.
-    std::uint32_t textStart = 0;
-    std::uint32_t textLength = 0;
+    uint32_t textStart = 0;
+    uint32_t textLength = 0;
 
     float originX = 0.0f;                  ///< от левого края полосы
     float width = 0.0f;
@@ -83,17 +83,17 @@ struct PlacedNote {
 
 /// Одна набранная строка.
 struct Line {
-    wxl::core::sta_vector<GlyphRun> runs;
-    wxl::core::sta_vector<PlacedNote> notes;
+    sta_vector<GlyphRun> runs;
+    sta_vector<PlacedNote> notes;
 
-    float ascent = 0.0f;                   ///< от базовой линии вверх
+    float ascent = 0.0f;              ///< от базовой линии вверх
     float descent = 0.0f;
-    float height = 0.0f;                   ///< с учётом межстрочного множителя
-    float width = 0.0f;                    ///< фактически занятое место
+    float height = 0.0f;              ///< с учётом межстрочного множителя
+    float width = 0.0f;               ///< фактически занятое место
 
-    std::uint32_t textStart = 0;           ///< в Paragraph::text
-    std::uint32_t textLength = 0;
-    std::uint32_t charOffset = 0;          ///< позиция первого символа строки в книге
+    uint32_t textStart = 0;           ///< в Paragraph::text
+    uint32_t textLength = 0;
+    uint32_t charOffset = 0;          ///< позиция первого символа строки в книге
 };
 
 /// Абзац, прошедший анализ и шейпинг, — то, что не надо делать заново.
@@ -158,8 +158,8 @@ public:
     /// Если стиль разошёлся с тем, на котором абзац шейпили, не размером
     /// (сменилось начертание или шрифт книги), абзац шейпится заново на месте —
     /// результат верен всегда, сэкономлено только когда звали правильно.
-    wxl::core::sta_vector<Line> layout(const ShapedParagraph& shaped, float width,
-                                       const ParagraphStyle& style);
+    sta_vector<Line> layout(const ShapedParagraph& shaped, float width,
+                            const ParagraphStyle& style);
 
     /// То же, но с середины абзаца: первая строка начинается ровно с символа
     /// firstChar, а не с начала абзаца.
@@ -171,13 +171,13 @@ public:
     /// текущей страницы: полоса сменилась, а первая буква на ней осталась той
     /// же, и читатель видит новый кегль не дожидаясь, пока пересчитается вся
     /// книга.
-    wxl::core::sta_vector<Line> layoutFrom(const ShapedParagraph& shaped, std::uint32_t firstChar,
-                                           float width, const ParagraphStyle& style);
+    sta_vector<Line> layoutFrom(const ShapedParagraph& shaped, uint32_t firstChar,
+                                float width, const ParagraphStyle& style);
 
     /// Верстает абзац в строки шириной width — шейпинг и разбивка разом.
     ///
     /// Пустой абзац даёт пустой список: блок без текста не занимает полосы.
-    wxl::core::sta_vector<Line> layout(const Paragraph& paragraph, float width, const ParagraphStyle& style);
+    sta_vector<Line> layout(const Paragraph& paragraph, float width, const ParagraphStyle& style);
 
     /// Высота строки при таком кегле — нужна пагинатору до вёрстки, чтобы
     /// прикинуть, влезет ли блок.
@@ -186,8 +186,8 @@ public:
 private:
     /// Общее тело обоих `layout`: разбивка от символа `firstChar` до конца
     /// абзаца.
-    wxl::core::sta_vector<Line> layoutRange(const ShapedParagraph& shaped, std::uint32_t firstChar,
-                                            float width, const ParagraphStyle& style);
+    sta_vector<Line> layoutRange(const ShapedParagraph& shaped, uint32_t firstChar,
+                                 float width, const ParagraphStyle& style);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

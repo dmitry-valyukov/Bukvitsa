@@ -46,7 +46,7 @@ public:
     ///
     /// Ничего не делает, если полку с тех пор пересобрали: карточки той книги
     /// уже нет, а есть новая, и её прогресс придёт своим чередом.
-    void setProgress(std::wstring_view guid, std::uint32_t charOffset, std::size_t bookmarks);
+    void setProgress(std::wstring_view guid, uint32_t charOffset, size_t bookmarks);
 
     std::function<void(std::wstring)> onOpen;   ///< guid выбранной книги
     std::function<void()> onAddBook;
@@ -56,10 +56,10 @@ public:
 private:
     wxl::Button shelfItem(const BookEntry& entry);
 
-    wxl::core::nullable<wxl::Grid> root_ = nullptr;
-    wxl::core::nullable<wxl::StackPanel> shelf_ = nullptr;
-    wxl::core::nullable<wxl::CheckBox> continueBox_ = nullptr;
-    wxl::core::nullable<wxl::TextBlock> emptyNote_ = nullptr;
+    nullable<wxl::Grid> root_ = nullptr;
+    nullable<wxl::StackPanel> shelf_ = nullptr;
+    nullable<wxl::CheckBox> continueBox_ = nullptr;
+    nullable<wxl::TextBlock> emptyNote_ = nullptr;
 
     /// Строка прогресса каждой карточки, по guid книги. Живёт ровно от одного
     /// показа полки до другого -- как и сами карточки.

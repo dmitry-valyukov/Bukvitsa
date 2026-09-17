@@ -49,7 +49,7 @@ struct FontStyle {
     bool strikethrough = false;
     bool underline = false;
     bool monospace = false;       ///< `<code>`
-    std::int8_t script = 0;       ///< +1 надстрочный, -1 подстрочный
+    int8_t script = 0;            ///< +1 надстрочный, -1 подстрочный
     bool spaced = false;          ///< разрядка (`<spacing>`)
 
     friend bool operator==(const FontStyle&, const FontStyle&) = default;
@@ -57,8 +57,8 @@ struct FontStyle {
 
 /// Кусок абзаца, набранный одним начертанием.
 struct StyleSpan {
-    std::uint32_t start = 0;      ///< индекс в Paragraph::text, в UTF-16
-    std::uint32_t length = 0;
+    uint32_t start = 0;      ///< индекс в Paragraph::text, в UTF-16
+    uint32_t length = 0;
     FontStyle style;
 };
 
@@ -69,8 +69,8 @@ struct StyleSpan {
 /// кусок и чьё тело за ним стоит. Знать это нужно тому, кто ловит по нему
 /// щелчок, — сама вёрстка обращается со знаком как с любым другим текстом.
 struct NoteAnchor {
-    std::uint32_t position = 0;   ///< индекс в Paragraph::text
-    std::uint32_t length = 0;     ///< длина знака в тексте
+    uint32_t position = 0;   ///< индекс в Paragraph::text
+    uint32_t length = 0;     ///< длина знака в тексте
     const fb3::Node* target = nullptr;
 };
 
@@ -79,19 +79,19 @@ struct NoteAnchor {
 /// Текст проверенный: он собран из проверенного текста книги, а тип не даёт
 /// ни дописать, ни отрезать половину суррогатной пары.
 struct Paragraph {
-    wxl::core::u16_text text;
+    u16_text text;
     std::vector<StyleSpan> spans;
     std::vector<NoteAnchor> notes;
 
     /// Позиция каждого символа text в книге. Нужна ровно потому, что свёртка
     /// пробелов рвёт соответствие «индекс в строке = смещение в книге», а
     /// закладка обязана указывать на книгу, а не на результат вёрстки.
-    std::vector<std::uint32_t> charOffsets;
+    std::vector<uint32_t> charOffsets;
 };
 
 /// Что за блок. Различаются те виды, которые вёрстка оформляет по-разному;
 /// то, что отличается только начертанием внутри строки, сюда не попадает.
-enum class BlockKind : std::uint8_t {
+enum class BlockKind : uint8_t {
     Paragraph,      ///< обычный абзац: отступ первой строки, выключка
     Title,          ///< заголовок секции; level говорит, какого уровня
     Subtitle,
@@ -109,21 +109,21 @@ enum class BlockKind : std::uint8_t {
 /// Один блок книги.
 struct Block {
     BlockKind kind = BlockKind::Paragraph;
-    Paragraph paragraph;                ///< пусто у Image и Separator
+    Paragraph paragraph;           ///< пусто у Image и Separator
     const fb3::Node* source = nullptr;
-    std::uint32_t charOffset = 0;       ///< позиция первого символа блока в книге
-    std::uint8_t level = 0;             ///< глубина секции — для заголовков
+    uint32_t charOffset = 0;       ///< позиция первого символа блока в книге
+    uint8_t level = 0;             ///< глубина секции — для заголовков
 
     /// Глубина секции, которая начинается с этого блока: 0 — блок секцию не
     /// открывает, N — открывает секцию глубины N (самую мелкую из открывшихся
     /// подряд). Единица — начало главы: с неё читалка начинает новую страницу
     /// и её же верстает отдельной единицей. Проставляет `flatten`.
-    std::uint8_t startsSection = 0;
+    uint8_t startsSection = 0;
 
-    std::uint8_t listDepth = 0;
-    std::uint32_t imageIndex = 0;       ///< для BlockKind::Image
-    bool ordered = false;               ///< нумерованный ли список, для ListItem
-    std::uint32_t itemNumber = 0;
+    uint8_t listDepth = 0;
+    uint32_t imageIndex = 0;       ///< для BlockKind::Image
+    bool ordered = false;          ///< нумерованный ли список, для ListItem
+    uint32_t itemNumber = 0;
 };
 
 /// Разворачивает тело книги в список блоков в порядке чтения.

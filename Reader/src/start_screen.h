@@ -59,18 +59,18 @@ private:
                           std::function<void()>* action, bool cancel = false);
 
     wxl::Compositor compositor_;
-    wxl::core::nullable<wxl::Grid> root_ = nullptr;
+    nullable<wxl::Grid> root_ = nullptr;
     std::vector<wxl::Visual> revealing_;   ///< визуалы кнопок в порядке появления
 
     /// Визуал обёртки карточки. Проступает вместе с кнопками, но своего
     /// визуала у карточки не отнять: у неё заняты фасадные свойства (подъём
     /// по Z несёт тень), а мешать их с handout-визуалом нельзя — ломается
     /// попадание мыши. Подробности — у построения карточки в .cpp.
-    wxl::core::nullable<wxl::Visual> cardVisual_ = nullptr;
+    nullable<wxl::Visual> cardVisual_ = nullptr;
 
     /// Большая кнопка и то, чем она наполнена: setContinueBook() зовут на
     /// каждом показе экрана, и одинаковое наполнение не перестраивается.
-    wxl::core::nullable<wxl::Button> continueButton_ = nullptr;
+    nullable<wxl::Button> continueButton_ = nullptr;
     std::wstring continueKey_;
 
     bool revealed_ = false;

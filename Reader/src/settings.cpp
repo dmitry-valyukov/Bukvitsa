@@ -81,7 +81,7 @@ std::string settingsXml(const Settings& settings) {
     // Аллокатор -- STA-пул: формирователь зовётся из корутины между двумя
     // `co_await`, а этот код у читалки исполняется в интерфейсном потоке (см.
     // io.h), на рабочий поток уходят только байты.
-    wxl::core::text_builder<wxl::core::sta_allocator> out;
+    text_builder<sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<settings version=\"{}\">\n", Settings::kVersion);
