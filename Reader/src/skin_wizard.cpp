@@ -397,6 +397,8 @@ void SkinWizard::redraw() {
         // Не top/bottom: это имена тегов DSL.
         const EdgeCurve& upper = skin_.top;
         const EdgeCurve& lower = skin_.bottom;
+        const EdgeSpline upperEdge{upper};
+        const EdgeSpline lowerEdge{lower};
         constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
 
         for (int row = 0; row < kGuideRows; ++row) {
@@ -411,8 +413,8 @@ void SkinWizard::redraw() {
             for (int step = 0; step <= steps; ++step) {
                 const float u =
                     from + (to - from) * static_cast<float>(step) / static_cast<float>(steps);
-                const float deviation = (edgeAt(upper, u) - kEdgeInset) * (1.0f - share) +
-                                        (edgeAt(lower, u) - (1.0f - kEdgeInset)) * share;
+                const float deviation = (upperEdge.at(u) - kEdgeInset) * (1.0f - share) +
+                                        (lowerEdge.at(u) - (1.0f - kEdgeInset)) * share;
                 const D2D1_POINT_2F point{u * width_, (base + deviation) * height_};
 
                 // Линия рисуется тройкой: тёмная в пиксель выше, тёмная в

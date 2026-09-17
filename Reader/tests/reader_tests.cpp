@@ -164,33 +164,60 @@ void testSearchMatchesWhatTheReaderMeans() {
     check(reader::searchBook(hyphen, L"прометей").empty(), "обычный дефис — не мягкий перенос");
 }
 
-/// Кривая края — два листа с общей точкой на корешке, посередине: в корешке
-/// край равен этой точке и подходит к ней с обеих сторон, а точки другого
-/// листа на лист не влияют.
-void testEdgeMeetsAtSpine() {
-    std::printf("\n=== кривая края ===\n");
+/// Кромка — два листа с общей точкой на корешке, посередине. Она проходит
+/// через каждую точку, между соседними точками не выходит за их значения,
+/// в корешке непрерывна с обеих сторон, а точки другого листа на лист не
+/// влияют.
+void testEdgeThroughPoints() {
+    std::printf("\n=== кромка через точки ===\n");
 
     // Левый лист прямой, правый задран: излом в корешке, как у настоящего
     // сгиба.
-    reader::EdgeCurve curve;
-    curve.x = {0.05f, 0.15f, 0.25f, 0.375f, 0.5f, 0.55f, 0.7f, 0.85f, 0.95f};
-    curve.y = {0.02f, 0.02f, 0.02f, 0.02f, 0.02f, 0.1f, 0.1f, 0.1f, 0.1f};
+    reader::EdgeCurve kink;
+    kink.x = {0.05f, 0.15f, 0.25f, 0.375f, 0.5f, 0.55f, 0.7f, 0.85f, 0.95f};
+    kink.y = {0.02f, 0.02f, 0.02f, 0.02f, 0.02f, 0.1f, 0.1f, 0.1f, 0.1f};
 
     constexpr size_t spine = static_cast<size_t>(reader::EdgeCurve::kSpine);
-    const float atSpine = curve.x[spine];
+    constexpr size_t points = static_cast<size_t>(reader::EdgeCurve::kPoints);
+    const reader::EdgeSpline bent{kink};
+    const float atSpine = kink.x[spine];
 
-    check(aboutEqual(reader::edgeAt(curve, atSpine), curve.y[spine]),
-          "в корешке — точка корешка");
-    // Шаг в десятитысячную: правый лист от корешка задран круто, и уже в
-    // тысячной от него край поднимается на полторы тысячных.
-    check(aboutEqual(reader::edgeAt(curve, atSpine - 0.0001f), curve.y[spine]) &&
-              aboutEqual(reader::edgeAt(curve, atSpine + 0.0001f), curve.y[spine]),
-          "край подходит к корешку с обеих сторон");
-    check(aboutEqual(reader::edgeAt(curve, 0.3f), 0.02f), "левый лист не знает о точках правого");
-    check(reader::edgeAt(curve, 0.53f) > 0.03f, "правый лист тянется к своим точкам");
-    check(aboutEqual(reader::edgeAt(curve, 0.0f), 0.02f) &&
-              aboutEqual(reader::edgeAt(curve, 1.0f), 0.1f),
-          "за крайними точками край держит их значение");
+    check(bent.at(atSpine) == kink.y[spine], "в корешке — точка корешка");
+    check(aboutEqual(bent.at(atSpine - 0.0001f), kink.y[spine]) &&
+              aboutEqual(bent.at(atSpine + 0.0001f), kink.y[spine]),
+          "кромка подходит к корешку с обеих сторон");
+    check(bent.at(0.3f) == 0.02f, "левый лист не знает о точках правого");
+    check(bent.at(0.6f) > 0.05f, "правый лист идёт к своим точкам");
+    check(bent.at(0.0f) == 0.02f && bent.at(1.0f) == 0.1f,
+          "за крайними точками кромка держит их значение");
+
+    // Низ «Брошюры» как он снят с фотографии: точки скачут вверх-вниз, и
+    // многочлен через них перелетал бы на девять сотых высоты.
+    reader::EdgeCurve booklet;
+    booklet.x = {0.036752604f, 0.15469007f, 0.29072955f, 0.3609435f, 0.5f,
+                 0.5485464f,   0.6544158f,  0.7778387f,  0.9478881f};
+    booklet.y = {0.9531773f, 0.9319955f, 0.9632107f, 0.8361204f, 0.94147158f,
+                 0.89966553f, 0.8573021f, 0.9509476f, 0.9587514f};
+    const reader::EdgeSpline edge{booklet};
+
+    bool through = true;
+    for (size_t index = 0; index < points; ++index) {
+        through = through && edge.at(booklet.x[index]) == booklet.y[index];
+    }
+    check(through, "кромка проходит через каждую точку");
+
+    bool within = true;
+    for (size_t index = 0; index + 1 < points; ++index) {
+        const float low = std::min(booklet.y[index], booklet.y[index + 1]);
+        const float high = std::max(booklet.y[index], booklet.y[index + 1]);
+        for (int step = 1; step < 200; ++step) {
+            const float u = booklet.x[index] +
+                            (booklet.x[index + 1] - booklet.x[index]) * static_cast<float>(step) / 200.0f;
+            const float value = edge.at(u);
+            within = within && value >= low - 1e-6f && value <= high + 1e-6f;
+        }
+    }
+    check(within, "между соседними точками кромка не выходит за их значения");
 }
 
 /// Реестр второй версии — листы порознь, по пять точек, — читается в кривые
@@ -271,6 +298,19 @@ void testSkinsReadSeparateLeaves() {
     check(repaired.list().size() == 1 &&
               repaired.list()[0].top.x[spine] == reader::EdgeCurve::kSpineX,
           "корешок из файла встаёт на середину");
+
+    // Точку увели за соседку: такая кромка — начальная прямая.
+    std::string crossed = written;
+    const size_t fourthAt = crossed.find("<point x=\"0.4\"");
+    check(fourthAt != std::string::npos, "четвёртая точка записана как была");
+    if (fourthAt == std::string::npos) return;
+    crossed.replace(fourthAt, 14, "<point x=\"0.6\"");
+
+    reader::Skins straightened;
+    straightened.loadFrom(crossed);
+    check(straightened.list().size() == 1 && straightened.list()[0].top.x == fresh.top.x &&
+              straightened.list()[0].top.y == fresh.top.y,
+          "точки не по порядку — кромка становится начальной прямой");
 }
 
 }  // namespace
@@ -282,7 +322,7 @@ int main() {
     testSearchContextKeepsLetters();
     testContentsBorrowTitles();
     testSearchMatchesWhatTheReaderMeans();
-    testEdgeMeetsAtSpine();
+    testEdgeThroughPoints();
     testSkinsReadSeparateLeaves();
 
     std::printf("\n%s\n", failures == 0 ? "OK" : "ЕСТЬ ОШИБКИ");

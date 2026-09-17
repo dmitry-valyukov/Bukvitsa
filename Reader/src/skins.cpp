@@ -35,6 +35,13 @@ EdgeCurve straightCurve(float from, float to, float level) {
     return curve;
 }
 
+/// Доля из атрибута; чего нет или что вылезло из долей — `fallback`. Сравнение
+/// написано так, чтобы и NaN (from_chars его разбирает) ушёл в `fallback`.
+float shareOf(const wxl::xml::node& point, const char* name, float fallback) {
+    const auto value = static_cast<float>(realOf(point, name, fallback));
+    return value >= 0.0f && value <= 1.0f ? value : fallback;
+}
+
 /// Читает до `count` дочерних `<point>` в точки кривой, начиная с `first`.
 /// Чего в файле нет или что вылезло из долей — остаётся как было: файл могли
 /// поправить руками, и это не повод ронять обложку.
@@ -42,12 +49,20 @@ void readPoints(const wxl::xml::node& element, EdgeCurve& curve, size_t first, s
     size_t index = first;
     for (const wxl::xml::node& point : element.children_named("point")) {
         if (index >= first + count) break;
-        curve.x[index] =
-            std::clamp(static_cast<float>(realOf(point, "x", curve.x[index])), 0.0f, 1.0f);
-        curve.y[index] =
-            std::clamp(static_cast<float>(realOf(point, "y", curve.y[index])), 0.0f, 1.0f);
+        curve.x[index] = shareOf(point, "x", curve.x[index]);
+        curve.y[index] = shareOf(point, "y", curve.y[index]);
         ++index;
     }
+}
+
+/// Иксы строго возрастают: сплайну нужен отрезок ненулевой длины между
+/// соседками, иначе деление на ноль. Мастер это держит клампами, а файл
+/// могли поправить руками.
+bool ascending(const EdgeCurve& curve) {
+    for (size_t index = 1; index < kPoints; ++index) {
+        if (!(curve.x[index] > curve.x[index - 1])) return false;
+    }
+    return true;
 }
 
 /// Кривая из записи второй версии, где листы описывались порознь: пять точек
@@ -148,50 +163,70 @@ std::filesystem::path skinImagePath(const Skin& skin) {
     return skin.system ? exeDirectory() / L"Assets" / skin.image : skinDirectory() / skin.image;
 }
 
-float edgeAt(const EdgeCurve& curve, float u) {
-    constexpr size_t last = kPoints - 1;
+EdgeSpline::EdgeSpline(const EdgeCurve& curve) : curve_(curve) {
+    // У каждого листа свои пять точек и четыре хорды; корешок входит в оба
+    // листа и получает две касательные — по одной с каждой стороны. Так
+    // кромка в нём непрерывна, но вольна ломаться: бумага там сгибается.
+    for (size_t leaf = 0; leaf < 2; ++leaf) {
+        const float* const x = &curve.x[leaf * (kLeaf - 1)];
+        const float* const y = &curve.y[leaf * (kLeaf - 1)];
+        float* const slope = &slope_[leaf * kLeaf];
 
-    if (u <= curve.x[0]) return curve.y[0];
-    if (u >= curve.x[last]) return curve.y[last];
+        float step[kLeaf - 1];
+        float chord[kLeaf - 1];
+        for (size_t k = 0; k + 1 < kLeaf; ++k) {
+            step[k] = x[k + 1] - x[k];
+            chord[k] = (y[k + 1] - y[k]) / step[k];
+        }
 
-    // Какой лист: левый описывают точки до корешка включительно, правый — от
-    // корешка; сам корешок — середина разворота. Обе кривые проходят через
-    // его точку, так что край в нём непрерывен.
-    const size_t first = u < curve.x[kSpine] ? 0 : kSpine;
-    const float* const px = &curve.x[first];
-    const float* const py = &curve.y[first];
+        // Крайние точки — по хорде крайнего отрезка: касательная не длиннее
+        // хорды, и отрезок остаётся монотонным.
+        slope[0] = chord[0];
+        slope[kLeaf - 1] = chord[kLeaf - 2];
 
-    // Кривая Безье четвёртой степени: пять точек листа — её управляющая
-    // ломаная. Кривая проходит только через крайние точки, средние тянут её к
-    // себе — зато она не выскакивает за свою ломаную, как это делал между
-    // точками Катмулл-Ром, и край выходит спокойным при любой расстановке.
-    const auto at = [px, py](float t) {
-        const float s = 1.0f - t;
-        const float w0 = s * s * s * s;
-        const float w1 = 4.0f * s * s * s * t;
-        const float w2 = 6.0f * s * s * t * t;
-        const float w3 = 4.0f * s * t * t * t;
-        const float w4 = t * t * t * t;
-        return std::pair{w0 * px[0] + w1 * px[1] + w2 * px[2] + w3 * px[3] + w4 * px[4],
-                         w0 * py[0] + w1 * py[1] + w2 * py[2] + w3 * py[3] + w4 * py[4]};
-    };
-
-    // Кривая параметрическая, а спрашивают её по столбцу u, поэтому t ищется
-    // по x бисекцией: иксы точек идут по порядку (клампы перетаскивания это
-    // держат), значит x(t) монотонен. Двадцать делений — миллионная доля
-    // ширины, карте хватает с запасом; замкнутой формулы у корня четвёртой
-    // степени всё равно нет.
-    float low = 0.0f;
-    float high = 1.0f;
-    for (int step = 0; step < 20; ++step) {
-        const float mid = 0.5f * (low + high);
-        if (at(mid).first < u) {
-            low = mid;
-        } else {
-            high = mid;
+        // Внутренние — по Фричу и Батленду: взвешенное гармоническое среднее
+        // наклонов соседних хорд, где короткая хорда весит больше. Между
+        // хордами разного знака или рядом с горизонтальной — ноль: точка и
+        // есть экстремум, кривая ложится в неё горизонтально и не перелетает.
+        for (size_t k = 1; k + 1 < kLeaf; ++k) {
+            const float before = chord[k - 1];
+            const float after = chord[k];
+            if (before * after <= 0.0f) {
+                slope[k] = 0.0f;
+                continue;
+            }
+            const float w1 = 2.0f * step[k] + step[k - 1];
+            const float w2 = step[k] + 2.0f * step[k - 1];
+            slope[k] = (w1 + w2) / (w1 / before + w2 / after);
         }
     }
-    return at(0.5f * (low + high)).second;
+}
+
+float EdgeSpline::at(float u) const {
+    constexpr size_t last = kPoints - 1;
+
+    if (u <= curve_.x[0]) return curve_.y[0];
+    if (u >= curve_.x[last]) return curve_.y[last];
+
+    // Лист — по корешку, отрезок — по точкам листа. `u` уже внутри кривой,
+    // так что отрезок найдётся не позже последнего в листе.
+    const size_t leaf = u < curve_.x[kSpine] ? 0 : 1;
+    size_t k = leaf * (kLeaf - 1);
+    while (u >= curve_.x[k + 1]) ++k;
+    const size_t s = leaf * kLeaf + (k - leaf * (kLeaf - 1));
+
+    // Кубический Эрмит на отрезке: базисные многочлены от доли t, касательные
+    // приведены к длине отрезка.
+    const float step = curve_.x[k + 1] - curve_.x[k];
+    const float t = (u - curve_.x[k]) / step;
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float h00 = 2.0f * t3 - 3.0f * t2 + 1.0f;
+    const float h10 = t3 - 2.0f * t2 + t;
+    const float h01 = -2.0f * t3 + 3.0f * t2;
+    const float h11 = t3 - t2;
+    return h00 * curve_.y[k] + h10 * step * slope_[s] + h01 * curve_.y[k + 1] +
+           h11 * step * slope_[s + 1];
 }
 
 void Skins::loadFrom(std::string xml) {
@@ -203,8 +238,10 @@ void Skins::loadFrom(std::string xml) {
         wxl::xml::document document;
         const wxl::xml::node& root = document.load(std::move(xml));
 
+        const Skin straight = defaultSkin();
+
         for (const wxl::xml::node& element : root.children_named("skin")) {
-            Skin skin = defaultSkin();
+            Skin skin = straight;
             skin.name = attributeOf(element, "name").wchars();
             skin.image = attributeOf(element, "image").wchars();
 
@@ -228,6 +265,11 @@ void Skins::loadFrom(std::string xml) {
             // могли поправить руками, а страницы режутся по середине всё равно.
             skin.top.x[kSpine] = EdgeCurve::kSpineX;
             skin.bottom.x[kSpine] = EdgeCurve::kSpineX;
+
+            // Кривая, у которой точки не идут слева направо, — не кривая:
+            // такая кромка становится начальной прямой, а не роняет полосу.
+            if (!ascending(skin.top)) skin.top = straight.top;
+            if (!ascending(skin.bottom)) skin.bottom = straight.bottom;
 
             // Обложка без имени не выбирается, без снимка не рисуется; такого
             // в файле, который писали мы, не бывает — но файл могли и

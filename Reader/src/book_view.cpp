@@ -2089,10 +2089,13 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
         std::vector<float> topEdge(static_cast<size_t>(columns));
         std::vector<float> bottomEdge(static_cast<size_t>(columns));
 
+        // Касательные считаются один раз на обе кромки, а не на каждый столбец.
+        const EdgeSpline upper{skin->top};
+        const EdgeSpline lower{skin->bottom};
         for (int x = 0; x < columns; ++x) {
             const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
-            topEdge[static_cast<size_t>(x)] = edgeAt(skin->top, u) - kEdgeInset;
-            bottomEdge[static_cast<size_t>(x)] = edgeAt(skin->bottom, u) - (1.0f - kEdgeInset);
+            topEdge[static_cast<size_t>(x)] = upper.at(u) - kEdgeInset;
+            bottomEdge[static_cast<size_t>(x)] = lower.at(u) - (1.0f - kEdgeInset);
         }
 
         float amplitude = 0.0f;
