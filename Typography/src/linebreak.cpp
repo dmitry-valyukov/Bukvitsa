@@ -32,7 +32,7 @@ struct Totals {
 
 /// Классы плотности строки. Соседние строки разных классов выглядят
 /// по-разному набранными, и за это Кнут берёт отдельный штраф.
-enum class Fitness : std::uint8_t { Tight, Decent, Loose, VeryLoose };
+enum class Fitness : uint8_t { Tight, Decent, Loose, VeryLoose };
 
 Fitness fitnessOf(float ratio) {
     if (ratio < -0.5f) return Fitness::Tight;
@@ -47,26 +47,26 @@ bool farApart(Fitness a, Fitness b) {
 }
 
 struct Node {
-    std::uint32_t position = 0;   ///< индекс элемента, на котором кончается строка
-    std::uint32_t line = 0;       ///< сколько строк набрано до этого места
+    uint32_t position = 0;   ///< индекс элемента, на котором кончается строка
+    uint32_t line = 0;       ///< сколько строк набрано до этого места
     Fitness fitness = Fitness::Decent;
-    Totals totals;                ///< суммы сразу после этого перелома
+    Totals totals;           ///< суммы сразу после этого перелома
     double demerits = 0.0;
-    std::uint32_t previous = kNone;
+    uint32_t previous = kNone;
 
     /// Сколько строк подряд, считая эту, кончаются переносом. Входит в то, чем
     /// узел отличается от соседа на том же месте, наравне с плотностью: иначе
     /// дешёвый узел с длинной серией вытеснил бы чуть более дорогой без неё, и
     /// там, где дальше без переноса не обойтись, решение пропало бы вместе с
     /// вытесненным.
-    std::uint8_t hyphens = 0;
+    uint8_t hyphens = 0;
 
-    static constexpr std::uint32_t kNone = 0xFFFFFFFFu;
+    static constexpr uint32_t kNone = 0xFFFFFFFFu;
 };
 
 /// Сколько различных длин серии переносов различает разбивка: 0, 1, 2 и «три
 /// и больше» — последняя бывает только в проходах, где потолок серии снят.
-inline constexpr std::size_t kHyphenSeries = 4;
+inline constexpr size_t kHyphenSeries = 4;
 
 class Breaker {
 public:
@@ -81,7 +81,7 @@ public:
     /// случае печатает `Overfull \hbox` и оставляет разбираться человеку;
     /// читалке разбираться не с кем, поэтому она последовательно уступает —
     /// сначала в плотности, потом в свободе, и лишь в конце во всём сразу.
-    std::vector<std::uint32_t> run() {
+    std::vector<uint32_t> run() {
         if (items_.empty() || lineWidths_.empty())
             return {};
 
@@ -132,15 +132,15 @@ private:
     BreakSettings settings_;
 
     std::vector<Node> nodes_;
-    std::vector<std::uint32_t> active_;
+    std::vector<uint32_t> active_;
 
-    float lineWidth(std::uint32_t line) const {
-        const std::size_t index = std::min<std::size_t>(line, lineWidths_.size() - 1);
+    float lineWidth(uint32_t line) const {
+        const size_t index = std::min<size_t>(line, lineWidths_.size() - 1);
         return lineWidths_[index];
     }
 
     /// Можно ли рвать перед этим элементом.
-    bool isBreakpoint(std::size_t at) const {
+    bool isBreakpoint(size_t at) const {
         const BreakItem& item = items_[at];
 
         if (item.kind == BreakItem::Kind::Penalty)
@@ -158,7 +158,7 @@ private:
 
     /// Насколько строку придётся растянуть (>0) или сжать (<0), чтобы она
     /// заняла полосу. Бесконечность — когда тянуть нечем.
-    float adjustmentRatio(const Node& node, const Totals& at, std::size_t breakAt) const {
+    float adjustmentRatio(const Node& node, const Totals& at, size_t breakAt) const {
         float width = naturalWidth(node.totals, at);
 
         // Штраф на переломе печатается (дефис переноса) и потому занимает место.
@@ -205,7 +205,7 @@ private:
         return 100.0 * value * value * value;
     }
 
-    double demeritsFor(const Node& from, std::size_t breakAt, float ratio, Fitness fitness) const {
+    double demeritsFor(const Node& from, size_t breakAt, float ratio, Fitness fitness) const {
         const BreakItem& item = items_[breakAt];
         const float penalty = item.kind == BreakItem::Kind::Penalty ? item.penalty : 0.0f;
         const double base = settings_.linePenalty + badness(ratio);
@@ -230,8 +230,8 @@ private:
 
     /// Суммы после элемента: клей и растяжимость, стоящие сразу за переломом,
     /// в следующую строку не входят — их съедает разрыв.
-    Totals totalsAfterBreak(std::size_t breakAt, Totals running) const {
-        for (std::size_t at = breakAt; at < items_.size(); ++at) {
+    Totals totalsAfterBreak(size_t breakAt, Totals running) const {
+        for (size_t at = breakAt; at < items_.size(); ++at) {
             const BreakItem& item = items_[at];
             if (item.kind == BreakItem::Kind::Box)
                 break;
@@ -249,8 +249,8 @@ private:
 
     /// @param limitSeries держать ли потолок серии переносов
     ///        (BreakSettings::maxHyphensInARow).
-    std::vector<std::uint32_t> attempt(float tolerance, float minRatio, bool limitSeries,
-                                       bool desperate) {
+    std::vector<uint32_t> attempt(float tolerance, float minRatio, bool limitSeries,
+                                  bool desperate) {
         nodes_.clear();
         active_.clear();
 
@@ -258,10 +258,10 @@ private:
         active_.push_back(0);
 
         Totals running;
-        std::vector<std::uint32_t> stillActive;
-        std::vector<std::uint32_t> born;
+        std::vector<uint32_t> stillActive;
+        std::vector<uint32_t> born;
 
-        for (std::size_t at = 0; at < items_.size(); ++at) {
+        for (size_t at = 0; at < items_.size(); ++at) {
             if (isBreakpoint(at))
                 considerBreak(at, running, tolerance, minRatio, limitSeries, desperate, stillActive,
                               born);
@@ -277,9 +277,9 @@ private:
         return collect();
     }
 
-    void considerBreak(std::size_t at, const Totals& running, float tolerance, float minRatio,
+    void considerBreak(size_t at, const Totals& running, float tolerance, float minRatio,
                        bool limitSeries, bool desperate,
-                       std::vector<std::uint32_t>& stillActive, std::vector<std::uint32_t>& born) {
+                       std::vector<uint32_t>& stillActive, std::vector<uint32_t>& born) {
         const bool forced = items_[at].kind == BreakItem::Kind::Penalty &&
                             items_[at].penalty <= -kInfinitePenalty;
 
@@ -290,12 +290,12 @@ private:
         // переносов: узлы, совпадающие в том и другом, взаимозаменяемы, и
         // хранить стоит только дешёвый. Серия — в ключе, а не только плотность,
         // см. Node::hyphens.
-        constexpr std::size_t kClasses = 4;
+        constexpr size_t kClasses = 4;
         double bestDemerits[kClasses][kHyphenSeries];
-        std::uint32_t bestFrom[kClasses][kHyphenSeries];
+        uint32_t bestFrom[kClasses][kHyphenSeries];
         float bestRatio[kClasses][kHyphenSeries];
-        for (std::size_t i = 0; i < kClasses; ++i) {
-            for (std::size_t j = 0; j < kHyphenSeries; ++j) {
+        for (size_t i = 0; i < kClasses; ++i) {
+            for (size_t j = 0; j < kHyphenSeries; ++j) {
                 bestDemerits[i][j] = std::numeric_limits<double>::max();
                 bestFrom[i][j] = Node::kNone;
                 bestRatio[i][j] = 0.0f;
@@ -310,7 +310,7 @@ private:
 
         bool anyFeasible = false;
 
-        for (const std::uint32_t index : active_) {
+        for (const uint32_t index : active_) {
             const Node& node = nodes_[index];
             const float ratio = adjustmentRatio(node, running, at);
 
@@ -337,8 +337,8 @@ private:
             const float clamped = desperate ? std::clamp(ratio, -1.0f, 10.0f) : ratio;
             const Fitness fitness = fitnessOf(clamped);
             const double demerits = demeritsFor(node, at, clamped, fitness);
-            const std::size_t klass = static_cast<std::size_t>(fitness);
-            const std::size_t series = std::min<std::size_t>(hyphens, kHyphenSeries - 1);
+            const size_t klass = static_cast<size_t>(fitness);
+            const size_t series = std::min<size_t>(hyphens, kHyphenSeries - 1);
 
             anyFeasible = true;
             if (demerits < bestDemerits[klass][series]) {
@@ -351,21 +351,21 @@ private:
         if (anyFeasible) {
             const Totals after = totalsAfterBreak(at, running);
 
-            for (std::size_t klass = 0; klass < kClasses; ++klass) {
-                for (std::size_t series = 0; series < kHyphenSeries; ++series) {
+            for (size_t klass = 0; klass < kClasses; ++klass) {
+                for (size_t series = 0; series < kHyphenSeries; ++series) {
                     if (bestFrom[klass][series] == Node::kNone) continue;
 
                     Node child;
-                    child.position = static_cast<std::uint32_t>(at);
+                    child.position = static_cast<uint32_t>(at);
                     child.line = nodes_[bestFrom[klass][series]].line + 1;
                     child.fitness = static_cast<Fitness>(klass);
                     child.totals = after;
                     child.demerits = bestDemerits[klass][series];
                     child.previous = bestFrom[klass][series];
-                    child.hyphens = static_cast<std::uint8_t>(series);
+                    child.hyphens = static_cast<uint8_t>(series);
 
                     nodes_.push_back(child);
-                    born.push_back(static_cast<std::uint32_t>(nodes_.size() - 1));
+                    born.push_back(static_cast<uint32_t>(nodes_.size() - 1));
                 }
             }
         }
@@ -375,10 +375,10 @@ private:
     }
 
     /// Дешевейший узел, стоящий на завершающем штрафе, и путь к нему.
-    std::vector<std::uint32_t> collect() const {
-        std::uint32_t best = Node::kNone;
+    std::vector<uint32_t> collect() const {
+        uint32_t best = Node::kNone;
 
-        for (std::uint32_t index = 1; index < nodes_.size(); ++index) {
+        for (uint32_t index = 1; index < nodes_.size(); ++index) {
             const Node& node = nodes_[index];
             if (node.position + 1 != items_.size()) continue;
             if (best == Node::kNone || node.demerits < nodes_[best].demerits) best = index;
@@ -387,8 +387,8 @@ private:
         if (best == Node::kNone)
             return {};
 
-        std::vector<std::uint32_t> breaks;
-        for (std::uint32_t index = best; index != 0 && index != Node::kNone;
+        std::vector<uint32_t> breaks;
+        for (uint32_t index = best; index != 0 && index != Node::kNone;
              index = nodes_[index].previous)
             breaks.push_back(nodes_[index].position);
 
@@ -399,9 +399,9 @@ private:
 
 }  // namespace
 
-std::vector<std::uint32_t> breakLines(std::span<const BreakItem> items,
-                                      std::span<const float> lineWidths,
-                                      const BreakSettings& settings) {
+std::vector<uint32_t> breakLines(std::span<const BreakItem> items,
+                                 std::span<const float> lineWidths,
+                                 const BreakSettings& settings) {
     return Breaker{items, lineWidths, settings}.run();
 }
 

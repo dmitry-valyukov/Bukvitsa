@@ -34,7 +34,7 @@ void countNodes(const Node& node, int counts[64]) {
 }
 
 /// Первые символы книги как их увидит вёрстка: текст в порядке документа.
-std::string firstText(const Node& node, std::size_t limit) {
+std::string firstText(const Node& node, size_t limit) {
     std::string text;
 
     auto walk = [&](const Node& n, auto& self) -> void {

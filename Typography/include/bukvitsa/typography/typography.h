@@ -5,7 +5,8 @@
 //   shaper.h     — итемизация/шейпинг (IDWriteTextAnalyzer), фолбэк шрифтов
 //   hyphenator.h — переносы (hunspell-hyphen, алгоритм Ляна; ru/en словари)
 //   linebreak.h  — разбивка на строки: greedy+переносы, затем Кнут-Пласс
-//   justify.h    — выключка (IDWriteTextAnalyzer1::GetJustificationOpportunities...)
+//   justify.h    — выключка по формату
+//                  (IDWriteTextAnalyzer1::GetJustificationOpportunities...)
 //   paginator.h  — страницы: layout от якоря чтения, фоновая пагинация
 //   position.h   — позиции чтения/закладок: xpointer-стиль против исходной
 //                  структуры FB3, с версией формата с первого дня
@@ -18,6 +19,6 @@
 
 namespace bukvitsa::typography {
 
-inline constexpr std::uint32_t kVersion = 0x0000'0100; // 0.1.0
+inline constexpr uint32_t kVersion = 0x0000'0100; // 0.1.0
 
 } // namespace bukvitsa::typography

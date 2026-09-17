@@ -41,7 +41,7 @@ class io_thread : public wxl::async::threaded_component
     using base = wxl::async::threaded_component;
 
 public:
-    static constexpr std::size_t block_size = 64;
+    static constexpr size_t block_size = 64;
 
     using to_worker = spsc_channel<job, block_size, semaphore_signal>;
 

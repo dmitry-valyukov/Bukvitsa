@@ -62,8 +62,8 @@ read_operation reader::read(buffer& into, cancellation_token token)
 
 void reader::read_blocking(buffer& into)
 {
-    const std::size_t filled = into.size();
-    const std::size_t room = into.capacity() - filled;
+    const size_t filled = into.size();
+    const size_t room = into.capacity() - filled;
 
     if (room == 0) throw std::logic_error("io::reader::read: в буфере нет места");
 

@@ -23,8 +23,8 @@ EdgeCurve straightCurve(float from, float to, float level) {
 
     const float step = (to - from) / (EdgeCurve::kPoints - 1);
     for (int index = 0; index < EdgeCurve::kPoints; ++index) {
-        curve.x[static_cast<std::size_t>(index)] = from + step * static_cast<float>(index);
-        curve.y[static_cast<std::size_t>(index)] = level;
+        curve.x[static_cast<size_t>(index)] = from + step * static_cast<float>(index);
+        curve.y[static_cast<size_t>(index)] = level;
     }
     return curve;
 }
@@ -35,9 +35,9 @@ EdgeCurve straightCurve(float from, float to, float level) {
 EdgeCurve curveOf(const wxl::xml::node& element, EdgeCurve fallback) {
     EdgeCurve curve = fallback;
 
-    std::size_t index = 0;
+    size_t index = 0;
     for (const wxl::xml::node& point : element.children_named("point")) {
-        if (index >= static_cast<std::size_t>(EdgeCurve::kPoints)) break;
+        if (index >= static_cast<size_t>(EdgeCurve::kPoints)) break;
         curve.x[index] =
             std::clamp(static_cast<float>(realOf(point, "x", curve.x[index])), 0.0f, 1.0f);
         curve.y[index] =
@@ -47,9 +47,9 @@ EdgeCurve curveOf(const wxl::xml::node& element, EdgeCurve fallback) {
     return curve;
 }
 
-void writeCurve(wxl::core::text_builder<wxl::core::sta_allocator>& out, const char* name, const EdgeCurve& curve) {
+void writeCurve(text_builder<sta_allocator>& out, const char* name, const EdgeCurve& curve) {
     out.format("    <{}>\n", name);
-    for (std::size_t index = 0; index < static_cast<std::size_t>(EdgeCurve::kPoints); ++index) {
+    for (size_t index = 0; index < static_cast<size_t>(EdgeCurve::kPoints); ++index) {
         out.format("      <point x=\"{}\" y=\"{}\"/>\n", curve.x[index], curve.y[index]);
     }
     out.format("    </{}>\n", name);
@@ -123,7 +123,7 @@ std::filesystem::path skinImagePath(const Skin& skin) {
 }
 
 float edgeAt(const EdgeCurve& curve, float u) {
-    constexpr std::size_t last = static_cast<std::size_t>(EdgeCurve::kPoints) - 1;
+    constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
 
     if (u <= curve.x[0]) return curve.y[0];
     if (u >= curve.x[last]) return curve.y[last];
@@ -199,7 +199,7 @@ void Skins::loadFrom(std::string xml) {
 }
 
 std::string Skins::toXml() const {
-    wxl::core::text_builder<wxl::core::sta_allocator> out;
+    text_builder<sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<skins version=\"{}\">\n", kVersion);

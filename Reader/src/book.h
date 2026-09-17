@@ -70,7 +70,7 @@ public:
     const fb3::Document& document() const { return document_; }
 
     const fb3::Description& description() const { return document_.description(); }
-    std::uint32_t characterCount() const { return document_.characterCount(); }
+    uint32_t characterCount() const { return document_.characterCount(); }
 
     /// Движок вёрстки книги. Отдан наружу затем, что сноску верстают теми же
     /// шрифтами и тем же кэшем, что и страницу.
@@ -80,7 +80,7 @@ public:
     /// читалкой под её стиль. Кэш держит ещё и соседние главы, чтобы у границы
     /// были под рукой обе; шейпинг каждой переживает переходы между ними.
     typography::Chapter& paginator() {
-        return chapterAt(currentChapter_ == static_cast<std::size_t>(-1) ? 0 : currentChapter_);
+        return chapterAt(currentChapter_ == static_cast<size_t>(-1) ? 0 : currentChapter_);
     }
 
     /// Глава по индексу, заведённая в кэше, — но, в отличие от paginator(), не
@@ -91,33 +91,33 @@ public:
     /// Не выбрасывает ничего из кэша: пока читалка держит указатели в страницы
     /// нескольких глав одного разворота, ни одну из них ронять нельзя. Чистку
     /// кэша делает отдельный `trimChapters`, когда разворот уже собран.
-    typography::Chapter& chapterAt(std::size_t index);
+    typography::Chapter& chapterAt(size_t index);
 
     /// Выбрасывает из кэша главы дальше `keepRadius` от текущей. Радиус задаёт
     /// читалка — он обязан покрыть весь показанный разворот (тот тянется на
     /// несколько глав, если они короче разворота), иначе выброшенная глава
     /// оставит висячий указатель в собранной ленте.
-    void trimChapters(std::size_t keepRadius);
+    void trimChapters(size_t keepRadius);
 
     /// Делает главу текущей, не трогая её раскладку: у соседней, уже
     /// разложенной под ленту, вёрстку сохраняем — на неё переходит переворот
     /// через границу. Этим `makeCurrentChapter` и отличается от
     /// `setCurrentChapter`, который главу сбрасывает под свежий стиль.
-    void makeCurrentChapter(std::size_t index) { currentChapter_ = index; chapterAt(index); }
+    void makeCurrentChapter(size_t index) { currentChapter_ = index; chapterAt(index); }
 
     /// Книга, развёрнутая в блоки, — мастер-список для оглавления и поиска.
     /// Пагинатор смотрит в него же, но по одной главе за раз.
     std::span<const typography::Block> blocks() const { return blocks_; }
 
     /// Сколько в книге глав верхнего уровня — единиц, которыми она верстается.
-    std::size_t chapterCount() const { return chapterStarts_.size(); }
+    size_t chapterCount() const { return chapterStarts_.size(); }
 
     /// Глава, на которую пагинатор наведён сейчас.
-    std::size_t currentChapter() const { return currentChapter_; }
+    size_t currentChapter() const { return currentChapter_; }
 
     /// Символ, с которого начинается глава, — позиция её первого блока в книге.
     /// Индекс — из [0, chapterCount).
-    std::uint32_t chapterFirstChar(std::size_t index) const {
+    uint32_t chapterFirstChar(size_t index) const {
         return blocks_[chapterStarts_[index]].charOffset;
     }
 
@@ -125,14 +125,14 @@ public:
     /// же глава — ничего не делает, и её шейпинг не пропадает; другая —
     /// пагинатор сбрасывается на её блоки, и вёрстку главы надо начать заново.
     /// @return сменилась ли глава.
-    bool setCurrentChapter(std::uint32_t charOffset);
+    bool setCurrentChapter(uint32_t charOffset);
 
     /// Часть-картинка книги как она лежит в пакете. Нужна тому, кто вынимает
     /// обложку: рисовать её незачем, надо положить байты в кэш.
-    const fb3::ImagePart* image(std::uint32_t index) const;
+    const fb3::ImagePart* image(uint32_t index) const;
 
     /// Индекс обложки в images(), если книга её несёт.
-    std::optional<std::uint32_t> coverIndex() const;
+    std::optional<uint32_t> coverIndex() const;
 
     /// Картинка, готовая к рисованию. Создаётся при первом обращении: книга с
     /// иллюстрациями не должна занимать видеопамять ради оглавления.
@@ -140,13 +140,13 @@ public:
     /// Битмап привязан к устройству контекста. Устройство у поверхностей
     /// композитора одно на процесс, так что пересоздавать его незачем — но
     /// если оно будет потеряно, эти битмапы придётся сбросить.
-    ID2D1Bitmap1* bitmap(std::uint32_t index, ID2D1DeviceContext* context);
+    ID2D1Bitmap1* bitmap(uint32_t index, ID2D1DeviceContext* context);
 
 private:
     void decodeImages();
 
     /// Блоки главы — вид в мастер-список.
-    std::span<const typography::Block> chapterSpan(std::size_t index) const;
+    std::span<const typography::Block> chapterSpan(size_t index) const;
 
     std::filesystem::path path_;
     fb3::Document document_;
@@ -159,20 +159,20 @@ private:
 
     /// Размеры картинок по индексу — вёрстка их спрашивает у нас, а декодирует
     /// WIC. Хранится, чтобы отдавать каждой заводимой главе.
-    std::function<typography::ImageSize(std::uint32_t)> imageSize_;
+    std::function<typography::ImageSize(uint32_t)> imageSize_;
 
     /// Кэш размеченных глав: индекс → её объект. Держит текущую и соседние
     /// (дальние выбрасываются), чтобы на границе были обе главы разом, а шейпинг
     /// не считался заново при возврате к главе.
-    std::map<std::size_t, std::unique_ptr<typography::Chapter>> chapters_;
+    std::map<size_t, std::unique_ptr<typography::Chapter>> chapters_;
 
     /// Индексы блоков — начала глав верхнего уровня; [0] всегда 0. Это границы
     /// глав в мастер-списке: по ним книга режется на главы.
-    std::vector<std::size_t> chapterStarts_;
+    std::vector<size_t> chapterStarts_;
 
     /// Текущая глава — та, что показывают. npos — ещё ни одной: paginator()
     /// тогда заведёт нулевую, а первый setCurrentChapter наведёт на нужную.
-    std::size_t currentChapter_ = static_cast<std::size_t>(-1);
+    size_t currentChapter_ = static_cast<size_t>(-1);
 
     Microsoft::WRL::ComPtr<IWICImagingFactory> wic_;
     std::vector<ImageAsset> images_;

@@ -33,8 +33,8 @@ io::managed_task print_file(std::filesystem::path path)
 
 /// Отчёт одного из десяти читателей.
 struct reading_report {
-    std::size_t bytes = 0;  ///< сколько прочитано всего
-    int chunks = 0;         ///< за сколько кусков
+    size_t bytes = 0;  ///< сколько прочитано всего
+    int chunks = 0;    ///< за сколько кусков
 };
 
 /// Тот же цикл, но вместо содержимого — счёт и метка, и с мелким буфером, чтобы
@@ -143,7 +143,7 @@ int main(int argc, char** argv)
 
     for (io::managed_task& reading_task : readings) reading_task.result();
 
-    const std::size_t expected = std::filesystem::file_size(path);
+    const size_t expected = std::filesystem::file_size(path);
     const bool all_read_whole = std::ranges::all_of(
         reports, [expected](const reading_report& r) { return r.bytes == expected; });
 

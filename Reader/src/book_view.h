@@ -66,7 +66,7 @@ public:
 
     /// Открывает книгу на этом символе. Книга держится здесь, пока её не
     /// сменит другая: пагинатор внутри неё указывает в её же узлы.
-    void open(std::shared_ptr<Book> book, std::uint32_t charOffset);
+    void open(std::shared_ptr<Book> book, uint32_t charOffset);
 
     /// Сверстать и нарисовать страницу до показа — размер полосы известен
     /// заранее, потому что она занимает окно целиком. Зовётся между `open` и
@@ -85,13 +85,13 @@ public:
     /// нет.
     std::span<const typography::Block> blocks() const;
 
-    std::uint32_t readingPosition() const { return readingPosition_; }
-    std::size_t pageNumber() const { return page_; }
-    std::size_t pageCount() const;
+    uint32_t readingPosition() const { return readingPosition_; }
+    size_t pageNumber() const { return page_; }
+    size_t pageCount() const;
     float progress() const;   ///< 0..1 по символам книги
 
     /// Переход к месту в книге: закладка, оглавление, находка поиска.
-    void goToCharOffset(std::uint32_t charOffset);
+    void goToCharOffset(uint32_t charOffset);
 
     void setTheme(int index);
     int theme() const { return theme_; }
@@ -134,7 +134,7 @@ public:
 
     /// Место чтения сдвинулось — пора записать его на диск. Зовётся на каждом
     /// перелистывании; записывать по нему сразу не обязательно.
-    std::function<void(std::uint32_t)> onPositionChanged;
+    std::function<void(uint32_t)> onPositionChanged;
 
     /// Читатель попросил ящик правой кнопкой. Полоса не знает, что там внутри,
     /// — панель ей не принадлежит, она лежит поверх.
@@ -192,10 +192,10 @@ private:
         wxl::ExpressionAnimation sheetLift;   ///< трапеция снимаемой бумаги
         wxl::ExpressionAnimation leafLift;    ///< трапеция приходящего листа
 
-        std::uint32_t epoch = 0;       ///< свой ли конец пришёл (пакет доигрывает и отменённый)
-        bool active = false;           ///< в воздухе или свободен
+        uint32_t epoch = 0;       ///< свой ли конец пришёл (пакет доигрывает и отменённый)
+        bool active = false;      ///< в воздухе или свободен
         bool forward = false;
-        std::uint64_t started = 0;     ///< порядок запуска — по нему добивается старейший
+        uint64_t started = 0;     ///< порядок запуска — по нему добивается старейший
     };
 
     wxl::Grid buildTree();
@@ -234,14 +234,14 @@ private:
     /// Очередная порция досчёта главы.
     /// @param epoch номер набора, которому порция принадлежит; чужая порция
     ///        молча заканчивается, ничего не посчитав.
-    void paginateChunk(std::uint32_t epoch);
+    void paginateChunk(uint32_t epoch);
 
     /// Место в непрерывной ленте колонок книги: глава и колонка внутри неё.
     /// Разворот на экране задаётся своей левой колонкой, а лента склеивается из
     /// колонок соседних глав, идущих подряд без пропуска на стыке.
     struct Column {
-        std::size_t chapter = 0;
-        std::size_t index = 0;
+        size_t chapter = 0;
+        size_t index = 0;
     };
 
     /// Левая колонка показанного (или заказанного очередью) разворота.
@@ -250,7 +250,7 @@ private:
     /// Глава по индексу, разложенная под нынешнюю полосу и досчитанная хотя бы
     /// до `pages` колонок. Ею лента достаёт колонки соседних глав: соседняя,
     /// оставшаяся в кэше от прежней полосы, при этом перекладывается заново.
-    typography::Chapter& chapterLaidTo(std::size_t index, std::size_t pages);
+    typography::Chapter& chapterLaidTo(size_t index, size_t pages);
 
     /// Двигает позицию на одну колонку ленты вперёд или назад, перешагивая
     /// границы глав (и пустые главы). false — уже у самого края книги.
@@ -269,7 +269,7 @@ private:
     /// Место чтения в ленте: наводит на нужную главу, верстает её до места и
     /// отдаёт колонку, в которой лежит символ. Ею идут закладка, оглавление,
     /// находка поиска и края книги.
-    Column columnOf(std::uint32_t charOffset);
+    Column columnOf(uint32_t charOffset);
 
     /// Ставит книгу на этот разворот без переворота: прыжок по ленте, а не
     /// листание. Наводит текущую главу, рисует и записывает место чтения.
@@ -368,7 +368,7 @@ private:
     const fb3::Node* noteAt(wxl::Point point, wxl::Point& anchor) const;
 
     /// Левый край колонки с этим номером внутри разворота.
-    float columnLeft(std::size_t index) const;
+    float columnLeft(size_t index) const;
 
     /// Корешок — середина средника между колонками разворота. То место, до
     /// которого доходит кромка в книжном листании.
@@ -435,7 +435,7 @@ private:
 
     wxl::CompositionWindow* window_ = nullptr;   ///< сцена и очередь окна
     wxl::Compositor compositor_;                 ///< композитор окна: на нём визуалы страницы
-    wxl::core::nullable<wxl::Grid> root_ = nullptr;    ///< прозрачный остров: ввод и оверлеи поверх сцены
+    nullable<wxl::Grid> root_ = nullptr;    ///< прозрачный остров: ввод и оверлеи поверх сцены
     bool active_ = false;                        ///< полоса — текущий экран, её сцена показана
 
     /// Осевший разворот — поверхность, которую в покое носят обе страницы
@@ -447,7 +447,7 @@ private:
     /// Севший лист его не перерисовывает, а меняется с ним поверхностями
     /// (landFlip); когда сел последний, settled_ — нынешний разворот, и флаг
     /// settledStale_ снимается.
-    wxl::core::nullable<wxl::ContainerVisual> sheets_ = nullptr;   ///< над страницами: листы переворотов
+    nullable<wxl::ContainerVisual> sheets_ = nullptr;   ///< над страницами: листы переворотов
     std::optional<wxl::DrawingSurface> settled_;             ///< DrawingSurface без пустого ctor — в optional
     bool settledStale_ = false;   ///< книжный лист в полёте: нынешний разворот несёт он, а не settled_
 
@@ -461,7 +461,7 @@ private:
     /// страницы кроют его целиком, красить под ними нечего. Размер и шов берут
     /// у сцены выражениями композитора (buildTree), потому идут за окном
     /// синхронно с WM_SIZE — applySize их не трогает.
-    wxl::core::nullable<wxl::SpriteVisual> pages_[2] = {nullptr, nullptr};
+    nullable<wxl::SpriteVisual> pages_[2] = {nullptr, nullptr};
 
     /// Пул листов переворотов (тип Flip объявлен в начале private). Растёт по
     /// требованию до kMaxFlips и переиспользуется; при быстром листании их в
@@ -470,7 +470,7 @@ private:
 
     /// Растущий счётчик запусков: по нему видно, какой из идущих листов самый
     /// старый — его добивают, когда все kMaxFlips заняты, а листать просят ещё.
-    std::uint64_t flipClock_ = 0;
+    uint64_t flipClock_ = 0;
 
     /// Очередь потока окна. Ею откладывается и перевёрстка, и порции, на
     /// которые разбит счёт книги.
@@ -490,8 +490,8 @@ private:
     /// глава кончилась, дальше идут колонки следующей. В отличие от прежнего
     /// поля, номер к числу колонок не привязан: разворот начинается ровно с той
     /// колонки, где стоит читатель, чтобы на стыке глав не пропадала колонка.
-    std::size_t page_ = 0;
-    std::uint32_t readingPosition_ = 0;
+    size_t page_ = 0;
+    uint32_t readingPosition_ = 0;
 
     /// Колонки показанного разворота — по одной странице на колонку, собранные
     /// лентой (buildSpread). Указывают в страницы глав из кэша Book; живут до
@@ -502,7 +502,7 @@ private:
     /// Сколько первых колонок разворота принадлежит текущей (левой) главе —
     /// остальные пришли со стыка, из следующей. Ими колонцифра называет номер
     /// «в главе», не залезая в номера соседней.
-    std::size_t spreadOwnColumns_ = 0;
+    size_t spreadOwnColumns_ = 0;
 
     /// Сколько колонок сейчас. Решается длиной строки в знаках при каждой
     /// перевёрстке, поле нужно ради гистерезиса: чтобы решить, куда идти с
@@ -523,7 +523,7 @@ private:
     /// порции прежнего набора, дождавшись очереди, видят чужой номер и
     /// расходятся. Этим набор и отменяется — считать по прежней полосе
     /// незачем.
-    std::uint32_t paginationEpoch_ = 0;
+    uint32_t paginationEpoch_ = 0;
 
     /// Начало чистового набора уже в очереди. Второй заказ к нему ничего не
     /// прибавит: задание всё равно возьмёт ту полосу, какую застанет.

@@ -235,7 +235,7 @@ private:
         append(parent, *node);
 
         doc_.textNodes.push_back(node);
-        doc_.characterCount += static_cast<std::uint32_t>(wxl::core::code_point_count(value));
+        doc_.characterCount += static_cast<std::uint32_t>(wxl::core::unicode::code_point_count(value));
     }
 
     const void* payloadFor(NodeKind kind, const xmlnode& source) {

@@ -17,7 +17,7 @@ public:
     void wait() { semaphore_.acquire(); }
 
 private:
-    wxl::core::semaphore semaphore_{0};
+    semaphore semaphore_{0};
 };
 
 }  // namespace bukvitsa::io

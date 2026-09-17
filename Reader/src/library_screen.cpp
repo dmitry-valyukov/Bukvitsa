@@ -38,7 +38,7 @@ ImageSource coverOf(const BookEntry& entry) {
 /// Место чтения лежит в отдельном файле на книгу, и читает его фоновая
 /// корутина -- уже после того, как карточка встала на полку. Поэтому здесь
 /// два состояния: «ещё не знаем» и то, что принесли.
-std::wstring progressOf(const BookEntry& entry, std::uint32_t charOffset, std::size_t bookmarks) {
+std::wstring progressOf(const BookEntry& entry, uint32_t charOffset, size_t bookmarks) {
     if (entry.characterCount == 0) return L"не открывалась";
 
 
@@ -139,8 +139,8 @@ void LibraryScreen::appendBook(const BookEntry& entry) {
     emptyNote_.value().visibility(Visibility::Collapsed);
 }
 
-void LibraryScreen::setProgress(std::wstring_view guid, std::uint32_t charOffset,
-                                std::size_t bookmarks) {
+void LibraryScreen::setProgress(std::wstring_view guid, uint32_t charOffset,
+                                size_t bookmarks) {
     const auto found = progress_.find(std::wstring(guid));
 
     if (found == progress_.end()) return;   // полку успели пересобрать

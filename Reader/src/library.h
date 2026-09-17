@@ -39,11 +39,11 @@ struct BookEntry {
     std::wstring guid;      ///< наш идентификатор; он же имя файла состояния
     std::wstring path;      ///< где лежит файл; книга остаётся на месте
     std::wstring bookId;    ///< UUID книги из FB3, если он у неё есть
-    wxl::core::u16_text title;
-    wxl::core::u16_text authors;
+    u16_text title;
+    u16_text authors;
     std::wstring cover;    ///< имя файла обложки в cache, пусто -- обложки нет
-    std::uint64_t fileSize = 0;        ///< вместе с path — дешёвая проверка «тот же файл»
-    std::uint32_t characterCount = 0;  ///< знаменатель прогресса чтения
+    uint64_t fileSize = 0;        ///< вместе с path — дешёвая проверка «тот же файл»
+    uint32_t characterCount = 0;  ///< знаменатель прогресса чтения
 };
 
 class Library {
@@ -79,7 +79,7 @@ public:
     /// Обновляет намеренно: файл могли переложить, а название — поправить в
     /// новом издании.
     const BookEntry& add(const fb3::Document& document, const std::filesystem::path& path,
-                         std::uint64_t fileSize);
+                         uint64_t fileSize);
 
 private:
     std::vector<BookEntry> books_;
@@ -110,8 +110,8 @@ CoverBytes coverOf(const fb3::Document& document, std::wstring_view guid);
 /// Подсказка — первые слова абзаца, а не номер страницы: страница меняется от
 /// кегля и окна, слова не меняются. По той же причине место хранится символом.
 struct Bookmark {
-    std::uint32_t charOffset = 0;
-    wxl::core::u16_text hint;
+    uint32_t charOffset = 0;
+    u16_text hint;
 };
 
 /// Всё, что читалка помнит про одну книгу: books\{guid}.xml.
@@ -126,12 +126,12 @@ struct Bookmark {
 struct BookState {
     static constexpr int kVersion = 1;
 
-    std::uint32_t charOffset = 0;
+    uint32_t charOffset = 0;
     std::vector<Bookmark> bookmarks;
 
     /// Есть ли закладка на этом месте. Совпадение точное: закладку ставят на
     /// начало страницы, и оно же приходит обратно.
-    bool hasBookmark(std::uint32_t offset) const;
+    bool hasBookmark(uint32_t offset) const;
 };
 
 /// Путь к файлу состояния книги.

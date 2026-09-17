@@ -53,10 +53,10 @@ private:
     void draw(const Theme& theme, float width, float height, float scale);
 
     wxl::Compositor compositor_;
-    wxl::core::nullable<wxl::Border> root_ = nullptr;
-    wxl::core::nullable<wxl::ScrollViewer> scroll_ = nullptr;
-    wxl::core::nullable<wxl::Grid> paper_ = nullptr;   ///< подложка ростом с текст сноски
-    wxl::core::nullable<wxl::SpriteVisual> sprite_ = nullptr;
+    nullable<wxl::Border> root_ = nullptr;
+    nullable<wxl::ScrollViewer> scroll_ = nullptr;
+    nullable<wxl::Grid> paper_ = nullptr;   ///< подложка ростом с текст сноски
+    nullable<wxl::SpriteVisual> sprite_ = nullptr;
     std::optional<wxl::DrawingSurface> surface_;
 
     std::vector<typography::Line> lines_;

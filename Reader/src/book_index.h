@@ -26,9 +26,9 @@ namespace bukvitsa::reader {
 
 /// Строка оглавления.
 struct ContentsEntry {
-    wxl::core::u16_view title;     ///< вид в текст блока: живёт, пока живы блоки
-    std::uint8_t level = 0;        ///< глубина секции: 0 — часть, дальше главы
-    std::uint32_t charOffset = 0;
+    u16_view title;        ///< вид в текст блока: живёт, пока живы блоки
+    uint8_t level = 0;     ///< глубина секции: 0 — часть, дальше главы
+    uint32_t charOffset = 0;
 };
 
 /// Оглавление книги: заголовки в порядке чтения.
@@ -36,12 +36,12 @@ struct ContentsEntry {
 /// Книга без заголовков бывает — тогда оглавление пустое, и показывать нечего.
 /// Выдумывать вместо него список абзацев не нужно: пустое оглавление честнее
 /// длинного списка ни о чём.
-wxl::core::sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks);
+sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks);
 
 /// Находка поиска: место и кусок текста вокруг него.
 struct SearchHit {
-    wxl::core::u16_text context;   ///< отрывок абзаца, в котором нашлось
-    std::uint32_t charOffset = 0;  ///< позиция самой находки в книге
+    u16_text context;         ///< отрывок абзаца, в котором нашлось
+    uint32_t charOffset = 0;  ///< позиция самой находки в книге
 };
 
 /// Ищет по книге, не различая регистра.
@@ -49,10 +49,10 @@ struct SearchHit {
 /// @param limit сколько находок вернуть. Ограничение не от лени: «а» в романе
 ///        встречается десятки тысяч раз, и список из них бесполезен читателю
 ///        ровно так же, как дорог приложению.
-wxl::core::sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
-                                            std::wstring_view needle, std::size_t limit = 200);
+sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
+                                 std::wstring_view needle, size_t limit = 200);
 
 /// Первые слова абзаца, в котором стоит эта позиция, — подсказка для закладки.
-wxl::core::u16_text hintAt(std::span<const typography::Block> blocks, std::uint32_t charOffset);
+u16_text hintAt(std::span<const typography::Block> blocks, uint32_t charOffset);
 
 }  // namespace bukvitsa::reader

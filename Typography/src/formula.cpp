@@ -55,7 +55,7 @@ std::wstring widen(const std::string& text) {
     if (text.empty()) return {};
     const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(),
                                            static_cast<int>(text.size()), nullptr, 0);
-    std::wstring wide(static_cast<std::size_t>(length), L'\0');
+    std::wstring wide(static_cast<size_t>(length), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(),
                         length);
     return wide;
@@ -107,7 +107,7 @@ using FontPtr = sptr<Font_dw>;
 std::vector<UINT32> codepoints(std::wstring_view text) {
     std::vector<UINT32> points;
     points.reserve(text.size());
-    for (std::size_t i = 0; i < text.size(); ++i) {
+    for (size_t i = 0; i < text.size(); ++i) {
         const wchar_t unit = text[i];
         if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < text.size()) {
             const wchar_t low = text[i + 1];
@@ -214,7 +214,7 @@ float Font_dw::measure(std::wstring_view text) const {
                                            glyphMetrics.data(), FALSE))) {
         return 0.0f;
     }
-    std::int64_t design = 0;
+    int64_t design = 0;
     for (const DWRITE_GLYPH_METRICS& glyph : glyphMetrics) design += glyph.advanceWidth;
     return static_cast<float>(design) * size / static_cast<float>(metrics.designUnitsPerEm);
 }
@@ -503,7 +503,7 @@ FormulaEngine::~FormulaEngine() {
 }
 
 std::unique_ptr<Formula> FormulaEngine::parse(std::wstring_view tex, float textSize,
-                                              float maxWidth, std::uint32_t argb) {
+                                              float maxWidth, uint32_t argb) {
     backend().factory = impl_->factory;
     try {
         tex::TeXRender* render =

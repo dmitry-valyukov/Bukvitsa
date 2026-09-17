@@ -82,7 +82,7 @@ private:
     void redraw();
 
     /// Точка под курсором: номер кривой и номер точки. false — мимо.
-    bool gripAt(wxl::Point point, int& curveIndex, std::size_t& pointIndex) const;
+    bool gripAt(wxl::Point point, int& curveIndex, size_t& pointIndex) const;
 
     void chooseAnother();
     void exitWizard();
@@ -96,15 +96,15 @@ private:
     void finishNaming(bool save);
 
     wxl::Compositor compositor_;
-    wxl::core::nullable<wxl::Grid> root_ = nullptr;
-    wxl::core::nullable<wxl::Grid> surfaceHost_ = nullptr;   ///< несёт визуал сетки
-    wxl::core::nullable<wxl::SpriteVisual> visual_ = nullptr;
+    nullable<wxl::Grid> root_ = nullptr;
+    nullable<wxl::Grid> surfaceHost_ = nullptr;   ///< несёт визуал сетки
+    nullable<wxl::SpriteVisual> visual_ = nullptr;
     std::vector<wxl::DrawingSurface> surface_;   ///< ноль или одна — как листы полосы
 
     /// Диалог имени. Свой оверлей, а не системное окно: он живёт поверх той
     /// же страницы, и «Отмена» возвращает ровно туда, где читатель был.
-    wxl::core::nullable<wxl::Border> namePanel_ = nullptr;
-    wxl::core::nullable<wxl::TextBox> nameBox_ = nullptr;
+    nullable<wxl::Border> namePanel_ = nullptr;
+    nullable<wxl::TextBox> nameBox_ = nullptr;
 
     std::filesystem::path image_;   ///< снимок обложки: выбранный файл или копия из реестра
     Skin skin_ = defaultSkin();     ///< редактируемые кривые (и имя с копией у правки)
@@ -112,7 +112,7 @@ private:
     bool open_ = false;
     bool dragging_ = false;
     int dragCurve_ = 0;
-    std::size_t dragPoint_ = 0;
+    size_t dragPoint_ = 0;
 
     /// Размер в DIP и масштаб экрана; поверхность — в их произведении.
     float width_ = 0.0f;

@@ -41,7 +41,7 @@ namespace bukvitsa::reader {
 struct DirectoryEntry {
     std::wstring name;
     bool isDirectory = false;
-    std::uint64_t size = 0;
+    uint64_t size = 0;
 };
 
 class Io {
@@ -92,7 +92,7 @@ public:
     wxl::async::awaitable<bool> fileExists(const std::filesystem::path& path);
 
     /// Размер файла, или ноль, если его не удалось узнать.
-    wxl::async::awaitable<std::uint64_t> fileSize(const std::filesystem::path& path);
+    wxl::async::awaitable<uint64_t> fileSize(const std::filesystem::path& path);
 
     /// Всё, что лежит в каталоге по маске (`L"*.fb3"`), одной порцией.
     wxl::async::awaitable<std::vector<DirectoryEntry>> list(const std::filesystem::path& directory,
@@ -110,6 +110,6 @@ private:
 
 /// Путь читалки, переведённый в путь пула. Строится в интерфейсном потоке --
 /// там, где STA-пул, -- и уезжает в операцию копией.
-wxl::core::path poolPath(const std::filesystem::path& path);
+path poolPath(const std::filesystem::path& system);
 
 }  // namespace bukvitsa::reader

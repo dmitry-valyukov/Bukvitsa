@@ -63,7 +63,7 @@ void benchBook(const std::filesystem::path& path) {
 
     // Пакет + метаданные: столько стоил бы вариант, который читает только
     // описание и не трогает тело.
-    std::size_t descriptionBytes = 0;
+    size_t descriptionBytes = 0;
     const double descriptionMs = best([&] {
         OpcPackage package(path);
         if (const auto part = package.partByPackageRelationship(kRelBook)) {
@@ -85,7 +85,7 @@ void benchBook(const std::filesystem::path& path) {
     const double rawReadMs = best([&] {
         std::FILE* file = nullptr;
         if (::_wfopen_s(&file, path.c_str(), L"rb") == 0 && file) {
-            std::vector<char> bytes(static_cast<std::size_t>(size));
+            std::vector<char> bytes(static_cast<size_t>(size));
             (void)std::fread(bytes.data(), 1, bytes.size(), file);
             std::fclose(file);
         }
@@ -100,7 +100,7 @@ void benchBook(const std::filesystem::path& path) {
 
     double coverReadMs = 0;
     double coverWriteMs = 0;
-    std::size_t coverBytes = 0;
+    size_t coverBytes = 0;
 
     if (coverIndex) {
         // Первое обращение читает часть из пакета, дальше отдаётся готовое,
