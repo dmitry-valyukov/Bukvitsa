@@ -18,6 +18,7 @@
 #include <string>
 
 #include "Object.h"
+#include "chrome.h"
 #include "pch.h"
 
 // Последним: реестр импортирует wxl.core.
@@ -27,10 +28,15 @@ namespace bukvitsa::reader {
 
 class LibraryScreen {
 public:
-    LibraryScreen();
+    /// @param chrome обстановка: полка красится ею и перекрашивается вместе
+    ///        с темой бумаги.
+    explicit LibraryScreen(Chrome& chrome);
 
     /// Корень, который отдаётся окну как содержимое.
     const wxl::UIElement& root() const { return root_.value(); }
+
+    /// Тема контролов полки: светлая или тёмная половина острова.
+    void requestedTheme(wxl::ElementTheme theme) { root_.value().requestedTheme(theme); }
 
     /// Перестраивает полку под содержимое реестра. Зовётся каждый раз, когда
     /// витрину показывают: книга могла добавиться, а место чтения — уехать.
@@ -55,6 +61,8 @@ public:
 
 private:
     wxl::Button shelfItem(const BookEntry& entry);
+
+    Chrome& chrome_;
 
     nullable<wxl::Grid> root_ = nullptr;
     nullable<wxl::StackPanel> shelf_ = nullptr;

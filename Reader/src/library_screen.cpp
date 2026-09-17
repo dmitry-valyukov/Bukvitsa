@@ -9,14 +9,6 @@ using namespace wxl::dsl;
 
 namespace {
 
-// Полка бумажного цвета, как и полоса набора: витрина — часть той же книги,
-// а не отдельное приложение.
-constexpr uint32_t kPaper = 0xFFF7F4EE;
-constexpr uint32_t kInk = 0xFF201E1C;
-constexpr uint32_t kDim = 0xFF8A857D;
-constexpr uint32_t kCard = 0xFFFFFDF9;
-constexpr uint32_t kEdge = 0xFFE3DED4;
-
 // Обложка стоит в пропорции 2:3 — так их печатают, и так они не прыгают по
 // высоте, когда у одной книги обложка квадратная, а у другой узкая.
 constexpr double kCoverWidth = 72;
@@ -57,20 +49,22 @@ std::wstring progressOf(const BookEntry& entry, uint32_t charOffset, size_t book
 
 }  // namespace
 
-LibraryScreen::LibraryScreen() {
+// Полка в цветах бумаги, как и полоса набора: витрина — часть той же книги,
+// а не отдельное приложение. Цвета привязаны к обстановке и идут за темой.
+LibraryScreen::LibraryScreen(Chrome& chrome) : chrome_(chrome) {
     shelf_ = StackPanel{Margin{40, 8, 40, 32}};
 
     emptyNote_ = TextBlock{
         L"Пока пусто. Добавьте книгу — она останется там, где лежит.",
         fontSize = 16,
-        foreground = SolidColorBrush{ARGB{kDim}},
+        foreground = Bind{chrome_.dim},
         Margin{40, 24, 40, 0},
     };
 
     continueBox_ = CheckBox{
         L"Продолжать чтение при старте",
         column = 1,
-        foreground = SolidColorBrush{ARGB{kInk}},
+        foreground = Bind{chrome_.ink},
         vAlign.center,
     };
 
@@ -86,7 +80,7 @@ LibraryScreen::LibraryScreen() {
 
     root_ = Grid{
         isTabStop = true,
-        background = SolidColorBrush{ARGB{kPaper}},
+        background = Bind{chrome_.paper},
         rowDefinitions = L"auto,*",
 
         Grid{
@@ -100,7 +94,7 @@ LibraryScreen::LibraryScreen() {
                 column = 0,
                 fontSize = 26,
                 FontWeight{600},
-                foreground = SolidColorBrush{ARGB{kInk}},
+                foreground = Bind{chrome_.ink},
                 vAlign.center,
             },
             // Место в сетке задано при постройке, вместе со всем остальным:
@@ -182,7 +176,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
     TextBlock progress = TextBlock{
         entry.characterCount == 0 ? std::wstring{L"не открывалась"} : std::wstring{},
         fontSize = 13,
-        foreground = SolidColorBrush{ARGB{kDim}},
+        foreground = Bind{chrome_.dim},
         Margin{0, 8, 0, 0},
     };
 
@@ -196,8 +190,8 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
         horizontalContentAlignment = HorizontalAlignment::Stretch,
         Margin{0, 6},
         Padding{0},
-        background = SolidColorBrush{ARGB{kCard}},
-        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        background = Bind{chrome_.card},
+        borderBrush = Bind{chrome_.edge},
         BorderThickness{1},
         CornerRadius{6},
         onClick = [this, guid](Object const&,
@@ -224,7 +218,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                     entry.title.wchars(),
                     fontSize = 18,
                     FontWeight{600},
-                    foreground = SolidColorBrush{ARGB{kInk}},
+                    foreground = Bind{chrome_.ink},
                     textWrapping.wrap,
                     maxLines = 2,
                     textTrimming.characterEllipsis,
@@ -232,7 +226,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                 TextBlock{
                     entry.authors.wchars(),
                     fontSize = 14,
-                    foreground = SolidColorBrush{ARGB{kDim}},
+                    foreground = Bind{chrome_.dim},
                     Margin{0, 4, 0, 0},
                     maxLines = 1,
                     textTrimming.characterEllipsis,

@@ -386,13 +386,26 @@ Grid BookView::buildTree() {
     ContainerVisual const scene = window_->contentVisual();
     ExpressionAnimation const sizeOfScene = compositor_.createExpressionAnimation(L"scene.Size");
     sizeOfScene.setReferenceParameter(L"scene", scene);
-    ExpressionAnimation const halfOfScene =
-        compositor_.createExpressionAnimation(L"scene.Size.X * 0.5");
-    halfOfScene.setReferenceParameter(L"scene", scene);
+
+    // Шов страниц — на целом пикселе. При нечётной ширине половина дробная, и
+    // клип по дробной кромке кроет средний столбец наполовину с каждой
+    // стороны: два полупрозрачных края складываются в просвет насквозь, до
+    // рабочего стола, — красить под страницами нечего. Левая страница — до
+    // целого, правая — от него, и при нечётной ширине она на пиксель шире.
+    ExpressionAnimation const leftPageInset =
+        compositor_.createExpressionAnimation(L"scene.Size.X - Floor(scene.Size.X * 0.5)");
+    leftPageInset.setReferenceParameter(L"scene", scene);
+    ExpressionAnimation const rightPageInset =
+        compositor_.createExpressionAnimation(L"Floor(scene.Size.X * 0.5)");
+    rightPageInset.setReferenceParameter(L"scene", scene);
     for (size_t side = 0; side < 2; ++side) {
         SpriteVisual page = compositor_.createSpriteVisual();
         InsetClip crop = compositor_.createInsetClip();
-        crop.startAnimation(side == kLeftPage ? L"RightInset" : L"LeftInset", halfOfScene);
+        if (side == kLeftPage) {
+            crop.startAnimation(L"RightInset", leftPageInset);
+        } else {
+            crop.startAnimation(L"LeftInset", rightPageInset);
+        }
         page.clip(crop);
         page.startAnimation(L"Size", sizeOfScene);
         page.isVisible(false);

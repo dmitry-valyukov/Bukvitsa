@@ -16,6 +16,7 @@
 #include "settings.h"
 
 #include "CompositionWindow.h"
+#include "chrome.h"
 #include "skin_wizard.h"
 #include "start_screen.h"
 
@@ -107,7 +108,25 @@ struct App {
     std::shared_ptr<Screen> bookCameFrom;
     std::shared_ptr<Skins> skins;
     std::shared_ptr<WarmBook> warm;
+    intrusive_ptr<Chrome> chrome;
 };
+
+/// Обстановка вслед за бумагой: ящики, полка и мастер перекрашиваются под
+/// тему, контролы острова получают её светлую или тёмную половину, а рамка
+/// окна — её цвет заголовка. Зовётся всякий раз, когда полоса меняет тему;
+/// заставка сюда не входит — её карточка лежит на картинке.
+void applyChrome(const App& app) {
+    const Theme& paper = app.view->paper();
+    app.chrome->follow(paper);
+    app.panel->remark();
+
+    const ElementTheme controls = paper.dark ? ElementTheme::Dark : ElementTheme::Light;
+    app.view->requestedTheme(controls);
+    app.shelf->requestedTheme(controls);
+
+    app.window->darkFrame(paper.dark);
+    app.window->captionColor(argbOf(paper.panel, 0xFF), argbOf(paper.text, 0xFF));
+}
 
 // ---- корутины приложения --------------------------------------------------
 //
@@ -266,6 +285,7 @@ managed_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
             break;
         }
     }
+    applyChrome(app);
 
     app.settings->skin = skinName;
     co_await io.writeFile(settingsPath(), settingsXml(*app.settings));
@@ -319,6 +339,7 @@ managed_task deleteSkinFlow(App app, std::wstring name) {
 
     app.view->setTheme(theme);
     app.panel->refreshThemes();
+    applyChrome(app);
 
     if (leavingActive) {
         app.settings->skin.clear();
@@ -574,6 +595,7 @@ managed_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
         }
     }
     app.view->setTheme(theme);
+    applyChrome(app);
 
     // Реестр читается всегда, а не только когда показывают полку: он маленький,
     // читает его чужой поток, и без него не ответить на «продолжить чтение» по
@@ -649,13 +671,17 @@ wxl::Teardown wxl_launched() {
 
     auto screen = std::make_shared<StartScreen>(window->chromeCompositor());
     auto view = std::make_shared<BookView>(*window);
-    auto shelf = std::make_shared<LibraryScreen>();
+
+    // Обстановка красится под первую тему, пока настройки не прочитаны: экраны
+    // строятся сейчас, а какая тема на самом деле, скажет applyChrome позже.
+    auto chrome = Chrome::create(kThemes[0]);
+    auto shelf = std::make_shared<LibraryScreen>(*chrome);
     auto skins = std::make_shared<Skins>();
-    auto wizard = std::make_shared<SkinWizard>(window->chromeCompositor());
+    auto wizard = std::make_shared<SkinWizard>(window->chromeCompositor(), *chrome);
 
     // Панель живёт поверх полосы набора: «поверх страницы» — это внутри полосы,
     // а не рядом с ней.
-    auto panel = std::make_shared<ReaderPanel>(window->chromeCompositor(), *view);
+    auto panel = std::make_shared<ReaderPanel>(window->chromeCompositor(), *view, *chrome);
     view->addOverlay(panel->root());
 
     // Состояние открытой книги: место чтения и закладки. Читается и пишется
@@ -740,7 +766,7 @@ wxl::Teardown wxl_launched() {
 
     // Всё, из чего собрано приложение, одной связкой: её берут корутины.
     App const app{io.get(), window, settings, library,      state, view,
-                  panel,    shelf,  screen,   shown,        bookCameFrom, skins, warm};
+                  panel,    shelf,  screen,   shown,        bookCameFrom, skins, warm, chrome};
 
     auto const showLibrary = [io, app, window, shelf, library, settings, shown, rememberPosition,
                               closePanel] {
@@ -819,7 +845,11 @@ wxl::Teardown wxl_launched() {
     // источника: панель зовёт её из своих ползунков, а сама полоса — из
     // Ctrl+колеса и клавиш ±/0/T (onReadingSettingsChanged), чтобы правки в
     // обход панели сохранялись тем же путём, а не жили только до перезапуска.
-    auto const persistView = [io, settings, view] {
+    auto const persistView = [io, settings, view, app] {
+        // Тема могла смениться — обстановка идёт за ней прежде, чем настройки
+        // уйдут на диск.
+        applyChrome(app);
+
         // Обложка запоминается именем, встроенная тема — номером; прежний
         // номер при обложке остаётся как то, куда вернуться, если реестр
         // обложек пропадёт.
@@ -1100,6 +1130,6 @@ wxl::Teardown wxl_launched() {
     // Рабочий поток останавливается здесь же: очередь интерфейсного к этому
     // моменту уже не принимает заданий, и операции, не успевшие вернуться,
     // возобновлять некому и незачем.
-    return [io, window, screen, shelf, view, library, settings, skins, wizard, saveTimer,
+    return [io, window, screen, shelf, view, library, settings, skins, wizard, chrome, saveTimer,
             positionTimer, splashTimer](TeardownReason) { io->stop(); };
 }
