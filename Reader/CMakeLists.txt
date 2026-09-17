@@ -16,6 +16,7 @@ add_executable(Reader WIN32
     src/reader_panel.cpp
     src/note_popup.cpp
     src/book_index.cpp
+    src/chrome.cpp
     src/imaging.cpp
     src/io.cpp
     src/library.cpp
@@ -26,6 +27,7 @@ add_executable(Reader WIN32
     src/file_dialog.cpp
     src/book.h
     src/book_view.h
+    src/chrome.h
     src/file_dialog.h
     src/imaging.h
     src/io.h

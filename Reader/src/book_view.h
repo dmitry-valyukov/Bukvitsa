@@ -56,6 +56,10 @@ public:
     /// занимает её целиком, и никакого другого места нет.
     void addOverlay(const wxl::UIElement& element);
 
+    /// Тема контролов острова над полосой — панели, мастера, сноски. Бумага в
+    /// ней не участвует: её красит paper().
+    void requestedTheme(wxl::ElementTheme theme) { root_.value().requestedTheme(theme); }
+
     /// Полоса стала текущим экраном — или перестала им быть. Страница живёт на
     /// сцене окна, и вне чтения её быть видно не должно: `setActive(false)`
     /// сажает летящие листы, прячет страницы и отдаёт осевший разворот заднику
@@ -95,6 +99,15 @@ public:
 
     void setTheme(int index);
     int theme() const { return theme_; }
+
+    /// Цвета текущей темы. Имя не theme(): так зовётся её номер, а перегрузка
+    /// по одному лишь типу возврата в C++ невозможна. У всякой обложки цвета
+    /// одни и те же (`kSkinTheme`): мастер задаёт снимок и кривые, а не цвета.
+    /// Публично: по ней приложение красит обстановку и рамку окна.
+    const Theme& paper() const {
+        if (preview_) return kSkinTheme;
+        return theme_ < kThemeCount ? kThemes[theme_] : kSkinTheme;
+    }
 
     /// Обложки читателя из реестра. Они продолжают список тем: индексы идут
     /// сперва по `kThemes`, затем по обложкам, и `setTheme` листает всех
@@ -416,14 +429,6 @@ private:
     /// Готовит размытие текста под конфигуратором изгиба. false — эффект не
     /// создался, предпросмотр идёт резким: блюр — подспорье, а не условие.
     bool ensureBlur();
-
-    /// Цвета текущей темы. Имя не theme(): так зовётся её номер, а перегрузка
-    /// по одному лишь типу возврата в C++ невозможна. У всякой обложки цвета
-    /// одни и те же (`kSkinTheme`): мастер задаёт снимок и кривые, а не цвета.
-    const Theme& paper() const {
-        if (preview_) return kSkinTheme;
-        return theme_ < kThemeCount ? kThemes[theme_] : kSkinTheme;
-    }
 
     /// Сколько всего тем: встроенные плюс обложки.
     int themeCount() const { return kThemeCount + static_cast<int>(skins_.size()); }
