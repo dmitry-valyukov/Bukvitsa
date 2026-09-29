@@ -11,7 +11,6 @@
 // `wxl::core::to_utf16`, `to_utf8`, `xml_escaped` и `parse`, и зовутся они по
 // месту. Одна реализация на два дерева лучше двух похожих.
 
-#include <filesystem>
 #include <string>
 #include <string_view>
 

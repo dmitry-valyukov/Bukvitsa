@@ -1,6 +1,5 @@
 #pragma once
 
-#include "async.h"
 #include "io_thread.h"
 
 namespace bukvitsa::io {

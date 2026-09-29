@@ -13,7 +13,6 @@
 
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core.
-#include <functional>
 #include <optional>
 #include <vector>
 

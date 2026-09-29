@@ -3,10 +3,8 @@
 
 #include <cmath>
 #include <cstdio>
-#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 // Заголовки читалки после всех стандартных: индекс книги ведёт к импорту
 // модуля книги, и обложки — перед ним.

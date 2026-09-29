@@ -1,6 +1,4 @@
 #include <algorithm>
-#include <cmath>
-#include <vector>
 
 #include <d2d1_1.h>
 #include <wincodec.h>

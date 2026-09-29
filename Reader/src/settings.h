@@ -12,7 +12,6 @@
 
 #include <filesystem>
 #include <string>
-#include <string_view>
 
 namespace bukvitsa::reader {
 

@@ -1,4 +1,3 @@
-#include <algorithm>
 
 // Свой заголовок последним: он импортирует wxl.xml (см. store.h).
 #include "store.h"
