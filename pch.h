@@ -16,6 +16,11 @@
 // приходит с `import wxl.core;` в самом файле — директива `using` видит и
 // то, что объявлено после неё. Целые типы — тоже без `std::`: `<cstdint>` и
 // `<cstddef>` дают их и в глобальном пространстве имён.
+//
+// windows.h — первым и только через platform.h из wxl, как во всех проектах на
+// ней: там же его ключи и снятый макрос GetCurrentTime.
+
+#include "platform.h"
 
 #include <algorithm>
 #include <array>
@@ -43,7 +48,6 @@
 #include <utility>
 #include <vector>
 
-#include <windows.h>
 #include <objbase.h>
 
 #include <d2d1.h>

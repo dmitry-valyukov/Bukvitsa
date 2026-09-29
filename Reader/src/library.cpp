@@ -1,4 +1,3 @@
-#include <windows.h>
 #include <objbase.h>
 
 // «book.h» больше не нужен: реестр работает с разобранным документом.

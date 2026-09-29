@@ -16,8 +16,6 @@
 #include <string_view>
 #include <vector>
 
-#include <windows.h>
-
 #include <d2d1_1.h>
 #include <dwrite.h>
 #include <wrl/client.h>

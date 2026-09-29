@@ -9,8 +9,6 @@
 
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
-#include <windows.h>
-
 #include "file_dialog.h"
 #include "imaging.h"
 #include "settings.h"

@@ -3,7 +3,8 @@ module;
 // Packaging API — это C и COM, стандартной библиотеки они с собой не несут,
 // поэтому им место в глобальном фрагменте модуля: `import std;` ниже они не
 // трогают, и порядок включений больше ничего не значит.
-#include <windows.h>
+#include "platform.h"
+
 #include <msopc.h>
 #include <objbase.h>
 

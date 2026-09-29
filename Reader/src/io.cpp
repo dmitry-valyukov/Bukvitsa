@@ -1,5 +1,3 @@
-#include <windows.h>
-
 #include <algorithm>
 
 #include "UiThread.h"

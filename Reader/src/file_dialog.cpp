@@ -1,6 +1,5 @@
 #include "file_dialog.h"
 
-#include <windows.h>
 #include <shobjidl.h>
 
 #include <wrl/client.h>

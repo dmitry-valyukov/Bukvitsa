@@ -1,7 +1,5 @@
 #include "imaging.h"
 
-#include <windows.h>
-
 #include <wincodec.h>
 
 namespace bukvitsa::reader {
