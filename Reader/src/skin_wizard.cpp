@@ -20,16 +20,16 @@ namespace {
 
 // Обстановка мастера — те же цвета, что у панели читалки: диалог имени и
 // кнопки не бумага, а инструмент.
-constexpr uint32_t kChrome = 0xF21E1E22;
-constexpr uint32_t kInk = 0xFFE8E4DC;
-constexpr uint32_t kEdge = 0x33FFFFFF;
+constexpr Color kChrome = rgba(30, 30, 34, 242 / 255.0);
+constexpr Color kInk = rgb(232, 228, 220);
+constexpr Color kEdge = rgba(255, 255, 255, 0.2);
 
 // Кнопки — как на стартовом экране: та же ширина, та же полупрозрачность,
 // под ними должна просвечивать страница; где им стоять, сказано у самой
 // карточки. Отмена — чуть серее остальных, она уводит, а не ведёт.
 constexpr float kButtonWidth = 300.0f;
 constexpr float kRestingOpacity = 0.92f;
-constexpr uint32_t kCancelFace = 0xFFD9D6D2;
+constexpr Color kCancelFace = rgb(217, 214, 210);
 
 // Сетка поверх страницы — подсказка, а не занавес: все линии сильно
 // полупрозрачны, центральная ярче тоном, чтобы читаться сквозь текст.
@@ -90,7 +90,7 @@ Button SkinWizard::overlayButton(std::wstring_view caption, float tall, float ke
         onClick = [this, handler](Object const&, RoutedEventArgs&) { (this->*handler)(); },
     };
 
-    if (cancel) button.background(SolidColorBrush{ARGB{kCancelFace}});
+    if (cancel) button.background(SolidColorBrush{kCancelFace});
 
     // Полупрозрачность — визуалом, как у стартового экрана, только без
     // анимации появления: мастер открывают действием, ждать ему нечего.
@@ -126,8 +126,8 @@ void SkinWizard::buildTree() {
         hAlign.center,
         vAlign.center,
         visibility = Visibility::Collapsed,
-        background = SolidColorBrush{ARGB{kChrome}},
-        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        background = SolidColorBrush{kChrome},
+        borderBrush = SolidColorBrush{kEdge},
         BorderThickness{1},
         CornerRadius{6},
         Padding{20, 16},
@@ -135,7 +135,7 @@ void SkinWizard::buildTree() {
             TextBlock{
                 L"Название обложки",
                 fontSize = 13,
-                foreground = SolidColorBrush{ARGB{kInk}},
+                foreground = SolidColorBrush{kInk},
                 Margin{0, 0, 0, 8},
             },
             nameBox_.value(),
@@ -163,7 +163,7 @@ void SkinWizard::buildTree() {
         visibility = Visibility::Collapsed,
         // Прозрачная, но настоящая кисть: без неё оверлей не участвует в
         // проверке попадания, и тянуть точки было бы не за что.
-        background = SolidColorBrush{ARGB{0x00000000}},
+        background = SolidColorBrush{colors.transparent},
         surfaceHost_.value(),
         buttons,
         namePanel_.value(),

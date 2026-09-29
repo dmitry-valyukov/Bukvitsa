@@ -15,12 +15,13 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Ящик, а не бумага: свои цвета при любой теме страницы.
-constexpr uint32_t kChrome = 0xF21E1E22;   ///< слегка прозрачный — под ним текст
-constexpr uint32_t kInk = 0xFFE8E4DC;
-constexpr uint32_t kDim = 0xFF9A968E;
-constexpr uint32_t kEdge = 0x33FFFFFF;
-constexpr uint32_t kActive = 0x22FFFFFF;
+// Ящик, а не бумага: свои цвета при любой теме страницы. wxl:: — потому что
+// rgb() темы страницы (theme.h) даёт цвет Direct2D и здесь заслонил бы этот.
+constexpr Color kChrome = wxl::rgba(30, 30, 34, 242 / 255.0);   ///< слегка прозрачный — под ним текст
+constexpr Color kInk = wxl::rgb(232, 228, 220);
+constexpr Color kDim = wxl::rgb(154, 150, 142);
+constexpr Color kEdge = wxl::rgba(255, 255, 255, 0.2);
+constexpr Color kActive = wxl::rgba(255, 255, 255, 34 / 255.0);
 
 constexpr double kWidth = 380;
 
@@ -33,7 +34,7 @@ TextBlock groupCaption(std::wstring_view said) {
     return TextBlock{
         said,
         fontSize = 13,
-        foreground = SolidColorBrush{ARGB{kDim}},
+        foreground = SolidColorBrush{kDim},
         Margin{0, 12, 0, 2},
     };
 }
@@ -72,9 +73,9 @@ void ReaderPanel::buildTree() {
         fontSize = 14,
         Margin{12, 12, 12, 0},
         Padding{12, 8},
-        foreground = SolidColorBrush{ARGB{kInk}},
-        background = SolidColorBrush{ARGB{0x00000000}},
-        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        foreground = SolidColorBrush{kInk},
+        background = SolidColorBrush{colors.transparent},
+        borderBrush = SolidColorBrush{kEdge},
         BorderThickness{1},
         CornerRadius{4},
         onClick =
@@ -117,7 +118,7 @@ void ReaderPanel::buildTree() {
     // страница между ящиками остаётся страницей.
     root_ = Grid{
         visibility = Visibility::Collapsed,
-        background = SolidColorBrush{ARGB{0x00000000}},
+        background = SolidColorBrush{colors.transparent},
         navigation_.value(),
         settings_.value(),
     };
@@ -148,8 +149,8 @@ Border ReaderPanel::box(HorizontalAlignment side, const UIElement& inside) {
         horizontalAlignment = side,
         vAlign.stretch,
         width = kWidth,
-        background = SolidColorBrush{ARGB{kChrome}},
-        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        background = SolidColorBrush{kChrome},
+        borderBrush = SolidColorBrush{kEdge},
         BorderThickness{onLeft ? 0.0 : 1.0, 0.0, onLeft ? 1.0 : 0.0, 0.0},
         Padding{pad, pad},
         child = inside,
@@ -191,9 +192,9 @@ Button ReaderPanel::tabButton(std::wstring_view caption, Tab tab) {
         fontSize = 14,
         Margin{0, 0, 6, 0},
         Padding{12, 6},
-        foreground = SolidColorBrush{ARGB{kInk}},
-        background = SolidColorBrush{ARGB{0x00000000}},
-        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        foreground = SolidColorBrush{kInk},
+        background = SolidColorBrush{colors.transparent},
+        borderBrush = SolidColorBrush{kEdge},
         BorderThickness{1},
         CornerRadius{4},
         onClick = [this, tab](Object const&, RoutedEventArgs&) { open(tab); },
@@ -208,7 +209,7 @@ Button ReaderPanel::listItem(std::wstring_view caption, std::wstring_view under,
         TextBlock{
             caption,
             fontSize = 14,
-            foreground = SolidColorBrush{ARGB{kInk}},
+            foreground = SolidColorBrush{kInk},
             textWrapping.wrap,
             maxLines = 2,
             textTrimming.characterEllipsis,
@@ -219,7 +220,7 @@ Button ReaderPanel::listItem(std::wstring_view caption, std::wstring_view under,
         lines.children().append(TextBlock{
             under,
             fontSize = 12,
-            foreground = SolidColorBrush{ARGB{kDim}},
+            foreground = SolidColorBrush{kDim},
             Margin{0, 2, 0, 0},
             maxLines = 1,
             textTrimming.characterEllipsis,
@@ -231,8 +232,8 @@ Button ReaderPanel::listItem(std::wstring_view caption, std::wstring_view under,
         horizontalContentAlignment = HorizontalAlignment::Stretch,
         Margin{indent, 1, 0, 1},
         Padding{8, 6},
-        background = SolidColorBrush{ARGB{0x00000000}},
-        borderBrush = SolidColorBrush{ARGB{0x00000000}},
+        background = SolidColorBrush{colors.transparent},
+        borderBrush = SolidColorBrush{colors.transparent},
         BorderThickness{0},
         CornerRadius{4},
         onClick = [action](Object const&, RoutedEventArgs&) { if (action) action(); },
@@ -273,7 +274,7 @@ UIElement ReaderPanel::buildSearch() {
         row = 1,
         L"Введите слово и нажмите Enter.",
         fontSize = 13,
-        foreground = SolidColorBrush{ARGB{kDim}},
+        foreground = SolidColorBrush{kDim},
         textWrapping.wrap,
     };
 
@@ -297,7 +298,7 @@ UIElement ReaderPanel::buildBookmarks() {
     bookmarkNote_ = TextBlock{
         row = 1,
         fontSize = 13,
-        foreground = SolidColorBrush{ARGB{kDim}},
+        foreground = SolidColorBrush{kDim},
         textWrapping.wrap,
     };
 
@@ -310,9 +311,9 @@ UIElement ReaderPanel::buildBookmarks() {
             L"Заложить эту страницу",
             hAlign.stretch,
             Margin{0, 0, 0, 8},
-            foreground = SolidColorBrush{ARGB{kInk}},
-            background = SolidColorBrush{ARGB{kActive}},
-            borderBrush = SolidColorBrush{ARGB{kEdge}},
+            foreground = SolidColorBrush{kInk},
+            background = SolidColorBrush{kActive},
+            borderBrush = SolidColorBrush{kEdge},
             BorderThickness{1},
             CornerRadius{4},
             onClick = [this](Object const&, RoutedEventArgs&) { toggleBookmark(); },
@@ -379,7 +380,7 @@ UIElement ReaderPanel::buildSettings() {
             TextBlock{
                 L"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
                 fontSize = 12,
-                foreground = SolidColorBrush{ARGB{kDim}},
+                foreground = SolidColorBrush{kDim},
                 Margin{0, 16, 0, 0},
                 textWrapping.wrap,
             },
@@ -397,7 +398,7 @@ void ReaderPanel::showTab(Tab tab) {
     }
     for (size_t i = 0; i < tabButtons_.size(); ++i) {
         tabButtons_[i].background(
-            SolidColorBrush{ARGB{static_cast<size_t>(tab) == i ? kActive : 0x00000000u}});
+            SolidColorBrush{static_cast<size_t>(tab) == i ? kActive : colors.transparent});
     }
 }
 
@@ -562,9 +563,9 @@ void ReaderPanel::refreshThemes() {
             fontSize = 13,
             Margin{margin},
             Padding{12, 6},
-            foreground = SolidColorBrush{ARGB{kInk}},
-            background = SolidColorBrush{ARGB{0x00000000}},
-            borderBrush = SolidColorBrush{ARGB{kEdge}},
+            foreground = SolidColorBrush{kInk},
+            background = SolidColorBrush{colors.transparent},
+            borderBrush = SolidColorBrush{kEdge},
             BorderThickness{1},
             CornerRadius{4},
             onClick =
@@ -602,9 +603,9 @@ void ReaderPanel::refreshThemes() {
             fontSize = 13,
             Margin{6, 6, 0, 0},
             Padding{8, 6},
-            foreground = SolidColorBrush{ARGB{kDim}},
-            background = SolidColorBrush{ARGB{0x00000000}},
-            borderBrush = SolidColorBrush{ARGB{kEdge}},
+            foreground = SolidColorBrush{kDim},
+            background = SolidColorBrush{colors.transparent},
+            borderBrush = SolidColorBrush{kEdge},
             BorderThickness{1},
             CornerRadius{4},
             onClick = [action](Object const&, RoutedEventArgs&) { action(); },
@@ -660,9 +661,9 @@ void ReaderPanel::refreshThemes() {
         fontSize = 13,
         Margin{0, 6, 0, 0},
         Padding{12, 6},
-        foreground = SolidColorBrush{ARGB{kDim}},
-        background = SolidColorBrush{ARGB{0x00000000}},
-        borderBrush = SolidColorBrush{ARGB{kEdge}},
+        foreground = SolidColorBrush{kDim},
+        background = SolidColorBrush{colors.transparent},
+        borderBrush = SolidColorBrush{kEdge},
         BorderThickness{1},
         CornerRadius{4},
         onClick =
@@ -680,7 +681,7 @@ void ReaderPanel::markTheme() {
     // и та же мысль — «вот это сейчас».
     for (int index = 0; index < static_cast<int>(themeButtons_.size()); ++index) {
         themeButtons_[static_cast<size_t>(index)].background(
-            SolidColorBrush{ARGB{index == view_.theme() ? kActive : 0x00000000u}});
+            SolidColorBrush{index == view_.theme() ? kActive : colors.transparent});
     }
 }
 

@@ -26,13 +26,13 @@ constexpr auto kStagger = 40ms;
 constexpr float kRestingOpacity = 0.92f;
 
 // Лицо кнопки отмены: чуть серее остальных — она уводит, а не ведёт.
-constexpr uint32_t kCancelFace = 0xFFD9D6D2;
+constexpr Color kCancelFace = rgb(217, 214, 210);
 
 // Большая кнопка, когда ей есть что продолжать: высота под обложку, обложка
 // в пропорции витрины, автор — тем же приглушённым тоном, что и там.
 constexpr float kContinueTall = 100.0f;
 constexpr double kCoverTall = 76.0;
-constexpr uint32_t kDimInk = 0xFF8A857D;
+constexpr Color kDimInk = rgb(138, 133, 125);
 
 // Откуда кнопка приезжает. Одной прозрачности мало — появление «из ничего»
 // читается плоско, а десяток пикселей вверх делает его живым.
@@ -132,7 +132,7 @@ Button StartScreen::addButton(std::wstring_view caption, float tall, float kegel
             },
     };
 
-    if (cancel) button.background(SolidColorBrush{ARGB{kCancelFace}});
+    if (cancel) button.background(SolidColorBrush{kCancelFace});
 
     // Подъём идёт по Translation, а НЕ по Offset. Offset — это то, чем XAML
     // расставляет элементы при разметке: анимация захватывает свойство себе,
@@ -179,7 +179,7 @@ void StartScreen::setContinueBook(std::wstring_view title, std::wstring_view aut
         TextBlock{std::wstring(title), fontSize = 13, Margin{0, 5, 0, 0},
                   textTrimming.characterEllipsis},
         TextBlock{std::wstring(author), fontSize = 12, Margin{0, 2, 0, 0},
-                  foreground = SolidColorBrush{ARGB{kDimInk}}, textTrimming.characterEllipsis},
+                  foreground = SolidColorBrush{kDimInk}, textTrimming.characterEllipsis},
     };
 
     Button button = continueButton_.value();

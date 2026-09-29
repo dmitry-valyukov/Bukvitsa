@@ -10,7 +10,7 @@
 namespace bukvitsa::reader {
 
 using wxl::async::awaitable;
-using wxl::async::managed_task;
+using wxl::async::task;
 
 namespace {
 
@@ -110,7 +110,7 @@ void Io::stop() {
     running_.clear();
 }
 
-void Io::spawn(managed_task&& work) {
+void Io::spawn(task&& work) {
     // Кончилась, не дойдя до первого co_await, -- держать нечего.
     if (work.done()) {
         work.result();
@@ -124,11 +124,11 @@ void Io::collect() {
     // Исключение из корутины -- это исключение приложения, а не рабочего
     // потока: result() бросает его здесь, в интерфейсном потоке, где ему и
     // место.
-    for (managed_task& work : running_) {
+    for (task& work : running_) {
         if (work.done()) work.result();
     }
 
-    std::erase_if(running_, [](const managed_task& work) { return work.done(); });
+    std::erase_if(running_, [](const task& work) { return work.done(); });
 }
 
 awaitable<std::optional<std::string>> Io::readFile(const std::filesystem::path& file_path) {
