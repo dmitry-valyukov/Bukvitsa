@@ -19,7 +19,6 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
-#include <string>
 #include <vector>
 
 import wxl.core;

@@ -16,10 +16,8 @@
 // ничего не теряет. Диска здесь нет: снимок мастер только проверяет, а копию
 // кладёт приложение — через свой рабочий поток.
 
-#include <array>
 #include <filesystem>
 #include <functional>
-#include <string>
 #include <vector>
 
 #include "skins.h"

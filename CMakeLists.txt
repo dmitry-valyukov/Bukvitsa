@@ -183,12 +183,12 @@ endfunction()
 add_subdirectory(external)
 
 # Своё Буквицы — строго после подключения wxl, в отличие от ключей языка выше.
-# Определения: у wxl свои NOMINMAX и WIN32_LEAN_AND_MEAN в platform.h, и наши
-# дали бы C4005 на каждом её файле. /W4: предупреждения wxl — её дело, и в
-# сборке читалки им место только шумом.
+# Ключей windows.h (NOMINMAX, WIN32_LEAN_AND_MEAN) здесь нет: их задаёт
+# platform.h из wxl, единственный путь к windows.h и у читалки. /W4:
+# предупреждения wxl — её дело, и в сборке читалки им место только шумом.
 if(MSVC)
     add_compile_options(/W4)
-    add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_compile_definitions(UNICODE _UNICODE)
 endif()
 
 option(BUKVITSA_BUILD_TESTS "Build unit tests" ON)

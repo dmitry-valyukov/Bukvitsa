@@ -16,6 +16,8 @@ target_link_libraries(IslandProbe PRIVATE
 target_include_directories(IslandProbe PRIVATE
     "${WXL_CPPWINRT_PROJECTION_DIR}"
     "${WXL_WINDOWSAPPSDK_FOUNDATION_DIR}/include"
+    # platform.h — единственный путь к windows.h, как у читалки.
+    "${BUKVITSA_WXL_ROOT}/wxl.core/src"
 )
 
 # Загрузчик ищет пакет платформы при старте и обязан лежать рядом — как у

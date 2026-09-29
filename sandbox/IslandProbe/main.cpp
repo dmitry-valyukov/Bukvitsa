@@ -11,7 +11,7 @@
 //     (клавиша B переключает; текущее состояние написано в заголовке окна);
 //  2) успевает ли картинка и карточка за рамкой при быстрой растяжке, когда
 //     остров маленький и перевёрстывать ему нечего.
-#include <windows.h>
+#include "platform.h"
 
 #include <DispatcherQueue.h>
 #include <MddBootstrap.h>
@@ -26,10 +26,6 @@
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Composition.Desktop.h>
 #include <winrt/Windows.UI.Composition.h>
-
-// GetCurrentTime из windows.h — макрос, который иначе подставился бы прямо в
-// объявление Storyboard::GetCurrentTime; тот же приём, что в pch песочницы.
-#undef GetCurrentTime
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Content.h>
 #include <winrt/Microsoft.UI.Dispatching.h>

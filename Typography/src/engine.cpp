@@ -15,7 +15,6 @@
 // отдельно, дал бы другой ответ на своих краях.
 
 #include <algorithm>
-#include <cmath>
 #include <format>
 #include <stdexcept>
 #include <map>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "platform.h"
 
 #include "async.h"
 #include "signals.h"

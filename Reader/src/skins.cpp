@@ -1,5 +1,3 @@
-#include <algorithm>
-#include <cmath>
 #include <utility>
 
 // Заголовки проекта после стандартных: store.h несёт импорт, после которого

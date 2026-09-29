@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "platform.h"
 
 // Импорт после заголовков — правило проекта.
 import wxl.core;

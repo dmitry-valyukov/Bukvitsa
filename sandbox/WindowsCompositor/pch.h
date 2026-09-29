@@ -4,6 +4,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+// GetCurrentTime() из windows.h (WinBase.h; разворачивается в GetTickCount())
+// иначе подставляется прямо в объявление Storyboard::GetCurrentTime из
+// Xaml.Media.
+#undef GetCurrentTime
 #include <dwmapi.h>
 #include <DispatcherQueue.h>
 #include <unknwn.h>
@@ -24,10 +28,5 @@
 #include <winrt/Windows.UI.Composition.Desktop.h>
 #include <winrt/Windows.Foundation.Collections.h>
 
-// GetCurrentTime() из windows.h (WinBase.h; разворачивается в GetTickCount())
-// иначе подставляется прямо в объявление Storyboard::GetCurrentTime из
-// Xaml.Media -- см. wxl/sandbox/live_app_activation.cpp, тот же приём (там
-// же ссылка на исходный WxlApp1/pch.h).
-#undef GetCurrentTime
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <windows.ui.composition.interop.h>
