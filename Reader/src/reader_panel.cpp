@@ -559,7 +559,7 @@ void ReaderPanel::refreshThemes() {
 
     // Индексы тем сквозные: сперва встроенные, затем обложки — ровно так их
     // считает и полоса набора. markTheme() ходит по кнопкам тем же счётом.
-    auto themeButton = [this](std::wstring_view caption, int index, Thickness margin) {
+    auto themeButton = [this](zstring_view caption, int index, Thickness margin) {
         return Button{
             caption,
             fontSize = 13,
@@ -597,7 +597,7 @@ void ReaderPanel::refreshThemes() {
     //
     // Кнопка без текста обязана иметь тултип (правило дизайна) — и он
     // называет конкретную обложку, а не действие вообще.
-    auto iconButton = [](std::wstring_view glyph, const std::wstring& tip, auto action) {
+    auto iconButton = [](zstring_view glyph, const std::wstring& tip, auto action) {
         return Button{
             glyph,
             fontFamily = FontFamily{L"Segoe Fluent Icons"},
