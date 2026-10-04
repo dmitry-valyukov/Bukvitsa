@@ -72,7 +72,7 @@ const EdgeCurve& SkinWizard::curve(int index) const {
     return const_cast<SkinWizard*>(this)->curve(index);
 }
 
-Button SkinWizard::overlayButton(std::wstring_view caption, float tall, float kegel, bool cancel,
+Button SkinWizard::overlayButton(zstring_view caption, float tall, float kegel, bool cancel,
                                  void (SkinWizard::*handler)()) {
     using namespace wxl::dsl;
 

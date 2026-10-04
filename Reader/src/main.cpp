@@ -1055,7 +1055,9 @@ wxl::Teardown wxl_launched() {
     saveTimer.isRepeating(false);
 
     auto const rememberWindow = [io, window, settings] {
-        settings->windowPlacement = window.placement();
+        // Место отдаётся строкой WinRT; к нам она приходит чужим текстом, и
+        // проверенным становится так же, как любой другой чужой.
+        settings->windowPlacement = std::wstring(unicode::repaired(window.placement()).wchars());
         io->spawn(saveSettingsLater(*io, *settings));
     };
 
