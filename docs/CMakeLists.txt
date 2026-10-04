@@ -32,26 +32,25 @@ wxl_add_doxygen_site(docs_wxl
     TAGFILE      "${CMAKE_BINARY_DIR}/docs/wxl.tag"
     # Список повторяет INPUT из wxl/docs/CMakeLists.txt и обязан за ним следовать:
     # новый модуль там, забытый здесь, роняет сборку сайта не отсутствием страниц,
-    # а неразрешимой ссылкой на них из index.md -- и только у Буквицы.
+    # а неразрешимой ссылкой на них из index.md -- и только у Буквицы; каталог,
+    # убранный там и оставшийся здесь, останавливает Doxygen предупреждением о
+    # несуществующем входе.
     INPUT
         "${BUKVITSA_WXL_ROOT}/docs"
         "${BUKVITSA_WXL_ROOT}/wxl.core/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.core/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.core/readme.md"
         "${BUKVITSA_WXL_ROOT}/wxl.fmt/src"
         "${BUKVITSA_WXL_ROOT}/wxl.fmt/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.fmt/README.md"
         "${BUKVITSA_WXL_ROOT}/wxl.async/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.async/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.logging/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.logging/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.xml/src"
+        "${BUKVITSA_WXL_ROOT}/wxl.json/src"
         "${BUKVITSA_WXL_ROOT}/wxl.html/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.html/doc"
         "${BUKVITSA_WXL_ROOT}/wxl.bb/src"
         "${BUKVITSA_WXL_ROOT}/wxl.rsdn/src"
+        "${BUKVITSA_WXL_ROOT}/wxl.highlight/src"
         "${BUKVITSA_WXL_ROOT}/wxl.ui/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.ui/doc"
     EXCLUDE
         "*/tests/*"
         "*/test/*"
