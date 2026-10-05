@@ -773,9 +773,13 @@ wxl::Teardown wxl_launched() {
         } catch (const system_exception& failure) {
             complain(::GetActiveWindow(), L"Не удалось выполнить операцию с файлом.", failure);
         } catch (const std::exception& failure) {
-            const u16_text reason = unicode::repaired(failure.what()).to_utf16();
-            ::MessageBoxW(::GetActiveWindow(), (L"Ошибка:\n" + std::wstring(reason.wchars())).c_str(),
-                          L"Буквица", MB_OK | MB_ICONWARNING);
+            // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
+            // проверяется, а не принимается на веру.
+            const std::optional<u8_view> text = unicode::checked(std::string_view(failure.what()));
+            const std::wstring reason =
+                text ? std::wstring(text->to_utf16().wchars()) : L"(сообщение не в UTF-8)";
+            ::MessageBoxW(::GetActiveWindow(), (L"Ошибка:\n" + reason).c_str(), L"Буквица",
+                          MB_OK | MB_ICONWARNING);
         } catch (...) {
             ::MessageBoxW(::GetActiveWindow(), L"Неизвестная ошибка.", L"Буквица", MB_OK | MB_ICONWARNING);
         }
