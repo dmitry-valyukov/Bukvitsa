@@ -6,15 +6,26 @@ namespace bukvitsa::reader {
 
 using Microsoft::WRL::ComPtr;
 
-ComPtr<IWICFormatConverter> decodeImage(const std::filesystem::path& path) {
+ComPtr<IWICFormatConverter> decodeImage(std::string_view bytes) {
+    if (bytes.empty()) return nullptr;
+
     ComPtr<IWICImagingFactory> wic;
     if (FAILED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_PPV_ARGS(&wic))))
         return nullptr;
 
+    // Поток поверх памяти вызывающего, без копии: WIC обещает в неё не писать,
+    // а неконстантный указатель просит по сигнатуре.
+    ComPtr<IWICStream> stream;
+    if (FAILED(wic->CreateStream(&stream))) return nullptr;
+    if (FAILED(stream->InitializeFromMemory(
+            reinterpret_cast<BYTE*>(const_cast<char*>(bytes.data())),
+            static_cast<DWORD>(bytes.size()))))
+        return nullptr;
+
     ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                              WICDecodeMetadataCacheOnLoad, &decoder)))
+    if (FAILED(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad,
+                                            &decoder)))
         return nullptr;
 
     ComPtr<IWICBitmapFrameDecode> frame;

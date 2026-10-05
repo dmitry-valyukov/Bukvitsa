@@ -20,7 +20,6 @@ wxl_add_executable(Reader
     src/note_popup.cpp
     src/book_index.cpp
     src/imaging.cpp
-    src/io.cpp
     src/library.cpp
     src/settings.cpp
     src/skins.cpp
@@ -31,7 +30,6 @@ wxl_add_executable(Reader
     src/book_view.h
     src/file_dialog.h
     src/imaging.h
-    src/io.h
     src/library.h
     src/library_screen.h
     src/reader_panel.h
@@ -49,7 +47,7 @@ wxl_add_executable(Reader
 
 # bukvitsa::typography тянет за собой bukvitsa::fb3, DirectWrite и Direct2D:
 # страницу читалка рисует своими глифами, и рисует их та же вёрстка, что их
-# разложила. wxl::async — петля ввода-вывода и корутины (io.h), wxl::xml и
+# разложила. wxl::async — операции с файлами и корутины сценариев (main.cpp), wxl::xml и
 # wxl::fmt — файлы читалки. windowscodecs -- декодирование картинок книги
 # (WIC), dxguid -- CLSID встроенных эффектов D2D (изгиб страницы на подложке).
 target_link_libraries(Reader PRIVATE
