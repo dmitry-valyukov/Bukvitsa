@@ -133,8 +133,7 @@ if(NOT TARGET wxl::fmt)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.fmt/src" "${CMAKE_BINARY_DIR}/wxl.fmt" EXCLUDE_FROM_ALL)
 endif()
 
-# wxl.async — петля ввода-вывода и корутины читалки (Reader/src/io.h); тот же
-# модуль берёт черновик асинхронной схемы в sandbox/.
+# wxl.async — операции с файлами и корутины сценариев читалки (Reader/src/main.cpp).
 if(NOT TARGET wxl::async)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.async/src" "${CMAKE_BINARY_DIR}/wxl.async" EXCLUDE_FROM_ALL)
 endif()
@@ -202,13 +201,6 @@ add_subdirectory(MathML)
 add_subdirectory(Typography)
 if(WIN32)
     add_subdirectory(Reader)
-endif()
-
-# Черновики. В сборке — потому что черновик, который не собирается, ничего не
-# проверяет: отдельной цели, которую надо назвать явно, для этого хватает.
-add_subdirectory(sandbox/AsyncScheme)
-if(WIN32)
-    add_subdirectory(sandbox/IslandProbe)
 endif()
 
 # ---- Документация ----
