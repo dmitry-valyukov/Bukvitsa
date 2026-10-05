@@ -221,7 +221,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                 column = 1,
                 vAlign.center,
                 TextBlock{
-                    entry.title.wchars(),
+                    entry.title,
                     fontSize = 18,
                     FontWeight{600},
                     foreground = SolidColorBrush{kInk},
@@ -230,7 +230,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                     textTrimming.characterEllipsis,
                 },
                 TextBlock{
-                    entry.authors.wchars(),
+                    entry.authors,
                     fontSize = 14,
                     foreground = SolidColorBrush{kDim},
                     Margin{0, 4, 0, 0},

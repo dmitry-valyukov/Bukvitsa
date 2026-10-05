@@ -28,7 +28,7 @@ constexpr double kWidth = 380;
 /// Подпись над группой настроек: тише текста и с отбивкой сверху. Не лямбда
 /// внутри одного строителя, потому что групп теперь две и собирают их разные
 /// функции — вкладка «Вид» и пересборка списка тем.
-TextBlock groupCaption(std::wstring_view said) {
+TextBlock groupCaption(zstring_view said) {
     using namespace wxl::dsl;
 
     return TextBlock{
@@ -184,7 +184,7 @@ void ReaderPanel::slide(Visual& visual, float x) {
     visual.startAnimation(L"Translation", animation);
 }
 
-Button ReaderPanel::tabButton(std::wstring_view caption, Tab tab) {
+Button ReaderPanel::tabButton(zstring_view caption, Tab tab) {
     using namespace wxl::dsl;
 
     return Button{
@@ -201,7 +201,7 @@ Button ReaderPanel::tabButton(std::wstring_view caption, Tab tab) {
     };
 }
 
-Button ReaderPanel::listItem(std::wstring_view caption, std::wstring_view under, float indent,
+Button ReaderPanel::listItem(zstring_view caption, zstring_view under, float indent,
                              std::function<void()> action) {
     using namespace wxl::dsl;
 
@@ -476,7 +476,9 @@ void ReaderPanel::fillContents() {
     for (const ContentsEntry& entry : contents) {
         const uint32_t offset = entry.charOffset;
         contentsList_.value().children().append(
-            listItem(entry.title.wchars(), {}, std::min<float>(entry.level, 4) * 14.0f,
+            // Заголовок оглавления — вид в текст блока, без нуля за ним: в разметку
+            // он идёт строкой WinRT, которую мы и делаем сами.
+            listItem(hstring{entry.title}, {}, std::min<float>(entry.level, 4) * 14.0f,
                      [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
@@ -494,7 +496,7 @@ void ReaderPanel::fillBookmarks() {
     for (const Bookmark& mark : state_->bookmarks) {
         const uint32_t offset = mark.charOffset;
         bookmarkList_.value().children().append(
-            listItem(mark.hint.empty() ? L"Закладка" : mark.hint.wchars(), {}, 0,
+            listItem(mark.hint.empty() ? zstring_view{L"Закладка"} : zstring_view{mark.hint}, {}, 0,
                      [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
@@ -519,7 +521,7 @@ void ReaderPanel::runSearch() {
     for (const SearchHit& hit : hits) {
         const uint32_t offset = hit.charOffset;
         searchList_.value().children().append(
-            listItem(hit.context.wchars(), {}, 0, [this, offset] { view_.goToCharOffset(offset); }));
+            listItem(hit.context, {}, 0, [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
 
@@ -557,7 +559,7 @@ void ReaderPanel::refreshThemes() {
 
     // Индексы тем сквозные: сперва встроенные, затем обложки — ровно так их
     // считает и полоса набора. markTheme() ходит по кнопкам тем же счётом.
-    auto themeButton = [this](std::wstring_view caption, int index, Thickness margin) {
+    auto themeButton = [this](zstring_view caption, int index, Thickness margin) {
         return Button{
             caption,
             fontSize = 13,
@@ -595,7 +597,7 @@ void ReaderPanel::refreshThemes() {
     //
     // Кнопка без текста обязана иметь тултип (правило дизайна) — и он
     // называет конкретную обложку, а не действие вообще.
-    auto iconButton = [](std::wstring_view glyph, const std::wstring& tip, auto action) {
+    auto iconButton = [](zstring_view glyph, const std::wstring& tip, auto action) {
         return Button{
             glyph,
             fontFamily = FontFamily{L"Segoe Fluent Icons"},

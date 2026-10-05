@@ -18,11 +18,12 @@ endif()
 
 set(BUKVITSA_WXL_CMAKE_DIR "${BUKVITSA_WXL_ROOT}/cmake")
 
-# vcpkg — ради cppwinrt, из которого собрана проекция WinUI 3 под wxl.ui,
-# и ради fmt, которым форматирует wxl.core. Тоже до project(), потому что
-# ставит CMAKE_TOOLCHAIN_FILE, а его после первого project() уже никто не
-# читает. Манифеста у Буквицы нет: из всего пакета берутся эти два, и оба —
-# по требованию wxl, а не её собственному.
+# vcpkg — ради cppwinrt, из которого собрана проекция WinUI 3 под wxl.ui.
+# Тоже до project(), потому что ставит CMAKE_TOOLCHAIN_FILE, а его после
+# первого project() уже никто не читает. Манифеста у Буквицы нет: из всего
+# пакета берётся он один, и тот по требованию wxl, а не её собственному.
+# fmt wxl.fmt приносит сама, модулем из своих исходников (FetchContent), —
+# поэтому первая настройка дерева ходит в сеть.
 include("${BUKVITSA_WXL_CMAKE_DIR}/vcpkg_bootstrap.cmake")
 
 include("${BUKVITSA_WXL_CMAKE_DIR}/wxl_import_std_gate.cmake")
@@ -132,9 +133,8 @@ if(NOT TARGET wxl::fmt)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.fmt/src" "${CMAKE_BINARY_DIR}/wxl.fmt" EXCLUDE_FROM_ALL)
 endif()
 
-# wxl.async — ради черновика асинхронной схемы в sandbox/. Читалка его пока не
-# линкует, поэтому EXCLUDE_FROM_ALL здесь не формальность: без цели, которая
-# его назвала, он и не собирается.
+# wxl.async — петля ввода-вывода и корутины читалки (Reader/src/io.h); тот же
+# модуль берёт черновик асинхронной схемы в sandbox/.
 if(NOT TARGET wxl::async)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.async/src" "${CMAKE_BINARY_DIR}/wxl.async" EXCLUDE_FROM_ALL)
 endif()
@@ -158,8 +158,9 @@ endif()
 # wxl.ui — проекция WinUI 3, на которой стоит Reader. Здесь, в отличие от
 # тех, что выше, берётся корневой CMakeLists модуля: он и есть весь модуль, а
 # генератор с его winmd и FetchContent живёт отдельной целью в дереве wxl и
-# сюда не приезжает. Собирается из профиля rich, уже выпущенного в
-# wxl.ui/src/generated — сборка генератор не запускает, это отдельный шаг.
+# сюда не приезжает. Собирается из профиля full, уже выпущенного в
+# wxl.ui/src/wxl дерева wxl, — сборка генератор не запускает, это отдельный
+# шаг там (`winui-srcgen --profile wxl.gen/profiles/full.json`).
 if(WIN32 AND NOT TARGET wxl::ui)
     add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.ui" "${CMAKE_BINARY_DIR}/wxl.ui" EXCLUDE_FROM_ALL)
 endif()

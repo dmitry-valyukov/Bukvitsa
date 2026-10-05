@@ -644,10 +644,9 @@ wxl::Teardown wxl_launched() {
     // загрузка идёт тем же устройством Win2D и не падает.
     window.backgroundAsync(exeDirectory() / L"Assets/splash-screen-1k.png");
 
-    // Ввод-вывод поднимается сразу за окном: раньше нельзя (нужна его очередь),
-    // позже незачем (первое, что делает приложение, — читает настройки).
+    // Петля ввода-вывода уже идёт: её поднимает wxl до того, как позвать нас.
+    // Здесь только операции и присмотр за корутинами.
     auto io = std::make_shared<Io>();
-    io->start(window.dispatcherQueue());
 
     auto screen = std::make_shared<StartScreen>(window.chromeCompositor());
     auto view = std::make_shared<BookView>(window);
@@ -1055,7 +1054,9 @@ wxl::Teardown wxl_launched() {
     saveTimer.isRepeating(false);
 
     auto const rememberWindow = [io, window, settings] {
-        settings->windowPlacement = window.placement();
+        // Место отдаётся строкой WinRT; к нам она приходит чужим текстом, и
+        // проверенным становится так же, как любой другой чужой.
+        settings->windowPlacement = std::wstring(unicode::repaired(window.placement()).wchars());
         io->spawn(saveSettingsLater(*io, *settings));
     };
 
@@ -1100,9 +1101,9 @@ wxl::Teardown wxl_launched() {
     // WM_NCDESTROY и в захвате не нуждается. Пул STA не наш: его строит и
     // держит сама wxl в своей точке входа, и второй такой падает.
     //
-    // Рабочий поток останавливается здесь же: очередь интерфейсного к этому
-    // моменту уже не принимает заданий, и операции, не успевшие вернуться,
-    // возобновлять некому и незачем.
+    // Петлю ввода-вывода wxl гасит уже после этого обработчика; здесь
+    // отпускаются корутины, не дождавшиеся ответа: возобновлять их некому
+    // и незачем.
     return [io, screen, shelf, view, library, settings, skins, wizard, saveTimer, positionTimer,
             splashTimer](TeardownReason) { io->stop(); };
 }
