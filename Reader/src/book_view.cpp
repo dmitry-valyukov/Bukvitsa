@@ -693,8 +693,9 @@ void BookView::setSkins(std::vector<Skin> skins) {
     if (theme_ >= themeCount()) theme_ = 0;
 
     // Пересохранённая обложка могла сменить и снимок, и кривые.
-    backdropLoaded_.clear();
+    backdropWanted_.clear();
     backdropSource_.Reset();
+    backdropBytes_.clear();
     photoBitmap_.Reset();
     warpMap_.Reset();
     warpFlat_ = false;
@@ -2010,20 +2011,36 @@ const fb3::Node* BookView::noteAt(Point point, Point& anchor) const {
 void BookView::updateBackdrop() {
     const std::filesystem::path wanted = backdropFile();
     if (wanted.empty()) {
+        backdropWanted_.clear();
         backdropSource_.Reset();
+        backdropBytes_.clear();
         photoBitmap_.Reset();
-        backdropLoaded_.clear();
         return;
     }
 
-    // Раскодированный снимок держится, пока путь тот же: decodeImage читает диск
-    // и дорог. Смена снимка сбрасывает и кэш битмапа устройства — его заведёт
-    // заново drawThemeBackdrop, вкомпоновывая фото прямо в поверхность страницы.
-    if (backdropLoaded_ != wanted.native()) {
-        backdropSource_ = decodeImage(wanted);
-        backdropLoaded_ = wanted.native();
+    // Снимок держится, пока путь тот же: читать и раскодировать его заново на
+    // каждую смену темы незачем. Смена пути отпускает прежний снимок и кэш
+    // битмапа устройства — его заведёт заново drawThemeBackdrop, вкомпоновывая
+    // фото прямо в поверхность страницы — и заказывает новый у владельца; до
+    // его прихода страница рисуется бумагой темы.
+    if (backdropWanted_ != wanted.native()) {
+        backdropWanted_ = wanted.native();
+        backdropSource_.Reset();
+        backdropBytes_.clear();
         photoBitmap_.Reset();
+        if (onBackdropNeeded) onBackdropNeeded(wanted);
     }
+}
+
+void BookView::setBackdrop(const std::filesystem::path& file, std::string bytes) {
+    if (file.native() != backdropWanted_) return;   // пока читали, захотели другое
+
+    // Сначала отпустить снимок, потом сменить байты: он читает из них.
+    backdropSource_.Reset();
+    backdropBytes_ = std::move(bytes);
+    backdropSource_ = decodeImage(backdropBytes_);
+    photoBitmap_.Reset();
+    redraw();
 }
 
 bool BookView::ensureWarp(ID2D1DeviceContext* context) {

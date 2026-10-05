@@ -1,12 +1,10 @@
 #include <algorithm>
 
 #include <d2d1_1.h>
-#include <wincodec.h>
 
 // Заголовки проекта после стандартных. Свой первым.
 #include "skin_wizard.h"
 
-#include "imaging.h"
 
 namespace bukvitsa::reader {
 
@@ -273,25 +271,17 @@ void SkinWizard::buildTree() {
     root_ = tree;
 }
 
-bool SkinWizard::openNew(std::filesystem::path image) {
-    // Проверка снимка — здесь, чтобы не входить в мастер с пустой подложкой:
-    // рисовать его будет полоса, но отказ она глотает молча.
-    if (!decodeImage(image)) return false;
-
+void SkinWizard::openNew(std::filesystem::path image) {
     image_ = std::move(image);
     skin_ = defaultSkin();
     dragging_ = false;
     namePanel_.value().visibility(Visibility::Collapsed);
 
     redraw();
-    return true;
 }
 
-bool SkinWizard::openEdit(const Skin& skin) {
-    std::filesystem::path image = skinImagePath(skin);
-    if (!decodeImage(image)) return false;
-
-    image_ = std::move(image);
+void SkinWizard::openEdit(const Skin& skin) {
+    image_ = skinImagePath(skin);
     skin_ = skin;
     dragging_ = false;
     namePanel_.value().visibility(Visibility::Collapsed);
@@ -308,7 +298,6 @@ bool SkinWizard::openEdit(const Skin& skin) {
     }
 
     redraw();
-    return true;
 }
 
 void SkinWizard::show() {

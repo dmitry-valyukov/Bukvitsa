@@ -116,19 +116,19 @@ struct App {
 
 /// Пишет настройки. Копией, а не ссылкой: между co_await читатель успеет
 /// поменять что-нибудь ещё, и на диск должно уйти то, что решили писать.
-task saveSettingsLater(Io& io, Settings settings) {
+task<> saveSettingsLater(Io& io, Settings settings) {
     co_await io.writeFile(settingsPath(), settingsXml(settings));
 }
 
 /// Пишет состояние книги: место чтения и закладки.
-task saveStateLater(Io& io, std::wstring guid, BookState state) {
+task<> saveStateLater(Io& io, std::wstring guid, BookState state) {
     if (guid.empty()) co_return;
 
     co_await io.writeFile(statePath(guid), bookStateXml(state));
 }
 
 /// Пишет реестр.
-task saveLibraryLater(Io& io, std::string xml) {
+task<> saveLibraryLater(Io& io, std::string xml) {
     co_await io.writeFile(libraryPath(), std::move(xml));
 }
 
@@ -138,7 +138,7 @@ task saveLibraryLater(Io& io, std::string xml) {
 /// Это и есть «библиотека наполняется по мере чтения»: карточки встают сразу,
 /// а «прочитано 42%» проступает на каждой, как только её файл прочитан. Полка
 /// с сотней книг не ждёт сотни обращений к диску, чтобы показать первую.
-task fillProgress(Io& io, std::shared_ptr<LibraryScreen> shelf, std::vector<BookEntry> books) {
+task<> fillProgress(Io& io, std::shared_ptr<LibraryScreen> shelf, std::vector<BookEntry> books) {
     for (const BookEntry& book : books) {
         if (book.characterCount == 0) continue;   // не открывалась -- и читать нечего
 
@@ -164,7 +164,7 @@ task fillProgress(Io& io, std::shared_ptr<LibraryScreen> shelf, std::vector<Book
 /// Разбирается при этом `fb3::Document`, а не `Book`: реестру нужны метаданные
 /// и обложка, а движок вёрстки с пагинатором книге, которую никто не открывал,
 /// ни к чему.
-task addFolderFlow(App app, std::filesystem::path folder, std::function<void()> showLibrary) {
+task<> addFolderFlow(App app, std::filesystem::path folder, std::function<void()> showLibrary) {
     Io& io = *app.io;
 
     // Полка -- прежде обхода: читатель, добавивший каталог, должен видеть, как
@@ -222,7 +222,7 @@ task addFolderFlow(App app, std::filesystem::path folder, std::function<void()> 
 
 /// Сохраняет обложку из мастера: копия снимка, запись реестра, немедленное
 /// применение — сохранённая обложка тут же становится текущей темой.
-task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
+task<> saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
                   std::function<void()> leaveWizard) {
     Io& io = *app.io;
 
@@ -271,6 +271,33 @@ task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
     leaveWizard();
 }
 
+/// Приносит полосе снимок подложки, который она заказала: байты файла читает
+/// рабочий поток, раскодирует их полоса у себя. Файла нет — полоса остаётся
+/// при бумаге темы, как прежде оставалась при неудачном раскодировании.
+task<> loadBackdropFlow(App app, std::filesystem::path file) {
+    std::optional<std::string> bytes = co_await app.io->readFile(file);
+
+    if (bytes) app.view->setBackdrop(file, std::move(*bytes));
+}
+
+/// Проверяет снимок перед мастером обложек: читает файл через `Io` и пробует
+/// раскодировать его как картинку. Годится — `proceed`, нет — `reject` с
+/// путём. Прежде это делал сам мастер, читая диск в потоке окна; теперь ему
+/// достаётся путь уже проверенного снимка, а байты для показа полоса закажет
+/// у loadBackdropFlow сама: второе чтение того же файла дешевле, чем нести
+/// байты через мастер в полосу.
+task<> checkImageFlow(App app, std::filesystem::path image, std::function<void()> proceed,
+                      std::function<void(std::filesystem::path)> reject) {
+    const std::optional<std::string> bytes = co_await app.io->readFile(image);
+
+    if (!bytes || !decodeImage(*bytes)) {
+        reject(std::move(image));
+        co_return;
+    }
+
+    proceed();
+}
+
 /// Убрать обложку из реестра и из полосы тем.
 ///
 /// **Снимок при этом остаётся лежать в `skins\`.** Копия картинки не
@@ -284,7 +311,7 @@ task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
 /// за удаляемой сдвигаются, и «остаться на своей» значит найти её заново.
 /// Удалили ту, что была на экране, — читатель возвращается на встроенную
 /// тему, номер которой читалка держит в настройках ровно на этот случай.
-task deleteSkinFlow(App app, std::wstring name) {
+task<> deleteSkinFlow(App app, std::wstring name) {
     Io& io = *app.io;
 
     if (!app.skins->find(name)) co_return;   // реестр успел перемениться под руками
@@ -329,7 +356,7 @@ task deleteSkinFlow(App app, std::wstring name) {
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого
 /// пути. Протух — спрашиваем реестр по guid; нет и там — читателю нечего
 /// продолжать, и он хотел открыть книгу.
-task continueReading(Io& io, std::shared_ptr<Settings> settings, std::shared_ptr<Library> library,
+task<> continueReading(Io& io, std::shared_ptr<Settings> settings, std::shared_ptr<Library> library,
                      std::shared_ptr<WarmBook> warm,
                      std::function<void(std::filesystem::path)> openBook,
                      std::function<void()> addBook) {
@@ -375,7 +402,7 @@ task continueReading(Io& io, std::shared_ptr<Settings> settings, std::shared_ptr
 /// Разбор идёт в интерфейсном потоке, как и в openBookFlow, и иначе нельзя:
 /// память разбора берётся из STA-пула, а он чужого потока не терпит. Поток на
 /// это время занят — но занят он до нажатия, а не после.
-task warmBookFlow(App app, std::filesystem::path path) {
+task<> warmBookFlow(App app, std::filesystem::path path) {
     // Не const: байты уходят в книгу перемещением (см. openBookFlow).
     std::optional<std::string> bytes = co_await app.io->readFile(path);
 
@@ -430,7 +457,7 @@ void revealBook(App const& app) {
 /// Две короткие дороги в начале: книга уже открыта (читатель вернулся к ней) —
 /// показать; книга прогрета (warmBookFlow) — взять её из памяти и не трогать
 /// диск.
-task openBookFlow(App app, std::filesystem::path path) {
+task<> openBookFlow(App app, std::filesystem::path path) {
     Io& io = *app.io;
 
     // Эта книга уже открыта — читатель просто вернулся к ней со стартового
@@ -522,7 +549,7 @@ task openBookFlow(App app, std::filesystem::path path) {
 /// потом переставить -- значит показать читателю прыжок. Ждать при этом нечего:
 /// файл настроек читает рабочий поток, а этот тем временем уже крутит цикл
 /// сообщений.
-task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
+task<> startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
                  std::function<void(std::filesystem::path)> openBook,
                  std::function<void()> showStartScreen,
                  std::function<void(std::filesystem::path)> warmBook) {
@@ -816,6 +843,11 @@ wxl::Teardown wxl_launched() {
     // нет: у страницы книги нет ни полосы меню, ни кнопок — и не должно быть.
     view->onPanelRequested = [panel] { panel->toggle(); };
 
+    // Снимок подложки полоса заказывает, а не читает: диск — только через Io.
+    view->onBackdropNeeded = [io, app](std::filesystem::path file) {
+        io->spawn(loadBackdropFlow(app, std::move(file)));
+    };
+
     // Сохранить настройки вида по текущему состоянию полосы. Одна лямбда на два
     // источника: панель зовёт её из своих ползунков, а сама полоса — из
     // Ctrl+колеса и клавиш ±/0/T (onReadingSettingsChanged), чтобы правки в
@@ -863,22 +895,24 @@ wxl::Teardown wxl_launched() {
                       MB_OK | MB_ICONWARNING);
     };
 
-    panel->onAddSkin = [window, wizard, closePanel, badImage, previewSkin] {
+    panel->onAddSkin = [window, io, app, wizard, closePanel, badImage, previewSkin] {
         std::filesystem::path const path = askForImage(window.handle());
 
         if (path.empty()) return;
 
-        if (!wizard->openNew(path)) {
-            badImage(path);
-            return;
-        }
-
-        closePanel();
-        wizard->show();
-        previewSkin();
+        io->spawn(checkImageFlow(
+            app, path,
+            [wizard, path, closePanel, previewSkin] {
+                wizard->openNew(path);
+                closePanel();
+                wizard->show();
+                previewSkin();
+            },
+            badImage));
     };
 
-    panel->onEditSkin = [view, wizard, closePanel, badImage, previewSkin](std::wstring skinName) {
+    panel->onEditSkin = [io, app, view, wizard, closePanel, badImage,
+                         previewSkin](std::wstring skinName) {
         // По полному списку полосы, а не по реестру: системные обложки живут
         // только в нём, а шестерёнка есть и у них — правка «на основе».
         const Skin* known = nullptr;
@@ -890,14 +924,19 @@ wxl::Teardown wxl_launched() {
         }
         if (!known) return;   // список успел перемениться под руками
 
-        if (!wizard->openEdit(*known)) {
-            badImage(skinImagePath(*known));
-            return;
-        }
+        // Копия, а не указатель: пока снимок читают, список полосы может
+        // перемениться, и указатель в него протухнет.
+        const Skin skin = *known;
 
-        closePanel();
-        wizard->show();
-        previewSkin();
+        io->spawn(checkImageFlow(
+            app, skinImagePath(skin),
+            [wizard, skin, closePanel, previewSkin] {
+                wizard->openEdit(skin);
+                closePanel();
+                wizard->show();
+                previewSkin();
+            },
+            badImage));
     };
 
     // Удаление спрашивает: точки по снимку читатель расставлял руками, вернуть
@@ -923,17 +962,19 @@ wxl::Teardown wxl_launched() {
 
     wizard->onCurvesChanged = previewSkin;
 
-    wizard->onChooseAnother = [window, wizard, badImage, previewSkin] {
+    wizard->onChooseAnother = [window, io, app, wizard, badImage, previewSkin] {
         std::filesystem::path const path = askForImage(window.handle());
 
         // Отказался — остаёмся на прежнем снимке: читатель ничего не терял.
         if (path.empty()) return;
 
-        if (!wizard->openNew(path)) {
-            badImage(path);
-            return;
-        }
-        previewSkin();
+        io->spawn(checkImageFlow(
+            app, path,
+            [wizard, path, previewSkin] {
+                wizard->openNew(path);
+                previewSkin();
+            },
+            badImage));
     };
 
     wizard->onExit = leaveWizard;

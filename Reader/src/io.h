@@ -68,7 +68,7 @@ public:
     /// возобновляет их wxl у себя, и другого места, где читалка узнаёт об их
     /// конце без опроса, нет. Кадр кончившейся корутины до следующего
     /// `spawn` — это несколько слов памяти, не ресурс.
-    void spawn(wxl::async::task&& work);
+    void spawn(wxl::async::task<>&& work);
 
     // ---- операции ------------------------------------------------------
     //
@@ -90,9 +90,6 @@ public:
     /// Есть ли такой файл. Каталог -- не файл и отвечает `false`.
     wxl::async::awaitable<bool> fileExists(const std::filesystem::path& path);
 
-    /// Размер файла, или ноль, если его не удалось узнать.
-    wxl::async::awaitable<uint64_t> fileSize(const std::filesystem::path& path);
-
     /// Всё, что лежит в каталоге по маске (`L"*.fb3"`), одной порцией.
     wxl::async::awaitable<std::vector<DirectoryEntry>> list(const std::filesystem::path& directory,
                                                            std::wstring_view mask);
@@ -102,7 +99,7 @@ private:
     /// интерфейсному потоку.
     void collect();
 
-    std::vector<wxl::async::task> running_;
+    std::vector<wxl::async::task<>> running_;
 };
 
 /// Путь читалки, переведённый в путь пула. Строится в интерфейсном потоке --
