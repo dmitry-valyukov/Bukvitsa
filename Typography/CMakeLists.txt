@@ -16,8 +16,10 @@ target_include_directories(bukvitsa_typography PUBLIC
 
 target_link_libraries(bukvitsa_typography PUBLIC bukvitsa::fb3)
 
-# wxl::core — только внутри: обход кодовых точек книги при развороте в блоки.
-target_link_libraries(bukvitsa_typography PRIVATE wxl::core)
+# wxl::core — в интерфейсе: block.h импортирует wxl.core ради u16_text в
+# абзаце, и всякий, кто подключает заголовки вёрстки, компилирует этот
+# импорт сам.
+target_link_libraries(bukvitsa_typography PUBLIC wxl::core)
 
 # MicroTeX — только внутри: наружу formula.h отдаёт Formula и FormulaEngine,
 # ни одного имени tex:: в публичных заголовках нет.

@@ -68,7 +68,7 @@ private:
 
     /// Кнопка карточки мастера. Главную от прочих отличают высота и кегль,
     /// кнопку отмены — чуть более серое лицо, как на стартовом экране.
-    wxl::Button overlayButton(std::wstring_view caption, float tall, float kegel, bool cancel,
+    wxl::Button overlayButton(zstring_view caption, float tall, float kegel, bool cancel,
                               void (SkinWizard::*handler)());
 
     /// Кривая по номеру: верхняя и нижняя. Номер и есть память о том, какую

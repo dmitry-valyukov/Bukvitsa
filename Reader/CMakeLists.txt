@@ -1,13 +1,16 @@
 # Reader — читалка на wxl.ui.
 #
-# Линкуется с wxl::ui и больше ни с чем из wxl: доступ к декларативной
-# поверхности не должен стоить приложению разбора проекции cppwinrt, и
-# отсутствие её include-пути здесь — то, что это гарантирует.
+# Объявляется так же, как всякое приложение на wxl: `wxl_add_executable`
+# делает исполняемый файл оконным (его точка входа wWinMain живёт в самой
+# wxl), линкует wxl::ui и кладёт рядом с ним всё, что wxl нужно во время
+# выполнения, — загрузчик Windows App Runtime, Win2D, WebView2Loader. Манифест
+# остаётся свой: он назван Bukvitsa.Reader, и wxl свой не выписывает.
 #
-# WIN32 делает исполняемый файл оконным, а оконным его точкой входа
-# становится wWinMain, который живёт в самой wxl.
+# Доступ к декларативной поверхности не должен стоить приложению разбора
+# проекции cppwinrt, и отсутствие её include-пути здесь — то, что это
+# гарантирует.
 
-add_executable(Reader WIN32
+wxl_add_executable(Reader
     src/main.cpp
     src/start_screen.cpp
     src/book.cpp
@@ -46,10 +49,10 @@ add_executable(Reader WIN32
 
 # bukvitsa::typography тянет за собой bukvitsa::fb3, DirectWrite и Direct2D:
 # страницу читалка рисует своими глифами, и рисует их та же вёрстка, что их
-# разложила. windowscodecs -- декодирование картинок книги (WIC),
-# dxguid -- CLSID встроенных эффектов D2D (изгиб страницы на подложке).
+# разложила. wxl::async — петля ввода-вывода и корутины (io.h), wxl::xml и
+# wxl::fmt — файлы читалки. windowscodecs -- декодирование картинок книги
+# (WIC), dxguid -- CLSID встроенных эффектов D2D (изгиб страницы на подложке).
 target_link_libraries(Reader PRIVATE
-    wxl::ui
     wxl::async
     wxl::xml
     wxl::core
@@ -64,48 +67,9 @@ target_link_libraries(Reader PRIVATE
 bukvitsa_consumes_wxl(Reader)
 
 # Путь без схемы разрешается рядом с исполняемым файлом, поэтому ресурсы
-# должны там лежать — копируются на каждой сборке, потому что правка картинки
-# не повод перелинковывать.
-add_custom_command(TARGET Reader POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/Assets" "$<TARGET_FILE_DIR:Reader>/Assets"
-    COMMENT "Копирование ресурсов рядом с Reader")
-
-# Загрузчик Windows App Runtime находит пакет платформы при старте, поэтому
-# его DLL обязана лежать рядом. Библиотеку импорта wxl линкует сама — это
-# вторая половина её правила «свои зависимости времени выполнения wxl носит
-# сама», и приложение по-прежнему не пишет об этом ничего.
-set(_reader_bootstrap_dll
-    "${WXL_WINDOWSAPPSDK_FOUNDATION_DIR}/runtimes/win-x64/native/Microsoft.WindowsAppRuntime.Bootstrap.dll")
-
-if(EXISTS "${_reader_bootstrap_dll}")
-    add_custom_command(TARGET Reader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_reader_bootstrap_dll}" "$<TARGET_FILE_DIR:Reader>"
-        COMMENT "Копирование загрузчика Windows App Runtime рядом с Reader")
-else()
-    message(WARNING
-        "Нет Microsoft.WindowsAppRuntime.Bootstrap.dll по пути ${_reader_bootstrap_dll}; "
-        "Reader не запустится, пока она не окажется рядом с исполняемым файлом.")
-endif()
-
-# Win2D (Microsoft.Graphics.Canvas) активируется неупакованно из своей нативной
-# DLL — CompositionWindow грузит ею текстуры (TextureCache), и без неё окно
-# падает при создании. Как загрузчик выше: путь объявляет wxl.ui, копируем
-# рядом с исполняемым файлом.
-set(_reader_win2d_dll
-    "${WXL_WIN2D_DIR}/runtimes/win-x64/native/Microsoft.Graphics.Canvas.dll")
-
-if(EXISTS "${_reader_win2d_dll}")
-    add_custom_command(TARGET Reader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_reader_win2d_dll}" "$<TARGET_FILE_DIR:Reader>"
-        COMMENT "Копирование Microsoft.Graphics.Canvas.dll (Win2D) рядом с Reader")
-else()
-    message(WARNING
-        "Нет Microsoft.Graphics.Canvas.dll по пути ${_reader_win2d_dll}; "
-        "Reader упадёт при создании окна, пока она не окажется рядом с ним.")
-endif()
+# должны там лежать. Правилом на файл, а не хвостом линковки: правка картинки
+# не повод перелинковывать, а хвост линковки без линковки и не сработал бы.
+wxl_target_assets(Reader src/Assets)
 
 if(BUKVITSA_BUILD_TESTS)
     add_subdirectory(tests)

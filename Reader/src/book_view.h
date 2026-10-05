@@ -432,7 +432,7 @@ private:
     /// `skinImagePath()`, и знает только оно.
     std::filesystem::path backdropFile() const;
 
-    wxl::CompositionWindow window_;              ///< ручка окна: его сцена и очередь
+    wxl::CompositionWindow window_;              ///< хендл окна: его сцена и очередь
     wxl::Compositor compositor_;                 ///< композитор окна: на нём визуалы страницы
     nullable<wxl::Grid> root_ = nullptr;    ///< прозрачный остров: ввод и оверлеи поверх сцены
     bool active_ = false;                        ///< полоса — текущий экран, её сцена показана

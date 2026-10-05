@@ -110,10 +110,10 @@ private:
     void show();
 
     /// Кнопка вкладки: заголовок плюс переключение.
-    wxl::Button tabButton(std::wstring_view caption, Tab tab);
+    wxl::Button tabButton(zstring_view caption, Tab tab);
 
     /// Строка списка — то, из чего собраны все три списка панели.
-    wxl::Button listItem(std::wstring_view caption, std::wstring_view under, float indent,
+    wxl::Button listItem(zstring_view caption, zstring_view under, float indent,
                          std::function<void()> action);
 
     void showTab(Tab tab);
