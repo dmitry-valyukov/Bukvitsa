@@ -11,7 +11,6 @@
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
 #include "file_dialog.h"
 #include "imaging.h"
-#include "settings.h"
 
 #include "ApplicationFolder.h"
 #include "CompositionWindow.h"
@@ -25,6 +24,7 @@
 #include "library.h"
 #include "library_screen.h"
 #include "reader_panel.h"
+#include "settings.h"
 #include "store.h"
 
 // Импорт последним, после всех обычных заголовков.

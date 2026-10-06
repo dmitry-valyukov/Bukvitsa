@@ -112,14 +112,14 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
     });
 }
 
-Button StartScreen::addButton(zstring_view caption, float tall, float kegel,
+Button StartScreen::addButton(zstring_view said, float tall, float kegel,
                               // Имена нарочно не height, не fontSize и не text:
                               // параметр с именем свойства перекрыл бы одноимённый
                               // тег DSL, и `height = height` стало бы
                               // присваиванием float.
                               std::function<void()>* action, bool cancel) {
     auto button = Button{
-        caption,
+        said,
         width = kButtonWidth,
         height = tall,
         FontWeight{600},

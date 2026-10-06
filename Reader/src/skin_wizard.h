@@ -20,11 +20,13 @@
 #include <functional>
 #include <vector>
 
-#include "skins.h"
-
 #include "DrawingSurface.h"
 #include "Object.h"
 #include "pch.h"
+
+// Последним: обложки импортируют wxl.core, после чего стандартный заголовок
+// MSVC уже не принимает.
+#include "skins.h"
 
 namespace bukvitsa::reader {
 
@@ -70,7 +72,7 @@ private:
 
     /// Кнопка карточки мастера. Главную от прочих отличают высота и кегль,
     /// кнопку отмены — чуть более серое лицо, как на стартовом экране.
-    wxl::Button overlayButton(zstring_view caption, float tall, float kegel, bool cancel,
+    wxl::Button overlayButton(zstring_view said, float tall, float kegel, bool cancel,
                               void (SkinWizard::*handler)());
 
     /// Кривая по номеру: верхняя и нижняя. Номер и есть память о том, какую

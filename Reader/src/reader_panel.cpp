@@ -89,10 +89,10 @@ void ReaderPanel::buildTree() {
         Orientation::Horizontal,
         Margin{12, 12, 12, 6},
     };
-    for (auto&& [caption, tab] : {std::pair{u"Оглавление", Tab::Contents},
+    for (auto&& [said, tab] : {std::pair{u"Оглавление", Tab::Contents},
                                   std::pair{u"Поиск", Tab::Search},
                                   std::pair{u"Закладки", Tab::Bookmarks}}) {
-        auto button = tabButton(caption, tab);
+        auto button = tabButton(said, tab);
         tabButtons_.push_back(button);
         strip.children().append(button);
     }
@@ -184,11 +184,11 @@ void ReaderPanel::slide(Visual& visual, float x) {
     visual.startAnimation(L"Translation", animation);
 }
 
-Button ReaderPanel::tabButton(zstring_view caption, Tab tab) {
+Button ReaderPanel::tabButton(zstring_view said, Tab tab) {
     using namespace wxl::dsl;
 
     return Button{
-        caption,
+        said,
         fontSize = 14,
         Margin{0, 0, 6, 0},
         Padding{12, 6},
@@ -201,13 +201,13 @@ Button ReaderPanel::tabButton(zstring_view caption, Tab tab) {
     };
 }
 
-Button ReaderPanel::listItem(zstring_view caption, zstring_view under, float indent,
+Button ReaderPanel::listItem(zstring_view said, zstring_view under, float indent,
                              std::function<void()> action) {
     using namespace wxl::dsl;
 
     auto lines = StackPanel{
         TextBlock{
-            caption,
+            said,
             fontSize = 14,
             foreground = SolidColorBrush{kInk},
             textWrapping.wrap,
@@ -562,9 +562,9 @@ void ReaderPanel::refreshThemes() {
 
     // Индексы тем сквозные: сперва встроенные, затем обложки — ровно так их
     // считает и полоса набора. markTheme() ходит по кнопкам тем же счётом.
-    auto themeButton = [this](zstring_view caption, int index, Thickness margin) {
+    auto themeButton = [this](zstring_view said, int index, Thickness margin) {
         return Button{
-            caption,
+            said,
             fontSize = 13,
             Margin{margin},
             Padding{12, 6},

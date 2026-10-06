@@ -54,7 +54,7 @@ public:
 private:
     /// Одна ширина на всех; главную от прочих отличают высота и кегль, а
     /// кнопку отмены — чуть более серое лицо.
-    wxl::Button addButton(zstring_view caption, float tall, float kegel,
+    wxl::Button addButton(zstring_view said, float tall, float kegel,
                           std::function<void()>* action, bool cancel = false);
 
     wxl::Compositor compositor_;
