@@ -784,9 +784,9 @@ wxl::Teardown wxl_launched() {
         } catch (const std::exception& failure) {
             // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
             // проверяется, а не принимается на веру.
-            const std::optional<u8_view> message = unicode::checked(std::string_view(failure.what()));
+            const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
             const std::wstring reason =
-                message ? std::wstring(message->to_utf16().wchars()) : L"(сообщение не в UTF-8)";
+                said ? std::wstring(said->to_utf16().wchars()) : L"(сообщение не в UTF-8)";
             ::MessageBoxW(::GetActiveWindow(), (L"Ошибка:\n" + reason).c_str(), L"Буквица",
                           MB_OK | MB_ICONWARNING);
         } catch (...) {
