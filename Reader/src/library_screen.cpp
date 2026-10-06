@@ -1,5 +1,7 @@
 #include "library_screen.h"
 
+#include "Bind.h"
+
 import wxl.fmt;
 
 namespace bukvitsa::reader {
@@ -53,7 +55,7 @@ u16_text progressOf(const BookEntry& entry, uint32_t charOffset, size_t bookmark
 
 }  // namespace
 
-LibraryScreen::LibraryScreen() {
+LibraryScreen::LibraryScreen(Settings& settings) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
     // бы обычные слова (entry, text) и под /W4 каждое стало бы C4459.
     using namespace wxl::dsl;
@@ -66,23 +68,6 @@ LibraryScreen::LibraryScreen() {
         foreground = SolidColorBrush{kDim},
         Margin{40, 24, 40, 0},
     };
-
-    continueBox_ = CheckBox{
-        u"Продолжать чтение при старте",
-        column = 1,
-        foreground = SolidColorBrush{kInk},
-        vAlign.center,
-    };
-
-    // Обе стороны одного вопроса: галочку и снимают, и ставят, а слушателю
-    // важно только новое значение.
-    auto const told = [this](Object const&, RoutedEventArgs&) {
-        if (onContinueAtStartChanged) {
-            onContinueAtStartChanged(continueBox_.value().isChecked().value_or(false));
-        }
-    };
-    continueBox_.value().add_onChecked(told);
-    continueBox_.value().add_onUnchecked(told);
 
     root_ = Grid{
         isTabStop = true,
@@ -103,9 +88,16 @@ LibraryScreen::LibraryScreen() {
                 foreground = SolidColorBrush{kInk},
                 vAlign.center,
             },
-            // Место в сетке задано при постройке, вместе со всем остальным:
-            // тег колонки живёт на самом элементе, а не на сетке.
-            continueBox_.value(),
+            // Галочка привязана к полю настроек в обе стороны: показывает его и
+            // пишет в него; запись файла слушает само поле. Место в сетке задано
+            // при постройке: тег колонки живёт на самом элементе, а не на сетке.
+            CheckBox{
+                u"Продолжать чтение при старте",
+                column = 1,
+                foreground = SolidColorBrush{kInk},
+                vAlign.center,
+                isChecked = Bind{settings.continueReading},
+            },
             Button{
                 u"Добавить книгу",
                 column = 2,
@@ -151,11 +143,9 @@ void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookm
     found->second.text(progressOf(*entry, charOffset, bookmarks));
 }
 
-void LibraryScreen::show(const Library& library, bool continueAtStart) {
+void LibraryScreen::show(const Library& library) {
     shown_ = &library;
     progress_.clear();
-
-    continueBox_.value().isChecked(continueAtStart);
 
     // Полка пересобирается целиком. Сравнивать её с реестром и править
     // разницу было бы дороже во всех смыслах: книг десятки, а не тысячи, и

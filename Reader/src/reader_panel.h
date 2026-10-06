@@ -42,7 +42,11 @@ public:
     /// @param view полоса набора: у неё панель и спрашивает книгу, и ей же
     ///        отдаёт переходы. Панель без книги бессмысленна, поэтому связь
     ///        прямая, а не через десяток обработчиков.
-    ReaderPanel(const wxl::Compositor& compositor, BookView& view);
+    /// @param settings настройки вида: ползунки привязаны к их полям (`Bind`),
+    ///        и то же поле двигают колесо и клавиши полосы — панель узнаёт о
+    ///        них привязкой, а не флагом «это мы сами».
+    ReaderPanel(const wxl::Compositor& compositor, BookView& view, Settings& settings);
+    ~ReaderPanel();
 
     /// Элемент, который кладут поверх полосы набора.
     const wxl::UIElement& root() const { return root_.value(); }
@@ -64,9 +68,6 @@ public:
 
     /// Закладки изменились — пора записать состояние книги.
     std::function<void()> onStateChanged;
-
-    /// Настройка изменилась — пора записать settings.xml.
-    std::function<void()> onSettingsChanged;
 
     /// Читатель попросился на полку — выбрать другую книгу. Панель этого не
     /// умеет и не должна: смена книги — дело приложения.
@@ -118,17 +119,22 @@ private:
 
     void showTab(Tab tab);
 
-    /// Отмечает кнопку нынешней темы — как отмечена открытая вкладка.
+    /// Отмечает кнопку нынешней темы — как отмечена открытая вкладка. Слушатель
+    /// поля `BookView::theme`: тему меняют и клавишей T мимо панели.
     void markTheme();
 
     void fillContents();
     void fillBookmarks();
     void runSearch();
     void toggleBookmark();
-    void syncSettings();
 
     wxl::Compositor compositor_;
     BookView& view_;
+    Settings& settings_;
+
+    /// Наш слушатель в поле темы полосы — снять за собой: полоса может пережить
+    /// панель.
+    std::optional<cookie_t> themeWatch_;
     BookState* state_ = nullptr;
 
     nullable<wxl::Grid> root_ = nullptr;          ///< холст на оба ящика; щелчок по нему закрывает
@@ -151,13 +157,8 @@ private:
     nullable<wxl::TextBlock> searchNote_ = nullptr;
     nullable<wxl::TextBlock> bookmarkNote_ = nullptr;
 
-    nullable<wxl::Slider> fontSize_ = nullptr;
-    nullable<wxl::Slider> lineHeight_ = nullptr;
-    nullable<wxl::Slider> margin_ = nullptr;
-
     Tab tab_ = Tab::Contents;
     bool open_ = false;
-    bool filling_ = false;   ///< правим ползунки сами — не считать это за ввод
 };
 
 }  // namespace bukvitsa::reader

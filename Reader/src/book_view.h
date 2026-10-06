@@ -34,6 +34,7 @@
 // модель), после чего стандартный заголовок MSVC уже не принимает.
 #include "book.h"
 #include "note_popup.h"
+#include "settings.h"
 #include "skins.h"
 #include "theme.h"
 
@@ -44,7 +45,12 @@ public:
     /// @param window окно: его сцена несёт страницу — визуалы на композиторе
     ///        окна, привешенные к contentVisual(), — а его очередь откладывает
     ///        и мгновенную вёрстку, и порции, которыми считается книга.
-    BookView(const wxl::CompositionWindow& window);
+    /// @param settings настройки вида: полоса слушает их наблюдаемые поля и
+    ///        перевёрстывается сама, а колесом и клавишами пишет в них же —
+    ///        так одно и то же поле видят и ползунки панели, и файл. Живут
+    ///        дольше полосы; слушателей полоса снимает за собой.
+    BookView(const wxl::CompositionWindow& window, Settings& settings);
+    ~BookView();
 
     /// Корень, который отдаётся окну как содержимое.
     const wxl::UIElement& root() const { return root_.value(); }
@@ -91,8 +97,12 @@ public:
     /// Переход к месту в книге: закладка, оглавление, находка поиска.
     void goToCharOffset(uint32_t charOffset);
 
+    /// Номер темы в общем списке «темы, затем обложки» — наблюдаемое поле:
+    /// панель отмечает по нему кнопку, приложение переводит его в имя для
+    /// настроек. Ставить — через setTheme(): он приводит номер к списку, а
+    /// перекраску делает слушатель поля.
+    observable<int> theme{0};
     void setTheme(int index);
-    int theme() const { return theme_; }
 
     /// Обложки читателя из реестра. Они продолжают список тем: индексы идут
     /// сперва по `kThemes`, затем по обложкам, и `setTheme` листает всех
@@ -116,20 +126,6 @@ public:
     /// вызов пересобирает карту изгиба; nullptr снимает предпросмотр.
     void setPreview(const Skin* skin, const std::filesystem::path& image);
 
-    void setFontSize(float size);
-    float fontSize() const { return fontSize_; }
-
-    void setLineHeight(float multiplier);
-    float lineHeight() const { return lineHeight_; }
-
-    /// Боковые поля полосы долей горизонтального размера страницы — то, чем
-    /// книжная страница отличается от текстового файла. Долей ширины, а не
-    /// кегля: поле книги — это доля страницы и расти со шрифтом не должно.
-    /// Правят только горизонталь: ими читатель выбирает ширину строки, а
-    /// отступы сверху и снизу фиксированные.
-    void setMargin(float fraction);
-    float margin() const { return marginFraction_; }
-
     /// Место чтения сдвинулось — пора записать его на диск. Зовётся на каждом
     /// перелистывании; записывать по нему сразу не обязательно.
     std::function<void(uint32_t)> onPositionChanged;
@@ -137,12 +133,6 @@ public:
     /// Читатель попросил ящик правой кнопкой. Полоса не знает, что там внутри,
     /// — панель ей не принадлежит, она лежит поверх.
     std::function<void()> onPanelRequested;
-
-    /// Читатель поменял вид прямо со страницы, в обход панели: кегль колесом
-    /// или Ctrl+±/0, тему клавишей T. Панель свои правки сохраняет сама через
-    /// собственный колбэк; этим полоса просит сохранить те, что сделаны мимо
-    /// неё, тем же путём — иначе они живут только до перезапуска.
-    std::function<void()> onReadingSettingsChanged;
 
     /// Полосе нужен снимок подложки — файл по этому пути. Читает его владелец
     /// (через `Io`, не в потоке окна) и отдаёт байты в setBackdrop(); до тех
@@ -207,11 +197,20 @@ private:
 
     wxl::Grid buildTree();
 
-    /// Сообщает наружу, что читатель поменял вид со страницы, в обход панели
-    /// (см. onReadingSettingsChanged). Пусто — молчит.
-    void readingChanged() const {
-        if (onReadingSettingsChanged) onReadingSettingsChanged();
-    }
+    /// Настройки вида, пришедшие из модели: приводятся к пределам и ведут к
+    /// перевёрстке. Зовутся слушателями полей `settings_`, не снаружи.
+    void applyFontSize(float size);
+    void applyLineHeight(float multiplier);
+    void applyMargin(float fraction);
+
+    /// Кегль с клавиш и колеса: на шаг в ту или другую сторону, в пределах.
+    /// Пишет в настройки — к полосе перемена вернётся слушателем, как и к
+    /// ползунку панели.
+    void nudgeFontSize(double by);
+
+    /// Тема сменилась: всплывашка и тени носят цвета прошлой, карта изгиба —
+    /// форму прошлой обложки. Слушатель поля `theme`.
+    void applyTheme();
 
     /// Пересчитывает размер поверхности под размер окна и масштаб экрана.
     /// Возвращает true, если размер изменился.
@@ -429,7 +428,7 @@ private:
     /// одни и те же (`kSkinTheme`): мастер задаёт снимок и кривые, а не цвета.
     const Theme& paper() const {
         if (preview_) return kSkinTheme;
-        return theme_ < kThemeCount ? kThemes[theme_] : kSkinTheme;
+        return theme.get() < kThemeCount ? kThemes[theme.get()] : kSkinTheme;
     }
 
     /// Сколько всего тем: встроенные плюс обложки.
@@ -441,6 +440,9 @@ private:
     std::filesystem::path backdropFile() const;
 
     wxl::CompositionWindow window_;              ///< хендл окна: его сцена и очередь
+    Settings& settings_;                         ///< настройки вида: слушаем и пишем
+    /// Наши слушатели в полях настроек — снять за собой: настройки живут дольше.
+    std::vector<std::pair<observable<double>*, cookie_t>> settingsWatches_;
     wxl::Compositor compositor_;                 ///< композитор окна: на нём визуалы страницы
     nullable<wxl::Grid> root_ = nullptr;    ///< прозрачный остров: ввод и оверлеи поверх сцены
     bool active_ = false;                        ///< полоса — текущий экран, её сцена показана
@@ -547,7 +549,6 @@ private:
     mutable float charFontSize_ = 0.0f;
     mutable std::wstring charFamily_;
 
-    int theme_ = 0;
     std::vector<Skin> skins_;
 
     /// Обложка предпросмотра и её снимок — см. setPreview().

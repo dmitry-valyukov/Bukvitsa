@@ -20,21 +20,24 @@
 #include "Object.h"
 #include "pch.h"
 
-// Последним: реестр импортирует wxl.core.
+// Последними: реестр и настройки импортируют wxl.core.
 #include "library.h"
+#include "settings.h"
 
 namespace bukvitsa::reader {
 
 class LibraryScreen {
 public:
-    LibraryScreen();
+    /// @param settings настройки: галочка «продолжать чтение при старте»
+    ///        привязана к их полю прямо в разметке.
+    explicit LibraryScreen(Settings& settings);
 
     /// Корень, который отдаётся окну как содержимое.
     const wxl::UIElement& root() const { return root_.value(); }
 
     /// Перестраивает полку под содержимое реестра. Зовётся каждый раз, когда
     /// витрину показывают: книга могла добавиться, а место чтения — уехать.
-    void show(const Library& library, bool continueAtStart);
+    void show(const Library& library);
 
     /// Ставит на полку ещё одну книгу -- ту, которую только что разобрал обход
     /// каталога. Полка при этом не пересобирается: карточки, которые уже стоят,
@@ -51,14 +54,12 @@ public:
     std::function<void(u16_text)> onOpen;   ///< guid выбранной книги
     std::function<void()> onAddBook;
     std::function<void()> onBack;
-    std::function<void(bool)> onContinueAtStartChanged;
 
 private:
-    wxl::Button shelfItem(const BookEntry& entry);
+    wxl::Button shelfItem(const BookEntry& book);
 
     nullable<wxl::Grid> root_ = nullptr;
     nullable<wxl::StackPanel> shelf_ = nullptr;
-    nullable<wxl::CheckBox> continueBox_ = nullptr;
     nullable<wxl::TextBlock> emptyNote_ = nullptr;
 
     /// Строка прогресса каждой карточки, по guid книги. Живёт ровно от одного

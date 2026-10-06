@@ -163,10 +163,12 @@ void complain(HWND owner, std::wstring text, const system_exception& failure) {
     ::MessageBoxW(owner, text.c_str(), L"Буквица", MB_OK | MB_ICONWARNING);
 }
 
-/// Пишет настройки. Копией, а не ссылкой: между co_await читатель успеет
-/// поменять что-нибудь ещё, и на диск должно уйти то, что решили писать.
-detached_task saveSettingsLater(Settings settings) {
-    co_await async_file::write_all(poolPath(settingsPath()), settingsXml(settings));
+/// Пишет настройки. Текст собирается у вызывающего в тот момент, когда решили
+/// писать: между co_await читатель успеет поменять что-нибудь ещё, а на диск
+/// должно уйти решённое. Сами настройки не копируются — у них наблюдаемые
+/// поля, к которым привязаны контролы и полоса.
+detached_task saveSettingsLater(std::string xml) {
+    co_await async_file::write_all(poolPath(settingsPath()), std::move(xml));
 }
 
 /// Пишет состояние книги: место чтения и закладки.
@@ -330,6 +332,9 @@ detached_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
 
     // По полному списку полосы, а не по реестру: номера считаются вместе с
     // системными обложками, которые стоят впереди реестровых.
+    //
+    // Имя обложки в настройки и их запись — дело слушателя темы (wxl_launched):
+    // смена темы здесь ничем не отличается от смены клавишей T.
     const std::vector<Skin>& list = app.view->skins();
     for (size_t index = 0; index < list.size(); ++index) {
         if (list[index].name == skinName) {
@@ -337,9 +342,6 @@ detached_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
             break;
         }
     }
-
-    app.settings->skin = skinName;
-    co_await async_file::write_all(poolPath(settingsPath()), settingsXml(*app.settings));
 
     leaveWizard();
 }
@@ -410,7 +412,7 @@ detached_task deleteSkinFlow(App app, u16_text name) {
 
     app.view->setSkins(app.skins->list());
 
-    int theme = app.view->theme();   // встроенная тема удалением не двигается
+    int theme = app.view->theme.get();   // встроенная тема удалением не двигается
 
     if (leavingActive) {
         theme = themeById(app.settings->theme);
@@ -425,13 +427,10 @@ detached_task deleteSkinFlow(App app, u16_text name) {
         }
     }
 
+    // Настройки — имя обложки или ключ темы — поправит и запишет слушатель
+    // темы (wxl_launched).
     app.view->setTheme(theme);
     app.panel->refreshThemes();
-
-    if (leavingActive) {
-        app.settings->skin = {};
-        co_await async_file::write_all(poolPath(settingsPath()), settingsXml(*app.settings));
-    }
 }
 
 /// «Продолжить чтение»: найти книгу, которую читали, и открыть её.
@@ -646,7 +645,8 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
 detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
                  std::function<void(std::filesystem::path)> openBook,
                  std::function<void()> showStartScreen,
-                 std::function<void(std::filesystem::path)> warmBook) {
+                 std::function<void(std::filesystem::path)> warmBook,
+                 std::function<void()> watchSettings) {
     std::string settingsXmlText;
 
     try {
@@ -659,7 +659,12 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
                      failure);
     }
 
-    *app.settings = parseSettings(settingsXmlText);
+    // В те настройки, что уже есть: к их полям привязаны ползунки панели и
+    // полоса набора, и о прочитанном они узнают сами. Запись на диск начинает
+    // слушать поля только теперь: прочитанное из файла — не перемена, которую
+    // надо записать обратно.
+    readSettings(std::move(settingsXmlText), *app.settings);
+    watchSettings();
 
     // Прогрев книги — сразу, как только стало известно, какая она: он не
     // зависит ни от обложек, ни от реестра, ни от места окна, а разбор длится
@@ -672,12 +677,8 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     // startupFlow ниже, и греть значило бы разобрать её дважды. Протухший путь
     // безвреден — прогрев не прочитает файла и тихо кончится, а «Продолжить
     // чтение» найдёт книгу по guid в реестре и откроет обычной дорогой.
-    if (!app.settings->continueReading && !app.settings->lastBookPath.empty())
+    if (!app.settings->continueReading.get() && !app.settings->lastBookPath.empty())
         warmBook(app.settings->lastBookPath);
-
-    app.view->setFontSize(app.settings->fontSize);
-    app.view->setLineHeight(app.settings->lineHeight);
-    app.view->setMargin(app.settings->margin);
 
     // Обложки — раньше темы: выбранной темой может оказаться обложка, а её
     // индекс продолжает список за встроенными и без реестра не существует.
@@ -753,7 +754,7 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     // должно быть уже на месте.
     if (!app.settings->windowPlacement.empty()) app.window.placement(app.settings->windowPlacement);
 
-    if (app.settings->continueReading && !lastBook.empty()) {
+    if (app.settings->continueReading.get() && !lastBook.empty()) {
         openBook(lastBook);
     } else {
         showStartScreen();
@@ -822,14 +823,14 @@ wxl::Teardown wxl_launched() {
     window.backgroundAsync(applicationFolder() / L"Assets/splash-screen-1k.png");
 
     auto screen = std::make_shared<StartScreen>(window.chromeCompositor());
-    auto view = std::make_shared<BookView>(window);
-    auto shelf = std::make_shared<LibraryScreen>();
+    auto view = std::make_shared<BookView>(window, *settings);
+    auto shelf = std::make_shared<LibraryScreen>(*settings);
     auto skins = std::make_shared<Skins>();
     auto wizard = std::make_shared<SkinWizard>(window.chromeCompositor());
 
     // Панель живёт поверх полосы набора: «поверх страницы» — это внутри полосы,
     // а не рядом с ней.
-    auto panel = std::make_shared<ReaderPanel>(window.chromeCompositor(), *view);
+    auto panel = std::make_shared<ReaderPanel>(window.chromeCompositor(), *view, *settings);
     view->addOverlay(panel->root());
 
     // Состояние открытой книги: место чтения и закладки. Читается и пишется
@@ -928,7 +929,7 @@ wxl::Teardown wxl_launched() {
 
         // Полка пересобирается на каждый показ: книга могла добавиться, а
         // место чтения — уехать с тех пор, как её видели в прошлый раз.
-        shelf->show(*library, settings->continueReading);
+        shelf->show(*library);
         *shown = Screen::Library;
         window.content(shelf->root());
 
@@ -974,11 +975,6 @@ wxl::Teardown wxl_launched() {
     shelf->onOpen = [library, openBook](u16_text guid) {
         if (BookEntry const* known = library->find(guid)) openBook(known->path);
     };
-    shelf->onContinueAtStartChanged = [settings](bool wanted) {
-        settings->continueReading = wanted;
-        saveSettingsLater(*settings);
-    };
-
     panel->onStateChanged = [settings, bookState] {
         saveStateLater(settings->lastBookGuid, *bookState);
     };
@@ -994,42 +990,58 @@ wxl::Teardown wxl_launched() {
         loadBackdropFlow(app, std::move(file));
     };
 
-    // Сохранить настройки вида по текущему состоянию полосы. Одна лямбда на два
-    // источника: панель зовёт её из своих ползунков, а сама полоса — из
-    // Ctrl+колеса и клавиш ±/0/T (onReadingSettingsChanged), чтобы правки в
-    // обход панели сохранялись тем же путём, а не жили только до перезапуска.
-    //
-    // Запись отложена на паузу, как у места окна: ползунок шлёт изменение на
-    // каждый сдвиг, файл переписывается целиком, а две записи одного файла не
-    // должны идти одновременно — `write_all` пишет через один временный файл.
-    // Сами значения в настройках меняются сразу: закрытие окна пишет их своей
-    // записью, не дожидаясь паузы.
+    // Настройки вида — наблюдаемые поля settings: ползунки панели привязаны к
+    // ним (Bind), полоса пишет в них с колеса и клавиш и сама их слушает,
+    // галочка полки привязана к continueReading. Здесь остаётся одна запись на
+    // диск — с паузой, как у места окна: ползунок шлёт перемену на каждый
+    // сдвиг, файл переписывается целиком, а две записи одного файла не должны
+    // идти одновременно — `write_all` пишет через один временный файл. Сами
+    // значения уже в settings: закрытие окна пишет их своей записью, не
+    // дожидаясь паузы.
     auto viewTimer = window.dispatcherQueue().createTimer();
     viewTimer.interval(kSaveQuiet);
     viewTimer.isRepeating(false);
     viewTimer.add_onTick([viewTimer, settings](Object const&, Object const&) {
         viewTimer.stop();
-        saveSettingsLater(*settings);
+        saveSettingsLater(settingsXml(*settings));
     });
 
-    auto const persistView = [settings, view, viewTimer] {
-        // Обложка запоминается именем, встроенная тема — номером; прежний
-        // номер при обложке остаётся как то, куда вернуться, если реестр
-        // обложек пропадёт.
-        if (const Skin* active = view->activeSkin()) {
-            settings->skin = active->name;
-        } else {
-            settings->skin = {};
-            settings->theme = u16_text{themeIdAt(view->theme())};
-        }
-        settings->fontSize = view->fontSize();
-        settings->lineHeight = view->lineHeight();
-        settings->margin = view->margin();
+    // Слушатели поля — noexcept по контракту observable: им некому отдать
+    // исключение. Настройки держат слушателей сами, снимать их незачем: они
+    // живут столько же, сколько окно. Ставит их запуск (startupFlow) сразу
+    // после чтения файла: прочитанное — не перемена, и писать его обратно
+    // незачем. Указатели, а не shared_ptr: слушатель лежит в самом поле, и
+    // держать им своего хозяина значило бы кольцо.
+    auto const persistLater = [viewTimer]() noexcept {
         viewTimer.stop();
         viewTimer.start();
     };
-    panel->onSettingsChanged = persistView;
-    view->onReadingSettingsChanged = persistView;
+    auto const watchSettings = [prefs = settings.get(), page = view.get(), persistLater] {
+        static_cast<void>(prefs->fontSize.on_change([persistLater](double) noexcept { persistLater(); }));
+        static_cast<void>(prefs->lineHeight.on_change([persistLater](double) noexcept { persistLater(); }));
+        static_cast<void>(prefs->margin.on_change([persistLater](double) noexcept { persistLater(); }));
+        static_cast<void>(
+            prefs->continueReading.on_change([persistLater](bool) noexcept { persistLater(); }));
+
+        // Тема — поле полосы, а в настройках она лежит именем: обложка — своим,
+        // встроенная тема — ключом; прежний ключ при обложке остаётся как то,
+        // куда вернуться, если реестр обложек пропадёт. Слушатель переводит
+        // номер в имена и пишет файл, только если имена изменились: запуск
+        // ставит ту же тему, что в файле.
+        static_cast<void>(page->theme.on_change([prefs, page, persistLater](int index) noexcept {
+            u16_text skinName;
+            u16_text themeId = prefs->theme;
+            if (const Skin* active = page->activeSkin()) {
+                skinName = active->name;
+            } else {
+                themeId = u16_text{themeIdAt(index)};
+            }
+            if (skinName == prefs->skin && themeId == prefs->theme) return;
+            prefs->skin = std::move(skinName);
+            prefs->theme = std::move(themeId);
+            persistLater();
+        }));
+    };
 
     // ---- мастер обложек ----
     //
@@ -1250,7 +1262,7 @@ wxl::Teardown wxl_launched() {
         // Место отдаётся строкой WinRT; к нам она приходит чужим текстом, и
         // проверенным становится так же, как любой другой чужой.
         settings->windowPlacement = unicode::repaired(window.placement());
-        saveSettingsLater(*settings);
+        saveSettingsLater(settingsXml(*settings));
     };
 
     saveTimer.add_onTick([saveTimer, rememberWindow](Object const&, Object const&) {
@@ -1288,7 +1300,7 @@ wxl::Teardown wxl_launched() {
     // Всё, что читалка знает о себе, читается отсюда и асинхронно: настройки,
     // реестр, книга, на которой остановились. Окно показывается в конце этой
     // цепочки — уже на своём месте и с уже выбранным экраном.
-    startupFlow(app, splashTimer, openBook, showStartScreen, warmBook);
+    startupFlow(app, splashTimer, openBook, showStartScreen, warmBook, watchSettings);
 
     // Захват держит экраны, модели и таймеры живыми, пока идёт приложение:
     // на них ссылаются обработчики окна и полосы. Само окно держит себя до

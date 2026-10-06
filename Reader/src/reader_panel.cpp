@@ -7,6 +7,8 @@
 
 #include "book_index.h"
 
+#include "Bind.h"
+
 import wxl.fmt;
 
 namespace bukvitsa::reader {
@@ -52,9 +54,17 @@ bool blank(std::u16string_view text) {
 
 }  // namespace
 
-ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view)
-    : compositor_(compositor), view_(view) {
+ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings& settings)
+    : compositor_(compositor), view_(view), settings_(settings) {
     buildTree();
+
+    // Отметка темы идёт за полем полосы, а не за нажатием здешней кнопки:
+    // тему меняют и клавишей T мимо панели.
+    themeWatch_ = view_.theme.on_change([this](int) noexcept { markTheme(); });
+}
+
+ReaderPanel::~ReaderPanel() {
+    if (themeWatch_) view_.theme.remove_change(*themeWatch_);
 }
 
 void ReaderPanel::buildTree() {
@@ -335,34 +345,20 @@ UIElement ReaderPanel::buildSettings() {
 
     // Ползунок, а не пара кнопок: кегль подбирают, а не выставляют числом, и
     // видеть весь ход сразу удобнее, чем нажимать «плюс» восемь раз.
-    auto slider = [](double low, double high, double step) {
+    //
+    // Привязан к полю настроек в обе стороны: показывает поле и пишет в него.
+    // В то же поле пишут колесо и клавиши полосы — и ползунок идёт за ними
+    // сам, без обработчика и без флага «это мы сами его двигаем». Единицы у
+    // ползунка и поля одни (проценты у интерлиньяжа и полей, см. Settings).
+    auto slider = [](double low, double high, double step, observable<double>& field) {
         return Slider{
             minimum = low,
             maximum = high,
             stepFrequency = step,
+            value = Bind{field},
             Margin{0, 0, 0, 4},
         };
     };
-
-    fontSize_ = slider(10, 48, 1);
-    lineHeight_ = slider(100, 240, 5);
-    margin_ = slider(2, 25, 0.5);
-
-    fontSize_.value().add_onValueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
-        if (filling_) return;
-        view_.setFontSize(static_cast<float>(args.newValue()));
-        if (onSettingsChanged) onSettingsChanged();
-    });
-    lineHeight_.value().add_onValueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
-        if (filling_) return;
-        view_.setLineHeight(static_cast<float>(args.newValue()) / 100.0f);
-        if (onSettingsChanged) onSettingsChanged();
-    });
-    margin_.value().add_onValueChanged([this](Object const&, RangeBaseValueChangedEventArgs& args) {
-        if (filling_) return;
-        view_.setMargin(static_cast<float>(args.newValue()) / 100.0f);
-        if (onSettingsChanged) onSettingsChanged();
-    });
 
     return ScrollViewer{
         horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
@@ -372,11 +368,11 @@ UIElement ReaderPanel::buildSettings() {
             // заново при каждой смене реестра.
             themesPanel_.value(),
             groupCaption(u"Кегль"),
-            fontSize_.value(),
+            slider(kFontSizeMin, kFontSizeMax, kFontSizeStep, settings_.fontSize),
             groupCaption(u"Интерлиньяж"),
-            lineHeight_.value(),
+            slider(kLineHeightMin, kLineHeightMax, kLineHeightStep, settings_.lineHeight),
             groupCaption(u"Поля"),
-            margin_.value(),
+            slider(kMarginMin, kMarginMax, kMarginStep, settings_.margin),
             TextBlock{
                 u"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
                 fontSize = 12,
@@ -427,10 +423,6 @@ void ReaderPanel::toggle() {
 void ReaderPanel::show() {
     if (open_) return;
     open_ = true;
-
-    // Ползунки и отметка темы — при каждом появлении: правый ящик виден всё
-    // время, пока панель открыта, а настройки меняют и мимо неё, клавишами.
-    syncSettings();
 
     root_.value().visibility(Visibility::Visible);
     slide(navigationVisual_.value(), 0.0f);
@@ -574,11 +566,7 @@ void ReaderPanel::refreshThemes() {
             BorderThickness{1},
             CornerRadius{4},
             onClick =
-                [this, index](Object const&, RoutedEventArgs&) {
-                    view_.setTheme(index);
-                    markTheme();
-                    if (onSettingsChanged) onSettingsChanged();
-                },
+                [this, index](Object const&, RoutedEventArgs&) { view_.setTheme(index); },
         };
     };
 
@@ -686,22 +674,8 @@ void ReaderPanel::markTheme() {
     // и та же мысль — «вот это сейчас».
     for (int index = 0; index < static_cast<int>(themeButtons_.size()); ++index) {
         themeButtons_[static_cast<size_t>(index)].background(
-            SolidColorBrush{index == view_.theme() ? kActive : colors.transparent});
+            SolidColorBrush{index == view_.theme.get() ? kActive : colors.transparent});
     }
-}
-
-void ReaderPanel::syncSettings() {
-    // Ползунки ставятся из текущего вида, и их же событие тут же прилетит
-    // обратно; флаг говорит обработчику, что это мы, а не читатель.
-    filling_ = true;
-    fontSize_.value().value(view_.fontSize());
-    lineHeight_.value().value(view_.lineHeight() * 100.0);
-    margin_.value().value(view_.margin() * 100.0);
-    filling_ = false;
-
-    // Тему меняют ещё и клавишей T мимо панели, поэтому отметка ставится при
-    // каждом открытии вкладки, а не только по нажатию здешней кнопки.
-    markTheme();
 }
 
 }  // namespace bukvitsa::reader
