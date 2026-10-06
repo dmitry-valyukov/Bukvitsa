@@ -13,10 +13,13 @@
 
 #include <d2d1.h>
 
+// Импорт последним: подпись темы и её ключ — текст wxl.core.
+import wxl.core;
+
 namespace bukvitsa::reader {
 
 struct Theme {
-    const wchar_t* name;   ///< подпись в панели, по-русски
+    const char16_t* name;   ///< подпись в панели, по-русски; в разметку идёт как есть
 
     /// Имя темы в настройках: `Day`, `Sepia`, `Night`. Ключ, а не подпись, и
     /// потому не переводится и не меняется.
@@ -29,7 +32,7 @@ struct Theme {
     ///
     /// У палитры обложки (`kSkinTheme`) ключа нет: в настройках она не
     /// пишется, там стоит имя самой обложки.
-    const wchar_t* id;
+    u16_view id;
     D2D1_COLOR_F background;
     D2D1_COLOR_F text;
     D2D1_COLOR_F dim;      ///< колонцифра и прогресс — тише основного текста
@@ -69,11 +72,11 @@ constexpr D2D1_COLOR_F rgb(int r, int g, int b) {
 /// исчезло и деление «тема с картинкой против темы без картинки»: картинку
 /// носит обложка, цвет — тема.
 inline constexpr Theme kThemes[] = {
-    {L"День",  L"Day",   rgb(250, 248, 243), rgb(32, 30, 28),    rgb(150, 145, 138),
+    {u"День",  u16_view{u"Day"},   rgb(250, 248, 243), rgb(32, 30, 28),    rgb(150, 145, 138),
      rgb(236, 232, 224), rgb(76, 52, 26)},
-    {L"Сепия", L"Sepia", rgb(245, 233, 209), rgb(70, 52, 32),    rgb(160, 138, 106),
+    {u"Сепия", u16_view{u"Sepia"}, rgb(245, 233, 209), rgb(70, 52, 32),    rgb(160, 138, 106),
      rgb(232, 216, 186), rgb(92, 62, 28)},
-    {L"Ночь",  L"Night", rgb(24, 24, 26),    rgb(208, 204, 198), rgb(110, 108, 104),
+    {u"Ночь",  u16_view{u"Night"}, rgb(24, 24, 26),    rgb(208, 204, 198), rgb(110, 108, 104),
      rgb(40, 40, 44),    rgb(10, 6, 2)},
 };
 
@@ -84,14 +87,14 @@ inline constexpr int kThemeCount = static_cast<int>(sizeof(kThemes) / sizeof(kTh
 /// «Антиквариата», подобранные под страницы старой книги на фотографии:
 /// `background` — тон её бумаги, чтобы полоса до загрузки снимка и подложка
 /// XAML под поверхностью не отличались от него вспышкой.
-inline constexpr Theme kSkinTheme{L"Обложка",        nullptr,            rgb(238, 221, 184),
+inline constexpr Theme kSkinTheme{u"Обложка",        u16_view{},         rgb(238, 221, 184),
                                   rgb(54, 38, 22),   rgb(158, 132, 96),  rgb(230, 210, 172),
                                   rgb(88, 58, 26)};
 
 /// Номер темы по её имени из настроек. Незнакомое имя — первая тема: файл
 /// могли принести с машины, где тем было другое число, или поправить руками, и
 /// это не повод открыться иначе, чем открывается новая читалка.
-inline int themeById(std::wstring_view id) {
+inline int themeById(u16_view id) {
     for (int index = 0; index < kThemeCount; ++index) {
         if (id == kThemes[index].id) return index;
     }
@@ -102,7 +105,7 @@ inline int themeById(std::wstring_view id) {
 /// Имя темы для настроек. Номер вне списка значит, что выбрана обложка, а не
 /// тема; именем тогда отвечает первая — настройки помнят её как то, куда
 /// вернуться, когда обложки не станет.
-inline const wchar_t* themeIdAt(int index) {
+inline u16_view themeIdAt(int index) {
     return kThemes[index >= 0 && index < kThemeCount ? index : 0].id;
 }
 

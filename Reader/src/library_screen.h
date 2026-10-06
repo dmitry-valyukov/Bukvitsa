@@ -46,9 +46,9 @@ public:
     ///
     /// Ничего не делает, если полку с тех пор пересобрали: карточки той книги
     /// уже нет, а есть новая, и её прогресс придёт своим чередом.
-    void setProgress(std::wstring_view guid, uint32_t charOffset, size_t bookmarks);
+    void setProgress(u16_view guid, uint32_t charOffset, size_t bookmarks);
 
-    std::function<void(std::wstring)> onOpen;   ///< guid выбранной книги
+    std::function<void(u16_text)> onOpen;   ///< guid выбранной книги
     std::function<void()> onAddBook;
     std::function<void()> onBack;
     std::function<void(bool)> onContinueAtStartChanged;
@@ -63,7 +63,7 @@ private:
 
     /// Строка прогресса каждой карточки, по guid книги. Живёт ровно от одного
     /// показа полки до другого -- как и сами карточки.
-    std::map<std::wstring, wxl::TextBlock> progress_;
+    std::map<std::u16string, wxl::TextBlock> progress_;
 
     /// Реестр, по которому построена нынешняя полка. Не владеет: реестр живёт
     /// в приложении и переживает витрину.

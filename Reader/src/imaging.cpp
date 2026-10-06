@@ -41,11 +41,4 @@ ComPtr<IWICFormatConverter> decodeImage(std::string_view bytes) {
     return converter;
 }
 
-std::filesystem::path exeDirectory() {
-    wchar_t module[MAX_PATH];
-    if (::GetModuleFileNameW(nullptr, module, MAX_PATH) == 0) return {};
-
-    return std::filesystem::path(module).parent_path();
-}
-
 }  // namespace bukvitsa::reader

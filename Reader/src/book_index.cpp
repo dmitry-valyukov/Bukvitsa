@@ -139,7 +139,7 @@ sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks) 
 }
 
 sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
-                                 std::wstring_view needle, size_t limit) {
+                                 u16_view needle, size_t limit) {
     sta_vector<SearchHit> hits;
     if (needle.empty() || limit == 0) return hits;
 
@@ -147,7 +147,7 @@ sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
 
     sta_wstring key;
     key.reserve(needle.size());
-    for (const wchar_t unit : needle)
+    for (const wchar_t unit : needle.wchars())
         if (const wchar_t folded = fold(unit)) key.push_back(folded);
     if (key.empty()) return hits;
 

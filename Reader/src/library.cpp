@@ -18,11 +18,11 @@ namespace {
 
 /// Расширение по типу содержимого части. Пустое значит «показать это нечем»:
 /// обложку читает XAML, а он знает те же форматы, что и WIC.
-std::wstring_view coverExtension(std::string_view contentType) {
-    if (contentType == "image/jpeg" || contentType == "image/jpg") return L".jpg";
-    if (contentType == "image/png") return L".png";
-    if (contentType == "image/gif") return L".gif";
-    if (contentType == "image/bmp") return L".bmp";
+u16_view coverExtension(std::string_view contentType) {
+    if (contentType == "image/jpeg" || contentType == "image/jpg") return u16_view{u".jpg"};
+    if (contentType == "image/png") return u16_view{u".png"};
+    if (contentType == "image/gif") return u16_view{u".gif"};
+    if (contentType == "image/bmp") return u16_view{u".bmp"};
     return {};
 }
 
@@ -44,20 +44,26 @@ std::filesystem::path libraryPath() {
     return dataDirectory() / L"library.xml";
 }
 
-std::filesystem::path statePath(std::wstring_view guid) {
+std::filesystem::path statePath(u16_view guid) {
     // Имя файла — guid и ничего больше: он наш, выдан CoCreateGuid, и в нём
     // не может оказаться ни разделителя пути, ни двоеточия. Названия книги
     // здесь нет намеренно — из него имя файла пришлось бы вычищать.
-    return dataDirectory() / L"books" / (std::wstring{guid} + L".xml");
+    std::filesystem::path file{guid.wchars()};
+    file += L".xml";
+    return dataDirectory() / L"books" / file;
 }
 
-std::wstring newGuid() {
+u16_text newGuid() {
     GUID guid{};
     if (FAILED(::CoCreateGuid(&guid))) return {};
 
     wchar_t text[40]{};
-    if (::StringFromGUID2(guid, text, static_cast<int>(std::size(text))) == 0) return {};
-    return text;
+    const int written = ::StringFromGUID2(guid, text, static_cast<int>(std::size(text)));
+    if (written == 0) return {};
+
+    // Скобки, шестнадцатеричные цифры и дефисы — ASCII по определению, так
+    // что проверять здесь нечего. В `written` считается и завершающий ноль.
+    return u16_text{unicode::assume_valid(std::wstring_view(text, static_cast<size_t>(written - 1)))};
 }
 
 void Library::loadFrom(std::string xml) {
@@ -71,10 +77,10 @@ void Library::loadFrom(std::string xml) {
 
         for (const wxl::xml::node& element : root.children_named("book")) {
             BookEntry entry;
-            entry.guid = attributeOf(element, "guid").wchars();
-            entry.path = attributeOf(element, "path").wchars();
-            entry.bookId = attributeOf(element, "bookId").wchars();
-            entry.cover = attributeOf(element, "cover").wchars();
+            entry.guid = attributeOf(element, "guid");
+            entry.path = std::filesystem::path(attributeOf(element, "path").wchars());
+            entry.bookId = attributeOf(element, "bookId");
+            entry.cover = attributeOf(element, "cover");
             entry.title = attributeOf(element, "title");
             entry.authors = attributeOf(element, "authors");
             entry.fileSize = numberOf(element, "size");
@@ -96,7 +102,7 @@ void Library::loadFrom(std::string xml) {
 std::string Library::toXml() const {
     // Аллокатор -- STA-пул: и этот формирователь, и bookStateXml ниже зовутся
     // из корутин между двумя `co_await`, то есть в интерфейсном потоке (см.
-    // io.h); на рабочий поток уходят только готовые байты.
+    // main.cpp); на рабочий поток уходят только готовые байты.
     text_builder<sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
@@ -109,7 +115,7 @@ std::string Library::toXml() const {
         attribute(out, "authors", entry.authors);
         attribute(out, "bookId", entry.bookId);
         attribute(out, "cover", entry.cover);
-        attribute(out, "path", entry.path);
+        attribute(out, "path", entry.path.native());
         out.format(" size=\"{}\" characters=\"{}\"/>\n", entry.fileSize, entry.characterCount);
     }
 
@@ -118,7 +124,7 @@ std::string Library::toXml() const {
     return std::string(out.view());
 }
 
-const BookEntry* Library::find(std::wstring_view guid) const {
+const BookEntry* Library::find(u16_view guid) const {
     for (const BookEntry& entry : books_) {
         if (entry.guid == guid) return &entry;
     }
@@ -134,11 +140,12 @@ const BookEntry* Library::findSame(const BookEntry& candidate) const {
 
     // По пути — только если UUID не помог. Сравнение без учёта регистра:
     // на Windows это один и тот же файл.
+    const std::wstring& wanted = candidate.path.native();
     for (const BookEntry& entry : books_) {
-        if (entry.path.size() == candidate.path.size() &&
-            ::CompareStringOrdinal(entry.path.c_str(), static_cast<int>(entry.path.size()),
-                                   candidate.path.c_str(), static_cast<int>(candidate.path.size()),
-                                   TRUE) == CSTR_EQUAL) {
+        const std::wstring& known = entry.path.native();
+        if (known.size() == wanted.size() &&
+            ::CompareStringOrdinal(known.c_str(), static_cast<int>(known.size()), wanted.c_str(),
+                                   static_cast<int>(wanted.size()), TRUE) == CSTR_EQUAL) {
             return &entry;
         }
     }
@@ -170,18 +177,19 @@ std::filesystem::path coverDirectory() {
     return dataDirectory() / L"cache";
 }
 
-CoverBytes coverOf(const fb3::Document& document, std::wstring_view guid) {
+CoverBytes coverOf(const fb3::Document& document, u16_view guid) {
     const std::optional<uint32_t> index = document.description().coverImageIndex;
     if (!index || guid.empty()) return {};
 
     const fb3::ImagePart* part = document.image(*index);
     if (!part || part->bytes.empty()) return {};
 
-    const std::wstring_view extension = coverExtension(part->contentType.chars());
+    const u16_view extension = coverExtension(part->contentType.chars());
     if (extension.empty()) return {};   // svg и прочее, чего Image не покажет
 
     CoverBytes cover;
-    cover.name = std::wstring(guid) + std::wstring(extension);
+    cover.name = u16_text{guid};
+    cover.name += extension;
     cover.bytes = part->bytes;
 
     return cover;
@@ -194,10 +202,10 @@ BookEntry describe(const fb3::Document& document, const std::filesystem::path& p
     const fb3::Description& description = document.description();
 
     BookEntry entry;
-    entry.path = path.wstring();
+    entry.path = path;
     // Ни одного assume_valid: модель книги отдаёт проверенный текст, потому
     // что документ проверила wxl.xml, когда его открывала.
-    entry.bookId = description.id.to_utf16().wchars();
+    entry.bookId = description.id.to_utf16();
     entry.title = description.title.to_utf16();
     entry.authors = description.authorsLine().to_utf16();
     entry.characterCount = document.characterCount();

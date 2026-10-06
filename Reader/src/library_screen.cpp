@@ -1,6 +1,6 @@
-#include <format>
-
 #include "library_screen.h"
+
+import wxl.fmt;
 
 namespace bukvitsa::reader {
 
@@ -28,9 +28,9 @@ ImageSource coverOf(const BookEntry& entry) {
     if (entry.cover.empty()) return {};
 
     // Имя нарочно не text: одноимённый тег синтаксиса перекрылся бы им.
-    std::wstring full = (coverDirectory() / entry.cover).wstring();
-    std::replace(full.begin(), full.end(), L'\\', L'/');
-    return ImageSource{L"file:///" + full};
+    std::u16string full = (coverDirectory() / entry.cover.wchars()).u16string();
+    std::replace(full.begin(), full.end(), u'\\', u'/');
+    return ImageSource{u"file:///" + full};
 }
 
 /// Сколько прочитано, словами витрины.
@@ -38,19 +38,16 @@ ImageSource coverOf(const BookEntry& entry) {
 /// Место чтения лежит в отдельном файле на книгу, и читает его фоновая
 /// корутина -- уже после того, как карточка встала на полку. Поэтому здесь
 /// два состояния: «ещё не знаем» и то, что принесли.
-std::wstring progressOf(const BookEntry& entry, uint32_t charOffset, size_t bookmarks) {
-    if (entry.characterCount == 0) return L"не открывалась";
-
-
-    if (charOffset == 0) return L"не открывалась";
+u16_text progressOf(const BookEntry& entry, uint32_t charOffset, size_t bookmarks) {
+    if (entry.characterCount == 0 || charOffset == 0) return u16_text{u"не открывалась"};
 
     const double share = static_cast<double>(charOffset) / entry.characterCount;
-    std::wstring said = std::format(L"прочитано {:.0f}%", share * 100.0);
+    u16_text said = core::format(u"прочитано {:.0f}%", share * 100.0);
 
     // Закладки видно прямо на полке: их наличие -- признак книги, к которой
     // возвращаются, и его стоит показать раньше, чем её откроют.
     if (bookmarks != 0) {
-        said += std::format(L"    закладок: {}", bookmarks);
+        said += core::format(u"    закладок: {}", bookmarks);
     }
     return said;
 }
@@ -61,14 +58,14 @@ LibraryScreen::LibraryScreen() {
     shelf_ = StackPanel{Margin{40, 8, 40, 32}};
 
     emptyNote_ = TextBlock{
-        L"Пока пусто. Добавьте книгу — она останется там, где лежит.",
+        u"Пока пусто. Добавьте книгу — она останется там, где лежит.",
         fontSize = 16,
         foreground = SolidColorBrush{kDim},
         Margin{40, 24, 40, 0},
     };
 
     continueBox_ = CheckBox{
-        L"Продолжать чтение при старте",
+        u"Продолжать чтение при старте",
         column = 1,
         foreground = SolidColorBrush{kInk},
         vAlign.center,
@@ -87,16 +84,16 @@ LibraryScreen::LibraryScreen() {
     root_ = Grid{
         isTabStop = true,
         background = SolidColorBrush{kPaper},
-        rowDefinitions = L"auto,*",
+        rowDefinitions = u"auto,*",
 
         Grid{
             row = 0,
             Margin{40, 32, 40, 8},
-            columnDefinitions = L"*,auto,auto,auto",
+            columnDefinitions = u"*,auto,auto,auto",
             columnSpacing = 12,
 
             TextBlock{
-                L"Моя библиотека",
+                u"Моя библиотека",
                 column = 0,
                 fontSize = 26,
                 FontWeight{600},
@@ -107,13 +104,13 @@ LibraryScreen::LibraryScreen() {
             // тег колонки живёт на самом элементе, а не на сетке.
             continueBox_.value(),
             Button{
-                L"Добавить книгу",
+                u"Добавить книгу",
                 column = 2,
                 onClick = [this](Object const&,
                                  RoutedEventArgs&) { if (onAddBook) onAddBook(); },
             },
             Button{
-                L"Назад",
+                u"Назад",
                 column = 3,
                 onClick = [this](Object const&, RoutedEventArgs&) { if (onBack) onBack(); },
             },
@@ -139,9 +136,8 @@ void LibraryScreen::appendBook(const BookEntry& entry) {
     emptyNote_.value().visibility(Visibility::Collapsed);
 }
 
-void LibraryScreen::setProgress(std::wstring_view guid, uint32_t charOffset,
-                                size_t bookmarks) {
-    const auto found = progress_.find(std::wstring(guid));
+void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookmarks) {
+    const auto found = progress_.find(std::u16string(guid.plain()));
 
     if (found == progress_.end()) return;   // полку успели пересобрать
 
@@ -173,20 +169,20 @@ void LibraryScreen::show(const Library& library, bool continueAtStart) {
 Button LibraryScreen::shelfItem(const BookEntry& entry) {
     // Карточка — это кнопка: по книге щёлкают, и всё, что кнопка умеет сама
     // (наведение, нажатие, фокус, клавиатура), достаётся даром.
-    std::wstring const guid = entry.guid;
+    u16_text const guid = entry.guid;
 
     // Строка прогресса ставится пустой не просто так: «не открывалась» было бы
     // неправдой, пока файл состояния ещё не прочитан, а карточка обязана
     // появиться раньше, чем он будет прочитан. Настоящий текст приносит
     // setProgress().
     TextBlock progress = TextBlock{
-        entry.characterCount == 0 ? std::wstring{L"не открывалась"} : std::wstring{},
+        entry.characterCount == 0 ? u16_text{u"не открывалась"} : u16_text{},
         fontSize = 13,
         foreground = SolidColorBrush{kDim},
         Margin{0, 8, 0, 0},
     };
 
-    progress_.insert_or_assign(guid, progress);
+    progress_.insert_or_assign(guid.plain(), progress);
 
     return Button {
         hAlign.stretch,
@@ -204,7 +200,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                                RoutedEventArgs&) { if (onOpen) onOpen(guid); },
 
         content = Grid{
-            columnDefinitions = L"auto,*",
+            columnDefinitions = u"auto,*",
             columnSpacing = 16,
             Margin{12},
 

@@ -51,9 +51,9 @@ constexpr int kGuideRows = 9;
 constexpr int kCurves = 2;
 
 /// Пусто ли имя — пробелы не в счёт.
-bool blank(std::wstring_view text) {
+bool blank(std::u16string_view text) {
     return std::all_of(text.begin(), text.end(),
-                       [](wchar_t c) { return c == L' ' || c == L'\t'; });
+                       [](char16_t c) { return c == u' ' || c == u'\t'; });
 }
 
 }  // namespace
@@ -106,10 +106,10 @@ void SkinWizard::buildTree() {
         vAlign.top,
         Margin{0, 64, 72, 0},
         StackPanel{
-            overlayButton(L"Сохранить", 72.0f, 19.0f, false, &SkinWizard::saveRequested),
-            overlayButton(L"Выбрать другое изображение", 46.0f, 15.0f, false,
+            overlayButton(u"Сохранить", 72.0f, 19.0f, false, &SkinWizard::saveRequested),
+            overlayButton(u"Выбрать другое изображение", 46.0f, 15.0f, false,
                           &SkinWizard::chooseAnother),
-            overlayButton(L"Выйти из мастера обложек", 46.0f, 15.0f, true,
+            overlayButton(u"Выйти из мастера обложек", 46.0f, 15.0f, true,
                           &SkinWizard::exitWizard),
         },
     };
@@ -127,7 +127,7 @@ void SkinWizard::buildTree() {
         Padding{20, 16},
         StackPanel{
             TextBlock{
-                L"Название обложки",
+                u"Название обложки",
                 fontSize = 13,
                 foreground = SolidColorBrush{kInk},
                 Margin{0, 0, 0, 8},
@@ -138,13 +138,13 @@ void SkinWizard::buildTree() {
                 hAlign.right,
                 Margin{0, 12, 0, 0},
                 Button{
-                    L"ОК",
+                    u"ОК",
                     Padding{18, 6},
                     Margin{0, 0, 8, 0},
                     onClick = [this](Object const&, RoutedEventArgs&) { finishNaming(true); },
                 },
                 Button{
-                    L"Отмена",
+                    u"Отмена",
                     Padding{18, 6},
                     onClick = [this](Object const&, RoutedEventArgs&) { finishNaming(false); },
                 },
@@ -293,8 +293,8 @@ void SkinWizard::openEdit(const Skin& skin) {
     // спросить его, как у новой. Своя обложка правится молча, под своим именем.
     if (skin.system) {
         skin_.system = false;
-        skin_.image.clear();
-        skin_.name.clear();
+        skin_.image = {};
+        skin_.name = {};
     }
 
     redraw();
@@ -481,12 +481,15 @@ void SkinWizard::finishNaming(bool save) {
         return;
     }
 
-    const std::wstring name{
-        reinterpret_cast<wchar_t const*>(nameBox_.value().text().c_str())};
-    if (name.empty() || blank(name)) return;   // безымянную сохранять некуда
+    // Текст поля — чужой: он пришёл из контрола строкой WinRT, и в обложку
+    // попадает проверенным, а не принятым на веру. Строка держится, пока
+    // жив вид на неё.
+    const hstring typed = nameBox_.value().text();
+    const std::optional<u16_view> name = unicode::checked(std::u16string_view(typed));
+    if (!name || name->empty() || blank(name->plain())) return;   // безымянную сохранять некуда
 
     Skin saved = skin_;
-    saved.name = name;
+    saved.name = u16_text{*name};
 
     namePanel_.value().visibility(Visibility::Collapsed);
     if (onSave) onSave(std::move(saved), image_);

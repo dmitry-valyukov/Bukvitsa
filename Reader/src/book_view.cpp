@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
-#include <format>
 #include <vector>
 
 // dwrite.h первым: он приводит guiddef.h с DEFINE_GUID, без которого
@@ -24,6 +23,8 @@
 
 #include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/glyph_painter.h"
+
+import wxl.fmt;
 
 namespace bukvitsa::reader {
 
@@ -2023,8 +2024,8 @@ void BookView::updateBackdrop() {
     // битмапа устройства — его заведёт заново drawThemeBackdrop, вкомпоновывая
     // фото прямо в поверхность страницы — и заказывает новый у владельца; до
     // его прихода страница рисуется бумагой темы.
-    if (backdropWanted_ != wanted.native()) {
-        backdropWanted_ = wanted.native();
+    if (backdropWanted_ != wanted) {
+        backdropWanted_ = wanted;
         backdropSource_.Reset();
         backdropBytes_.clear();
         photoBitmap_.Reset();
@@ -2033,7 +2034,7 @@ void BookView::updateBackdrop() {
 }
 
 void BookView::setBackdrop(const std::filesystem::path& file, std::string bytes) {
-    if (file.native() != backdropWanted_) return;   // пока читали, захотели другое
+    if (file != backdropWanted_) return;   // пока читали, захотели другое
 
     // Сначала отпустить снимок, потом сменить байты: он читает из них.
     backdropSource_.Reset();
@@ -2369,20 +2370,19 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
         // spreadOwnColumns_.
         const size_t first = page_;
         const size_t own = std::max<size_t>(spreadOwnColumns_, 1);
-        const std::wstring numbers =
-            own <= 1 ? std::format(L"{}", first + 1)
-                     : std::format(L"{}–{}", first + 1, first + own);
-        const std::wstring total = book_->paginator().isComplete()
-                                       ? std::format(L"{}", std::max<size_t>(pageCount(), 1))
-                                       : std::wstring{L"…"};
+        const u16_text numbers = own <= 1 ? core::format(u"{}", first + 1)
+                                          : core::format(u"{}–{}", first + 1, first + own);
+        const u16_text total = book_->paginator().isComplete()
+                                   ? core::format(u"{}", std::max<size_t>(pageCount(), 1))
+                                   : u16_text{u"…"};
 
         // Номер и общее число — по главе: пагинатор знает лишь её, и «из M»
         // здесь значит «из стольких страниц в этой главе». Процент — по всей
         // книге, по символам; им читатель и меряет весь путь.
-        const std::wstring status =
-            std::format(L"Глава {} · стр. {} из {}     {:.0f}%",
-                        book_->currentChapter() + 1, numbers, total, progress() * 100.0f);
-        context->DrawText(status.c_str(), static_cast<UINT32>(status.size()), statusFormat_.Get(),
+        const u16_text status = core::format(u"Глава {} · стр. {} из {}     {:.0f}%",
+                                             book_->currentChapter() + 1, numbers, total,
+                                             progress() * 100.0f);
+        context->DrawText(status.wchars().data(), static_cast<UINT32>(status.size()), statusFormat_.Get(),
                           D2D1::RectF(margin, height - kVerticalMargin, width - margin, height),
                           dimBrush.Get());
     }

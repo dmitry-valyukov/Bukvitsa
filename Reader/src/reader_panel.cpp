@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <format>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
@@ -7,6 +6,8 @@
 #include "reader_panel.h"
 
 #include "book_index.h"
+
+import wxl.fmt;
 
 namespace bukvitsa::reader {
 
@@ -44,10 +45,9 @@ TextBlock groupCaption(zstring_view said) {
 // читается как задержка.
 constexpr auto kSlide = 180ms;
 
-/// Строчными — для сравнения без учёта регистра там, где нужен только ответ
-/// «пусто или нет».
-bool blank(std::wstring_view text) {
-    return std::all_of(text.begin(), text.end(), [](wchar_t c) { return c == L' ' || c == L'\t'; });
+/// Пусто ли введённое — пробелы не в счёт.
+bool blank(std::u16string_view text) {
+    return std::all_of(text.begin(), text.end(), [](char16_t c) { return c == u' ' || c == u'\t'; });
 }
 
 }  // namespace
@@ -67,7 +67,7 @@ void ReaderPanel::buildTree() {
     // другую, и стоять в одном ряду с ними ей не за что.
     auto shelf = Button{
         row = 0,
-        L"←  Моя библиотека",
+        u"←  Моя библиотека",
         hAlign.stretch,
         horizontalContentAlignment = HorizontalAlignment::Left,
         fontSize = 14,
@@ -89,9 +89,9 @@ void ReaderPanel::buildTree() {
         Orientation::Horizontal,
         Margin{12, 12, 12, 6},
     };
-    for (auto&& [caption, tab] : {std::pair{L"Оглавление", Tab::Contents},
-                                  std::pair{L"Поиск", Tab::Search},
-                                  std::pair{L"Закладки", Tab::Bookmarks}}) {
+    for (auto&& [caption, tab] : {std::pair{u"Оглавление", Tab::Contents},
+                                  std::pair{u"Поиск", Tab::Search},
+                                  std::pair{u"Закладки", Tab::Bookmarks}}) {
         auto button = tabButton(caption, tab);
         tabButtons_.push_back(button);
         strip.children().append(button);
@@ -103,7 +103,7 @@ void ReaderPanel::buildTree() {
     }
 
     navigation_ = box(HorizontalAlignment::Left, Grid{
-                                                     rowDefinitions = L"auto,auto,*",
+                                                     rowDefinitions = u"auto,auto,*",
                                                      shelf,
                                                      strip,
                                                      pages_.value(),
@@ -258,7 +258,7 @@ UIElement ReaderPanel::buildSearch() {
 
     searchBox_ = TextBox{
         row = 0,
-        placeholderText = L"Что искать",
+        placeholderText = u"Что искать",
         Margin{0, 0, 0, 8},
     };
 
@@ -272,7 +272,7 @@ UIElement ReaderPanel::buildSearch() {
 
     searchNote_ = TextBlock{
         row = 1,
-        L"Введите слово и нажмите Enter.",
+        u"Введите слово и нажмите Enter.",
         fontSize = 13,
         foreground = SolidColorBrush{kDim},
         textWrapping.wrap,
@@ -281,7 +281,7 @@ UIElement ReaderPanel::buildSearch() {
     searchList_ = StackPanel{};
 
     return Grid{
-        rowDefinitions = L"auto,auto,*",
+        rowDefinitions = u"auto,auto,*",
         searchBox_.value(),
         searchNote_.value(),
         ScrollViewer{
@@ -305,10 +305,10 @@ UIElement ReaderPanel::buildBookmarks() {
     bookmarkList_ = StackPanel{};
 
     return Grid{
-        rowDefinitions = L"auto,auto,*",
+        rowDefinitions = u"auto,auto,*",
         Button{
             row = 0,
-            L"Заложить эту страницу",
+            u"Заложить эту страницу",
             hAlign.stretch,
             Margin{0, 0, 0, 8},
             foreground = SolidColorBrush{kInk},
@@ -371,14 +371,14 @@ UIElement ReaderPanel::buildSettings() {
             // где кончается одна группа и начинается другая, а собирается
             // заново при каждой смене реестра.
             themesPanel_.value(),
-            groupCaption(L"Кегль"),
+            groupCaption(u"Кегль"),
             fontSize_.value(),
-            groupCaption(L"Интерлиньяж"),
+            groupCaption(u"Интерлиньяж"),
             lineHeight_.value(),
-            groupCaption(L"Поля"),
+            groupCaption(u"Поля"),
             margin_.value(),
             TextBlock{
-                L"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
+                u"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
                 fontSize = 12,
                 foreground = SolidColorBrush{kDim},
                 Margin{0, 16, 0, 0},
@@ -468,7 +468,7 @@ void ReaderPanel::fillContents() {
 
     const sta_vector<ContentsEntry> contents = contentsOf(view_.blocks());
     if (contents.empty()) {
-        contentsList_.value().children().append(listItem(L"В этой книге нет заголовков", {}, 0,
+        contentsList_.value().children().append(listItem(u"В этой книге нет заголовков", {}, 0,
                                                          {}));
         return;
     }
@@ -487,7 +487,7 @@ void ReaderPanel::fillBookmarks() {
     bookmarkList_.value().children().clear();
 
     if (!state_ || state_->bookmarks.empty()) {
-        bookmarkNote_.value().text(L"Закладок пока нет.");
+        bookmarkNote_.value().text(u"Закладок пока нет.");
         return;
     }
 
@@ -496,7 +496,7 @@ void ReaderPanel::fillBookmarks() {
     for (const Bookmark& mark : state_->bookmarks) {
         const uint32_t offset = mark.charOffset;
         bookmarkList_.value().children().append(
-            listItem(mark.hint.empty() ? zstring_view{L"Закладка"} : zstring_view{mark.hint}, {}, 0,
+            listItem(mark.hint.empty() ? zstring_view{u"Закладка"} : zstring_view{mark.hint}, {}, 0,
                      [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
@@ -504,19 +504,22 @@ void ReaderPanel::fillBookmarks() {
 void ReaderPanel::runSearch() {
     searchList_.value().children().clear();
 
-    const std::wstring needle{reinterpret_cast<wchar_t const*>(searchBox_.value().text().c_str())};
-    if (needle.empty() || blank(needle)) {
-        searchNote_.value().text(L"Введите слово и нажмите Enter.");
+    // Текст поля — чужой: пришёл из контрола строкой WinRT и в поиск идёт
+    // проверенным. Строка держится, пока жив вид на неё.
+    const hstring typed = searchBox_.value().text();
+    const std::optional<u16_view> needle = unicode::checked(std::u16string_view(typed));
+    if (!needle || needle->empty() || blank(needle->plain())) {
+        searchNote_.value().text(u"Введите слово и нажмите Enter.");
         return;
     }
 
-    const sta_vector<SearchHit> hits = searchBook(view_.blocks(), needle);
+    const sta_vector<SearchHit> hits = searchBook(view_.blocks(), *needle);
     if (hits.empty()) {
-        searchNote_.value().text(std::format(L"«{}» в книге не нашлось.", needle));
+        searchNote_.value().text(core::format(u"«{}» в книге не нашлось.", *needle));
         return;
     }
 
-    searchNote_.value().text(std::format(L"Нашлось: {}", hits.size()));
+    searchNote_.value().text(core::format(u"Нашлось: {}", hits.size()));
 
     for (const SearchHit& hit : hits) {
         const uint32_t offset = hit.charOffset;
@@ -581,7 +584,7 @@ void ReaderPanel::refreshThemes() {
 
     // Тема — это ровный цвет бумаги, и таких три. Они коротки и помещаются в
     // строчку; фотография среди них не стоит больше — снимок носит обложка.
-    themesPanel_.value().children().append(groupCaption(L"Тема"));
+    themesPanel_.value().children().append(groupCaption(u"Тема"));
 
     auto builtins = StackPanel{Orientation::Horizontal};
     for (int index = 0; index < kThemeCount; ++index) {
@@ -597,11 +600,11 @@ void ReaderPanel::refreshThemes() {
     //
     // Кнопка без текста обязана иметь тултип (правило дизайна) — и он
     // называет конкретную обложку, а не действие вообще.
-    auto iconButton = [](zstring_view glyph, const std::wstring& tip, auto action) {
+    auto iconButton = [](zstring_view glyph, const u16_text& tip, auto action) {
         return Button{
             glyph,
-            fontFamily = FontFamily{L"Segoe Fluent Icons"},
-            toolTip = tip.c_str(),
+            fontFamily = FontFamily{u"Segoe Fluent Icons"},
+            toolTip = tip,
             fontSize = 13,
             Margin{6, 6, 0, 0},
             Padding{8, 6},
@@ -626,7 +629,7 @@ void ReaderPanel::refreshThemes() {
     // Спросить «точно ли» панель не может и не должна: окна у неё нет, а
     // удаление необратимо — вопрос задаёт приложение, которому принадлежат и
     // окно, и реестр.
-    themesPanel_.value().children().append(groupCaption(L"Обложки"));
+    themesPanel_.value().children().append(groupCaption(u"Обложки"));
 
     const std::vector<Skin>& skins = view_.skins();
     for (size_t index = 0; index < skins.size(); ++index) {
@@ -634,21 +637,21 @@ void ReaderPanel::refreshThemes() {
                                   Thickness{0, 6, 0, 0});
         themeButtons_.push_back(button);
 
-        const std::wstring name = skins[index].name;
+        const u16_text name = skins[index].name;
 
         auto row = StackPanel{
             Orientation::Horizontal,
             button,
-            iconButton(L"",   // шестерёнка Segoe Fluent Icons
-                       L"Настроить подложку «" + name + L"»",
+            iconButton(u"",   // шестерёнка Segoe Fluent Icons
+                       core::format(u"Настроить подложку «{}»", name),
                        [this, name] {
                            if (onEditSkin) onEditSkin(name);
                        }),
         };
 
         if (!skins[index].system) {
-            row.children().append(iconButton(L"",   // корзина оттуда же
-                                             L"Удалить обложку «" + name + L"»",
+            row.children().append(iconButton(u"",   // корзина оттуда же
+                                             core::format(u"Удалить обложку «{}»", name),
                                              [this, name] {
                                                  if (onDeleteSkin) onDeleteSkin(name);
                                              }));
@@ -659,7 +662,7 @@ void ReaderPanel::refreshThemes() {
 
     // Дорога в мастер — последней строкой, после всех тем.
     themesPanel_.value().children().append(Button{
-        L"Добавить обложку…",
+        u"Добавить обложку…",
         fontSize = 13,
         Margin{0, 6, 0, 0},
         Padding{12, 6},

@@ -1,11 +1,8 @@
-#include "settings.h"
-
 #include <shlobj.h>
 
-
-
-// Свои заголовки со стандартными внутри — до импорта: он несёт с собой
-// модульный std, а стандартный заголовок после него MSVC уже не принимает.
+// Свои заголовки — после системных: settings.h и store.h несут импорт, а
+// заголовок после импорта MSVC принимает не всякий.
+#include "settings.h"
 #include "store.h"
 
 import wxl.core;
@@ -40,7 +37,7 @@ Settings parseSettings(std::string xml) {
         const wxl::xml::node& root = document.load(std::move(xml));
 
         if (const wxl::xml::node* window = root.child("window")) {
-            settings.windowPlacement = attributeOf(*window, "placement").wchars();
+            settings.windowPlacement = attributeOf(*window, "placement");
         }
         if (const wxl::xml::node* reading = root.child("reading")) {
             settings.continueReading = reading->attribute("continue") == "true";
@@ -52,17 +49,17 @@ Settings parseSettings(std::string xml) {
         // чем выставить заново. Что не прочиталось, берётся умолчанием, и
         // первое же закрытие окна перепишет файл начисто.
         if (const wxl::xml::node* text = root.child("text")) {
-            settings.theme = attributeOf(*text, "theme").wchars();
+            settings.theme = attributeOf(*text, "theme");
             settings.fontSize = static_cast<float>(realOf(*text, "fontSize", 20.0));
             settings.lineHeight = static_cast<float>(realOf(*text, "lineHeight", 1.45));
             settings.margin = static_cast<float>(realOf(*text, "margin", 0.075));
         }
         if (const wxl::xml::node* skin = root.child("skin")) {
-            settings.skin = attributeOf(*skin, "name").wchars();
+            settings.skin = attributeOf(*skin, "name");
         }
         if (const wxl::xml::node* book = root.child("lastBook")) {
-            settings.lastBookGuid = attributeOf(*book, "guid").wchars();
-            settings.lastBookPath = attributeOf(*book, "path").wchars();
+            settings.lastBookGuid = attributeOf(*book, "guid");
+            settings.lastBookPath = std::filesystem::path(attributeOf(*book, "path").wchars());
         }
     } catch (...) {
         // Битый файл, файл от будущей версии, файл, который правили руками, —
@@ -79,7 +76,7 @@ std::string settingsXml(const Settings& settings) {
     // и дробное число пишется точкой, какие бы настройки ни стояли в Windows.
     // Аллокатор -- STA-пул: формирователь зовётся из корутины между двумя
     // `co_await`, а этот код у читалки исполняется в интерфейсном потоке (см.
-    // io.h), на рабочий поток уходят только байты.
+    // main.cpp), на рабочий поток уходят только байты.
     text_builder<sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
@@ -95,7 +92,7 @@ std::string settingsXml(const Settings& settings) {
 
     if (!settings.lastBookGuid.empty()) {
         out.format("  <lastBook guid=\"{}\" path=\"{}\"/>\n", xmlValue(settings.lastBookGuid),
-                   xmlValue(settings.lastBookPath));
+                   xmlValue(settings.lastBookPath.native()));
     }
 
     out.append("</settings>\n");

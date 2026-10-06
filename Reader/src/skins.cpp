@@ -4,9 +4,10 @@
 // стандартный заголовок MSVC уже не принимает. Свой первым.
 #include "skins.h"
 
-#include "imaging.h"   // exeDirectory(): у системной обложки снимок в Assets
 #include "settings.h"
 #include "store.h"
+
+#include "ApplicationFolder.h"   // у системной обложки снимок в Assets рядом с программой
 
 import wxl.fmt;
 
@@ -116,8 +117,8 @@ std::span<const Skin> systemSkins() {
     // и первая правого.
     static const std::vector<Skin> list = [] {
         Skin antique;
-        antique.name = L"Антиквариат";
-        antique.image = L"book-1.png";
+        antique.name = u16_text{u"Антиквариат"};
+        antique.image = u16_text{u"book-1.png"};
         antique.system = true;
         antique.top = {{0.0453125f, 0.13645834f, 0.25677082f, 0.43489584f, 0.5f, 0.5494792f,
                         0.7375f, 0.8567708f, 0.95677084f},
@@ -132,13 +133,13 @@ std::span<const Skin> systemSkins() {
         // это не недоделка, а ответ. Гнуть тут нечего, и вёрстка это увидит
         // сама — размах выйдет нулевым, полоса нарисуется без изгиба вовсе.
         Skin tome = defaultSkin();
-        tome.name = L"Томик";
-        tome.image = L"tom-1.png";
+        tome.name = u16_text{u"Томик"};
+        tome.image = u16_text{u"tom-1.png"};
         tome.system = true;
 
         Skin booklet;
-        booklet.name = L"Брошюра";
-        booklet.image = L"Брошюра.png";
+        booklet.name = u16_text{u"Брошюра"};
+        booklet.image = u16_text{u"Брошюра.png"};
         booklet.system = true;
         booklet.top = {{0.043335162f, 0.14920461f, 0.33790454f, 0.43938562f, 0.5f, 0.56939113f,
                         0.63960505f, 0.81130004f, 0.9511794f},
@@ -158,7 +159,8 @@ std::span<const Skin> systemSkins() {
 std::filesystem::path skinImagePath(const Skin& skin) {
     if (skin.image.empty()) return {};
 
-    return skin.system ? exeDirectory() / L"Assets" / skin.image : skinDirectory() / skin.image;
+    return skin.system ? wxl::applicationFolder() / L"Assets" / skin.image.wchars()
+                       : skinDirectory() / skin.image.wchars();
 }
 
 EdgeSpline::EdgeSpline(const EdgeCurve& curve) : curve_(curve) {
@@ -250,8 +252,8 @@ void Skins::loadFrom(std::string xml) {
 
         for (const wxl::xml::node& element : root.children_named("skin")) {
             Skin skin = straight;
-            skin.name = attributeOf(element, "name").wchars();
-            skin.image = attributeOf(element, "image").wchars();
+            skin.name = attributeOf(element, "name");
+            skin.image = attributeOf(element, "image");
 
             // Вторая версия писала листы порознь — topLeft и topRight; её
             // кривая собирается из обеих половин. Различаются они по именам
@@ -309,7 +311,7 @@ std::string Skins::toXml() const {
     return std::string(out.view());
 }
 
-const Skin* Skins::find(std::wstring_view name) const {
+const Skin* Skins::find(u16_view name) const {
     for (const Skin& skin : skins_) {
         if (skin.name == name) return &skin;
     }
@@ -326,7 +328,7 @@ void Skins::put(Skin skin) {
     skins_.push_back(std::move(skin));
 }
 
-bool Skins::remove(std::wstring_view name) {
+bool Skins::remove(u16_view name) {
     for (auto it = skins_.begin(); it != skins_.end(); ++it) {
         if (it->name == name) {
             skins_.erase(it);

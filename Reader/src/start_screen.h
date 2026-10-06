@@ -38,8 +38,7 @@ public:
     /// Книга, которую продолжит большая кнопка: слева обложка, под своей
     /// надписью — название, под названием — автор. Пустое название оставляет
     /// кнопку простой надписью: продолжать пока нечего.
-    void setContinueBook(std::wstring_view title, std::wstring_view author,
-                         const std::filesystem::path& cover);
+    void setContinueBook(u16_view title, u16_view author, const std::filesystem::path& cover);
 
     /// Что делают кнопки. Пустой обработчик значит «кнопка на месте, но
     /// делать ей пока нечего» — так и задумано для каталога.
@@ -71,7 +70,7 @@ private:
     /// Большая кнопка и то, чем она наполнена: setContinueBook() зовут на
     /// каждом показе экрана, и одинаковое наполнение не перестраивается.
     nullable<wxl::Button> continueButton_ = nullptr;
-    std::wstring continueKey_;
+    std::u16string continueKey_;
 
     bool revealed_ = false;
 };

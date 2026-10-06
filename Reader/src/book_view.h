@@ -588,7 +588,7 @@ private:
     /// сбрасывают его.
     std::string backdropBytes_;
     Microsoft::WRL::ComPtr<IWICFormatConverter> backdropSource_;
-    std::wstring backdropWanted_;
+    std::filesystem::path backdropWanted_;
 
     /// Изгиб страницы поверх фотографии: содержимое рисуется в слой двойной
     /// высоты, Displacement Map гнёт его по карте, Scale ужимает по вертикали
