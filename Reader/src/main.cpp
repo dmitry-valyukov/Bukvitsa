@@ -32,7 +32,6 @@ import wxl.async;
 import wxl.core;
 
 using namespace wxl;
-using namespace wxl::dsl;
 using namespace std::chrono_literals;
 
 namespace {
@@ -767,6 +766,12 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
 }  // namespace
 
 wxl::Teardown wxl_launched() {
+    // Теги разметки открыты только здесь, где она и пишется. На уровне файла
+    // они накрыли бы обычные слова — text, size, state, entry — и под /W4
+    // каждое такое имя, вплоть до параметров шаблонов самой wxl, стало бы
+    // «прячущим глобальное» (C4459).
+    using namespace wxl::dsl;
+
     // Сценарий, кончившийся исключением, которого сам не поймал, -- не повод
     // ронять читалку: исключение приходит сюда, в поток окна, и читатель видит,
     // что именно не удалось. Сам сценарий на этом кончается, кадр уходит, как у
@@ -779,9 +784,9 @@ wxl::Teardown wxl_launched() {
         } catch (const std::exception& failure) {
             // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
             // проверяется, а не принимается на веру.
-            const std::optional<u8_view> text = unicode::checked(std::string_view(failure.what()));
+            const std::optional<u8_view> message = unicode::checked(std::string_view(failure.what()));
             const std::wstring reason =
-                text ? std::wstring(text->to_utf16().wchars()) : L"(сообщение не в UTF-8)";
+                message ? std::wstring(message->to_utf16().wchars()) : L"(сообщение не в UTF-8)";
             ::MessageBoxW(::GetActiveWindow(), (L"Ошибка:\n" + reason).c_str(), L"Буквица",
                           MB_OK | MB_ICONWARNING);
         } catch (...) {
@@ -830,7 +835,7 @@ wxl::Teardown wxl_launched() {
     // Состояние открытой книги: место чтения и закладки. Читается и пишется
     // целиком, потому что файл переписывается заменой — «дописать одно поле»
     // всё равно значит написать его весь.
-    auto state = std::make_shared<BookState>();
+    auto bookState = std::make_shared<BookState>();
 
     // Слот прогретой книги: в него запуск кладёт ту, что стоит на кнопке
     // «Продолжить чтение», разобрав её заранее.
@@ -847,12 +852,12 @@ wxl::Teardown wxl_launched() {
     positionTimer.interval(kPositionQuiet);
     positionTimer.isRepeating(false);
 
-    auto const rememberPosition = [view, settings, state] {
+    auto const rememberPosition = [view, settings, bookState] {
         // Книга закрыта -- писать нечего: место чтения принадлежит ей, а не
         // окну, и ноль незанятой полосы стёр бы то, что уже записано.
         if (settings->lastBookGuid.empty() || !view->isOpen()) return;
-        state->charOffset = view->readingPosition();
-        saveStateLater(settings->lastBookGuid, *state);
+        bookState->charOffset = view->readingPosition();
+        saveStateLater(settings->lastBookGuid, *bookState);
     };
 
     positionTimer.add_onTick([positionTimer, rememberPosition](Object const&, Object const&) {
@@ -897,10 +902,10 @@ wxl::Teardown wxl_launched() {
         // Большой кнопке — её книга: обложка, название, автор. На каждом
         // показе, потому что последняя открытая книга могла смениться, пока
         // экрана не было видно; при запуске реестр к этому моменту прочитан.
-        if (const BookEntry* entry = library->find(settings->lastBookGuid)) {
-            screen->setContinueBook(entry->title, entry->authors,
-                                    entry->cover.empty() ? std::filesystem::path{}
-                                                         : coverDirectory() / entry->cover.wchars());
+        if (const BookEntry* known = library->find(settings->lastBookGuid)) {
+            screen->setContinueBook(known->title, known->authors,
+                                    known->cover.empty() ? std::filesystem::path{}
+                                                         : coverDirectory() / known->cover.wchars());
         }
 
         *shown = Screen::Start;
@@ -908,7 +913,7 @@ wxl::Teardown wxl_launched() {
     };
 
     // Всё, из чего собрано приложение, одной связкой: её берут корутины.
-    App const app{window, settings, library,      state, view,
+    App const app{window, settings, library,      bookState, view,
                   panel,    shelf,  screen,   shown,        bookCameFrom, skins, warm};
 
     auto const showLibrary = [app, window, shelf, library, settings, shown, rememberPosition,
@@ -967,15 +972,15 @@ wxl::Teardown wxl_launched() {
     shelf->onAddBook = addBook;
     shelf->onBack = showStartScreen;
     shelf->onOpen = [library, openBook](u16_text guid) {
-        if (BookEntry const* entry = library->find(guid)) openBook(entry->path);
+        if (BookEntry const* known = library->find(guid)) openBook(known->path);
     };
     shelf->onContinueAtStartChanged = [settings](bool wanted) {
         settings->continueReading = wanted;
         saveSettingsLater(*settings);
     };
 
-    panel->onStateChanged = [settings, state] {
-        saveStateLater(settings->lastBookGuid, *state);
+    panel->onStateChanged = [settings, bookState] {
+        saveStateLater(settings->lastBookGuid, *bookState);
     };
 
     panel->onLibrary = showLibrary;

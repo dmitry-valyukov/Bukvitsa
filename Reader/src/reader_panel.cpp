@@ -335,10 +335,10 @@ UIElement ReaderPanel::buildSettings() {
 
     // Ползунок, а не пара кнопок: кегль подбирают, а не выставляют числом, и
     // видеть весь ход сразу удобнее, чем нажимать «плюс» восемь раз.
-    auto slider = [](double from, double to, double step) {
+    auto slider = [](double low, double high, double step) {
         return Slider{
-            minimum = from,
-            maximum = to,
+            minimum = low,
+            maximum = high,
             stepFrequency = step,
             Margin{0, 0, 0, 4},
         };
@@ -562,11 +562,11 @@ void ReaderPanel::refreshThemes() {
 
     // Индексы тем сквозные: сперва встроенные, затем обложки — ровно так их
     // считает и полоса набора. markTheme() ходит по кнопкам тем же счётом.
-    auto themeButton = [this](zstring_view said, int index, Thickness margin) {
+    auto themeButton = [this](zstring_view said, int index, Thickness gap) {
         return Button{
             said,
             fontSize = 13,
-            Margin{margin},
+            Margin{gap},
             Padding{12, 6},
             foreground = SolidColorBrush{kInk},
             background = SolidColorBrush{colors.transparent},
@@ -637,27 +637,27 @@ void ReaderPanel::refreshThemes() {
                                   Thickness{0, 6, 0, 0});
         themeButtons_.push_back(button);
 
-        const u16_text name = skins[index].name;
+        const u16_text skinName = skins[index].name;
 
-        auto row = StackPanel{
+        auto line = StackPanel{
             Orientation::Horizontal,
             button,
             iconButton(u"",   // шестерёнка Segoe Fluent Icons
-                       core::format(u"Настроить подложку «{}»", name),
-                       [this, name] {
-                           if (onEditSkin) onEditSkin(name);
+                       core::format(u"Настроить подложку «{}»", skinName),
+                       [this, skinName] {
+                           if (onEditSkin) onEditSkin(skinName);
                        }),
         };
 
         if (!skins[index].system) {
-            row.children().append(iconButton(u"",   // корзина оттуда же
-                                             core::format(u"Удалить обложку «{}»", name),
-                                             [this, name] {
-                                                 if (onDeleteSkin) onDeleteSkin(name);
+            line.children().append(iconButton(u"",   // корзина оттуда же
+                                             core::format(u"Удалить обложку «{}»", skinName),
+                                             [this, skinName] {
+                                                 if (onDeleteSkin) onDeleteSkin(skinName);
                                              }));
         }
 
-        themesPanel_.value().children().append(row);
+        themesPanel_.value().children().append(line);
     }
 
     // Дорога в мастер — последней строкой, после всех тем.

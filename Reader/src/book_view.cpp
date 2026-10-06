@@ -1358,7 +1358,6 @@ BookView::Flip* BookView::newestFlip() {
 }
 
 BookView::Flip BookView::makeFlip() {
-    using namespace wxl::dsl;   // colors.transparent — как в buildTree
 
     const SizeInt32 pixels{static_cast<int32_t>(width_ * scale_ + 0.5f),
                            static_cast<int32_t>(height_ * scale_ + 0.5f)};
@@ -1389,10 +1388,10 @@ BookView::Flip BookView::makeFlip() {
     foldBrush.startPoint({0.0f, 0.0f});
     foldBrush.endPoint({1.0f, 0.0f});
     CompositionColorGradientStop foldMid =
-        compositor_.createColorGradientStop(kFoldMidStop, colors.transparent);
-    foldBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
+        compositor_.createColorGradientStop(kFoldMidStop, dsl::colors.transparent);
+    foldBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, dsl::colors.transparent));
     foldBrush.colorStops().append(foldMid);
-    foldBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    foldBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, dsl::colors.transparent));
     SpriteVisual fold = compositor_.createSpriteVisual();
     fold.brush(foldBrush);
     fold.size({width_, height_});
@@ -1401,9 +1400,9 @@ BookView::Flip BookView::makeFlip() {
     // Тень наружного края приходящего листа: узкая и неизменная, градиент
     // развёрнут — густо у листа, прозрачно прочь.
     CompositionLinearGradientBrush edgeBrush = compositor_.createLinearGradientBrush();
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(kEdgeMidStop, colors.transparent));
-    edgeBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, dsl::colors.transparent));
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(kEdgeMidStop, dsl::colors.transparent));
+    edgeBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, dsl::colors.transparent));
     SpriteVisual edge = compositor_.createSpriteVisual();
     edge.brush(edgeBrush);
     edge.size({width_ * kEdgeOfWindow, height_});
@@ -1417,9 +1416,9 @@ BookView::Flip BookView::makeFlip() {
     leaf.size({width_, height_});
     leaf.isVisible(false);
     CompositionLinearGradientBrush bendBrush = compositor_.createLinearGradientBrush();
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(kBendMidStop, colors.transparent));
-    bendBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, dsl::colors.transparent));
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(kBendMidStop, dsl::colors.transparent));
+    bendBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, dsl::colors.transparent));
     SpriteVisual bend = compositor_.createSpriteVisual();
     bend.brush(bendBrush);
     bend.size({width_ * kBendOfWindow, height_});

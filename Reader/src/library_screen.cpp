@@ -5,7 +5,6 @@ import wxl.fmt;
 namespace bukvitsa::reader {
 
 using namespace wxl;
-using namespace wxl::dsl;
 
 namespace {
 
@@ -55,6 +54,10 @@ u16_text progressOf(const BookEntry& entry, uint32_t charOffset, size_t bookmark
 }  // namespace
 
 LibraryScreen::LibraryScreen() {
+    // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
+    // бы обычные слова (entry, text) и под /W4 каждое стало бы C4459.
+    using namespace wxl::dsl;
+
     shelf_ = StackPanel{Margin{40, 8, 40, 32}};
 
     emptyNote_ = TextBlock{
@@ -166,17 +169,19 @@ void LibraryScreen::show(const Library& library, bool continueAtStart) {
                                                          : Visibility::Collapsed);
 }
 
-Button LibraryScreen::shelfItem(const BookEntry& entry) {
+Button LibraryScreen::shelfItem(const BookEntry& book) {
+    using namespace wxl::dsl;
+
     // Карточка — это кнопка: по книге щёлкают, и всё, что кнопка умеет сама
     // (наведение, нажатие, фокус, клавиатура), достаётся даром.
-    u16_text const guid = entry.guid;
+    u16_text const guid = book.guid;
 
     // Строка прогресса ставится пустой не просто так: «не открывалась» было бы
     // неправдой, пока файл состояния ещё не прочитан, а карточка обязана
     // появиться раньше, чем он будет прочитан. Настоящий текст приносит
     // setProgress().
     TextBlock progress = TextBlock{
-        entry.characterCount == 0 ? u16_text{u"не открывалась"} : u16_text{},
+        book.characterCount == 0 ? u16_text{u"не открывалась"} : u16_text{},
         fontSize = 13,
         foreground = SolidColorBrush{kDim},
         Margin{0, 8, 0, 0},
@@ -206,7 +211,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
 
             Image{
                 column = 0,
-                source = coverOf(entry),
+                source = coverOf(book),
                 width = kCoverWidth,
                 height = kCoverHeight,
                 stretch = Stretch::UniformToFill,
@@ -217,7 +222,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                 column = 1,
                 vAlign.center,
                 TextBlock{
-                    entry.title,
+                    book.title,
                     fontSize = 18,
                     FontWeight{600},
                     foreground = SolidColorBrush{kInk},
@@ -226,7 +231,7 @@ Button LibraryScreen::shelfItem(const BookEntry& entry) {
                     textTrimming.characterEllipsis,
                 },
                 TextBlock{
-                    entry.authors,
+                    book.authors,
                     fontSize = 14,
                     foreground = SolidColorBrush{kDim},
                     Margin{0, 4, 0, 0},
