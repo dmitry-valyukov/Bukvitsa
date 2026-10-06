@@ -48,7 +48,7 @@ struct SearchHit {
 ///        встречается десятки тысяч раз, и список из них бесполезен читателю
 ///        ровно так же, как дорог приложению.
 sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
-                                 std::wstring_view needle, size_t limit = 200);
+                                 u16_view needle, size_t limit = 200);
 
 /// Первые слова абзаца, в котором стоит эта позиция, — подсказка для закладки.
 u16_text hintAt(std::span<const typography::Block> blocks, uint32_t charOffset);

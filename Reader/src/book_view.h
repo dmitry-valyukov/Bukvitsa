@@ -25,18 +25,17 @@
 #include <string>
 #include <vector>
 
-#include "skins.h"
-#include "theme.h"
-
 #include "CompositionWindow.h"
 #include "DrawingSurface.h"
 #include "Object.h"
 #include "pch.h"
 
-// Последним: он ведёт к модели книги, а она импортирует wxl.core, после чего
-// стандартный заголовок MSVC уже не принимает.
+// Последними: они импортируют wxl.core (темы и обложки — сами, книга — через
+// модель), после чего стандартный заголовок MSVC уже не принимает.
 #include "book.h"
 #include "note_popup.h"
+#include "skins.h"
+#include "theme.h"
 
 namespace bukvitsa::reader {
 
@@ -588,7 +587,7 @@ private:
     /// сбрасывают его.
     std::string backdropBytes_;
     Microsoft::WRL::ComPtr<IWICFormatConverter> backdropSource_;
-    std::wstring backdropWanted_;
+    std::filesystem::path backdropWanted_;
 
     /// Изгиб страницы поверх фотографии: содержимое рисуется в слой двойной
     /// высоты, Displacement Map гнёт его по карте, Scale ужимает по вертикали

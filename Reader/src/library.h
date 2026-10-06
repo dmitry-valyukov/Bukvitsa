@@ -35,12 +35,12 @@ namespace bukvitsa::reader {
 
 /// Одна книга в реестре — ровно то, что нужно витрине и быстрому запуску.
 struct BookEntry {
-    std::wstring guid;      ///< наш идентификатор; он же имя файла состояния
-    std::wstring path;      ///< где лежит файл; книга остаётся на месте
-    std::wstring bookId;    ///< UUID книги из FB3, если он у неё есть
+    u16_text guid;                ///< наш идентификатор; он же имя файла состояния
+    std::filesystem::path path;   ///< где лежит файл; книга остаётся на месте
+    u16_text bookId;              ///< UUID книги из FB3, если он у неё есть
     u16_text title;
     u16_text authors;
-    std::wstring cover;    ///< имя файла обложки в cache, пусто -- обложки нет
+    u16_text cover;               ///< имя файла обложки в cache, пусто -- обложки нет
     uint64_t fileSize = 0;        ///< вместе с path — дешёвая проверка «тот же файл»
     uint32_t characterCount = 0;  ///< знаменатель прогресса чтения
 };
@@ -54,16 +54,16 @@ public:
     /// реестр это пустая витрина, а не отказ запуститься, и книги никуда не
     /// денутся -- они лежат там, где лежали, и добавятся снова.
     ///
-    /// Байты приносит `Io::readFile`: читать в интерфейсном потоке нельзя, а
-    /// разбирать -- только в нём.
+    /// Байты приносит `async_file::read_all`: читать в интерфейсном потоке
+    /// нельзя, а разбирать -- только в нём.
     void loadFrom(std::string xml);
 
-    /// Текст library.xml -- то, что уходит в `Io::writeFile`.
+    /// Текст library.xml -- то, что уходит в `async_file::write_all`.
     std::string toXml() const;
 
     const std::vector<BookEntry>& books() const { return books_; }
 
-    const BookEntry* find(std::wstring_view guid) const;
+    const BookEntry* find(u16_view guid) const;
 
     /// Та же книга, если она уже в реестре: сперва по UUID книги, потом по
     /// пути. Добавить книгу дважды нельзя — иначе у одной книги оказалось бы
@@ -88,7 +88,7 @@ private:
 std::filesystem::path libraryPath();
 
 /// Новый guid записи реестра, в фигурных скобках, как их пишет Windows.
-std::wstring newGuid();
+u16_text newGuid();
 
 /// Каталог, в котором лежат обложки. Отдельно от books намеренно: обложку
 /// можно смело стереть -- она восстановится из книги, — а место чтения нельзя.
@@ -98,11 +98,11 @@ std::filesystem::path coverDirectory();
 /// Пусто, если у книги обложки нет или она в формате, который витрине не
 /// показать.
 struct CoverBytes {
-    std::wstring name;
+    u16_text name;
     std::string_view bytes;   ///< вид в саму книгу: она жива, пока обложку пишут
 };
 
-CoverBytes coverOf(const fb3::Document& document, std::wstring_view guid);
+CoverBytes coverOf(const fb3::Document& document, u16_view guid);
 
 /// Закладка: место в книге и то, по чему читатель его узнает.
 ///
@@ -134,7 +134,7 @@ struct BookState {
 };
 
 /// Путь к файлу состояния книги.
-std::filesystem::path statePath(std::wstring_view guid);
+std::filesystem::path statePath(u16_view guid);
 
 /// Разбирает books\{guid}.xml. Пусто или битое -- книга, открытая с начала,
 /// а не книга, которая не открылась.

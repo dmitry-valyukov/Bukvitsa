@@ -16,15 +16,14 @@
 #include <optional>
 #include <vector>
 
-#include "theme.h"
-
 #include "DrawingSurface.h"
 #include "Object.h"
 #include "pch.h"
 
-// Последним: он ведёт к модели книги, а она импортирует wxl.core, после чего
-// стандартный заголовок MSVC уже не принимает.
+// Последними: они импортируют wxl.core (тема — сама, книга — через модель),
+// после чего стандартный заголовок MSVC уже не принимает.
 #include "book.h"
+#include "theme.h"
 
 namespace bukvitsa::reader {
 

@@ -2,9 +2,8 @@
 // Раскодирование картинки — общая ступень подложки темы и мастера обложек:
 // WIC доводит снимок до 32bppPBGRA, битмап устройства из него делает уже тот
 // контекст, который будет рисовать. Диска здесь нет: байты файла приносит
-// `Io::readFile`, и раскодируется уже память.
+// `async_file::read_all`, и раскодируется уже память.
 
-#include <filesystem>
 #include <string_view>
 
 #include <wrl/client.h>
@@ -19,10 +18,5 @@ namespace bukvitsa::reader {
 /// Фабрика WIC своя и на один вызов: снимки раскодируются по смене темы и по
 /// открытию мастера, а не в цикле.
 Microsoft::WRL::ComPtr<IWICFormatConverter> decodeImage(std::string_view bytes);
-
-/// Каталог исполняемого файла — от него достраиваются пути ресурсов Assets.
-/// Именно от модуля, а не от текущего каталога: тот зависит от того, откуда
-/// читалку запустили.
-std::filesystem::path exeDirectory();
 
 }  // namespace bukvitsa::reader

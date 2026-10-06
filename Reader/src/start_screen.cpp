@@ -7,7 +7,6 @@
 namespace bukvitsa::reader {
 
 using namespace wxl;
-using namespace wxl::dsl;
 using namespace std::chrono_literals;
 
 namespace {
@@ -41,18 +40,22 @@ constexpr Vector3 kRiseFrom{0.0f, 14.0f, 0.0f};
 }  // namespace
 
 StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor) {
+    // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
+    // бы обычные слова (title, key, delay) и под /W4 каждое стало бы C4459.
+    using namespace wxl::dsl;
+
     // Кнопки собираются раньше корня: каждая должна успеть отдать свой визуал
     // в revealing_ до того, как дерево уедет в конструктор Grid. Большая
     // кнопка остаётся в руках: setContinueBook() наполнит её книгой.
-    auto continueButton = addButton(L"Продолжить чтение", 72.0f, 19.0f, &onContinueReading);
+    auto continueButton = addButton(u"Продолжить чтение", 72.0f, 19.0f, &onContinueReading);
     continueButton_ = continueButton;
 
     auto panel = StackPanel{
         continueButton,
-        addButton(L"Моя библиотека", 46.0f, 15.0f, &onLibrary),
-        addButton(L"Добавить книгу", 46.0f, 15.0f, &onAddBook),
-        addButton(L"Добавить каталог", 46.0f, 15.0f, &onAddFolder),
-        addButton(L"Выйти из читалки", 46.0f, 15.0f, &onExit, true),
+        addButton(u"Моя библиотека", 46.0f, 15.0f, &onLibrary),
+        addButton(u"Добавить книгу", 46.0f, 15.0f, &onAddBook),
+        addButton(u"Добавить каталог", 46.0f, 15.0f, &onAddFolder),
+        addButton(u"Выйти из читалки", 46.0f, 15.0f, &onExit, true),
     };
 
     // Кнопки лежат на карточке — той же, что у мастера обложек. Проступать
@@ -112,14 +115,16 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
     });
 }
 
-Button StartScreen::addButton(zstring_view caption, float tall, float kegel,
+Button StartScreen::addButton(zstring_view said, float tall, float kegel,
                               // Имена нарочно не height, не fontSize и не text:
                               // параметр с именем свойства перекрыл бы одноимённый
                               // тег DSL, и `height = height` стало бы
                               // присваиванием float.
                               std::function<void()>* action, bool cancel) {
+    using namespace wxl::dsl;
+
     auto button = Button{
-        caption,
+        said,
         width = kButtonWidth,
         height = tall,
         FontWeight{600},
@@ -158,15 +163,21 @@ Button StartScreen::addButton(zstring_view caption, float tall, float kegel,
     return button;
 }
 
-void StartScreen::setContinueBook(std::wstring_view title, std::wstring_view author,
+void StartScreen::setContinueBook(u16_view bookTitle, u16_view bookAuthor,
                                   const std::filesystem::path& cover) {
-    if (title.empty()) return;   // продолжать нечего — кнопка остаётся простой надписью
+    using namespace wxl::dsl;
+
+    if (bookTitle.empty()) return;   // продолжать нечего — кнопка остаётся простой надписью
 
     // Сюда попадают на каждом показе экрана, а книга меняется редко:
     // перестраивать то же самое незачем.
-    std::wstring key = std::wstring(title) + L'\n' + std::wstring(author) + L'\n' + cover.wstring();
-    if (key == continueKey_) return;
-    continueKey_ = std::move(key);
+    std::u16string fingerprint{bookTitle.plain()};
+    fingerprint += u'\n';
+    fingerprint += bookAuthor.plain();
+    fingerprint += u'\n';
+    fingerprint += cover.u16string();
+    if (fingerprint == continueKey_) return;
+    continueKey_ = std::move(fingerprint);
 
     // Колонка текста: своя надпись кнопки, под ней название, под ним автор.
     // Grid со звёздной колонкой, а не горизонтальный StackPanel: тот мерил бы
@@ -175,10 +186,10 @@ void StartScreen::setContinueBook(std::wstring_view title, std::wstring_view aut
     auto lines = StackPanel{
         column = 1,
         vAlign.center,
-        TextBlock{L"Продолжить чтение", fontSize = 19, FontWeight{600}},
-        TextBlock{std::wstring(title), fontSize = 13, Margin{0, 5, 0, 0},
+        TextBlock{u"Продолжить чтение", fontSize = 19, FontWeight{600}},
+        TextBlock{hstring{bookTitle}, fontSize = 13, Margin{0, 5, 0, 0},
                   textTrimming.characterEllipsis},
-        TextBlock{std::wstring(author), fontSize = 12, Margin{0, 2, 0, 0},
+        TextBlock{hstring{bookAuthor}, fontSize = 12, Margin{0, 2, 0, 0},
                   foreground = SolidColorBrush{kDimInk}, textTrimming.characterEllipsis},
     };
 
@@ -189,13 +200,13 @@ void StartScreen::setContinueBook(std::wstring_view title, std::wstring_view aut
     } else {
         // Путь абсолютный, поэтому со схемой: без неё wxl искал бы картинку
         // рядом с исполняемым файлом — так же устроена обложка на витрине.
-        std::wstring full = cover.wstring();
-        std::replace(full.begin(), full.end(), L'\\', L'/');
+        std::u16string full = cover.u16string();
+        std::replace(full.begin(), full.end(), u'\\', u'/');
 
         button.content(Grid{
-            columnDefinitions = L"auto,*",
+            columnDefinitions = u"auto,*",
             Image{
-                source = ImageSource{L"file:///" + full},
+                source = ImageSource{u"file:///" + full},
                 height = kCoverTall,
                 Margin{0, 0, 12, 0},
             },

@@ -77,12 +77,12 @@ public:
     std::function<void()> onAddSkin;
 
     /// Шестерёнка у обложки: открыть в мастере правку её кривизны.
-    std::function<void(std::wstring)> onEditSkin;
+    std::function<void(u16_text)> onEditSkin;
 
     /// Корзина у обложки: убрать её из реестра вместе со снимком. Спросить,
     /// точно ли, — дело приложения: у панели нет ни окна, ни права решать за
     /// читателя, а удаление необратимо.
-    std::function<void(std::wstring)> onDeleteSkin;
+    std::function<void(u16_text)> onDeleteSkin;
 
     /// Пересобирает список тем: встроенные плюс обложки из полосы набора.
     /// Зовётся приложением, когда реестр обложек изменился.
@@ -110,10 +110,10 @@ private:
     void show();
 
     /// Кнопка вкладки: заголовок плюс переключение.
-    wxl::Button tabButton(zstring_view caption, Tab tab);
+    wxl::Button tabButton(zstring_view said, Tab tab);
 
     /// Строка списка — то, из чего собраны все три списка панели.
-    wxl::Button listItem(zstring_view caption, zstring_view under, float indent,
+    wxl::Button listItem(zstring_view said, zstring_view under, float indent,
                          std::function<void()> action);
 
     void showTab(Tab tab);

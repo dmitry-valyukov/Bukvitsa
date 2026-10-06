@@ -23,6 +23,9 @@
 #include <string_view>
 #include <vector>
 
+// Импорт последним: имя обложки и имя снимка — проверенный текст wxl.core.
+import wxl.core;
+
 namespace bukvitsa::reader {
 
 /// Кривая одной границы разворота — верхней или нижней: девять точек, каждая
@@ -47,8 +50,8 @@ struct EdgeCurve {
 /// Одна обложка. Имя вводит читатель, и оно же — ключ реестра: сохранить
 /// обложку под старым именем значит заменить её.
 struct Skin {
-    std::wstring name;
-    std::wstring image;   ///< имя файла снимка; где он лежит, говорит `system`
+    u16_text name;
+    u16_text image;   ///< имя файла снимка; где он лежит, говорит `system`
 
     /// Системная — приехала вместе с программой, а не заведена читателем.
     /// Снимок такой лежит в `Assets` рядом с исполняемым, а не в
@@ -127,7 +130,7 @@ private:
 };
 
 /// Реестр обложек — skins.xml. Читается и пишется целиком, как и остальные
-/// файлы читалки; байты приносит и уносит `Io`.
+/// файлы читалки; байты приносят и уносят операции wxl (`async_file`).
 class Skins {
 public:
     /// Версия формата: незнакомое игнорируется, а не роняет разбор. Вторая —
@@ -142,12 +145,12 @@ public:
     /// то, ради чего стоит не запуститься.
     void loadFrom(std::string xml);
 
-    /// Текст skins.xml — то, что уходит в `Io::writeFile`.
+    /// Текст skins.xml — то, что уходит в `async_file::write_all`.
     std::string toXml() const;
 
     const std::vector<Skin>& list() const { return skins_; }
 
-    const Skin* find(std::wstring_view name) const;
+    const Skin* find(u16_view name) const;
 
     /// Добавляет обложку или заменяет одноимённую: имя — ключ.
     void put(Skin skin);
@@ -159,7 +162,7 @@ public:
     /// открытую обложку под другим именем, заводит вторую с тем же именем
     /// файла. Ссылок на файл никто не считает, так что уносить его вместе с
     /// обложкой значило бы иногда ломать соседнюю.
-    bool remove(std::wstring_view name);
+    bool remove(u16_view name);
 
 private:
     std::vector<Skin> skins_;

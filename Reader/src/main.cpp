@@ -11,8 +11,8 @@
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
 #include "file_dialog.h"
 #include "imaging.h"
-#include "settings.h"
 
+#include "ApplicationFolder.h"
 #include "CompositionWindow.h"
 #include "skin_wizard.h"
 #include "start_screen.h"
@@ -24,6 +24,7 @@
 #include "library.h"
 #include "library_screen.h"
 #include "reader_panel.h"
+#include "settings.h"
 #include "store.h"
 
 // Импорт последним, после всех обычных заголовков.
@@ -31,7 +32,6 @@ import wxl.async;
 import wxl.core;
 
 using namespace wxl;
-using namespace wxl::dsl;
 using namespace std::chrono_literals;
 
 namespace {
@@ -170,7 +170,7 @@ detached_task saveSettingsLater(Settings settings) {
 }
 
 /// Пишет состояние книги: место чтения и закладки.
-detached_task saveStateLater(std::wstring guid, BookState state) {
+detached_task saveStateLater(u16_text guid, BookState state) {
     if (guid.empty()) co_return;
 
     co_await async_file::write_all(poolPath(statePath(guid)), bookStateXml(state));
@@ -272,7 +272,7 @@ detached_task addFolderFlow(App app, std::filesystem::path folder, std::function
         const bool isNew = app.library->books().size() != knownBefore;
 
         if (const CoverBytes cover = coverOf(*document, stored.guid); !cover.name.empty())
-            co_await async_file::write_all(poolPath(coverDirectory() / cover.name), std::string(cover.bytes));
+            co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
 
         added = true;
 
@@ -310,14 +310,17 @@ detached_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
             co_return;
         }
 
-        std::wstring file = newGuid() + photo.extension().wstring();
+        // Расширение — от файла снимка, то есть от файловой системы: имя файла
+        // Windows не обязано быть правильным UTF-16, потому чинится.
+        u16_text file = newGuid();
+        file += unicode::repaired(photo.extension().native());
 
-        co_await async_file::write_all(poolPath(skinDirectory() / file), std::move(bytes));
+        co_await async_file::write_all(poolPath(skinDirectory() / file.wchars()), std::move(bytes));
 
         skin.image = std::move(file);
     }
 
-    const std::wstring skinName = skin.name;
+    const u16_text skinName = skin.name;
     app.skins->put(std::move(skin));
 
     co_await async_file::write_all(poolPath(skinsPath()), app.skins->toXml());
@@ -393,12 +396,12 @@ detached_task checkImageFlow(App app, std::filesystem::path image, std::function
 /// за удаляемой сдвигаются, и «остаться на своей» значит найти её заново.
 /// Удалили ту, что была на экране, — читатель возвращается на встроенную
 /// тему, номер которой читалка держит в настройках ровно на этот случай.
-detached_task deleteSkinFlow(App app, std::wstring name) {
+detached_task deleteSkinFlow(App app, u16_text name) {
     if (!app.skins->find(name)) co_return;   // реестр успел перемениться под руками
 
     // Спрашиваем, пока старый список цел: activeSkin() смотрит в него номером.
     const Skin* active = app.view->activeSkin();
-    const std::wstring activeName = active ? active->name : std::wstring{};
+    const u16_text activeName = active ? active->name : u16_text{};
     const bool leavingActive = activeName == name;
 
     app.skins->remove(name);
@@ -426,7 +429,7 @@ detached_task deleteSkinFlow(App app, std::wstring name) {
     app.panel->refreshThemes();
 
     if (leavingActive) {
-        app.settings->skin.clear();
+        app.settings->skin = {};
         co_await async_file::write_all(poolPath(settingsPath()), settingsXml(*app.settings));
     }
 }
@@ -609,7 +612,7 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
     const BookEntry stored = app.library->add(book->document(), path, fileSize);
 
     if (const CoverBytes cover = coverOf(book->document(), stored.guid); !cover.name.empty())
-        co_await async_file::write_all(poolPath(coverDirectory() / cover.name), std::string(cover.bytes));
+        co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
 
     co_await async_file::write_all(poolPath(libraryPath()), app.library->toXml());
 
@@ -763,6 +766,12 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
 }  // namespace
 
 wxl::Teardown wxl_launched() {
+    // Теги разметки открыты только здесь, где она и пишется. На уровне файла
+    // они накрыли бы обычные слова — text, size, state, entry — и под /W4
+    // каждое такое имя, вплоть до параметров шаблонов самой wxl, стало бы
+    // «прячущим глобальное» (C4459).
+    using namespace wxl::dsl;
+
     // Сценарий, кончившийся исключением, которого сам не поймал, -- не повод
     // ронять читалку: исключение приходит сюда, в поток окна, и читатель видит,
     // что именно не удалось. Сам сценарий на этом кончается, кадр уходит, как у
@@ -775,9 +784,9 @@ wxl::Teardown wxl_launched() {
         } catch (const std::exception& failure) {
             // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
             // проверяется, а не принимается на веру.
-            const std::optional<u8_view> text = unicode::checked(std::string_view(failure.what()));
+            const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
             const std::wstring reason =
-                text ? std::wstring(text->to_utf16().wchars()) : L"(сообщение не в UTF-8)";
+                said ? std::wstring(said->to_utf16().wchars()) : L"(сообщение не в UTF-8)";
             ::MessageBoxW(::GetActiveWindow(), (L"Ошибка:\n" + reason).c_str(), L"Буквица",
                           MB_OK | MB_ICONWARNING);
         } catch (...) {
@@ -796,7 +805,7 @@ wxl::Teardown wxl_launched() {
     // с WS_EX_NOREDIRECTIONBITMAP — поверхности перенаправления нет вовсе, а
     // содержимое целиком даёт композитор. Окно — хендл: App и обработчики держат
     // его копии, а само окно живёт до WM_NCDESTROY.
-    CompositionWindow const window{L"Буквица", SizeInt32{720, 520}};
+    CompositionWindow const window{u"Буквица", SizeInt32{720, 520}};
 
     // Рамка окна тёмная, как и остров: системный светлый заголовок над тёмными
     // ящиками, мастером и полкой смотрелся бы чужим.
@@ -810,7 +819,7 @@ wxl::Teardown wxl_launched() {
     // D3D-устройством, и на сцене-композиторе оно не уживается с устройством
     // Win2D того же кэша — DirectComposition падает (dcompi). Асинхронная
     // загрузка идёт тем же устройством Win2D и не падает.
-    window.backgroundAsync(exeDirectory() / L"Assets/splash-screen-1k.png");
+    window.backgroundAsync(applicationFolder() / L"Assets/splash-screen-1k.png");
 
     auto screen = std::make_shared<StartScreen>(window.chromeCompositor());
     auto view = std::make_shared<BookView>(window);
@@ -826,7 +835,7 @@ wxl::Teardown wxl_launched() {
     // Состояние открытой книги: место чтения и закладки. Читается и пишется
     // целиком, потому что файл переписывается заменой — «дописать одно поле»
     // всё равно значит написать его весь.
-    auto state = std::make_shared<BookState>();
+    auto bookState = std::make_shared<BookState>();
 
     // Слот прогретой книги: в него запуск кладёт ту, что стоит на кнопке
     // «Продолжить чтение», разобрав её заранее.
@@ -843,12 +852,12 @@ wxl::Teardown wxl_launched() {
     positionTimer.interval(kPositionQuiet);
     positionTimer.isRepeating(false);
 
-    auto const rememberPosition = [view, settings, state] {
+    auto const rememberPosition = [view, settings, bookState] {
         // Книга закрыта -- писать нечего: место чтения принадлежит ей, а не
         // окну, и ноль незанятой полосы стёр бы то, что уже записано.
         if (settings->lastBookGuid.empty() || !view->isOpen()) return;
-        state->charOffset = view->readingPosition();
-        saveStateLater(settings->lastBookGuid, *state);
+        bookState->charOffset = view->readingPosition();
+        saveStateLater(settings->lastBookGuid, *bookState);
     };
 
     positionTimer.add_onTick([positionTimer, rememberPosition](Object const&, Object const&) {
@@ -888,15 +897,15 @@ wxl::Teardown wxl_launched() {
         // бумага книги. Задел на будущее (кэш texture держит снимок) — второй
         // показ заставки идёт без загрузки.
         view->setActive(false);
-        window.backgroundAsync(exeDirectory() / L"Assets/splash-screen-1k.png");
+        window.backgroundAsync(applicationFolder() / L"Assets/splash-screen-1k.png");
 
         // Большой кнопке — её книга: обложка, название, автор. На каждом
         // показе, потому что последняя открытая книга могла смениться, пока
         // экрана не было видно; при запуске реестр к этому моменту прочитан.
-        if (const BookEntry* entry = library->find(settings->lastBookGuid)) {
-            screen->setContinueBook(entry->title.wchars(), entry->authors.wchars(),
-                                    entry->cover.empty() ? std::filesystem::path{}
-                                                         : coverDirectory() / entry->cover);
+        if (const BookEntry* known = library->find(settings->lastBookGuid)) {
+            screen->setContinueBook(known->title, known->authors,
+                                    known->cover.empty() ? std::filesystem::path{}
+                                                         : coverDirectory() / known->cover.wchars());
         }
 
         *shown = Screen::Start;
@@ -904,7 +913,7 @@ wxl::Teardown wxl_launched() {
     };
 
     // Всё, из чего собрано приложение, одной связкой: её берут корутины.
-    App const app{window, settings, library,      state, view,
+    App const app{window, settings, library,      bookState, view,
                   panel,    shelf,  screen,   shown,        bookCameFrom, skins, warm};
 
     auto const showLibrary = [app, window, shelf, library, settings, shown, rememberPosition,
@@ -915,7 +924,7 @@ wxl::Teardown wxl_launched() {
         // Как и на стартовом экране: полоса перестаёт быть текущим экраном —
         // её страница уходит со сцены, а задником окна снова заставка.
         app.view->setActive(false);
-        window.backgroundAsync(exeDirectory() / L"Assets/splash-screen-1k.png");
+        window.backgroundAsync(applicationFolder() / L"Assets/splash-screen-1k.png");
 
         // Полка пересобирается на каждый показ: книга могла добавиться, а
         // место чтения — уехать с тех пор, как её видели в прошлый раз.
@@ -962,16 +971,16 @@ wxl::Teardown wxl_launched() {
 
     shelf->onAddBook = addBook;
     shelf->onBack = showStartScreen;
-    shelf->onOpen = [library, openBook](std::wstring guid) {
-        if (BookEntry const* entry = library->find(guid)) openBook(entry->path);
+    shelf->onOpen = [library, openBook](u16_text guid) {
+        if (BookEntry const* known = library->find(guid)) openBook(known->path);
     };
     shelf->onContinueAtStartChanged = [settings](bool wanted) {
         settings->continueReading = wanted;
         saveSettingsLater(*settings);
     };
 
-    panel->onStateChanged = [settings, state] {
-        saveStateLater(settings->lastBookGuid, *state);
+    panel->onStateChanged = [settings, bookState] {
+        saveStateLater(settings->lastBookGuid, *bookState);
     };
 
     panel->onLibrary = showLibrary;
@@ -1010,8 +1019,8 @@ wxl::Teardown wxl_launched() {
         if (const Skin* active = view->activeSkin()) {
             settings->skin = active->name;
         } else {
-            settings->skin.clear();
-            settings->theme = themeIdAt(view->theme());
+            settings->skin = {};
+            settings->theme = u16_text{themeIdAt(view->theme())};
         }
         settings->fontSize = view->fontSize();
         settings->lineHeight = view->lineHeight();
@@ -1057,7 +1066,7 @@ wxl::Teardown wxl_launched() {
     };
 
     panel->onEditSkin = [app, view, wizard, closePanel,
-                         previewSkin](std::wstring skinName) {
+                         previewSkin](u16_text skinName) {
         // По полному списку полосы, а не по реестру: системные обложки живут
         // только в нём, а шестерёнка есть и у них — правка «на основе».
         const Skin* known = nullptr;
@@ -1089,10 +1098,10 @@ wxl::Teardown wxl_launched() {
     //
     // Вопрос говорит ровно то, что произойдёт: снимок остаётся в `skins\`, и
     // обещать его пропажу значило бы соврать про собственное поведение.
-    panel->onDeleteSkin = [window, app, skins](std::wstring skinName) {
+    panel->onDeleteSkin = [window, app, skins](u16_text skinName) {
         if (!skins->find(skinName)) return;   // реестр успел перемениться
 
-        const std::wstring question = L"Удалить обложку «" + skinName +
+        const std::wstring question = L"Удалить обложку «" + std::wstring(skinName.wchars()) +
                                       L"»?\n\nРасставленные по снимку точки пропадут; "
                                       L"сам снимок останется.";
 
@@ -1240,7 +1249,7 @@ wxl::Teardown wxl_launched() {
     auto const rememberWindow = [window, settings] {
         // Место отдаётся строкой WinRT; к нам она приходит чужим текстом, и
         // проверенным становится так же, как любой другой чужой.
-        settings->windowPlacement = std::wstring(unicode::repaired(window.placement()).wchars());
+        settings->windowPlacement = unicode::repaired(window.placement());
         saveSettingsLater(*settings);
     };
 
