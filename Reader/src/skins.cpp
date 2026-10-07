@@ -7,8 +7,6 @@
 #include "settings.h"
 #include "store.h"
 
-#include "ApplicationFolder.h"   // у системной обложки снимок в Assets рядом с программой
-
 import wxl.fmt;
 
 namespace bukvitsa::reader {
@@ -159,7 +157,9 @@ std::span<const Skin> systemSkins() {
 std::filesystem::path skinImagePath(const Skin& skin) {
     if (skin.image.empty()) return {};
 
-    return skin.system ? wxl::applicationFolder() / L"Assets" / skin.image.wchars()
+    // У системной обложки снимок в Assets рядом с программой. Папку даёт
+    // wxl.core, не wxl.ui: этот файл собирают и тесты, у которых окна нет.
+    return skin.system ? environment::application_folder() / L"Assets" / skin.image.wchars()
                        : skinDirectory() / skin.image.wchars();
 }
 
