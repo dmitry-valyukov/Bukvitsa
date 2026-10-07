@@ -126,7 +126,9 @@ void SkinWizard::buildTree() {
         },
     };
 
-    nameBox_ = TextBox{width = 320.0};
+    // Имя для чтеца экрана — слова подписи над полем: у поля ввода своего
+    // слова на лице нет.
+    nameBox_ = TextBox{width = 320.0, automationName = u"Название обложки"};
 
     namePanel_ = Border{
         hAlign.center,

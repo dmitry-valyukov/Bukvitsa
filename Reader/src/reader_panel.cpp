@@ -276,6 +276,8 @@ UIElement ReaderPanel::buildSearch() {
 
     searchBox_ = TextBox{
         row = 0,
+        // Подсказка в пустом поле — не имя: чтецу экрана поле зовётся отдельно.
+        automationName = u"Поиск по книге",
         placeholderText = u"Что искать",
         Margin{0, 0, 0, 8},
     };
@@ -358,13 +360,22 @@ UIElement ReaderPanel::buildSettings() {
     // В то же поле пишут колесо и клавиши полосы — и ползунок идёт за ними
     // сам, без обработчика и без флага «это мы сами его двигаем». Единицы у
     // ползунка и поля одни (проценты у интерлиньяжа и полей, см. Settings).
-    auto slider = [](double low, double high, double step, observable<double>& field) {
-        return Slider{
-            minimum = low,
-            maximum = high,
-            stepFrequency = step,
-            value = Bind{field},
-            Margin{0, 0, 0, 4},
+    //
+    // Подпись над ползунком — его же имя для чтеца экрана: у ползунка нет
+    // слова на лице, и без имени Narrator называет его просто ползунком.
+    // Одни слова на подпись и имя, поэтому группа собирается здесь целиком.
+    auto setting = [](zstring_view said, double low, double high, double step,
+                      observable<double>& field) {
+        return StackPanel{
+            groupCaption(said),
+            Slider{
+                automationName = said,
+                minimum = low,
+                maximum = high,
+                stepFrequency = step,
+                value = Bind{field},
+                Margin{0, 0, 0, 4},
+            },
         };
     };
 
@@ -375,12 +386,10 @@ UIElement ReaderPanel::buildSettings() {
             // где кончается одна группа и начинается другая, а собирается
             // заново при каждой смене реестра.
             themesPanel_.value(),
-            groupCaption(u"Кегль"),
-            slider(kFontSizeMin, kFontSizeMax, kFontSizeStep, prefs_.fontSize),
-            groupCaption(u"Интерлиньяж"),
-            slider(kLineHeightMin, kLineHeightMax, kLineHeightStep, prefs_.lineHeight),
-            groupCaption(u"Поля"),
-            slider(kMarginMin, kMarginMax, kMarginStep, prefs_.margin),
+            setting(u"Кегль", kFontSizeMin, kFontSizeMax, kFontSizeStep, prefs_.fontSize),
+            setting(u"Интерлиньяж", kLineHeightMin, kLineHeightMax, kLineHeightStep,
+                    prefs_.lineHeight),
+            setting(u"Поля", kMarginMin, kMarginMax, kMarginStep, prefs_.margin),
             TextBlock{
                 u"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
                 fontSize = 12,
