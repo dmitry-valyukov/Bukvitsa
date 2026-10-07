@@ -515,18 +515,10 @@ detached_task warmBookFlow(App app, std::filesystem::path path) {
 /// Показывает полосу набора: страница — на сцену, экран — книга. Общее у двух
 /// дорог сюда: открытия книги и возвращения к уже открытой.
 void revealBook(App const& app) {
-    // Сверстать и нарисовать до показа, чтобы читатель не увидел пустой лист.
-    // Меру — размер с масштабом — берём у самого окна, а не у экрана поверх
-    // него. Так это работает и при автооткрытии на старте, когда никакого
-    // экрана ещё нет: прежде размер спрашивали у content()->xamlRoot(), а на
-    // старте острова нет вовсе — и падало на нуле.
-    if (SizeInt32 const pixels = app.window.clientSize(); pixels.width > 0 && pixels.height > 0) {
-        float scale = app.window.rasterizationScale();
-        if (scale <= 0.0f) scale = 1.0f;
-        app.view->prepare(static_cast<float>(pixels.width) / scale,
-                          static_cast<float>(pixels.height) / scale, scale);
-    }
-
+    // Страница уже сверстана и нарисована: меру полоса берёт у самого окна
+    // (ClientSizeChanged), а не у экрана поверх него, и потому сверстана
+    // всегда — и когда её остров ещё не показан, и при автооткрытии на старте,
+    // когда никакого экрана нет вовсе. Пустого листа читатель не увидит.
     *app.bookCameFrom = *app.shown;
     *app.shown = Screen::Book;
     // Полоса становится текущим экраном: показать её страницу на сцене и увести

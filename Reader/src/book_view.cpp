@@ -337,6 +337,21 @@ BookView::BookView(const CompositionWindow& window, Settings& settings)
       note_(window.chromeCompositor()) {
     root_ = buildTree();
 
+    // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из WM_SIZE,
+    // раньше вёрстки XAML, и несёт размер в пикселях вместе с масштабом экрана
+    // — тем же числом, которым остров переводит DIP в пиксели; переезд на
+    // монитор с другим DPI (WM_DPICHANGED) приходит сюда же, новым масштабом.
+    // Остров полосы занимает окно целиком, так что это и его размер, а
+    // спрашивать остров (SizeChanged, XamlRoot) не нужно — и нельзя было до
+    // Loaded. Первый WM_SIZE окно пережило до нас: текущая мера снимается сразу.
+    sizeToken_ = window_.add_onClientSizeChanged([this](Object const&, ClientSize const& client) {
+        // Гистерезис числа колонок — только здесь: окно тянут мышью, граница
+        // меры проходит под курсором, и без него колонки защёлкают. Знака
+        // хватает — дрожь бывает в доли знака, а не в четыре.
+        if (applySize(client.size, client.scale)) requestRelayout(true);
+    });
+    applySize(window_.clientSize(), window_.rasterizationScale());
+
     // Настройки вида приходят из модели, а не ставятся снаружи: полоса слушает
     // поля и перевёрстывается сама; то же поле двигает ползунок панели (Bind),
     // а колесо и клавиши полосы пишут в него же — и панель узнаёт о них так же.
@@ -471,14 +486,6 @@ Grid BookView::buildTree() {
 
     tree.add_onLoaded([this](Object const&, RoutedEventArgs&) {
         root_.value().focus(FocusState::Programmatic);
-        if (resizeSurface()) relayoutNow();
-    });
-
-    tree.add_onSizeChanged([this](Object const&, SizeChangedEventArgs&) {
-        // Единственное место, где нужен гистерезис: окно тянут мышью, граница
-        // меры проходит под курсором, и без него колонки защёлкают. Знака
-        // хватает — дрожь бывает в доли знака, а не в четыре.
-        if (resizeSurface()) requestRelayout(true);
     });
 
     tree.add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
@@ -623,9 +630,11 @@ Grid BookView::buildTree() {
 }
 
 BookView::~BookView() {
-    // Настройки переживают полосу: слушатели с нашим this снимаются, иначе
-    // следующая перемена кегля позвала бы уже разрушенную полосу.
+    // Настройки и окно переживают полосу: слушатели с нашим this снимаются,
+    // иначе следующая перемена кегля или размера позвала бы уже разрушенную
+    // полосу.
     for (auto& [field, cookie] : settingsWatches_) field->remove_change(cookie);
+    window_.remove_onClientSizeChanged(sizeToken_);
 }
 
 void BookView::addOverlay(const UIElement& element) {
@@ -794,41 +803,18 @@ void BookView::applyMargin(float fraction) {
     requestRelayout();
 }
 
-void BookView::prepare(float width, float height, float scale) {
-    // Полоса верстается и рисуется до того, как её покажут.
-    //
-    // Размер для этого известен заранее: полоса занимает окно целиком, а
-    // размер окна и масштаб экрана можно спросить у того, что показано сейчас,
-    // — окно-то одно. Без этого читатель, нажав «Продолжить чтение», успевает
-    // увидеть пустой лист: элемент попадает в дерево сразу, а рисовать его
-    // есть чем только со следующего кадра.
-    if (applySize(width, height, scale)) relayoutNow();
-}
-
-bool BookView::resizeSurface() {
-    const auto width = static_cast<float>(root_.value().actualWidth());
-    const auto height = static_cast<float>(root_.value().actualHeight());
-
-    // Масштаб экрана берётся у XamlRoot, а не считается от DPI окна: это то
-    // же число, которым XAML умножает DIP в пиксели, и оно обязано совпадать.
-    // XamlRoot появляется, когда элемент попал в живое дерево: до Loaded его
-    // нет, и спрашивать масштаб не у кого.
-    core::nullable<XamlRoot> const xamlRoot = root_.value().xamlRoot();
-    float scale = xamlRoot ? static_cast<float>(xamlRoot->rasterizationScale()) : 1.0f;
+bool BookView::applySize(SizeInt32 pixels, float scale) {
     if (scale <= 0.0f) scale = 1.0f;
 
-    return applySize(width, height, scale);
-}
-
-bool BookView::applySize(float width, float height, float scale) {
+    // Пиксели — мера; DIP, в которых верстается и рисуется полоса, — их доля.
+    const float width = static_cast<float>(pixels.width) / scale;
+    const float height = static_cast<float>(pixels.height) / scale;
     if (width == width_ && height == height_ && scale == scale_ && settled_) return false;
 
     width_ = width;
     height_ = height;
     scale_ = scale;
 
-    const SizeInt32 pixels{static_cast<int32_t>(width * scale + 0.5f),
-                           static_cast<int32_t>(height * scale + 0.5f)};
     if (pixels.width <= 0 || pixels.height <= 0) return false;
 
     // Задник и поверхности листов меняют размер, а не пересоздаются: кисти,
