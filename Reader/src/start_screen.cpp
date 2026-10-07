@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "ThemeBrush.h"
 
 namespace bukvitsa::reader {
 
@@ -24,8 +25,11 @@ constexpr auto kStagger = 40ms;
 // Кнопки полупрозрачные: под ними картинка, и она должна просвечивать.
 constexpr float kRestingOpacity = 0.92f;
 
-// Лицо кнопки отмены: чуть серее остальных — она уводит, а не ведёт.
+// Лицо кнопки отмены: чуть серее остальных — она уводит, а не ведёт. Под
+// указателем и нажатой — на шаг темнее, как у штатной кнопки, но в своём сером.
 constexpr Color kCancelFace = rgb(217, 214, 210);
+constexpr Color kCancelFaceOver = rgb(208, 205, 201);
+constexpr Color kCancelFacePressed = rgb(199, 196, 192);
 
 // Большая кнопка, когда ей есть что продолжать: высота под обложку, обложка
 // в пропорции витрины, автор — тем же приглушённым тоном, что и там.
@@ -137,7 +141,18 @@ Button StartScreen::addButton(zstring_view said, float tall, float kegel,
             },
     };
 
-    if (cancel) button.background(SolidColorBrush{kCancelFace});
+    // Лицо отмены — её собственное и под указателем тоже. Пока указатель над
+    // кнопкой, шаблон кладёт вместо фона кисть состояния, которую ищет по
+    // имени в словаре темы; кисть под тем же именем на самом элементе он
+    // находит первой. Состояния переключает фреймворк, цвет — наш.
+    if (cancel) {
+        Apply{
+            button,
+            background = SolidColorBrush{kCancelFace},
+            ThemeBrush{u"ButtonBackgroundPointerOver", SolidColorBrush{kCancelFaceOver}},
+            ThemeBrush{u"ButtonBackgroundPressed", SolidColorBrush{kCancelFacePressed}},
+        };
+    }
 
     // Подъём идёт по Translation, а НЕ по Offset. Offset — это то, чем XAML
     // расставляет элементы при разметке: анимация захватывает свойство себе,
@@ -219,6 +234,13 @@ void StartScreen::setContinueBook(u16_view bookTitle, u16_view bookAuthor,
     // сработало бы.
     button.height(kContinueTall);
     button.horizontalContentAlignment(HorizontalAlignment::Stretch);
+
+    // Пока лицом кнопки была надпись, она же была и её именем для чтеца
+    // экрана; сетка с обложкой имени не даёт — имя ставится отдельно, из тех
+    // же слов, что на кнопке.
+    u16_text said{u"Продолжить чтение: "};
+    said += bookTitle;
+    button.automationName(said);
 }
 
 void StartScreen::reveal() {
