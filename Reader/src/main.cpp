@@ -106,7 +106,28 @@ struct WarmBook {
 /// второй диалог может прийти только от сценария по таймеру.
 class Notices {
 public:
-    explicit Notices(wxl::CompositionWindow window) : window_(std::move(window)) {}
+    /// Ставит себя обработчиком сбоев сценариев: сценарий, кончившийся
+    /// исключением, которого сам не поймал, -- не повод ронять читалку;
+    /// исключение приходит в поток окна, и читатель видит, что именно не
+    /// удалось, а кадр уходит, как у всякой detached_task. Без обработчика wxl
+    /// завершила бы процесс. Обработчик wxl — указатель на функцию, без
+    /// захвата, потому экземпляр один на процесс и находится по instance_.
+    explicit Notices(wxl::CompositionWindow window) : window_(std::move(window)) {
+        instance_ = this;
+        previous_ = wxl::async::on_detached_task_failure();
+        wxl::async::on_detached_task_failure() = [](std::exception_ptr error) noexcept {
+            if (instance_) instance_->failed(std::move(error));
+        };
+    }
+
+    ~Notices() {
+        if (instance_ != this) return;
+        wxl::async::on_detached_task_failure() = previous_;
+        instance_ = nullptr;
+    }
+
+    Notices(const Notices&) = delete;
+    Notices& operator=(const Notices&) = delete;
 
     /// @param headline что не удалось — заголовок диалога
     /// @param details  с чем и почему: путь, причина системы; может быть пусто
@@ -166,6 +187,13 @@ public:
     }
 
 private:
+    /// Сбой сценария — сообщением: словами системы, чужим текстом после
+    /// проверки или просто фактом.
+    void failed(std::exception_ptr error) noexcept;
+
+    inline static Notices* instance_ = nullptr;
+    wxl::async::detached_task_failure_handler previous_ = nullptr;
+
     wxl::CompositionWindow window_;
     nullable<StackPanel> lines_ = nullptr;   ///< содержимое открытого диалога; пусто — диалога нет
     std::vector<std::pair<std::wstring, std::wstring>> pending_;   ///< до первого экрана
@@ -233,6 +261,21 @@ std::wstring reasonOf(const system_exception& failure) {
     ::MultiByteToWideChar(CP_ACP, 0, narrow.data(), size, wide.data(), static_cast<int>(wide.size()));
 
     return wide;
+}
+
+void Notices::failed(std::exception_ptr error) noexcept {
+    try {
+        std::rethrow_exception(error);
+    } catch (const system_exception& failure) {
+        complain(L"Не удалось выполнить операцию с файлом", reasonOf(failure));
+    } catch (const std::exception& failure) {
+        // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
+        // проверяется, а не принимается на веру.
+        const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
+        complain(L"Ошибка", said ? std::wstring(said->to_utf16().wchars()) : L"(сообщение не в UTF-8)");
+    } catch (...) {
+        complain(L"Неизвестная ошибка", L"Сценарий прерван.");
+    }
 }
 
 /// Говорит читателю, что не удалось, с чем и почему — словами системы.
@@ -888,29 +931,10 @@ wxl::Teardown wxl_launched() {
     // ящиками, мастером и полкой смотрелся бы чужим.
     window.darkFrame(true);
 
+    // Сообщения читателю и обработчик сбоев сценариев — после окна: сообщение
+    // идёт диалогом над показанным экраном, а первый сценарий начнётся позже,
+    // со startupFlow.
     auto notices = std::make_shared<Notices>(window);
-
-    // Сценарий, кончившийся исключением, которого сам не поймал, -- не повод
-    // ронять читалку: исключение приходит сюда, в поток окна, и читатель видит,
-    // что именно не удалось. Сам сценарий на этом кончается, кадр уходит, как у
-    // всякой detached_task. Без обработчика wxl завершила бы процесс.
-    // Обработчик стоит после окна: сообщение — диалог над показанным экраном,
-    // а первый сценарий начнётся позже, со startupFlow.
-    wxl::async::on_detached_task_failure() = [notices](std::exception_ptr error) noexcept {
-        try {
-            std::rethrow_exception(error);
-        } catch (const system_exception& failure) {
-            notices->complain(L"Не удалось выполнить операцию с файлом", reasonOf(failure));
-        } catch (const std::exception& failure) {
-            // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
-            // проверяется, а не принимается на веру.
-            const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
-            notices->complain(L"Ошибка", said ? std::wstring(said->to_utf16().wchars())
-                                                : L"(сообщение не в UTF-8)");
-        } catch (...) {
-            notices->complain(L"Неизвестная ошибка", L"Сценарий прерван.");
-        }
-    };
 
     // Заставка — задником сцены: единственный визуал под XAML-островом
     // оснастки. Он ресайзится синхронно в WM_SIZE, оттого держится за рамку без
