@@ -241,6 +241,11 @@ Button ReaderPanel::listItem(zstring_view said, zstring_view under, float indent
     }
 
     return Button{
+        // Лицо строки — панель из надписей, а не слово, и чтецу экрана кнопка с
+        // такой начинкой безымянна: имя кнопки берётся из содержимого, только
+        // когда оно строка. Подсказки при наведении строке не нужно — её слова
+        // и так на экране, — поэтому имя отдельно, не toolTip.
+        automationName = said,
         hAlign.stretch,
         horizontalContentAlignment = HorizontalAlignment::Stretch,
         Margin{indent, 1, 0, 1},

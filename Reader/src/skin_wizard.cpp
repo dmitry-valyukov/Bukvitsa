@@ -5,6 +5,7 @@
 // Заголовки проекта после стандартных. Свой первым.
 #include "skin_wizard.h"
 
+#include "ThemeBrush.h"
 
 namespace bukvitsa::reader {
 
@@ -24,6 +25,8 @@ constexpr Color kEdge = rgba(255, 255, 255, 0.2);
 constexpr float kButtonWidth = 300.0f;
 constexpr float kRestingOpacity = 0.92f;
 constexpr Color kCancelFace = rgb(217, 214, 210);
+constexpr Color kCancelFaceOver = rgb(208, 205, 201);
+constexpr Color kCancelFacePressed = rgb(199, 196, 192);
 
 // Сетка поверх страницы — подсказка, а не занавес: все линии сильно
 // полупрозрачны, центральная ярче тоном, чтобы читаться сквозь текст.
@@ -84,7 +87,16 @@ Button SkinWizard::overlayButton(zstring_view said, float tall, float kegel, boo
         onClick = [this, handler](Object const&, RoutedEventArgs&) { (this->*handler)(); },
     };
 
-    if (cancel) button.background(SolidColorBrush{kCancelFace});
+    // Как на стартовом экране: своё лицо и в состояниях указателя, иначе
+    // шаблон подменил бы серый фон кистью темы, пока курсор над кнопкой.
+    if (cancel) {
+        Apply{
+            button,
+            background = SolidColorBrush{kCancelFace},
+            ThemeBrush{u"ButtonBackgroundPointerOver", SolidColorBrush{kCancelFaceOver}},
+            ThemeBrush{u"ButtonBackgroundPressed", SolidColorBrush{kCancelFacePressed}},
+        };
+    }
 
     // Полупрозрачность — визуалом, как у стартового экрана, только без
     // анимации появления: мастер открывают действием, ждать ему нечего.
