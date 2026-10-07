@@ -130,11 +130,11 @@ private:
 
     wxl::Compositor compositor_;
     BookView& view_;
-    Settings& settings_;
+    Settings& prefs_;   ///< настройки вида; settings_ ниже — правый ящик
 
     /// Наш слушатель в поле темы полосы — снять за собой: полоса может пережить
     /// панель.
-    std::optional<cookie_t> themeWatch_;
+    cookie_t themeWatch_;
     BookState* state_ = nullptr;
 
     nullable<wxl::Grid> root_ = nullptr;          ///< холст на оба ящика; щелчок по нему закрывает

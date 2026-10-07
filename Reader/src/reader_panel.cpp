@@ -54,17 +54,20 @@ bool blank(std::u16string_view text) {
 
 }  // namespace
 
+// Отметка темы идёт за полем полосы, а не за нажатием здешней кнопки: тему
+// меняют и клавишей T мимо панели. Слушатель ставится в списке инициализации:
+// cookie_t не присваивается, а срабатывает он только на смену поля — не раньше,
+// чем дерево панели собрано.
 ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings& settings)
-    : compositor_(compositor), view_(view), settings_(settings) {
+    : compositor_(compositor),
+      view_(view),
+      prefs_(settings),
+      themeWatch_(view.theme.on_change([this](int) noexcept { markTheme(); })) {
     buildTree();
-
-    // Отметка темы идёт за полем полосы, а не за нажатием здешней кнопки:
-    // тему меняют и клавишей T мимо панели.
-    themeWatch_ = view_.theme.on_change([this](int) noexcept { markTheme(); });
 }
 
 ReaderPanel::~ReaderPanel() {
-    if (themeWatch_) view_.theme.remove_change(*themeWatch_);
+    view_.theme.remove_change(themeWatch_);
 }
 
 void ReaderPanel::buildTree() {
@@ -368,11 +371,11 @@ UIElement ReaderPanel::buildSettings() {
             // заново при каждой смене реестра.
             themesPanel_.value(),
             groupCaption(u"Кегль"),
-            slider(kFontSizeMin, kFontSizeMax, kFontSizeStep, settings_.fontSize),
+            slider(kFontSizeMin, kFontSizeMax, kFontSizeStep, prefs_.fontSize),
             groupCaption(u"Интерлиньяж"),
-            slider(kLineHeightMin, kLineHeightMax, kLineHeightStep, settings_.lineHeight),
+            slider(kLineHeightMin, kLineHeightMax, kLineHeightStep, prefs_.lineHeight),
             groupCaption(u"Поля"),
-            slider(kMarginMin, kMarginMax, kMarginStep, settings_.margin),
+            slider(kMarginMin, kMarginMax, kMarginStep, prefs_.margin),
             TextBlock{
                 u"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
                 fontSize = 12,
