@@ -99,7 +99,7 @@ void testSearchContextKeepsLetters() {
         text.append(20, L'\x0436');
 
         const typography::Block blocks[] = {blockOf(text)};
-        const sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, L"q");
+        const sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, u"q");
 
         check(hits.size() == 1, "находка одна");
         if (hits.size() != 1) continue;
@@ -136,19 +136,21 @@ void testContentsBorrowTitles() {
 void testSearchMatchesWhatTheReaderMeans() {
     std::printf("\n=== что поиск считает совпадением ===\n");
 
+    // Текст — wchar_t, как его отдаёт вёрстка; запрос — u16_view, как его
+    // приносит поле поиска: проверенный текст, литерал проверяется при сборке.
     struct Case {
         const char* what;
         std::wstring_view text;
-        std::wstring_view needle;
+        u16_view needle;
         uint32_t at;
     };
 
     const Case found[] = {
-        {"регистр", L"Сказал Прометей.", L"прометей", 7},
-        {"«ё» в тексте, «е» в запросе", L"Ну, ещё раз.", L"ЕЩЕ", 4},
-        {"«е» в тексте, «ё» в запросе", L"еще раз", L"ещё", 0},
-        {"мягкий перенос внутри слова", L"О Про\x00ADме\x00ADтее", L"прометее", 2},
-        {"неразрывный пробел", L"за 10\x00A0лет", L"10 лет", 3},
+        {"регистр", L"Сказал Прометей.", u"прометей", 7},
+        {"«ё» в тексте, «е» в запросе", L"Ну, ещё раз.", u"ЕЩЕ", 4},
+        {"«е» в тексте, «ё» в запросе", L"еще раз", u"ещё", 0},
+        {"мягкий перенос внутри слова", L"О Про\x00ADме\x00ADтее", u"прометее", 2},
+        {"неразрывный пробел", L"за 10\x00A0лет", u"10 лет", 3},
     };
 
     for (const Case& test : found) {
@@ -159,7 +161,7 @@ void testSearchMatchesWhatTheReaderMeans() {
     }
 
     const typography::Block hyphen[] = {blockOf(L"Про-метей")};
-    check(reader::searchBook(hyphen, L"прометей").empty(), "обычный дефис — не мягкий перенос");
+    check(reader::searchBook(hyphen, u"прометей").empty(), "обычный дефис — не мягкий перенос");
 }
 
 /// Кромка — два листа с общей точкой на корешке, посередине. Она проходит
