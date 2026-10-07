@@ -189,7 +189,7 @@ private:
         wxl::ExpressionAnimation sheetLift;   ///< трапеция снимаемой бумаги
         wxl::ExpressionAnimation leafLift;    ///< трапеция приходящего листа
 
-        uint32_t epoch = 0;       ///< свой ли конец пришёл (пакет доигрывает и отменённый)
+        uint64_t epoch = 0;       ///< свой ли конец пришёл (пакет доигрывает и отменённый); те же часы, что у started
         bool active = false;      ///< в воздухе или свободен
         bool forward = false;
         uint64_t started = 0;     ///< порядок запуска — по нему добивается старейший

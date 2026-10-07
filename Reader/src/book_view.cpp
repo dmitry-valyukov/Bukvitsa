@@ -1709,7 +1709,7 @@ void BookView::animateTurn(Flip& flip, bool forward) {
     // Конец переворота отслеживается пакетом: по нему лист освобождается в пул.
     // Пакет закрывает и остановленную анимацию, поэтому обработчик проверяет и
     // жизнь полосы, и свой ли это лист (epoch).
-    const uint32_t epoch = flip.epoch;
+    const uint64_t epoch = flip.epoch;
     Flip* const which = &flip;
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
     flip.sheet.startAnimation(L"Offset", slide);
@@ -1961,7 +1961,7 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // сбросили при перевёрстке), поэтому обработчик проверяет и жизнь полосы, и
     // свой ли это лист — по epoch: у добитого он уже сменился, и обработчик
     // узнаёт свой номер чужим и молчит.
-    const uint32_t epoch = flip.epoch;
+    const uint64_t epoch = flip.epoch;
     Flip* const which = &flip;
 
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
