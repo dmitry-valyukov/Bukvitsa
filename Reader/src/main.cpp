@@ -14,6 +14,7 @@
 
 #include "ApplicationFolder.h"
 #include "CompositionWindow.h"
+#include "ShowDialog.h"
 #include "skin_wizard.h"
 #include "start_screen.h"
 
@@ -94,6 +95,82 @@ struct WarmBook {
     uint64_t fileSize = 0;          ///< размер файла: его записывает реестр
 };
 
+/// Сообщения читателю — диалогом над показанным экраном, одним на всё
+/// приложение. XAML не держит двух ContentDialog разом (второй ShowAsync —
+/// исключение), а сбои приходят и по два: сценарий упал, пока читатель читает
+/// о прошлом. Потому, пока сообщение открыто, новое дописывается в него, а не
+/// открывает второе; пока открыт чужой диалог (вопрос об удалении обложки) или
+/// экрана ещё нет, сообщение ждёт в очереди и выходит по flush(). Ответа не
+/// ждём: кнопка одна, и сценарий, которому не удалось, на этом и так кончился.
+/// Щёлкнуть мимо открытого диалога нельзя — он заслоняет остров, — так что
+/// второй диалог может прийти только от сценария по таймеру.
+class Notices {
+public:
+    explicit Notices(wxl::CompositionWindow window) : window_(std::move(window)) {}
+
+    /// @param headline что не удалось — заголовок диалога
+    /// @param details  с чем и почему: путь, причина системы; может быть пусто
+    void complain(std::wstring headline, std::wstring details) {
+        using namespace wxl::dsl;
+
+        if (lines_) {
+            // Диалог открыт — дописываем. Заголовок второго сообщения — строкой
+            // в содержимом: title у диалога один, и он принадлежит первому.
+            lines_.value().children().append(
+                TextBlock{headline, FontWeight{600}, Margin{0, 12, 0, 0}, textWrapping.wrap});
+            if (!details.empty()) lines_.value().children().append(TextBlock{details, textWrapping.wrap});
+            return;
+        }
+
+        // Над тем островом, что показан: диалог — не часть дерева, и без
+        // XamlRoot показ падает; его ставит showDialog. Тема — показанного
+        // экрана: полоса тёмная, полка и стартовый экран светлые, а корни их
+        // все — Grid.
+        UIElement const host = window_.content();
+        if (!host) {
+            // Показывать ещё не над чем: так падает чтение настроек и реестров
+            // на старте, до первого экрана. Сообщение дождётся его (flush).
+            pending_.emplace_back(std::move(headline), std::move(details));
+            return;
+        }
+
+        auto lines = StackPanel{};
+        if (!details.empty()) lines.children().append(TextBlock{details, textWrapping.wrap});
+
+        auto dialog = ContentDialog{
+            title = headline,
+            content = lines,
+            closeButtonText = u"Закрыть",
+            defaultButton = ContentDialogButton::Close,
+            onClosed = [this](ContentDialog const&) { lines_ = nullptr; },
+        };
+        dialog.requestedTheme(host.try_as<FrameworkElement>().actualTheme());
+
+        // Открыт чужой диалог — XAML откажет исключением. Зовут отсюда и из
+        // noexcept-обработчика сбоев, так что отказ — не ошибка, а очередь.
+        try {
+            showDialog(dialog, host);
+        } catch (...) {
+            pending_.emplace_back(std::move(headline), std::move(details));
+            return;
+        }
+        lines_ = lines;
+    }
+
+    /// Экран показан: сообщения, пришедшие, пока показывать было не над чем,
+    /// выходят теперь. Зовётся там же, где окну ставят содержимое.
+    void flush() {
+        std::vector<std::pair<std::wstring, std::wstring>> waiting = std::move(pending_);
+        pending_.clear();
+        for (auto& [headline, details] : waiting) complain(std::move(headline), std::move(details));
+    }
+
+private:
+    wxl::CompositionWindow window_;
+    nullable<StackPanel> lines_ = nullptr;   ///< содержимое открытого диалога; пусто — диалога нет
+    std::vector<std::pair<std::wstring, std::wstring>> pending_;   ///< до первого экрана
+};
+
 struct App {
     wxl::CompositionWindow window;
     std::shared_ptr<Settings> settings;
@@ -107,6 +184,7 @@ struct App {
     std::shared_ptr<Screen> bookCameFrom;
     std::shared_ptr<Skins> skins;
     std::shared_ptr<WarmBook> warm;
+    std::shared_ptr<Notices> notices;
 };
 
 // ---- корутины приложения --------------------------------------------------
@@ -144,7 +222,7 @@ bool absent(const system_exception& failure) {
     return failure.err_code() == ERROR_FILE_NOT_FOUND || failure.err_code() == ERROR_PATH_NOT_FOUND;
 }
 
-/// Причина сбоя для окна сообщения. Текст системы приходит в кодировке
+/// Причина сбоя для диалога сообщения. Текст системы приходит в кодировке
 /// потока (`FormatMessageA`), а не в UTF-8, потому переводится через CP_ACP.
 std::wstring reasonOf(const system_exception& failure) {
     const std::string_view narrow = failure.what();
@@ -157,10 +235,12 @@ std::wstring reasonOf(const system_exception& failure) {
     return wide;
 }
 
-/// Говорит читателю, что не удалось и почему. Одно окно на все сценарии.
-void complain(HWND owner, std::wstring text, const system_exception& failure) {
-    text += L"\n\n" + reasonOf(failure);
-    ::MessageBoxW(owner, text.c_str(), L"Буквица", MB_OK | MB_ICONWARNING);
+/// Говорит читателю, что не удалось, с чем и почему — словами системы.
+void complain(App const& app, std::wstring headline, std::wstring details,
+              const system_exception& failure) {
+    if (!details.empty()) details += L"\n\n";
+    details += reasonOf(failure);
+    app.notices->complain(std::move(headline), std::move(details));
 }
 
 /// Пишет настройки. Текст собирается у вызывающего в тот момент, когда решили
@@ -231,7 +311,7 @@ detached_task addFolderFlow(App app, std::filesystem::path folder, std::function
     try {
         found = co_await async_directory::list(poolPath(folder / L"*.fb3"));
     } catch (const system_exception& failure) {
-        complain(app.window.handle(), L"Не удалось прочитать каталог:\n" + folder.wstring(), failure);
+        complain(app, L"Не удалось прочитать каталог", folder.wstring(), failure);
         co_return;
     }
 
@@ -288,9 +368,12 @@ detached_task addFolderFlow(App app, std::filesystem::path folder, std::function
     if (added) co_await async_file::write_all(poolPath(libraryPath()), app.library->toXml());
 
     if (!unread.empty()) {
-        std::wstring text = L"Не удалось прочитать:\n";
-        for (const std::wstring& line : unread) text += L"\n" + line;
-        ::MessageBoxW(app.window.handle(), text.c_str(), L"Буквица", MB_OK | MB_ICONWARNING);
+        std::wstring text;
+        for (const std::wstring& line : unread) {
+            if (!text.empty()) text += L"\n";
+            text += line;
+        }
+        app.notices->complain(L"Не удалось прочитать", std::move(text));
     }
 }
 
@@ -308,7 +391,7 @@ detached_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
         try {
             bytes = co_await async_file::read_all(poolPath(photo));
         } catch (const system_exception& failure) {
-            complain(app.window.handle(), L"Не удалось прочитать снимок:\n" + photo.wstring(), failure);
+            complain(app, L"Не удалось прочитать снимок", photo.wstring(), failure);
             co_return;
         }
 
@@ -371,14 +454,12 @@ detached_task checkImageFlow(App app, std::filesystem::path image, std::function
     try {
         bytes = co_await async_file::read_all(poolPath(image));
     } catch (const system_exception& failure) {
-        complain(app.window.handle(), L"Не удалось открыть изображение:\n" + image.wstring(), failure);
+        complain(app, L"Не удалось открыть изображение", image.wstring(), failure);
         co_return;
     }
 
     if (!decodeImage(bytes)) {
-        ::MessageBoxW(app.window.handle(),
-                      (L"Это не изображение:\n" + image.wstring()).c_str(), L"Буквица",
-                      MB_OK | MB_ICONWARNING);
+        app.notices->complain(L"Это не изображение", image.wstring());
         co_return;
     }
 
@@ -400,6 +481,36 @@ detached_task checkImageFlow(App app, std::filesystem::path image, std::function
 /// тему, номер которой читалка держит в настройках ровно на этот случай.
 detached_task deleteSkinFlow(App app, u16_text name) {
     if (!app.skins->find(name)) co_return;   // реестр успел перемениться под руками
+
+    // Удаление спрашивает: точки по снимку читатель расставлял руками, вернуть
+    // их нечем, а корзина стоит вплотную к шестерёнке. Ответ по умолчанию —
+    // «Отмена»: промах по соседней кнопке не должен ничего стоить. Вопрос
+    // говорит ровно то, что произойдёт: снимок остаётся в `skins\`, и обещать
+    // его пропажу значило бы соврать про собственное поведение.
+    //
+    // Диалог — над показанным экраном (XamlRoot) и в его теме; ответ ждётся
+    // здесь же, окно всё это время живо. Открытое сообщение сюда не пустит —
+    // оно заслоняет остров; а сообщение, пришедшее, пока вопрос открыт, ждёт в
+    // Notices и выходит, когда вопрос закрыт.
+    {
+        using namespace wxl::dsl;
+
+        UIElement const host = app.window.content();
+        auto dialog = ContentDialog{
+            xamlRoot = host.xamlRoot(),
+            requestedTheme = host.try_as<FrameworkElement>().actualTheme(),
+            title = L"Удалить обложку «" + std::wstring(name.wchars()) + L"»?",
+            content = TextBlock{u"Расставленные по снимку точки пропадут; сам снимок останется.",
+                                textWrapping.wrap},
+            primaryButtonText = u"Удалить",
+            closeButtonText = u"Отмена",
+            defaultButton = ContentDialogButton::Close,
+            onClosed = [notices = app.notices](ContentDialog const&) { notices->flush(); },
+        };
+        if (co_await dialog.showAsync() != ContentDialogResult::Primary) co_return;
+    }
+
+    if (!app.skins->find(name)) co_return;   // реестр мог перемениться, пока спрашивали
 
     // Спрашиваем, пока старый список цел: activeSkin() смотрит в него номером.
     const Skin* active = app.view->activeSkin();
@@ -525,6 +636,7 @@ void revealBook(App const& app) {
     // задник окна с заставки на бумагу темы. Только потом — остров ввода поверх.
     app.view->setActive(true);
     app.window.content(app.view->root());
+    app.notices->flush();
 }
 
 /// Открывает книгу: от байтов на диске до страницы на экране.
@@ -569,8 +681,7 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
         try {
             bytes = co_await async_file::read_all(poolPath(path));
         } catch (const system_exception& failure) {
-            complain(app.window.handle(), L"Не удалось прочитать файл книги:\n" + path.wstring(),
-                     failure);
+            complain(app, L"Не удалось прочитать файл книги", path.wstring(), failure);
             co_return;
         }
 
@@ -582,10 +693,8 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
             // Разговор с читателем, а не запись в лог: он только что выбрал этот
             // файл и вправе узнать, что с ним не так.
             u16_text const reason = unicode::assume_valid(failure.what()).to_utf16();
-            std::wstring const complaint = L"Не удалось открыть книгу:\n" + path.wstring() +
-                                           L"\n\n" + std::wstring(reason.wchars());
-            ::MessageBoxW(app.window.handle(), complaint.c_str(), L"Буквица",
-                          MB_OK | MB_ICONWARNING);
+            app.notices->complain(L"Не удалось открыть книгу",
+                                  path.wstring() + L"\n\n" + std::wstring(reason.wchars()));
             co_return;
         }
     }
@@ -647,8 +756,7 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
         // Нет файла -- первый запуск, и это не ошибка; всё остальное -- ошибка,
         // о которой читателю говорится, а запуск идёт дальше с умолчаниями.
         if (!absent(failure))
-            complain(app.window.handle(), L"Не удалось прочитать настройки:\n" + settingsPath().wstring(),
-                     failure);
+            complain(app, L"Не удалось прочитать настройки", settingsPath().wstring(), failure);
     }
 
     // В те настройки, что уже есть: к их полям привязаны ползунки панели и
@@ -682,8 +790,7 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
         // Нет файла -- первый запуск, и это не ошибка; всё остальное -- ошибка,
         // о которой читателю говорится, а запуск идёт дальше с умолчаниями.
         if (!absent(failure))
-            complain(app.window.handle(), L"Не удалось прочитать реестр обложек:\n" + skinsPath().wstring(),
-                     failure);
+            complain(app, L"Не удалось прочитать реестр обложек", skinsPath().wstring(), failure);
     }
 
     app.skins->loadFrom(skinsXmlText);
@@ -716,8 +823,7 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
         // Нет файла -- первый запуск, и это не ошибка; всё остальное -- ошибка,
         // о которой читателю говорится, а запуск идёт дальше с умолчаниями.
         if (!absent(failure))
-            complain(app.window.handle(), L"Не удалось прочитать реестр книг:\n" + libraryPath().wstring(),
-                     failure);
+            complain(app, L"Не удалось прочитать реестр книг", libraryPath().wstring(), failure);
     }
 
     app.library->loadFrom(libraryXmlText);
@@ -765,28 +871,6 @@ wxl::Teardown wxl_launched() {
     // «прячущим глобальное» (C4459).
     using namespace wxl::dsl;
 
-    // Сценарий, кончившийся исключением, которого сам не поймал, -- не повод
-    // ронять читалку: исключение приходит сюда, в поток окна, и читатель видит,
-    // что именно не удалось. Сам сценарий на этом кончается, кадр уходит, как у
-    // всякой detached_task. Без обработчика wxl завершила бы процесс.
-    wxl::async::on_detached_task_failure() = [](std::exception_ptr error) noexcept {
-        try {
-            std::rethrow_exception(error);
-        } catch (const system_exception& failure) {
-            complain(::GetActiveWindow(), L"Не удалось выполнить операцию с файлом.", failure);
-        } catch (const std::exception& failure) {
-            // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
-            // проверяется, а не принимается на веру.
-            const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
-            const std::wstring reason =
-                said ? std::wstring(said->to_utf16().wchars()) : L"(сообщение не в UTF-8)";
-            ::MessageBoxW(::GetActiveWindow(), (L"Ошибка:\n" + reason).c_str(), L"Буквица",
-                          MB_OK | MB_ICONWARNING);
-        } catch (...) {
-            ::MessageBoxW(::GetActiveWindow(), L"Неизвестная ошибка.", L"Буквица", MB_OK | MB_ICONWARNING);
-        }
-    };
-
     // Пустые: их наполнит запуск, и наполнит асинхронно. Ни настройки, ни
     // реестр здесь не читаются — в этом потоке к диску не обращаются вовсе.
     auto settings = std::make_shared<Settings>();
@@ -803,6 +887,30 @@ wxl::Teardown wxl_launched() {
     // Рамка окна тёмная, как и остров: системный светлый заголовок над тёмными
     // ящиками, мастером и полкой смотрелся бы чужим.
     window.darkFrame(true);
+
+    auto notices = std::make_shared<Notices>(window);
+
+    // Сценарий, кончившийся исключением, которого сам не поймал, -- не повод
+    // ронять читалку: исключение приходит сюда, в поток окна, и читатель видит,
+    // что именно не удалось. Сам сценарий на этом кончается, кадр уходит, как у
+    // всякой detached_task. Без обработчика wxl завершила бы процесс.
+    // Обработчик стоит после окна: сообщение — диалог над показанным экраном,
+    // а первый сценарий начнётся позже, со startupFlow.
+    wxl::async::on_detached_task_failure() = [notices](std::exception_ptr error) noexcept {
+        try {
+            std::rethrow_exception(error);
+        } catch (const system_exception& failure) {
+            notices->complain(L"Не удалось выполнить операцию с файлом", reasonOf(failure));
+        } catch (const std::exception& failure) {
+            // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
+            // проверяется, а не принимается на веру.
+            const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
+            notices->complain(L"Ошибка", said ? std::wstring(said->to_utf16().wchars())
+                                                : L"(сообщение не в UTF-8)");
+        } catch (...) {
+            notices->complain(L"Неизвестная ошибка", L"Сценарий прерван.");
+        }
+    };
 
     // Заставка — задником сцены: единственный визуал под XAML-островом
     // оснастки. Он ресайзится синхронно в WM_SIZE, оттого держится за рамку без
@@ -878,7 +986,7 @@ wxl::Teardown wxl_launched() {
     auto const closePanel = [panel] { panel->close(); };
 
     auto const showStartScreen = [window, screen, view, settings, library, shown, rememberPosition,
-                                  closePanel] {
+                                  closePanel, notices] {
         closePanel();
         // Уходя из книги, место чтения пишем сразу: отложенная запись ждёт
         // паузы, а читатель уже ушёл -- и, может быть, закроет приложение
@@ -903,11 +1011,12 @@ wxl::Teardown wxl_launched() {
 
         *shown = Screen::Start;
         window.content(screen->root());
+        notices->flush();
     };
 
     // Всё, из чего собрано приложение, одной связкой: её берут корутины.
-    App const app{window, settings, library,      bookState, view,
-                  panel,    shelf,  screen,   shown,        bookCameFrom, skins, warm};
+    App const app{window, settings, library, bookState,    view,  panel,  shelf,
+                  screen, shown,    bookCameFrom, skins,   warm,  notices};
 
     auto const showLibrary = [app, window, shelf, library, settings, shown, rememberPosition,
                               closePanel] {
@@ -924,6 +1033,7 @@ wxl::Teardown wxl_launched() {
         shelf->show(*library);
         *shown = Screen::Library;
         window.content(shelf->root());
+        app.notices->flush();
 
         // Карточки уже стоят; проценты проступят на них по мере того, как
         // рабочий поток прочитает файлы состояния — по одному на книгу.
@@ -1096,26 +1206,8 @@ wxl::Teardown wxl_launched() {
             });
     };
 
-    // Удаление спрашивает: точки по снимку читатель расставлял руками, вернуть
-    // их нечем, а корзина стоит вплотную к шестерёнке. Ответ по умолчанию —
-    // «нет»: промах по соседней кнопке не должен ничего стоить.
-    //
-    // Вопрос говорит ровно то, что произойдёт: снимок остаётся в `skins\`, и
-    // обещать его пропажу значило бы соврать про собственное поведение.
-    panel->onDeleteSkin = [window, app, skins](u16_text skinName) {
-        if (!skins->find(skinName)) return;   // реестр успел перемениться
-
-        const std::wstring question = L"Удалить обложку «" + std::wstring(skinName.wchars()) +
-                                      L"»?\n\nРасставленные по снимку точки пропадут; "
-                                      L"сам снимок останется.";
-
-        if (::MessageBoxW(window.handle(), question.c_str(), L"Буквица",
-                          MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
-            return;
-        }
-
-        deleteSkinFlow(app, std::move(skinName));
-    };
+    // Спрашивает и удаляет сам сценарий: вопрос — диалог, которого ждут.
+    panel->onDeleteSkin = [app](u16_text skinName) { deleteSkinFlow(app, std::move(skinName)); };
 
     wizard->onCurvesChanged = previewSkin;
 
