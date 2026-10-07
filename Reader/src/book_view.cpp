@@ -326,8 +326,9 @@ bool controlHeld() {
 
 }  // namespace
 
-BookView::BookView(const CompositionWindow& window)
+BookView::BookView(const CompositionWindow& window, Settings& settings)
     : window_(window),
+      settings_(settings),
       compositor_(window.compositor()),
       queue_(window.dispatcherQueue()),
       releaseTimer_(window.dispatcherQueue().createTimer()),
@@ -335,6 +336,30 @@ BookView::BookView(const CompositionWindow& window)
       // на сцене: ей нужен композитор острова, а не окна.
       note_(window.chromeCompositor()) {
     root_ = buildTree();
+
+    // Настройки вида приходят из модели, а не ставятся снаружи: полоса слушает
+    // поля и перевёрстывается сама; то же поле двигает ползунок панели (Bind),
+    // а колесо и клавиши полосы пишут в него же — и панель узнаёт о них так же.
+    // Интерлиньяж и поля в модели в процентах, здесь — множитель и доля.
+    settingsWatches_.emplace_back(
+        &settings_.fontSize, settings_.fontSize.on_change([this](double size) noexcept {
+            applyFontSize(static_cast<float>(size));
+        }));
+    settingsWatches_.emplace_back(
+        &settings_.lineHeight, settings_.lineHeight.on_change([this](double percent) noexcept {
+            applyLineHeight(static_cast<float>(percent) / 100.0f);
+        }));
+    settingsWatches_.emplace_back(
+        &settings_.margin, settings_.margin.on_change([this](double percent) noexcept {
+            applyMargin(static_cast<float>(percent) / 100.0f);
+        }));
+    fontSize_ = static_cast<float>(settings_.fontSize.get());
+    lineHeight_ = static_cast<float>(settings_.lineHeight.get()) / 100.0f;
+    marginFraction_ = static_cast<float>(settings_.margin.get()) / 100.0f;
+
+    // Смена темы — своя перекраска; поле своё, его слушатель умрёт вместе с
+    // полосой, снимать нечего.
+    static_cast<void>(theme.on_change([this](int) noexcept { applyTheme(); }));
 
     // Таймер отпускания пула листов не повторяется — перезаводится сам с новой
     // паузой (armRelease/onReleaseTick).
@@ -505,21 +530,20 @@ Grid BookView::buildTree() {
                 if (book_) goToCharOffset(book_->characterCount());
                 break;
             case VirtualKey::Add:
-                if (controlHeld()) { setFontSize(fontSize_ + 1.0f); readingChanged(); }
+                if (controlHeld()) nudgeFontSize(kFontSizeStep);
                 break;
             case VirtualKey::Subtract:
-                if (controlHeld()) { setFontSize(fontSize_ - 1.0f); readingChanged(); }
+                if (controlHeld()) nudgeFontSize(-kFontSizeStep);
                 break;
             case VirtualKey::Number0:
             case VirtualKey::NumberPad0:
-                if (controlHeld()) { setFontSize(20.0f); readingChanged(); }
+                if (controlHeld()) settings_.fontSize.set(kFontSizeDefault);
                 break;
             case VirtualKey::T:
                 // Голая T меняет тему; Ctrl+T -- оглавление, и его разбирает
                 // приложение: сюда оно не должно доходить вовсе.
                 if (controlHeld()) return;
-                setTheme(theme_ + 1);
-                readingChanged();
+                setTheme(theme.get() + 1);
                 break;
             default:
                 return;   // не наша клавиша: пусть идёт дальше
@@ -535,8 +559,7 @@ Grid BookView::buildTree() {
                               static_cast<uint32_t>(VirtualKeyModifiers::Control)) != 0;
 
         if (control) {
-            setFontSize(fontSize_ + (delta > 0 ? 1.0f : -1.0f));
-            readingChanged();
+            nudgeFontSize(delta > 0 ? kFontSizeStep : -kFontSizeStep);
         } else {
             turnPage(delta > 0 ? -1 : 1);
         }
@@ -597,6 +620,12 @@ Grid BookView::buildTree() {
     });
 
     return tree;
+}
+
+BookView::~BookView() {
+    // Настройки переживают полосу: слушатели с нашим this снимаются, иначе
+    // следующая перемена кегля позвала бы уже разрушенную полосу.
+    for (auto& [field, cookie] : settingsWatches_) field->remove_change(cookie);
 }
 
 void BookView::addOverlay(const UIElement& element) {
@@ -660,8 +689,14 @@ void BookView::setActive(bool active) {
 }
 
 void BookView::setTheme(int index) {
+    // Приводится к списку и кладётся в поле; всё, что следует за сменой темы,
+    // делает слушатель (applyTheme) — так же, как если бы поле поменял кто-то
+    // другой. Та же тема, что и была, слушателя не зовёт.
     const int count = themeCount();
-    theme_ = ((index % count) + count) % count;
+    theme.set(((index % count) + count) % count);
+}
+
+void BookView::applyTheme() {
     note_.hide();   // подложка всплывашки покрашена прошлой темой
     applyShadowTint();   // тени тоже покрашены прошлой темой
 
@@ -691,7 +726,7 @@ void BookView::setSkins(std::vector<Skin> skins) {
 
     // Реестр мог и похудеть: тема, показывающая исчезнувшую обложку, честно
     // возвращается к первой встроенной.
-    if (theme_ >= themeCount()) theme_ = 0;
+    if (theme.get() >= themeCount()) theme.set(0);
 
     // Пересохранённая обложка могла сменить и снимок, и кривые.
     backdropWanted_.clear();
@@ -705,8 +740,8 @@ void BookView::setSkins(std::vector<Skin> skins) {
 }
 
 const Skin* BookView::activeSkin() const {
-    if (theme_ < kThemeCount) return nullptr;
-    return &skins_[static_cast<size_t>(theme_ - kThemeCount)];
+    if (theme.get() < kThemeCount) return nullptr;
+    return &skins_[static_cast<size_t>(theme.get() - kThemeCount)];
 }
 
 void BookView::setPreview(const Skin* skin, const std::filesystem::path& image) {
@@ -731,22 +766,29 @@ std::filesystem::path BookView::backdropFile() const {
     return {};
 }
 
-void BookView::setFontSize(float size) {
-    const float wanted = std::clamp(size, 10.0f, 48.0f);
+void BookView::nudgeFontSize(double by) {
+    settings_.fontSize.set(std::clamp(settings_.fontSize.get() + by, kFontSizeMin, kFontSizeMax));
+}
+
+void BookView::applyFontSize(float size) {
+    const float wanted =
+        std::clamp(size, static_cast<float>(kFontSizeMin), static_cast<float>(kFontSizeMax));
     if (wanted == fontSize_) return;
     fontSize_ = wanted;
     requestRelayout();
 }
 
-void BookView::setLineHeight(float multiplier) {
-    const float wanted = std::clamp(multiplier, 1.0f, 2.4f);
+void BookView::applyLineHeight(float multiplier) {
+    const float wanted = std::clamp(multiplier, static_cast<float>(kLineHeightMin) / 100.0f,
+                                    static_cast<float>(kLineHeightMax) / 100.0f);
     if (wanted == lineHeight_) return;
     lineHeight_ = wanted;
     requestRelayout();
 }
 
-void BookView::setMargin(float fraction) {
-    const float wanted = std::clamp(fraction, 0.02f, 0.25f);
+void BookView::applyMargin(float fraction) {
+    const float wanted = std::clamp(fraction, static_cast<float>(kMarginMin) / 100.0f,
+                                    static_cast<float>(kMarginMax) / 100.0f);
     if (wanted == marginFraction_) return;
     marginFraction_ = wanted;
     requestRelayout();
