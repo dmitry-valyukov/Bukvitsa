@@ -56,7 +56,10 @@ public:
     ///
     /// Байты приносит `async_file::read_all`: читать в интерфейсном потоке
     /// нельзя, а разбирать -- только в нём.
-    void loadFrom(std::string xml);
+    /// @return false — файл есть, но не разобран: читателю об этом говорят,
+    ///         потому что первая же запись реестра (добавление книги) заменит
+    ///         его. Пустой — true.
+    bool loadFrom(std::string xml);
 
     /// Текст library.xml -- то, что уходит в `async_file::write_all`.
     std::string toXml() const;

@@ -806,7 +806,14 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     // полоса набора, и о прочитанном они узнают сами. Запись на диск начинает
     // слушать поля только теперь: прочитанное из файла — не перемена, которую
     // надо записать обратно.
-    readSettings(std::move(settingsXmlText), *app.settings);
+    // Файл прочитан, но не разобран — читателю об этом говорят: умолчания
+    // взяты молча, а первая же запись настроек заменит испорченный файл.
+    if (!readSettings(std::move(settingsXmlText), *app.settings)) {
+        app.notices->complain(L"Настройки не прочитаны",
+                              settingsPath().wstring() +
+                                  L"\n\nФайл испорчен: взяты умолчания, и первая же запись "
+                                  L"настроек заменит его.");
+    }
     watchSettings();
 
     // Прогрев книги — сразу, как только стало известно, какая она: он не
@@ -836,7 +843,12 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
             complain(app, L"Не удалось прочитать реестр обложек", skinsPath().wstring(), failure);
     }
 
-    app.skins->loadFrom(skinsXmlText);
+    if (!app.skins->loadFrom(skinsXmlText)) {
+        app.notices->complain(L"Реестр обложек не прочитан",
+                              skinsPath().wstring() +
+                                  L"\n\nФайл испорчен: обложек нет, и первая же запись "
+                                  L"реестра заменит его. Снимки в skins\\ целы.");
+    }
     app.view->setSkins(app.skins->list());
     app.panel->refreshThemes();
 
@@ -869,7 +881,12 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
             complain(app, L"Не удалось прочитать реестр книг", libraryPath().wstring(), failure);
     }
 
-    app.library->loadFrom(libraryXmlText);
+    if (!app.library->loadFrom(libraryXmlText)) {
+        app.notices->complain(L"Реестр книг не прочитан",
+                              libraryPath().wstring() +
+                                  L"\n\nФайл испорчен: полка пуста, и добавление книги "
+                                  L"заменит его. Сами книги лежат там, где лежали.");
+    }
 
     // Продолжать чтение — только если книга на месте. Путь в настройках копия
     // того, что в реестре, и она здесь ради быстрого пути; протухла —

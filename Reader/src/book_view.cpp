@@ -999,19 +999,30 @@ void BookView::relayoutNow() {
     redraw();
 
     // Остаток главы — порциями в свободное время потока: с него узнаётся общее
-    // число страниц. Если глава уже досчиталась (короткая), звать нечего.
+    // число страниц.
+    startTail();
+}
+
+void BookView::startTail() {
+    if (!book_ || book_->paginator().isComplete()) return;   // досчитывать нечего
+    if (paginationTail_ && !paginationTail_->done()) return;   // идёт — возьмёт и эту главу
+
     // Корутина доходит до первого ожидания ещё внутри вызова, так что в
-    // paginationTail_ ложится кадр, который уже ждёт простоя.
-    if (!paginator.isComplete())
-        paginationTail_.emplace(paginateTail());
+    // paginationTail_ ложится кадр, который уже ждёт простоя. Кончившийся кадр,
+    // если он там лежал, emplace уничтожает.
+    paginationTail_.emplace(paginateTail());
 }
 
 async::task BookView::paginateTail() {
-    // Порции продолжают счёт с курсора главы, не начиная заново: синхронно
-    // посчитанные в relayoutNow страницы остаются на месте, а здесь добирается
+    // Порции продолжают счёт с курсора текущей главы, не начиная заново:
+    // синхронно посчитанные страницы остаются на месте, а здесь добирается
     // лишь хвост главы ради общего числа страниц. Меняется от него только
     // число «из M» — и то один раз, когда глава досчитана; до тех пор
     // колонцифра показывает «из …», и перерисовывать по ходу нечего.
+    //
+    // «Текущей» — на момент порции: листание через границу меняет главу под
+    // идущим досчётом, и он просто считает дальше ту, что стала текущей;
+    // кончил — startTail заведёт новый, когда войдут в следующую недосчитанную.
     //
     // Ожидание простоя — это и есть «в свободное время»: поток сперва разберёт
     // ввод и покажет нарисованное, а уже потом возьмётся за книгу. Книга здесь
@@ -1036,8 +1047,8 @@ BookView::Column BookView::columnOf(uint32_t charOffset) {
         paginator.beginLayout(pageStyle_);
 
     // Энергично, без срока: читатель прыгнул по закладке и ждёт ответа. Остаток
-    // главы по-прежнему добирается порциями — та, что стоит в очереди, продолжит
-    // с того, на чём мы кончили.
+    // главы по-прежнему добирается порциями — досчёт заведёт showColumn, когда
+    // колонка показана, и продолжит с того, на чём мы кончили.
     paginator.advanceTo(charOffset);
     if (paginator.pageCount() == 0)
         return Column{book_->currentChapter(), 0};
@@ -1168,6 +1179,7 @@ void BookView::showColumn(const Column& target) {
     page_ = target.index;
     if (book_->paginator().pageCount() != 0)
         readingPosition_ = book_->paginator().page(page_).firstCharOffset;
+    startTail();   // глава могла смениться — её хвост тоже нужен
 
     redraw();
     if (onPositionChanged) onPositionChanged(readingPosition_);
@@ -1287,6 +1299,7 @@ void BookView::startTurn(const Column& target, bool forward) {
         book_->makeCurrentChapter(target.chapter);
     page_ = target.index;
     readingPosition_ = book_->paginator().page(page_).firstCharOffset;
+    startTail();   // вошли в соседнюю главу — её «из M» тоже надо досчитать
 
     if (book) {
         // Режим книги: неперелистываемая страница (при листании вперёд левая)
