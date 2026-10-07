@@ -143,7 +143,9 @@ public:
 
     /// Разбирает skins.xml. Пусто или битое — реестр просто пуст: обложки не
     /// то, ради чего стоит не запуститься.
-    void loadFrom(std::string xml);
+    /// @return false — файл есть, но не разобран: читателю об этом говорят,
+    ///         потому что первая же запись реестра заменит его. Пустой — true.
+    bool loadFrom(std::string xml);
 
     /// Текст skins.xml — то, что уходит в `async_file::write_all`.
     std::string toXml() const;

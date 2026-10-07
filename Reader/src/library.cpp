@@ -66,10 +66,10 @@ u16_text newGuid() {
     return u16_text{unicode::assume_valid(std::wstring_view(text, static_cast<size_t>(written - 1)))};
 }
 
-void Library::loadFrom(std::string xml) {
+bool Library::loadFrom(std::string xml) {
     books_.clear();
 
-    if (xml.empty()) return;
+    if (xml.empty()) return true;
 
     try {
         wxl::xml::document document;
@@ -94,9 +94,11 @@ void Library::loadFrom(std::string xml) {
     } catch (...) {
         // Битый реестр — это пустая витрина, а не отказ запуститься. Книги
         // при этом никуда не денутся: они лежат там, где лежали, и добавятся
-        // снова.
+        // снова. Сказать об этом читателю — дело вызывающего.
         books_.clear();
+        return false;
     }
+    return true;
 }
 
 std::string Library::toXml() const {

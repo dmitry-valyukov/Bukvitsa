@@ -27,8 +27,8 @@ std::filesystem::path settingsPath() {
     return directory.empty() ? std::filesystem::path{} : directory / L"settings.xml";
 }
 
-void readSettings(std::string xml, Settings& into) {
-    if (xml.empty()) return;   // первого запуска ещё не было
+bool readSettings(std::string xml, Settings& into) {
+    if (xml.empty()) return true;   // первого запуска ещё не было
 
     // Сперва всё читается в местные, и лишь потом ложится в поля: битый файл
     // не должен оставить настройки прочитанными наполовину.
@@ -77,8 +77,9 @@ void readSettings(std::string xml, Settings& into) {
     } catch (...) {
         // Битый файл, файл от будущей версии, файл, который правили руками, —
         // всё это повод открыться со значениями по умолчанию, а не повод не
-        // открыться. Настройки не стоят отказа запускаться.
-        return;
+        // открыться. Настройки не стоят отказа запускаться; сказать об этом
+        // читателю — дело вызывающего.
+        return false;
     }
 
     into.windowPlacement = std::move(placement);
@@ -90,6 +91,7 @@ void readSettings(std::string xml, Settings& into) {
     into.skin = std::move(skin);
     into.lastBookGuid = std::move(lastBookGuid);
     into.lastBookPath = std::move(lastBookPath);
+    return true;
 }
 
 std::string settingsXml(const Settings& settings) {

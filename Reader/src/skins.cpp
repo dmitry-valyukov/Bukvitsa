@@ -239,10 +239,10 @@ float EdgeSpline::at(float u) const {
            step * (h10 * slope_[s] + h11 * slope_[s + 1]);
 }
 
-void Skins::loadFrom(std::string xml) {
+bool Skins::loadFrom(std::string xml) {
     skins_.clear();
 
-    if (xml.empty()) return;
+    if (xml.empty()) return true;
 
     try {
         wxl::xml::document document;
@@ -290,7 +290,9 @@ void Skins::loadFrom(std::string xml) {
         // Битый реестр — пустой список обложек, а не отказ запуститься:
         // встроенные темы никуда не деваются.
         skins_.clear();
+        return false;
     }
+    return true;
 }
 
 std::string Skins::toXml() const {

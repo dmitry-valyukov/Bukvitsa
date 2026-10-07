@@ -115,7 +115,10 @@ std::filesystem::path settingsPath();
 /// Разбор, а не чтение: байты приносит `async_file::read_all`, потому что
 /// читать их в интерфейсном потоке нельзя, а разбирать -- только в нём (память
 /// разбора из STA-пула).
-void readSettings(std::string xml, Settings& into);
+///
+/// @return false — файл есть, но не разобран: читателю об этом говорят, потому
+///         что первая же запись настроек заменит его. Пустой файл — true.
+bool readSettings(std::string xml, Settings& into);
 
 /// Текст settings.xml -- то, что уходит в `async_file::write_all`.
 ///
