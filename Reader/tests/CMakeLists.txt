@@ -9,8 +9,8 @@ add_executable(reader_tests reader_tests.cpp
 # Чистые функции читалки — над блоками книги и над кривыми обложек — без
 # окна, без wxl::ui. Исходники берутся из src как есть: вынимать их в
 # библиотеку ради теста незачем. За skins.cpp идут store.cpp (разбор XML),
-# settings.cpp и imaging.cpp: в них живут каталог данных и каталог
-# исполняемого, от которых обложка строит путь к снимку; windowscodecs —
+# settings.cpp и imaging.cpp: в них живёт каталог данных, от которого обложка
+# строит путь к снимку (каталог исполняемого даёт wxl.core); windowscodecs —
 # за imaging.cpp.
 target_include_directories(reader_tests PRIVATE ../src)
 target_link_libraries(reader_tests PRIVATE
