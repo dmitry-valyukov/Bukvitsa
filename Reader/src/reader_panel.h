@@ -30,7 +30,7 @@
 // Последними: они ведут к модели книги и реестру, а те импортируют wxl.core,
 // после чего стандартный заголовок MSVC уже не принимает.
 #include "book_view.h"
-#include "library.h"
+#include "bukvitsa/reader/library.h"
 
 namespace bukvitsa::reader {
 

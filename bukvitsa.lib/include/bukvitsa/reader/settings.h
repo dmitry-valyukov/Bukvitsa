@@ -96,19 +96,6 @@ inline constexpr double kMarginMin = 2.0;
 inline constexpr double kMarginMax = 25.0;
 inline constexpr double kMarginStep = 0.5;
 
-/// Каталог данных читалки: `%LOCALAPPDATA%\Bukvitsa\Reader`; задана
-/// переменная окружения `BUKVITSA_DATA` — каталог из неё целиком, так прогон
-/// драйвером (`tools\drive.ps1 -DataDir`) идёт на подопытных данных, не
-/// трогая настоящих.
-///
-/// Корень общий для семейства — рядом однажды встанет Writer. Не Roaming:
-/// в реестре лежат локальные пути и кэш обложек, и роуминг перенёс бы на
-/// другую машину битые ссылки и лишние мегабайты.
-std::filesystem::path dataDirectory();
-
-/// Путь к settings.xml.
-std::filesystem::path settingsPath();
-
 /// Разбирает settings.xml в настройки, которые уже есть: наблюдаемые поля не
 /// копируются, да и незачем — к ним уже привязаны контролы и полоса, и о
 /// прочитанном они узнают сами. Пусто, битое или от будущей версии — поля не

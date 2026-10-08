@@ -1,4 +1,4 @@
-#include "imaging.h"
+#include "bukvitsa/reader/imaging.h"
 
 #include <wincodec.h>
 

@@ -25,11 +25,11 @@ constexpr double kCoverHeight = 108;
 
 /// Путь к обложке как источник картинки. Путь абсолютный, поэтому со схемой:
 /// без схемы wxl разрешает его рядом с исполняемым файлом.
-ImageSource coverOf(const BookEntry& entry) {
+ImageSource coverOf(const std::filesystem::path& coverDirectory, const BookEntry& entry) {
     if (entry.cover.empty()) return {};
 
     // Имя нарочно не text: одноимённый тег синтаксиса перекрылся бы им.
-    std::u16string full = (coverDirectory() / entry.cover.wchars()).u16string();
+    std::u16string full = (coverDirectory / entry.cover.wchars()).u16string();
     std::replace(full.begin(), full.end(), u'\\', u'/');
     return ImageSource{u"file:///" + full};
 }
@@ -55,7 +55,7 @@ u16_text progressOf(const BookEntry& entry, uint32_t charOffset, size_t bookmark
 
 }  // namespace
 
-LibraryScreen::LibraryScreen(Settings& settings) {
+LibraryScreen::LibraryScreen(Workspace& workspace) : workspace_(workspace) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
     // бы обычные слова (entry, text) и под /W4 каждое стало бы C4459.
     using namespace wxl::dsl;
@@ -96,7 +96,7 @@ LibraryScreen::LibraryScreen(Settings& settings) {
                 column = 1,
                 foreground = SolidColorBrush{kInk},
                 vAlign.center,
-                isChecked = Bind{settings.continueReading},
+                isChecked = Bind{workspace.settings.continueReading},
             },
             Button{
                 u"Добавить книгу",
@@ -206,7 +206,7 @@ Button LibraryScreen::shelfItem(const BookEntry& book) {
 
             Image{
                 column = 0,
-                source = coverOf(book),
+                source = coverOf(workspace_.coverDirectory(), book),
                 width = kCoverWidth,
                 height = kCoverHeight,
                 stretch = Stretch::UniformToFill,

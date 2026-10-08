@@ -200,6 +200,7 @@ add_subdirectory(FB3)
 add_subdirectory(MathML)
 add_subdirectory(Typography)
 if(WIN32)
+    add_subdirectory(bukvitsa.lib)
     add_subdirectory(Reader)
 endif()
 

@@ -32,11 +32,12 @@
 
 // Последними: они импортируют wxl.core (темы и обложки — сами, книга — через
 // модель), после чего стандартный заголовок MSVC уже не принимает.
-#include "book.h"
+#include "bukvitsa/reader/book.h"
 #include "note_popup.h"
-#include "settings.h"
-#include "skins.h"
-#include "theme.h"
+#include "bukvitsa/reader/settings.h"
+#include "bukvitsa/reader/skins.h"
+#include "bukvitsa/reader/theme.h"
+#include "bukvitsa/reader/workspace.h"
 
 // Импорт — последним: хвост главы считает корутина async::task, которой владеет
 // полоса.
@@ -48,11 +49,13 @@ class BookView {
 public:
     /// @param window окно: его сцена несёт страницу — визуалы на композиторе
     ///        окна, привешенные к contentVisual().
-    /// @param settings настройки вида: полоса слушает их наблюдаемые поля и
-    ///        перевёрстывается сама, а колесом и клавишами пишет в них же —
-    ///        так одно и то же поле видят и ползунки панели, и файл. Живут
-    ///        дольше полосы; слушателей полоса снимает за собой.
-    BookView(const wxl::CompositionWindow& window, Settings& settings);
+    /// @param workspace рабочее место: его настройки вида полоса слушает —
+    ///        наблюдаемые поля, по которым перевёрстывается сама, — и
+    ///        пишет в них же колесом и клавишами, так что одно поле видят и
+    ///        ползунки панели, и файл; у него же спрашивает, где лежит
+    ///        снимок обложки. Живёт дольше полосы; слушателей полоса
+    ///        снимает за собой.
+    BookView(const wxl::CompositionWindow& window, Workspace& workspace);
     ~BookView();
 
     /// Корень, который отдаётся окну как содержимое.
@@ -441,6 +444,7 @@ private:
     wxl::CompositionWindow window_;              ///< хендл окна: его сцена и мера
     wxl::EventToken sizeToken_;                  ///< наша подписка на меру окна — снять за собой
     Settings& settings_;                         ///< настройки вида: слушаем и пишем
+    const Workspace& workspace_;                 ///< где лежат снимки обложек
     /// Наши слушатели в полях настроек — снять за собой: настройки живут дольше.
     std::vector<std::pair<observable<double>*, cookie_t>> settingsWatches_;
     wxl::Compositor compositor_;                 ///< композитор окна: на нём визуалы страницы

@@ -1,11 +1,10 @@
 #include <objbase.h>
 
 // «book.h» больше не нужен: реестр работает с разобранным документом.
-#include "settings.h"
 
 // Последними: реестр и хранилище импортируют wxl.core.
-#include "library.h"
-#include "store.h"
+#include "bukvitsa/reader/library.h"
+#include "bukvitsa/reader/store.h"
 
 // После своих заголовков: document.h тянет import wxl.core, а стандартный
 // заголовок после импорта MSVC уже не принимает.
@@ -39,19 +38,6 @@ BookEntry describe(const fb3::Document& document, const std::filesystem::path& p
                    uint64_t fileSize);
 
 }  // namespace
-
-std::filesystem::path libraryPath() {
-    return dataDirectory() / L"library.xml";
-}
-
-std::filesystem::path statePath(u16_view guid) {
-    // Имя файла — guid и ничего больше: он наш, выдан CoCreateGuid, и в нём
-    // не может оказаться ни разделителя пути, ни двоеточия. Названия книги
-    // здесь нет намеренно — из него имя файла пришлось бы вычищать.
-    std::filesystem::path file{guid.wchars()};
-    file += L".xml";
-    return dataDirectory() / L"books" / file;
-}
 
 u16_text newGuid() {
     GUID guid{};
@@ -176,10 +162,6 @@ const BookEntry& Library::add(const fb3::Document& document, const std::filesyst
     return books_.back();
 }
 
-
-std::filesystem::path coverDirectory() {
-    return dataDirectory() / L"cache";
-}
 
 CoverBytes coverOf(const fb3::Document& document, u16_view guid) {
     const std::optional<uint32_t> index = document.description().coverImageIndex;

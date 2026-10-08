@@ -2,10 +2,10 @@
 
 // Заголовки проекта после стандартных: store.h несёт импорт, после которого
 // стандартный заголовок MSVC уже не принимает. Свой первым.
-#include "skins.h"
+#include "bukvitsa/reader/skins.h"
 
-#include "settings.h"
-#include "store.h"
+#include "bukvitsa/reader/settings.h"
+#include "bukvitsa/reader/store.h"
 
 import wxl.fmt;
 
@@ -152,15 +152,6 @@ std::span<const Skin> systemSkins() {
     }();
 
     return list;
-}
-
-std::filesystem::path skinImagePath(const Skin& skin) {
-    if (skin.image.empty()) return {};
-
-    // У системной обложки снимок в Assets рядом с программой. Папку даёт
-    // wxl.core, не wxl.ui: этот файл собирают и тесты, у которых окна нет.
-    return skin.system ? environment::application_folder() / L"Assets" / skin.image.wchars()
-                       : skinDirectory() / skin.image.wchars();
 }
 
 EdgeSpline::EdgeSpline(const EdgeCurve& curve) : curve_(curve) {
@@ -338,18 +329,6 @@ bool Skins::remove(u16_view name) {
         }
     }
     return false;
-}
-
-std::filesystem::path skinsPath() {
-    const std::filesystem::path directory = dataDirectory();
-
-    return directory.empty() ? std::filesystem::path{} : directory / L"skins.xml";
-}
-
-std::filesystem::path skinDirectory() {
-    const std::filesystem::path directory = dataDirectory();
-
-    return directory.empty() ? std::filesystem::path{} : directory / L"skins";
 }
 
 }  // namespace bukvitsa::reader
