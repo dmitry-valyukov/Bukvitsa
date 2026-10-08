@@ -38,7 +38,9 @@ public:
     /// удалось, а кадр уходит, как у всякой detached_task. Без обработчика wxl
     /// завершила бы процесс. Обработчик wxl — указатель на функцию, без
     /// захвата, потому экземпляр один на процесс и находится по instance_.
-    explicit Notices(wxl::CompositionWindow window);
+    /// @param screenTheme тема показанного экрана: диалог не в его дереве и
+    ///        сам её не наследует. Поле владельца, живёт дольше сообщений.
+    Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme);
 
     ~Notices();
 
@@ -62,6 +64,7 @@ private:
     wxl::async::detached_task_failure_handler previous_ = nullptr;
 
     wxl::CompositionWindow window_;
+    observable<wxl::ElementTheme const>& screenTheme_;
     nullable<wxl::StackPanel> lines_ = nullptr;   ///< содержимое открытого диалога; пусто — диалога нет
     std::vector<std::pair<std::wstring, std::wstring>> pending_;   ///< до первого экрана
 };
