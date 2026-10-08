@@ -1046,7 +1046,7 @@ wxl::Teardown wxl_launched() {
         saveSkinFlow(app, std::move(skin), std::move(photo), leaveWizard);
     };
 
-    screen->onContinueReading = [settings, library, warm, openBook, addBook] {
+    screen->onContinueReading = [ws, warm, openBook, addBook] {
         continueReading(ws, warm, openBook, addBook);
     };
 
