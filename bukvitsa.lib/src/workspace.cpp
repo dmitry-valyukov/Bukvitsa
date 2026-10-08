@@ -48,6 +48,21 @@ std::wstring reasonOf(const system_exception& failure) {
     return wide;
 }
 
+Notice noticeOf(std::exception_ptr error) {
+    try {
+        std::rethrow_exception(std::move(error));
+    } catch (const system_exception& failure) {
+        return {L"Не удалось выполнить операцию с файлом", reasonOf(failure)};
+    } catch (const std::exception& failure) {
+        // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
+        // проверяется, а не принимается на веру.
+        const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
+        return {L"Ошибка", said ? std::wstring(said->to_utf16().wchars()) : std::wstring(L"(сообщение не в UTF-8)")};
+    } catch (...) {
+        return {L"Неизвестная ошибка", L"Сценарий прерван."};
+    }
+}
+
 std::filesystem::path standardDataDirectory() {
     // Подопытный каталог: сценарии прогона портят settings.xml и реестры, и
     // гонять их на настоящих данных читателя нельзя. Переменная подменяет

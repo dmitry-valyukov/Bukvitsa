@@ -47,11 +47,6 @@ TextBlock groupCaption(zstring_view said) {
 // читается как задержка.
 constexpr auto kSlide = 180ms;
 
-/// Пусто ли введённое — пробелы не в счёт.
-bool blank(std::u16string_view text) {
-    return std::all_of(text.begin(), text.end(), [](char16_t c) { return c == u' ' || c == u'\t'; });
-}
-
 }  // namespace
 
 // Отметка темы идёт за полем полосы, а не за нажатием здешней кнопки: тему
@@ -518,10 +513,10 @@ void ReaderPanel::runSearch() {
     searchList_.value().children().clear();
 
     // Текст поля — чужой: пришёл из контрола строкой WinRT и в поиск идёт
-    // проверенным. Строка держится, пока жив вид на неё.
+    // проверенным (`searchQuery`). Строка держится, пока жив вид на неё.
     const hstring typed = searchBox_.value().text();
-    const std::optional<u16_view> needle = unicode::checked(std::u16string_view(typed));
-    if (!needle || needle->empty() || blank(needle->plain())) {
+    const std::optional<u16_view> needle = searchQuery(std::u16string_view(typed));
+    if (!needle) {
         searchNote_.value().text(u"Введите слово и нажмите Enter.");
         return;
     }
@@ -544,24 +539,10 @@ void ReaderPanel::runSearch() {
 void ReaderPanel::toggleBookmark() {
     if (!state_ || !view_.isOpen()) return;
 
+    // Поставить или снять и где ей лежать — решает состояние книги; панель
+    // только перерисовывает список.
     const uint32_t here = view_.readingPosition();
-
-    const auto found = std::find_if(state_->bookmarks.begin(), state_->bookmarks.end(),
-                                    [here](const Bookmark& mark) {
-                                        return mark.charOffset == here;
-                                    });
-    if (found != state_->bookmarks.end()) {
-        state_->bookmarks.erase(found);
-    } else {
-        // Закладки лежат по порядку книги: так их и читают, и так список не
-        // приходится сортировать при показе.
-        Bookmark mark{here, hintAt(view_.blocks(), here)};
-        const auto after = std::lower_bound(state_->bookmarks.begin(), state_->bookmarks.end(),
-                                            here, [](const Bookmark& mark, uint32_t offset) {
-                                                return mark.charOffset < offset;
-                                            });
-        state_->bookmarks.insert(after, std::move(mark));
-    }
+    state_->toggleBookmark(here, hintAt(view_.blocks(), here));
 
     fillBookmarks();
     if (onStateChanged) onStateChanged();

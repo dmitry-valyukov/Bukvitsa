@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <utility>
+
 #include <objbase.h>
 
 // «book.h» больше не нужен: реестр работает с разобранным документом.
@@ -215,6 +218,22 @@ bool BookState::hasBookmark(uint32_t offset) const {
         if (mark.charOffset == offset) return true;
     }
     return false;
+}
+
+bool BookState::toggleBookmark(uint32_t offset, u16_text hint) {
+    const auto found = std::find_if(bookmarks.begin(), bookmarks.end(),
+                                    [offset](const Bookmark& mark) { return mark.charOffset == offset; });
+    if (found != bookmarks.end()) {
+        bookmarks.erase(found);
+        return false;
+    }
+
+    // Место — двоичным поиском: список и так по порядку, и вставка его не
+    // ломает.
+    const auto after = std::lower_bound(bookmarks.begin(), bookmarks.end(), offset,
+                                        [](const Bookmark& mark, uint32_t at) { return mark.charOffset < at; });
+    bookmarks.insert(after, Bookmark{offset, std::move(hint)});
+    return true;
 }
 
 BookState parseBookState(std::string xml) {
