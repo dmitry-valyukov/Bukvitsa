@@ -636,6 +636,9 @@ void runSkinEditorTests();
 // Мелкие куски модели, вынесенные из экранов (pieces_tests.cpp). Слот
 // прогретой книги открывает настоящую книгу — потому после COM.
 void runPiecesTests();
+// Слои модели своими файлами: карта клавиш, список тем.
+void runKeyMapTests();
+void runThemeListTests();
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -647,6 +650,8 @@ int main() {
     testEdgeThroughPoints();
     testSkinsReadSeparateLeaves();
     runSkinEditorTests();
+    runKeyMapTests();
+    runThemeListTests();
 
     // Петля операций wxl — одна на процесс, как у тестов самой wxl: её каналы
     // живут столько же, сколько процесс, и второй раз не стартуют. COM — для

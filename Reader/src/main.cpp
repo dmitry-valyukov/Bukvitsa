@@ -10,6 +10,7 @@
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
 #include "file_dialog.h"
+#include "keys.h"
 
 #include "ApplicationFolder.h"
 #include "CompositionWindow.h"
@@ -26,6 +27,7 @@
 #include "reader_panel.h"
 #include "bukvitsa/reader/settings.h"
 #include "bukvitsa/reader/store.h"
+#include "bukvitsa/reader/theme_list.h"
 #include "bukvitsa/reader/warm_slot.h"
 #include "bukvitsa/reader/workspace.h"
 
@@ -64,12 +66,6 @@ constexpr auto kSaveQuiet = 800ms;
 
 // То же для места чтения: страницы листают подряд, а файл на книгу один.
 constexpr auto kPositionQuiet = 1500ms;
-
-// Что сейчас в окне. Три экрана, и переход между ними — присваивание
-// содержимого; перечисление нужно только затем, чтобы Escape знал, куда
-// возвращать. Мастер обложек — не экран, а оверлей поверх полосы: под ним
-// читатель видит свою страницу, изогнутую редактируемыми кривыми.
-enum class Screen { Start, Library, Book };
 
 // ---- то, из чего собрано приложение ---------------------------------------
 //
@@ -194,6 +190,11 @@ struct App {
     std::shared_ptr<Screen> bookCameFrom;
     std::shared_ptr<WarmSlot> warm;   ///< прогретая книга под «Продолжить чтение»
     std::shared_ptr<Notices> notices;
+
+    /// Темы и обложки одним списком — номер темы полосы ↔ имена в настройках.
+    /// Заполняется там же и тем же, что список полосы (`setSkins`): при
+    /// запуске, после сохранения и после удаления обложки.
+    std::shared_ptr<ThemeList> themes = std::make_shared<ThemeList>();
 };
 
 // ---- корутины приложения --------------------------------------------------
@@ -315,21 +316,18 @@ detached_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
         co_return;
     }
 
+    // Список тем — раньше полосы: слушатель темы, которого может позвать
+    // setSkins полосы, переводит номер в имена по нему.
+    app.themes->setSkins(app.ws->skins.list());
     app.view->setSkins(app.ws->skins.list());
     app.panel->refreshThemes();
 
-    // По полному списку полосы, а не по реестру: номера считаются вместе с
+    // Номер — по полному списку, а не по реестру: номера считаются вместе с
     // системными обложками, которые стоят впереди реестровых.
     //
     // Имя обложки в настройки и их запись — дело слушателя темы (wxl_launched):
     // смена темы здесь ничем не отличается от смены клавишей T.
-    const std::vector<Skin>& list = app.view->skins();
-    for (size_t index = 0; index < list.size(); ++index) {
-        if (list[index].name == skinName) {
-            app.view->setTheme(kThemeCount + static_cast<int>(index));
-            break;
-        }
-    }
+    app.view->setTheme(app.themes->afterSave(skinName, app.view->theme.get()));
 
     leaveWizard();
 }
@@ -413,29 +411,17 @@ detached_task deleteSkinFlow(App app, u16_text name) {
 
     if (!app.ws->skins.find(name)) co_return;   // реестр мог перемениться, пока спрашивали
 
-    // Спрашиваем, пока старый список цел: activeSkin() смотрит в него номером.
-    const Skin* active = app.view->activeSkin();
-    const u16_text activeName = active ? active->name : u16_text{};
-    const bool leavingActive = activeName == name;
+    // Куда встать — спрашиваем, пока старый список цел: номер текущей темы
+    // смотрит в него. Ключ встроенной темы из настроек — тоже сейчас: когда
+    // номер текущей выпадает за укоротившийся список, setSkins полосы ставит
+    // первую тему, и слушатель темы пишет её ключ в настройки поверх того,
+    // к которому читатель должен вернуться.
+    const int theme = app.themes->afterRemoval(name, app.view->theme.get(), app.ws->settings.theme);
 
     co_await app.ws->deleteSkin(name);
 
+    app.themes->setSkins(app.ws->skins.list());
     app.view->setSkins(app.ws->skins.list());
-
-    int theme = app.view->theme.get();   // встроенная тема удалением не двигается
-
-    if (leavingActive) {
-        theme = themeById(app.ws->settings.theme);
-    } else if (!activeName.empty()) {
-        const std::vector<Skin>& list = app.view->skins();
-
-        for (size_t index = 0; index < list.size(); ++index) {
-            if (list[index].name == activeName) {
-                theme = kThemeCount + static_cast<int>(index);
-                break;
-            }
-        }
-    }
 
     // Настройки — имя обложки или ключ темы — поправит и запишет слушатель
     // темы (wxl_launched).
@@ -632,23 +618,13 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
 
     // Обложки — раньше темы: выбранной темой может оказаться обложка, а её
     // индекс продолжает список за встроенными и без реестра не существует.
+    app.themes->setSkins(app.ws->skins.list());
     app.view->setSkins(app.ws->skins.list());
     app.panel->refreshThemes();
 
-    int theme = themeById(app.ws->settings.theme);
-
-    if (!app.ws->settings.skin.empty()) {
-        // По полному списку полосы, а не по реестру: номера считаются вместе с
-        // системными обложками, которые стоят впереди реестровых.
-        const std::vector<Skin>& list = app.view->skins();
-        for (size_t index = 0; index < list.size(); ++index) {
-            if (list[index].name == app.ws->settings.skin) {
-                theme = kThemeCount + static_cast<int>(index);
-                break;
-            }
-        }
-    }
-    app.view->setTheme(theme);
+    // Обложка по имени, а нет такой — встроенная по ключу: номера считаются
+    // по полному списку, вместе с системными обложками впереди реестровых.
+    app.view->setTheme(app.themes->indexFromSettings(app.ws->settings.theme, app.ws->settings.skin));
 
     const std::filesystem::path& lastBook = started.lastBook;
 
@@ -903,7 +879,8 @@ wxl::Teardown wxl_launched() {
         viewTimer.stop();
         viewTimer.start();
     };
-    auto const watchSettings = [prefs = &ws->settings, page = view.get(), persistLater] {
+    auto const watchSettings = [prefs = &ws->settings, page = view.get(), themes = app.themes,
+                                persistLater] {
         static_cast<void>(prefs->fontSize.on_change([persistLater](double) noexcept { persistLater(); }));
         static_cast<void>(prefs->lineHeight.on_change([persistLater](double) noexcept { persistLater(); }));
         static_cast<void>(prefs->margin.on_change([persistLater](double) noexcept { persistLater(); }));
@@ -913,19 +890,14 @@ wxl::Teardown wxl_launched() {
         // Тема — поле полосы, а в настройках она лежит именем: обложка — своим,
         // встроенная тема — ключом; прежний ключ при обложке остаётся как то,
         // куда вернуться, если реестр обложек пропадёт. Слушатель переводит
-        // номер в имена и пишет файл, только если имена изменились: запуск
-        // ставит ту же тему, что в файле.
-        static_cast<void>(page->theme.on_change([prefs, page, persistLater](int index) noexcept {
-            u16_text skinName;
-            u16_text themeId = prefs->theme;
-            if (const Skin* active = page->activeSkin()) {
-                skinName = active->name;
-            } else {
-                themeId = u16_text{themeIdAt(index)};
-            }
-            if (skinName == prefs->skin && themeId == prefs->theme) return;
-            prefs->skin = std::move(skinName);
-            prefs->theme = std::move(themeId);
+        // номер в имена по списку тем и пишет файл, только если имена
+        // изменились: запуск ставит ту же тему, что в файле. Список тем
+        // слушатель держит сам: тот о полосе не знает, кольца нет.
+        static_cast<void>(page->theme.on_change([prefs, themes, persistLater](int index) noexcept {
+            ThemeList::Persisted names = themes->persist(index, prefs->theme);
+            if (names.skin == prefs->skin && names.theme == prefs->theme) return;
+            prefs->skin = std::move(names.skin);
+            prefs->theme = std::move(names.theme);
             persistLater();
         }));
     };
@@ -964,20 +936,14 @@ wxl::Teardown wxl_launched() {
             });
     };
 
-    panel->onEditSkin = [app, view, wizard, closePanel,
-                         previewSkin](u16_text skinName) {
-        // По полному списку полосы, а не по реестру: системные обложки живут
+    panel->onEditSkin = [app, wizard, closePanel, previewSkin](u16_text skinName) {
+        // По полному списку тем, а не по реестру: системные обложки живут
         // только в нём, а шестерёнка есть и у них — правка «на основе».
-        const Skin* known = nullptr;
-        for (const Skin& skin : view->skins()) {
-            if (skin.name == skinName) {
-                known = &skin;
-                break;
-            }
-        }
+        const std::optional<int> index = app.themes->indexOfSkin(skinName);
+        const Skin* known = index ? app.themes->skinAt(*index) : nullptr;
         if (!known) return;   // список успел перемениться под руками
 
-        // Копия, а не указатель: пока снимок читают, список полосы может
+        // Копия, а не указатель: пока снимок читают, список тем может
         // перемениться, и указатель в него протухнет.
         const Skin skin = *known;
 
@@ -1028,9 +994,10 @@ wxl::Teardown wxl_launched() {
     // не на всплытии: событие начинается у того, на чём фокус, и клавиша
     // должна работать независимо от того, на какой кнопке он сейчас стоит.
     //
-    // Escape решается здесь, а не в полосе набора: приоритет один на всё
-    // приложение — сперва закрыть открытое поверх, потом выйти из полного
-    // экрана, и лишь потом вернуться из книги на стартовый экран.
+    // Что значит клавиша, решает карта клавиш (`resolve`, bukvitsa.lib): там
+    // вся матрица — полоса, мастер, ползунок и поле ввода, приоритет Escape.
+    // Здесь — только контекст для неё и исполнение ответа.
+    //
     // Флага «мы в полном экране» нет намеренно: он был бы вторым местом, где это
     // записано, — а состояние знает само окно (window.fullScreen()), и второй
     // его слепок разошёлся бы с первым.
@@ -1041,73 +1008,81 @@ wxl::Teardown wxl_launched() {
     auto const installKeys = [setFullScreen, isFullScreen, shown, bookCameFrom, showStartScreen,
                               showLibrary, panel, view, wizard](UIElement const& element) {
         element.add_onPreviewKeyDown([=](Object const&, KeyRoutedEventArgs& args) {
+            // Листание, кегль и тему полоса пока разбирает сама — её
+            // обработчик стоит на том же корне раньше этого и помечает свои
+            // клавиши. Помеченная сюда не доходит, и команд полосы приложение
+            // не исполняет; карта отвечает за них так же, как полоса.
             if (args.handled()) return;   // полоса набора своё уже разобрала
 
-            // Пока открыт мастер обложек, клавиши экранов молчат: Escape увёл
-            // бы с полосы прямо под ним. Дороги из мастера — его кнопки.
-            if (wizard->isOpen()) return;
+            const KeyPress press = keyPressOf(args.key());
 
-            // Панель — только над книгой: над заставкой ей нечего показывать.
-            bool const reading = *shown == Screen::Book;
-            bool const control = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            // Открыта ли сноска, полоса пока не говорит: dismissOverlays()
+            // спрашивает и закрывает разом. Поэтому сноска считается открытой,
+            // пока полоса не ответит, что закрывать было нечего, — тогда
+            // клавиша разбирается заново без неё. Спрашивает только Escape над
+            // книгой без панели: прочие клавиши от сноски не зависят.
+            KeyContext context{
+                .shown = *shown,
+                .cameFrom = *bookCameFrom,
+                .wizardOpen = wizard->isOpen(),
+                .panelOpen = panel->isOpen(),
+                .noteOpen = true,
+                .fullScreen = isFullScreen(),
+                .origin = focusOriginOf(args.originalSource()),
+                .bookOpen = view->isOpen(),
+            };
 
-            // Полка — отовсюду, а не только из книги: выбрать другую книгу
-            // читатель вправе в любой момент, и это единственная клавиша,
-            // которой не мешает то, что сейчас на экране.
-            if (control && args.key() == VirtualKey::L) {
-                if (*shown != Screen::Library) showLibrary();
-                args.handled(true);
-                return;
+            Command command = resolve(press, context);
+            if (command == Command::DismissNote && !view->dismissOverlays()) {
+                context.noteOpen = false;
+                command = resolve(press, context);
             }
 
-            if (reading && control) {
-                switch (args.key()) {
-                    case VirtualKey::T: panel->open(ReaderPanel::Tab::Contents); break;
-                    case VirtualKey::F: panel->open(ReaderPanel::Tab::Search); break;
-                    case VirtualKey::B: panel->open(ReaderPanel::Tab::Bookmarks); break;
-                    default:
-                        // Ctrl с чем-то другим — не наше: кегль и тему разбирает
-                        // сама полоса, до сюда они не доходят.
-                        return;
-                }
-                args.handled(true);
-                return;
-            }
-
-            switch (args.key()) {
-                case VirtualKey::F2:
-                    if (!reading) return;
+            switch (command) {
+                case Command::ShowLibrary:
+                case Command::BackToLibrary:
+                    showLibrary();
+                    break;
+                case Command::BackToStart:
+                    showStartScreen();
+                    break;
+                case Command::OpenContents:
+                    panel->open(ReaderPanel::Tab::Contents);
+                    break;
+                case Command::OpenSearch:
+                    panel->open(ReaderPanel::Tab::Search);
+                    break;
+                case Command::OpenBookmarks:
+                    panel->open(ReaderPanel::Tab::Bookmarks);
+                    break;
+                case Command::TogglePanel:
                     panel->toggle();
                     break;
-                case VirtualKey::F11:
+                case Command::ClosePanel:
+                    panel->close();   // фокус полосе возвращает сама панель
+                    break;
+                case Command::DismissNote:
+                    break;   // сноску закрыла полоса — больше ничего не нужно
+                case Command::ToggleFullScreen:
                     setFullScreen(!isFullScreen());
                     break;
-                case VirtualKey::Escape:
-                    // Один приоритет на всё приложение: сперва убрать то, что
-                    // лежит поверх страницы, потом выйти из полного экрана, и
-                    // лишь потом уйти с экрана.
-                    if (panel->isOpen()) {
-                        panel->close();   // фокус полосе возвращает сама панель
-                    } else if (reading && view->dismissOverlays()) {
-                        // сноску закрыла полоса — больше ничего не нужно
-                    } else if (isFullScreen()) {
-                        setFullScreen(false);
-                    } else if (reading) {
-                        // Обратно туда, откуда книгу открыли: выбравший её на
-                        // полке ждёт полку, а не заставку.
-                        if (*bookCameFrom == Screen::Library) {
-                            showLibrary();
-                        } else {
-                            showStartScreen();
-                        }
-                    } else if (*shown == Screen::Library) {
-                        showStartScreen();
-                    } else {
-                        return;
-                    }
+                case Command::LeaveFullScreen:
+                    setFullScreen(false);
                     break;
-                default:
-                    return;
+
+                // Команды полосы — фаза 2: их исполнит приложение, когда
+                // полоса отдаст свой обработчик карте. Сейчас они сюда не
+                // доходят (см. выше), а дошедшую — не метим.
+                case Command::TurnForward:
+                case Command::TurnBackward:
+                case Command::GoToStart:
+                case Command::GoToEnd:
+                case Command::FontLarger:
+                case Command::FontSmaller:
+                case Command::FontReset:
+                case Command::NextTheme:
+                case Command::None:
+                    return;   // не наша клавиша: пусть идёт дальше
             }
             args.handled(true);
         });
