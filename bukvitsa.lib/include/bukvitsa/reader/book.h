@@ -12,7 +12,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -159,7 +158,7 @@ private:
 
     /// Размеры картинок по индексу — вёрстка их спрашивает у нас, а декодирует
     /// WIC. Хранится, чтобы отдавать каждой заводимой главе.
-    std::function<typography::ImageSize(uint32_t)> imageSize_;
+    function<typography::ImageSize(uint32_t)> imageSize_;
 
     /// Кэш размеченных глав: индекс → её объект. Держит текущую и соседние
     /// (дальние выбрасываются), чтобы на границе были обе главы разом, а шейпинг

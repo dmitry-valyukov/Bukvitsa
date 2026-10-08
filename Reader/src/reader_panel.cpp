@@ -20,11 +20,11 @@ namespace {
 
 // Ящик, а не бумага: свои цвета при любой теме страницы. wxl:: — потому что
 // rgb() темы страницы (theme.h) даёт цвет Direct2D и здесь заслонил бы этот.
-constexpr Color kChrome = wxl::rgba(30, 30, 34, 242 / 255.0);   ///< слегка прозрачный — под ним текст
+constexpr Color kChrome = wxl::rgba(30, 30, 34, 0.95);   ///< слегка прозрачный — под ним текст
 constexpr Color kInk = wxl::rgb(232, 228, 220);
 constexpr Color kDim = wxl::rgb(154, 150, 142);
 constexpr Color kEdge = wxl::rgba(255, 255, 255, 0.2);
-constexpr Color kActive = wxl::rgba(255, 255, 255, 34 / 255.0);
+constexpr Color kActive = wxl::rgba(255, 255, 255, 0.132);
 
 constexpr double kWidth = 380;
 

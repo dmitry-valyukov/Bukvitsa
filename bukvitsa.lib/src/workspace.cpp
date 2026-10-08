@@ -223,7 +223,7 @@ task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize) {
     co_return opened;
 }
 
-task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, std::function<void(const BookEntry&)> onNew) {
+task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, function<void(const BookEntry&)> onNew) {
     FolderAdded result;
 
     const std::vector<async_directory::listed_entry> found =
@@ -264,7 +264,7 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, std::functi
 
         // Полка растёт на каждой книге, а не в конце: в этом и смысл — читатель
         // видит, как она наполняется.
-        if (registered.isNew && onNew) onNew(registered.entry);
+        if (registered.isNew) onNew(registered.entry);
     }
 
     if (result.added) co_await saveLibrary();
