@@ -14,7 +14,6 @@
 
 #include "ApplicationFolder.h"
 #include "CompositionWindow.h"
-#include "ShowDialog.h"
 #include "skin_wizard.h"
 #include "start_screen.h"
 
@@ -24,6 +23,7 @@
 #include "book_view.h"
 #include "bukvitsa/reader/library.h"
 #include "library_screen.h"
+#include "notices.h"
 #include "reader_panel.h"
 #include "bukvitsa/reader/settings.h"
 #include "bukvitsa/reader/store.h"
@@ -74,110 +74,6 @@ constexpr auto kPositionQuiet = 1500ms;
 // один. Всё внутри — либо shared_ptr, либо обёртка wxl, то есть хендл; копия
 // такой связки ничего не копирует по существу.
 
-/// Сообщения читателю — диалогом над показанным экраном, одним на всё
-/// приложение. XAML не держит двух ContentDialog разом (второй ShowAsync —
-/// исключение), а сбои приходят и по два: сценарий упал, пока читатель читает
-/// о прошлом. Потому, пока сообщение открыто, новое дописывается в него, а не
-/// открывает второе; пока открыт чужой диалог (вопрос об удалении обложки) или
-/// экрана ещё нет, сообщение ждёт в очереди и выходит по flush(). Ответа не
-/// ждём: кнопка одна, и сценарий, которому не удалось, на этом и так кончился.
-/// Щёлкнуть мимо открытого диалога нельзя — он заслоняет остров, — так что
-/// второй диалог может прийти только от сценария по таймеру.
-class Notices {
-public:
-    /// Ставит себя обработчиком сбоев сценариев: сценарий, кончившийся
-    /// исключением, которого сам не поймал, -- не повод ронять читалку;
-    /// исключение приходит в поток окна, и читатель видит, что именно не
-    /// удалось, а кадр уходит, как у всякой detached_task. Без обработчика wxl
-    /// завершила бы процесс. Обработчик wxl — указатель на функцию, без
-    /// захвата, потому экземпляр один на процесс и находится по instance_.
-    explicit Notices(wxl::CompositionWindow window) : window_(std::move(window)) {
-        instance_ = this;
-        previous_ = wxl::async::on_detached_task_failure();
-        wxl::async::on_detached_task_failure() = [](std::exception_ptr error) noexcept {
-            if (instance_) instance_->failed(std::move(error));
-        };
-    }
-
-    ~Notices() {
-        if (instance_ != this) return;
-        wxl::async::on_detached_task_failure() = previous_;
-        instance_ = nullptr;
-    }
-
-    Notices(const Notices&) = delete;
-    Notices& operator=(const Notices&) = delete;
-
-    /// @param headline что не удалось — заголовок диалога
-    /// @param details  с чем и почему: путь, причина системы; может быть пусто
-    void complain(std::wstring headline, std::wstring details) {
-        using namespace wxl::dsl;
-
-        if (lines_) {
-            // Диалог открыт — дописываем. Заголовок второго сообщения — строкой
-            // в содержимом: title у диалога один, и он принадлежит первому.
-            lines_.value().children().append(
-                TextBlock{headline, FontWeight{600}, Margin{0, 12, 0, 0}, textWrapping.wrap});
-            if (!details.empty()) lines_.value().children().append(TextBlock{details, textWrapping.wrap});
-            return;
-        }
-
-        // Над тем островом, что показан: диалог — не часть дерева, и без
-        // XamlRoot показ падает; его ставит showDialog. Тема — показанного
-        // экрана: полоса тёмная, полка и стартовый экран светлые, а корни их
-        // все — Grid.
-        UIElement const host = window_.content();
-        if (!host) {
-            // Показывать ещё не над чем: так падает чтение настроек и реестров
-            // на старте, до первого экрана. Сообщение дождётся его (flush).
-            pending_.emplace_back(std::move(headline), std::move(details));
-            return;
-        }
-
-        auto lines = StackPanel{};
-        if (!details.empty()) lines.children().append(TextBlock{details, textWrapping.wrap});
-
-        auto dialog = ContentDialog{
-            title = headline,
-            content = lines,
-            closeButtonText = u"Закрыть",
-            defaultButton = ContentDialogButton::Close,
-            onClosed = [this](ContentDialog const&) { lines_ = nullptr; },
-        };
-        dialog.requestedTheme(host.try_as<FrameworkElement>().actualTheme());
-
-        // Открыт чужой диалог — XAML откажет исключением. Зовут отсюда и из
-        // noexcept-обработчика сбоев, так что отказ — не ошибка, а очередь.
-        try {
-            showDialog(dialog, host);
-        } catch (...) {
-            pending_.emplace_back(std::move(headline), std::move(details));
-            return;
-        }
-        lines_ = lines;
-    }
-
-    /// Экран показан: сообщения, пришедшие, пока показывать было не над чем,
-    /// выходят теперь. Зовётся там же, где окну ставят содержимое.
-    void flush() {
-        std::vector<std::pair<std::wstring, std::wstring>> waiting = std::move(pending_);
-        pending_.clear();
-        for (auto& [headline, details] : waiting) complain(std::move(headline), std::move(details));
-    }
-
-private:
-    /// Сбой сценария — сообщением: словами системы, чужим текстом после
-    /// проверки или просто фактом.
-    void failed(std::exception_ptr error) noexcept;
-
-    inline static Notices* instance_ = nullptr;
-    wxl::async::detached_task_failure_handler previous_ = nullptr;
-
-    wxl::CompositionWindow window_;
-    nullable<StackPanel> lines_ = nullptr;   ///< содержимое открытого диалога; пусто — диалога нет
-    std::vector<std::pair<std::wstring, std::wstring>> pending_;   ///< до первого экрана
-};
-
 struct App {
     wxl::CompositionWindow window;
     std::shared_ptr<Workspace> ws;   ///< рабочее место: настройки, реестр, обложки и все файлы
@@ -215,12 +111,6 @@ struct App {
 // каталог; «файла нет» там, где его может и не быть, — не сбой. Остальное
 // всплывает в `on_detached_task_failure` (см. wxl_launched): читатель видит
 // окно с причиной, сценарий на этом кончается.
-
-void Notices::failed(std::exception_ptr error) noexcept {
-    // Какими словами — решает модель (`noticeOf`); здесь только показ.
-    Notice notice = noticeOf(std::move(error));
-    complain(std::move(notice.headline), std::move(notice.details));
-}
 
 /// Говорит читателю, что не удалось, с чем и почему — словами системы.
 void complain(App const& app, std::wstring headline, std::wstring details,
