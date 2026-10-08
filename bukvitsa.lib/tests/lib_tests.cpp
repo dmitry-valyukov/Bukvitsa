@@ -639,6 +639,8 @@ void runPiecesTests();
 // Слои модели своими файлами: карта клавиш, список тем.
 void runKeyMapTests();
 void runThemeListTests();
+// Пробы слоёв модели — каждая в своём файле.
+void runPageFlowTests();
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -669,6 +671,8 @@ int main() {
     testWorkspaceTellsImages();
 
     runPiecesTests();
+    // Поток страниц верстает настоящую книгу: DirectWrite и WIC — после COM.
+    runPageFlowTests();
 
     sta_loop::stop();
     ::CoUninitialize();

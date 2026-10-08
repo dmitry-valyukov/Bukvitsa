@@ -58,6 +58,13 @@ constexpr float kSpacedTracking = 0.22f;    ///< разрядка, доля ке
 /// символов, и потому что короткие прогоны шейпятся заметно быстрее.
 constexpr uint32_t kMaxRunLength = 4000;
 
+/// На чём меряется средняя ширина знака. Не алфавит: в строке книги есть
+/// пробелы и запятые, и они тоже знаки. Обе фразы — панграммы, то есть в
+/// каждой все буквы своего алфавита ровно по разу.
+constexpr wchar_t kCyrillicSample[] =
+    L"съешь же ещё этих мягких французских булок, да выпей чаю";
+constexpr wchar_t kLatinSample[] = L"the quick brown fox jumps over the lazy dog";
+
 /* ================================================================== */
 /* Источник и приёмник анализа                                        */
 
@@ -301,6 +308,13 @@ struct Engine::Impl {
     /// поколение, и по несовпадению видно, что глифы в нём уже не те, —
     /// иначе смена шрифта тихо не подействовала бы на всё уже отшейпленное.
     uint64_t styleGeneration = 0;
+
+    /// Запомненная средняя ширина знака (averageCharWidth) и то, при каком
+    /// кегле и каком поколении стиля она измерена: смена шрифта книги видна
+    /// по поколению, как и у отшейпленных абзацев.
+    float charWidth = 0.0f;
+    float charWidthFontSize = 0.0f;
+    uint64_t charWidthGeneration = 0;
 
     std::map<FaceKey, ComPtr<IDWriteFontFace>> faces;
     std::unordered_map<IDWriteFontFace*, DWRITE_FONT_METRICS> metrics;
@@ -1267,6 +1281,51 @@ void Engine::setTextStyle(const TextStyle& style) {
 const TextStyle& Engine::textStyle() const { return impl_->style; }
 
 float Engine::lineHeightFor(const ParagraphStyle& style) const { return impl_->lineHeightOf(style); }
+
+float Engine::averageCharWidth(float fontSize) const {
+    Impl& impl = *impl_;
+    const float fallback = fontSize * 0.5f;
+
+    // Мерить каждый раз незачем: ответ зависит только от шрифта и кегля, а
+    // спрашивают его на каждой перевёрстке.
+    if (impl.charWidth > 0.0f && impl.charWidthFontSize == fontSize &&
+        impl.charWidthGeneration == impl.styleGeneration) {
+        return impl.charWidth;
+    }
+
+    // Латиница или кириллица — по языку книги: средняя ширина знака у них
+    // разная, и мерить английскую фразу для русской книги значило бы мерить
+    // не то.
+    const TextStyle& text = impl.style;
+    const bool cyrillic = text.locale.starts_with(L"ru");
+    const std::wstring_view sample = cyrillic ? std::wstring_view{kCyrillicSample}
+                                              : std::wstring_view{kLatinSample};
+
+    // Целой строкой через IDWriteTextLayout, а не своей вёрсткой: здесь нужна
+    // одна ширина фразы, и разбивка на строки ей ни к чему.
+    ComPtr<IDWriteTextFormat> format;
+    if (FAILED(impl.factory->CreateTextFormat(text.fontFamily.c_str(), nullptr,
+                                              DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                              DWRITE_FONT_STRETCH_NORMAL, fontSize,
+                                              text.locale.c_str(), format.GetAddressOf()))) {
+        return fallback;
+    }
+
+    ComPtr<IDWriteTextLayout> phrase;
+    if (FAILED(impl.factory->CreateTextLayout(sample.data(), static_cast<UINT32>(sample.size()),
+                                              format.Get(), 1.0e6f, 1.0e6f,
+                                              phrase.GetAddressOf()))) {
+        return fallback;
+    }
+
+    DWRITE_TEXT_METRICS metrics{};
+    if (FAILED(phrase->GetMetrics(&metrics)) || metrics.width <= 0.0f) return fallback;
+
+    impl.charWidth = metrics.width / static_cast<float>(sample.size());
+    impl.charWidthFontSize = fontSize;
+    impl.charWidthGeneration = impl.styleGeneration;
+    return impl.charWidth;
+}
 
 ShapedParagraphPtr Engine::shape(const Paragraph& paragraph, const ParagraphStyle& style) {
     // Конструктор закрыт: отшейпленный абзац умеет делать только движок.
