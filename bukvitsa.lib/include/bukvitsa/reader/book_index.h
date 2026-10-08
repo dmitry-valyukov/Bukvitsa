@@ -15,6 +15,7 @@
 // вкладка панели, — поэтому списки берут память из STA-пула.
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -49,6 +50,16 @@ struct SearchHit {
 ///        ровно так же, как дорог приложению.
 sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
                                  u16_view needle, size_t limit = 200);
+
+/// Запрос поиска из того, что набрал читатель: проверенный текст или пусто —
+/// искать нечего.
+///
+/// Набранное — чужой текст: приходит из поля ввода строкой системы, и
+/// одиночная половина суррогатной пары в нём возможна; такой запрос не
+/// ищется. Пустой и из одних пробелов и табуляций — тоже: слова в нём нет.
+/// Края не срезаются — ищется то, что набрано.
+/// @return вид в `typed`: живёт, пока жива строка поля
+std::optional<u16_view> searchQuery(std::u16string_view typed);
 
 /// Первые слова абзаца, в котором стоит эта позиция, — подсказка для закладки.
 u16_text hintAt(std::span<const typography::Block> blocks, uint32_t charOffset);
