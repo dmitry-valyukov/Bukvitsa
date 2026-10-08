@@ -302,6 +302,16 @@ detached_task saveStateLater(u16_text guid, BookState state) {
 }
 
 /// Пишет реестр.
+/// Испорченный файл читалки — копией рядом, под тем же именем с «.bad»: первая
+/// же запись заменит сам файл, а в копии остаются пути книг, места чтения по
+/// guid и кривые обложек, которые можно вытащить руками. Байты — те, что
+/// прочли и не разобрали; копия одна, прежняя перезаписывается: истории порч
+/// хранить незачем. Сбой записи копии придёт в обработчик сбоев, как у всех.
+detached_task keepBrokenCopy(std::filesystem::path file, std::string bytes) {
+    file += L".bad";
+    co_await async_file::write_all(poolPath(file), std::move(bytes));
+}
+
 detached_task saveLibraryLater(std::string xml) {
     co_await async_file::write_all(poolPath(libraryPath()), std::move(xml));
 }
@@ -806,13 +816,16 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     // полоса набора, и о прочитанном они узнают сами. Запись на диск начинает
     // слушать поля только теперь: прочитанное из файла — не перемена, которую
     // надо записать обратно.
-    // Файл прочитан, но не разобран — читателю об этом говорят: умолчания
-    // взяты молча, а первая же запись настроек заменит испорченный файл.
-    if (!readSettings(std::move(settingsXmlText), *app.settings)) {
+    // Файл прочитан, но не разобран — читателю об этом говорят, а байты
+    // остаются рядом копией: умолчания взяты молча, и первая же запись
+    // настроек заменит испорченный файл.
+    if (!readSettings(settingsXmlText, *app.settings)) {
+        keepBrokenCopy(settingsPath(), std::move(settingsXmlText));
         app.notices->complain(L"Настройки не прочитаны",
                               settingsPath().wstring() +
-                                  L"\n\nФайл испорчен: взяты умолчания, и первая же запись "
-                                  L"настроек заменит его.");
+                                  L"\n\nФайл испорчен: взяты умолчания. Копия лежит рядом "
+                                  L"(settings.xml.bad), а первая же запись настроек заменит "
+                                  L"сам файл.");
     }
     watchSettings();
 
@@ -844,10 +857,12 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     }
 
     if (!app.skins->loadFrom(skinsXmlText)) {
+        keepBrokenCopy(skinsPath(), std::move(skinsXmlText));
         app.notices->complain(L"Реестр обложек не прочитан",
                               skinsPath().wstring() +
-                                  L"\n\nФайл испорчен: обложек нет, и первая же запись "
-                                  L"реестра заменит его. Снимки в skins\\ целы.");
+                                  L"\n\nФайл испорчен: обложек нет. Копия лежит рядом "
+                                  L"(skins.xml.bad), снимки в skins\\ целы, а первая же "
+                                  L"запись реестра заменит сам файл.");
     }
     app.view->setSkins(app.skins->list());
     app.panel->refreshThemes();
@@ -882,10 +897,12 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     }
 
     if (!app.library->loadFrom(libraryXmlText)) {
+        keepBrokenCopy(libraryPath(), std::move(libraryXmlText));
         app.notices->complain(L"Реестр книг не прочитан",
                               libraryPath().wstring() +
-                                  L"\n\nФайл испорчен: полка пуста, и добавление книги "
-                                  L"заменит его. Сами книги лежат там, где лежали.");
+                                  L"\n\nФайл испорчен: полка пуста. Копия лежит рядом "
+                                  L"(library.xml.bad), сами книги лежат там, где лежали, а "
+                                  L"добавление книги заменит сам файл.");
     }
 
     // Продолжать чтение — только если книга на месте. Путь в настройках копия
