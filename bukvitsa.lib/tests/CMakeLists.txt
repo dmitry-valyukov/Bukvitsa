@@ -3,6 +3,7 @@
 add_executable(bukvitsa_lib_tests
     lib_tests.cpp
     key_map_tests.cpp
+    theme_list_tests.cpp
 )
 
 target_link_libraries(bukvitsa_lib_tests PRIVATE bukvitsa::lib)

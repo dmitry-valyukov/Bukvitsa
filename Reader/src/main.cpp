@@ -27,6 +27,7 @@
 #include "reader_panel.h"
 #include "bukvitsa/reader/settings.h"
 #include "bukvitsa/reader/store.h"
+#include "bukvitsa/reader/theme_list.h"
 #include "bukvitsa/reader/workspace.h"
 
 // Импорт последним, после всех обычных заголовков.
@@ -204,6 +205,11 @@ struct App {
     std::shared_ptr<Screen> bookCameFrom;
     std::shared_ptr<WarmBook> warm;
     std::shared_ptr<Notices> notices;
+
+    /// Темы и обложки одним списком — номер темы полосы ↔ имена в настройках.
+    /// Заполняется там же и тем же, что список полосы (`setSkins`): при
+    /// запуске, после сохранения и после удаления обложки.
+    std::shared_ptr<ThemeList> themes = std::make_shared<ThemeList>();
 };
 
 // ---- корутины приложения --------------------------------------------------
@@ -334,21 +340,18 @@ detached_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
         co_return;
     }
 
+    // Список тем — раньше полосы: слушатель темы, которого может позвать
+    // setSkins полосы, переводит номер в имена по нему.
+    app.themes->setSkins(app.ws->skins.list());
     app.view->setSkins(app.ws->skins.list());
     app.panel->refreshThemes();
 
-    // По полному списку полосы, а не по реестру: номера считаются вместе с
+    // Номер — по полному списку, а не по реестру: номера считаются вместе с
     // системными обложками, которые стоят впереди реестровых.
     //
     // Имя обложки в настройки и их запись — дело слушателя темы (wxl_launched):
     // смена темы здесь ничем не отличается от смены клавишей T.
-    const std::vector<Skin>& list = app.view->skins();
-    for (size_t index = 0; index < list.size(); ++index) {
-        if (list[index].name == skinName) {
-            app.view->setTheme(kThemeCount + static_cast<int>(index));
-            break;
-        }
-    }
+    app.view->setTheme(app.themes->afterSave(skinName, app.view->theme.get()));
 
     leaveWizard();
 }
@@ -432,29 +435,17 @@ detached_task deleteSkinFlow(App app, u16_text name) {
 
     if (!app.ws->skins.find(name)) co_return;   // реестр мог перемениться, пока спрашивали
 
-    // Спрашиваем, пока старый список цел: activeSkin() смотрит в него номером.
-    const Skin* active = app.view->activeSkin();
-    const u16_text activeName = active ? active->name : u16_text{};
-    const bool leavingActive = activeName == name;
+    // Куда встать — спрашиваем, пока старый список цел: номер текущей темы
+    // смотрит в него. Ключ встроенной темы из настроек — тоже сейчас: когда
+    // номер текущей выпадает за укоротившийся список, setSkins полосы ставит
+    // первую тему, и слушатель темы пишет её ключ в настройки поверх того,
+    // к которому читатель должен вернуться.
+    const int theme = app.themes->afterRemoval(name, app.view->theme.get(), app.ws->settings.theme);
 
     co_await app.ws->deleteSkin(name);
 
+    app.themes->setSkins(app.ws->skins.list());
     app.view->setSkins(app.ws->skins.list());
-
-    int theme = app.view->theme.get();   // встроенная тема удалением не двигается
-
-    if (leavingActive) {
-        theme = themeById(app.ws->settings.theme);
-    } else if (!activeName.empty()) {
-        const std::vector<Skin>& list = app.view->skins();
-
-        for (size_t index = 0; index < list.size(); ++index) {
-            if (list[index].name == activeName) {
-                theme = kThemeCount + static_cast<int>(index);
-                break;
-            }
-        }
-    }
 
     // Настройки — имя обложки или ключ темы — поправит и запишет слушатель
     // темы (wxl_launched).
@@ -654,23 +645,13 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
 
     // Обложки — раньше темы: выбранной темой может оказаться обложка, а её
     // индекс продолжает список за встроенными и без реестра не существует.
+    app.themes->setSkins(app.ws->skins.list());
     app.view->setSkins(app.ws->skins.list());
     app.panel->refreshThemes();
 
-    int theme = themeById(app.ws->settings.theme);
-
-    if (!app.ws->settings.skin.empty()) {
-        // По полному списку полосы, а не по реестру: номера считаются вместе с
-        // системными обложками, которые стоят впереди реестровых.
-        const std::vector<Skin>& list = app.view->skins();
-        for (size_t index = 0; index < list.size(); ++index) {
-            if (list[index].name == app.ws->settings.skin) {
-                theme = kThemeCount + static_cast<int>(index);
-                break;
-            }
-        }
-    }
-    app.view->setTheme(theme);
+    // Обложка по имени, а нет такой — встроенная по ключу: номера считаются
+    // по полному списку, вместе с системными обложками впереди реестровых.
+    app.view->setTheme(app.themes->indexFromSettings(app.ws->settings.theme, app.ws->settings.skin));
 
     const std::filesystem::path& lastBook = started.lastBook;
 
@@ -926,7 +907,8 @@ wxl::Teardown wxl_launched() {
         viewTimer.stop();
         viewTimer.start();
     };
-    auto const watchSettings = [prefs = &ws->settings, page = view.get(), persistLater] {
+    auto const watchSettings = [prefs = &ws->settings, page = view.get(), themes = app.themes,
+                                persistLater] {
         static_cast<void>(prefs->fontSize.on_change([persistLater](double) noexcept { persistLater(); }));
         static_cast<void>(prefs->lineHeight.on_change([persistLater](double) noexcept { persistLater(); }));
         static_cast<void>(prefs->margin.on_change([persistLater](double) noexcept { persistLater(); }));
@@ -936,19 +918,14 @@ wxl::Teardown wxl_launched() {
         // Тема — поле полосы, а в настройках она лежит именем: обложка — своим,
         // встроенная тема — ключом; прежний ключ при обложке остаётся как то,
         // куда вернуться, если реестр обложек пропадёт. Слушатель переводит
-        // номер в имена и пишет файл, только если имена изменились: запуск
-        // ставит ту же тему, что в файле.
-        static_cast<void>(page->theme.on_change([prefs, page, persistLater](int index) noexcept {
-            u16_text skinName;
-            u16_text themeId = prefs->theme;
-            if (const Skin* active = page->activeSkin()) {
-                skinName = active->name;
-            } else {
-                themeId = u16_text{themeIdAt(index)};
-            }
-            if (skinName == prefs->skin && themeId == prefs->theme) return;
-            prefs->skin = std::move(skinName);
-            prefs->theme = std::move(themeId);
+        // номер в имена по списку тем и пишет файл, только если имена
+        // изменились: запуск ставит ту же тему, что в файле. Список тем
+        // слушатель держит сам: тот о полосе не знает, кольца нет.
+        static_cast<void>(page->theme.on_change([prefs, themes, persistLater](int index) noexcept {
+            ThemeList::Persisted names = themes->persist(index, prefs->theme);
+            if (names.skin == prefs->skin && names.theme == prefs->theme) return;
+            prefs->skin = std::move(names.skin);
+            prefs->theme = std::move(names.theme);
             persistLater();
         }));
     };
@@ -987,20 +964,14 @@ wxl::Teardown wxl_launched() {
             });
     };
 
-    panel->onEditSkin = [app, view, wizard, closePanel,
-                         previewSkin](u16_text skinName) {
-        // По полному списку полосы, а не по реестру: системные обложки живут
+    panel->onEditSkin = [app, wizard, closePanel, previewSkin](u16_text skinName) {
+        // По полному списку тем, а не по реестру: системные обложки живут
         // только в нём, а шестерёнка есть и у них — правка «на основе».
-        const Skin* known = nullptr;
-        for (const Skin& skin : view->skins()) {
-            if (skin.name == skinName) {
-                known = &skin;
-                break;
-            }
-        }
+        const std::optional<int> index = app.themes->indexOfSkin(skinName);
+        const Skin* known = index ? app.themes->skinAt(*index) : nullptr;
         if (!known) return;   // список успел перемениться под руками
 
-        // Копия, а не указатель: пока снимок читают, список полосы может
+        // Копия, а не указатель: пока снимок читают, список тем может
         // перемениться, и указатель в него протухнет.
         const Skin skin = *known;
 

@@ -631,8 +631,9 @@ void testWorkspaceTellsImages() {
 
 }  // namespace
 
-// Слои модели своими файлами: карта клавиш.
+// Слои модели своими файлами: карта клавиш, список тем.
 void runKeyMapTests();
+void runThemeListTests();
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -644,6 +645,7 @@ int main() {
     testEdgeThroughPoints();
     testSkinsReadSeparateLeaves();
     runKeyMapTests();
+    runThemeListTests();
 
     // Петля операций wxl — одна на процесс, как у тестов самой wxl: её каналы
     // живут столько же, сколько процесс, и второй раз не стартуют. COM — для
