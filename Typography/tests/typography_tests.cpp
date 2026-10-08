@@ -26,6 +26,7 @@
 #include "bukvitsa/typography/glyph_painter.h"
 #include "bukvitsa/typography/hyphenation.h"
 #include "bukvitsa/typography/layout.h"
+#include "bukvitsa/typography/note.h"
 #include "bukvitsa/typography/page.h"
 
 import wxl.core;
@@ -1560,6 +1561,119 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
     }
 }
 
+/// Базовые линии идут сверху вниз, и вся сноска ниже последней из них.
+bool notePlacedDownwards(const typography::NoteLayout& note) {
+    float previous = 0.0f;
+    for (const typography::NoteLine& placed : note.lines) {
+        if (placed.baseline <= previous) return false;
+        previous = placed.baseline;
+    }
+    return note.height > previous;
+}
+
+/// Раскладка всплывающей сноски — то, что читалка показывает по щелчку на
+/// знаке: строки, их базовые линии и высота, без окна.
+void testNoteLayout(typography::Engine& engine, const std::filesystem::path& testdata) {
+    std::printf("\n=== сноска ===\n");
+
+    // Абзац из ста слов — несколько строк в любой из колонок ниже.
+    std::string hundred;
+    for (int i = 0; i < 100; ++i) hundred += "слово ";
+
+    const std::string body = std::string(R"(<?xml version="1.0" encoding="UTF-8"?>
+<fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" xmlns:xlink="http://www.w3.org/1999/xlink" id="00000000-0000-0000-0000-000000000003">
+<section id="s1"><p>Текст книги.</p></section>
+<notes show="0">
+<notebody id="empty"/>
+<notebody id="blank"><p> </p></notebody>
+<notebody id="word"><p>Слово.</p></notebody>
+<notebody id="hundred"><p>)") + hundred + R"(</p></notebody>
+<notebody id="two"><p>)" + hundred + R"(</p><p>Второй абзац.</p></notebody>
+</notes>
+</fb3-body>)";
+    const fb3::Document document{fb3Of(body)};
+    check(document.noteBody("empty") && document.noteBody("blank") && document.noteBody("word") &&
+              document.noteBody("hundred") && document.noteBody("two"),
+          "тела сносок находятся по id");
+
+    constexpr float kFontSize = 20.0f;
+    constexpr float kWidth = 300.0f;
+    const auto layoutOf = [&](std::string_view id, float width) {
+        const fb3::Node* note = document.noteBody(id);
+        return note ? typography::layoutNote(engine, *note, width, kFontSize)
+                    : typography::NoteLayout{};
+    };
+
+    // Пустая сноска не занимает места: всплывашка по ней не открывается.
+    const typography::NoteLayout emptyNote = layoutOf("empty", kWidth);
+    const typography::NoteLayout blankNote = layoutOf("blank", kWidth);
+    const typography::NoteLayout noWidth = layoutOf("word", 0.0f);
+    check(emptyNote.lines.empty() && emptyNote.height == 0.0f,
+          "пустая сноска — ни строки, высота ноль");
+    check(blankNote.lines.empty() && blankNote.height == 0.0f,
+          "сноска из одних пробелов — ни строки, высота ноль");
+    check(noWidth.lines.empty() && noWidth.height == 0.0f,
+          "колонка без ширины — ни строки, высота ноль");
+
+    // Высота растёт с текстом.
+    const typography::NoteLayout word = layoutOf("word", kWidth);
+    const typography::NoteLayout hundredWords = layoutOf("hundred", kWidth);
+    std::printf("  слово: строк %zu, высота %.1f; сто слов: строк %zu, высота %.1f\n",
+                word.lines.size(), word.height, hundredWords.lines.size(), hundredWords.height);
+    check(word.lines.size() == 1 && notePlacedDownwards(word),
+          "одно слово — одна строка, сноска ниже её базовой линии");
+    check(hundredWords.lines.size() > 1 && notePlacedDownwards(hundredWords) &&
+              hundredWords.height > word.height,
+          "сто слов — строки сверху вниз, сноска выше, чем из одного слова");
+
+    // Отбивка между абзацами больше шага строк внутри абзаца. Первая строка
+    // второго абзаца — та, что начинается с начала его текста.
+    const typography::NoteLayout two = layoutOf("two", kWidth);
+    size_t second = 0;
+    for (size_t i = 1; i < two.lines.size() && second == 0; ++i)
+        if (two.lines[i].line.textStart == 0) second = i;
+
+    float lineStep = 0.0f;
+    for (size_t i = 1; i < second; ++i)
+        lineStep = std::max(lineStep, two.lines[i].baseline - two.lines[i - 1].baseline);
+    const float paragraphStep =
+        second > 1 ? two.lines[second].baseline - two.lines[second - 1].baseline : 0.0f;
+
+    std::printf("  шаг строк %.1f, шаг через границу абзацев %.1f\n", lineStep, paragraphStep);
+    check(second > 1 && paragraphStep > lineStep,
+          "отбивка между абзацами больше, чем между строками одного абзаца");
+
+    // Уже колонка — больше строк.
+    const typography::NoteLayout narrow = layoutOf("hundred", kWidth / 2.0f);
+    check(narrow.lines.size() > hundredWords.lines.size() && narrow.height > hundredWords.height,
+          "колонка вдвое уже — строк больше, сноска выше");
+
+    // Сноски настоящей книги: каждая, на которую ссылается текст.
+    const std::filesystem::path bookPath = testdata / "nightmare_example.fb3";
+    if (!std::filesystem::exists(bookPath)) {
+        std::printf("  нет nightmare_example.fb3: сноски книги пропущены\n");
+        return;
+    }
+
+    const fb3::Document book{bookPath};
+    std::vector<const fb3::Node*> targets;
+    for (const typography::Block& block : typography::flatten(book.body()))
+        for (const typography::NoteAnchor& anchor : block.paragraph.notes)
+            if (anchor.target &&
+                std::find(targets.begin(), targets.end(), anchor.target) == targets.end())
+                targets.push_back(anchor.target);
+
+    bool allPlaced = true;
+    for (const fb3::Node* target : targets) {
+        const typography::NoteLayout note =
+            typography::layoutNote(engine, *target, kWidth, kFontSize);
+        if (note.lines.empty() || !notePlacedDownwards(note)) allPlaced = false;
+    }
+
+    std::printf("  nightmare_example: сносок %zu\n", targets.size());
+    check(!targets.empty() && allPlaced, "каждая сноска книги раскладывается в строки сверху вниз");
+}
+
 }  // namespace
 
 int main() {
@@ -1585,6 +1699,7 @@ int main() {
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
     testHyphenSeries(engine, testdata);
     shootHyphenation(engine, testdata);
+    testNoteLayout(engine, testdata);
 
     for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3",
                              "hardcore_file_structure.fb3",

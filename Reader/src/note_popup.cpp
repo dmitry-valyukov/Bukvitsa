@@ -5,7 +5,6 @@
 // он единственный тянет за собой стандартные заголовки, которых нет здесь.
 #include "note_popup.h"
 
-#include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/glyph_painter.h"
 
 namespace bukvitsa::reader {
@@ -68,38 +67,6 @@ void NotePopup::hide() {
     root_.value().visibility(Visibility::Collapsed);
 }
 
-float NotePopup::layout(Book& book, const fb3::Node* note, float width, float fontSize) {
-    lines_.clear();
-    baselines_.clear();
-
-    if (!note || width <= 0.0f) return 0.0f;
-
-    typography::Engine& engine = book.engine();
-    float y = 0.0f;
-
-    for (const typography::Block& block : typography::flatten(*note)) {
-        if (block.paragraph.text.empty()) continue;
-
-        // Сноска набирается мельче книги и без абзацного отступа: она короткая,
-        // и отступ в ней читался бы как случайная дыра.
-        typography::ParagraphStyle style;
-        style.fontSize = fontSize * 0.85f;
-        style.lineHeight = 1.35f;
-        style.alignment = typography::Alignment::Justify;
-
-        for (typography::Line& line : engine.layout(block.paragraph, width, style)) {
-            y += line.ascent;
-            baselines_.push_back(y);
-            y += line.height - line.ascent;
-            lines_.push_back(std::move(line));
-        }
-
-        y += style.fontSize * 0.4f;   // отбивка между абзацами сноски
-    }
-
-    return y;
-}
-
 void NotePopup::draw(const Theme& theme, float width, float height, float scale) {
     const SizeInt32 pixels{static_cast<int32_t>(width * scale + 0.5f),
                            static_cast<int32_t>(height * scale + 0.5f)};
@@ -127,8 +94,8 @@ void NotePopup::draw(const Theme& theme, float width, float height, float scale)
         context->CreateSolidColorBrush(theme.text, &ink);
         if (!ink) return;
 
-        for (size_t i = 0; i < lines_.size(); ++i) {
-            typography::drawLine(context, lines_[i], 0.0f, baselines_[i], ink.Get());
+        for (const typography::NoteLine& placed : body_.lines) {
+            typography::drawLine(context, placed.line, 0.0f, placed.baseline, ink.Get());
         }
     });
 }
@@ -138,11 +105,13 @@ void NotePopup::show(Book& book, const fb3::Node* note, Point anchor, Size area,
     const float width = std::min(kMaxWidth, std::max(area.width * 0.6f, 220.0f));
     const float inner = width - kPadding * 2.0f;
 
-    const float noteHeight = layout(book, note, inner, fontSize);
-    if (lines_.empty()) {
+    body_ = note ? typography::layoutNote(book.engine(), *note, inner, fontSize)
+                 : typography::NoteLayout{};
+    if (body_.lines.empty()) {
         hide();
         return;
     }
+    const float noteHeight = body_.height;
 
     const float height =
         std::min(noteHeight + kPadding * 2.0f, std::max(area.height * kMaxHeightShare, 120.0f));
