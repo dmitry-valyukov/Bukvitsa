@@ -37,6 +37,12 @@ using namespace bukvitsa;
 
 namespace {
 
+/// Цвет для Direct2D записью `rgb`, как во всём дереве: такую запись редактор
+/// узнаёт и ставит образец цвета.
+constexpr D2D1_COLOR_F rgb(int r, int g, int b) {
+    return {r / 255.0f, g / 255.0f, b / 255.0f, 1.0f};
+}
+
 int failures = 0;
 
 void check(bool condition, std::string_view what) {
@@ -208,7 +214,7 @@ void testFormulas(IDWriteFactory* dwrite) {
     target.As(&context);
 
     context->BeginDraw();
-    context->Clear(D2D1::ColorF(D2D1::ColorF::White));
+    context->Clear(rgb(255, 255, 255));
     emc->draw(context.Get(), 4.0f, 4.0f);
     check(SUCCEEDED(context->EndDraw()), "отрисовка завершилась");
 
@@ -1522,12 +1528,12 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
         FAILED(target.As(&context)))
         return;
 
-    context->CreateSolidColorBrush(D2D1::ColorF(0x202020), &ink);
-    context->CreateSolidColorBrush(D2D1::ColorF(0xD8D0C0), &rule);
+    context->CreateSolidColorBrush(rgb(32, 32, 32), &ink);
+    context->CreateSolidColorBrush(rgb(216, 208, 192), &rule);
     context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
     context->BeginDraw();
-    context->Clear(D2D1::ColorF(0xFBF8F1));
+    context->Clear(rgb(251, 248, 241));
     for (int side = 0; side < 2; ++side) {
         const float left = kMargin + static_cast<float>(side) * (kColumn + kGap);
         const float bottom = static_cast<float>(height) - kMargin;
