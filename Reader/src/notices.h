@@ -39,16 +39,18 @@ public:
     /// удалось, а кадр уходит, как у всякой detached_task. Без обработчика wxl
     /// завершила бы процесс. Обработчик wxl — указатель на функцию, без
     /// захвата, потому экземпляр один на процесс и находится по instance_.
-    explicit Notices(wxl::CompositionWindow window);
+    /// @param screenTheme тема показанного экрана: диалог не в его дереве и
+    ///        сам её не наследует. Поле владельца, живёт дольше сообщений.
+    Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme);
 
     ~Notices();
 
     Notices(const Notices&) = delete;
     Notices& operator=(const Notices&) = delete;
 
-    /// @param headline что не удалось — заголовок диалога
-    /// @param details  с чем и почему: путь, причина системы; может быть пусто
-    void complain(std::wstring headline, std::wstring details);
+    /// Публикует сообщение: диалогом сразу, строкой в уже открытый диалог
+    /// или в очередь до `flush()`, если показывать ещё не над чем.
+    void post(Notice notice);
 
     /// Экран показан: сообщения, пришедшие, пока показывать было не над чем,
     /// выходят теперь. Зовётся там же, где окну ставят содержимое.
@@ -63,8 +65,9 @@ private:
     wxl::async::detached_task_failure_handler previous_ = nullptr;
 
     wxl::CompositionWindow window_;
+    observable<wxl::ElementTheme const>& screenTheme_;
     nullable<wxl::StackPanel> lines_ = nullptr;   ///< содержимое открытого диалога; пусто — диалога нет
-    std::vector<std::pair<std::wstring, std::wstring>> pending_;   ///< до первого экрана
+    std::vector<Notice> pending_;   ///< до первого экрана или до закрытия чужого диалога
 };
 
 }  // namespace bukvitsa::reader

@@ -28,4 +28,9 @@ std::wstring reasonOf(const wxl::async::system_exception& failure);
 /// текстом, если он UTF-8; что-то ещё — просто фактом.
 Notice noticeOf(std::exception_ptr error);
 
+/// Сбой операции с файлом, на который у сценария есть ответ читателю: что
+/// не удалось, с чем (путь; может быть пусто) и почему — причина словами
+/// системы через пустую строку после подробностей.
+Notice noticeOf(std::wstring headline, std::wstring details, const wxl::async::system_exception& failure);
+
 }  // namespace bukvitsa::reader

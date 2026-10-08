@@ -53,6 +53,11 @@ LibraryScreen::LibraryScreen(Workspace& workspace) : workspace_(workspace) {
 
     root_ = Grid{
         isTabStop = true,
+
+        // Тема — светлая, явно: полка бумажная, а остров без своей темы берёт
+        // тему приложений Windows, и в тёмной текст кнопок светлел бы на бумаге.
+        requestedTheme = ElementTheme::Light,
+
         background = SolidColorBrush{kPaper},
         rowDefinitions = u"auto,*",
 

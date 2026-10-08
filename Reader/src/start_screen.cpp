@@ -93,6 +93,12 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
         // событие клавиши начинается у того, на чём фокус, и пока фокуса нет
         // ни на чём, ловить нечего — ни на всплытии, ни на пути вниз.
         isTabStop = true,
+
+        // Тема — светлая, явно: экран подобран под неё, а остров без своей
+        // темы берёт тему приложений Windows, и вид заставки зависел бы от
+        // настройки, о которой читалка не знает.
+        requestedTheme = ElementTheme::Light,
+
         cardShell,
     };
 

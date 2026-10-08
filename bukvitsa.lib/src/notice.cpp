@@ -35,4 +35,10 @@ Notice noticeOf(std::exception_ptr error) {
     }
 }
 
+Notice noticeOf(std::wstring headline, std::wstring details, const system_exception& failure) {
+    if (!details.empty()) details += L"\n\n";
+    details += reasonOf(failure);
+    return {std::move(headline), std::move(details)};
+}
+
 }  // namespace bukvitsa::reader

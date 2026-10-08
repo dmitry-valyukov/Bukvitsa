@@ -86,6 +86,13 @@ void testNoticeOfFailure() {
     check(onFile.details.find(L"ReadFile") != std::wstring::npos && onFile.details.find(L"= 2") != std::wstring::npos,
           "в причине — что делали и код системы");
 
+    const Notice withPath = noticeOf(L"Не удалось прочитать файл книги", L"C:\\книги\\роман.fb3", failure);
+    check(withPath.headline == L"Не удалось прочитать файл книги" &&
+              withPath.details == L"C:\\книги\\роман.fb3\n\n" + reasonOf(failure),
+          "сбой с файлом: что не удалось, путь и причина через пустую строку");
+    check(noticeOf(L"Не удалось", L"", failure).details == reasonOf(failure),
+          "без пути — одна причина, без пустых строк впереди");
+
     const Notice said = noticeOf(std::make_exception_ptr(std::runtime_error("Книга испорчена: нет описания")));
     check(said.headline == L"Ошибка" && said.details == L"Книга испорчена: нет описания",
           "исключение с текстом UTF-8 — его текст");
