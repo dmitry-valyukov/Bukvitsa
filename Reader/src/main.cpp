@@ -1032,13 +1032,13 @@ wxl::Teardown wxl_launched() {
                 .bookOpen = view->isOpen(),
             };
 
-            Command command = resolve(press, context);
-            if (command == Command::DismissNote && !view->dismissOverlays()) {
+            Command resolved = resolve(press, context);
+            if (resolved == Command::DismissNote && !view->dismissOverlays()) {
                 context.noteOpen = false;
-                command = resolve(press, context);
+                resolved = resolve(press, context);
             }
 
-            switch (command) {
+            switch (resolved) {
                 case Command::ShowLibrary:
                 case Command::BackToLibrary:
                     showLibrary();
