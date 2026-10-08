@@ -15,7 +15,6 @@
 // Reader.
 
 #include <cstdint>
-#include <exception>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -25,6 +24,7 @@
 // Заголовки модели — последними: они несут импорт.
 #include "book.h"
 #include "library.h"
+#include "notice.h"
 #include "settings.h"
 #include "skins.h"
 #include "store.h"
@@ -32,12 +32,6 @@
 import wxl.async;
 
 namespace bukvitsa::reader {
-
-/// Слова для читателя: заголовок и подробности. Модель окон не показывает.
-struct Notice {
-    std::wstring headline;
-    std::wstring details;
-};
 
 /// Чем кончился запуск: настройки, обложки и реестр уже в полях рабочего
 /// места, а здесь — что при этом пошло не так, и книга, которую можно
@@ -71,17 +65,6 @@ struct FolderAdded {
     bool added = false;                 ///< хоть одна книга зарегистрирована — реестр записан
     std::vector<std::wstring> unread;   ///< файлы, которые не прочитались: имя и причина
 };
-
-/// Причина сбоя операции словами системы, для сообщения читателю. Текст
-/// приходит в кодировке потока (`FormatMessageA`), потому переводится через
-/// CP_ACP.
-std::wstring reasonOf(const wxl::async::system_exception& failure);
-
-/// Сбой сценария словами для читателя: то, что дошло до обработчика сбоев,
-/// потому что сам сценарий ответа на это не знал. Операция с файлом —
-/// причиной словами системы (`reasonOf`); всякое другое исключение — его
-/// текстом, если он UTF-8; что-то ещё — просто фактом.
-Notice noticeOf(std::exception_ptr error);
 
 /// Каталог данных по умолчанию: `%LOCALAPPDATA%\Bukvitsa\Reader`. Корень общий
 /// для семейства — рядом однажды встанет Writer; не Roaming: в реестре лежат
