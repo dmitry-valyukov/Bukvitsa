@@ -4,9 +4,9 @@
 
 #include "ShowDialog.h"
 
-// Последним: модель сообщений импортирует wxl.core, после чего стандартный
-// заголовок MSVC уже не принимает.
-#include "bukvitsa/reader/workspace.h"
+// Последним: слова читателю (`noticeOf`) несут импорт wxl.async, после чего
+// стандартный заголовок MSVC уже не принимает.
+#include "bukvitsa/reader/notice.h"
 
 import wxl.async;
 import wxl.core;

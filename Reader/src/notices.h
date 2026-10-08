@@ -14,6 +14,7 @@
 
 #include "CompositionWindow.h"
 #include "Object.h"
+#include "bukvitsa/reader/notice.h"
 #include "pch.h"
 
 // Импорт — последним: тип обработчика сбоев сценариев живёт в wxl.async.
