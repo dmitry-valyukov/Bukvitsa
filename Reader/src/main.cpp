@@ -10,7 +10,7 @@
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
 #include "file_dialog.h"
-#include "imaging.h"
+#include "bukvitsa/reader/imaging.h"
 
 #include "ApplicationFolder.h"
 #include "CompositionWindow.h"
@@ -20,13 +20,13 @@
 
 // Последними: они ведут к модели книги и реестру, а те импортируют wxl.core,
 // после чего стандартный заголовок MSVC уже не принимает.
-#include "book.h"
+#include "bukvitsa/reader/book.h"
 #include "book_view.h"
-#include "library.h"
+#include "bukvitsa/reader/library.h"
 #include "library_screen.h"
 #include "reader_panel.h"
-#include "settings.h"
-#include "store.h"
+#include "bukvitsa/reader/settings.h"
+#include "bukvitsa/reader/store.h"
 
 // Импорт последним, после всех обычных заголовков.
 import wxl.async;

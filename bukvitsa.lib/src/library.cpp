@@ -1,11 +1,11 @@
 #include <objbase.h>
 
 // «book.h» больше не нужен: реестр работает с разобранным документом.
-#include "settings.h"
+#include "bukvitsa/reader/settings.h"
 
 // Последними: реестр и хранилище импортируют wxl.core.
-#include "library.h"
-#include "store.h"
+#include "bukvitsa/reader/library.h"
+#include "bukvitsa/reader/store.h"
 
 // После своих заголовков: document.h тянет import wxl.core, а стандартный
 // заголовок после импорта MSVC уже не принимает.

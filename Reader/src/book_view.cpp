@@ -20,7 +20,7 @@
 #include "UiThread.h"
 #include "book_view.h"
 
-#include "imaging.h"
+#include "bukvitsa/reader/imaging.h"
 
 #include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/glyph_painter.h"

@@ -22,8 +22,8 @@
 
 // Последними: они импортируют wxl.core (тема — сама, книга — через модель),
 // после чего стандартный заголовок MSVC уже не принимает.
-#include "book.h"
-#include "theme.h"
+#include "bukvitsa/reader/book.h"
+#include "bukvitsa/reader/theme.h"
 
 namespace bukvitsa::reader {
 

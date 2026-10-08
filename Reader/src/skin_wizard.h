@@ -26,7 +26,7 @@
 
 // Последним: обложки импортируют wxl.core, после чего стандартный заголовок
 // MSVC уже не принимает.
-#include "skins.h"
+#include "bukvitsa/reader/skins.h"
 
 namespace bukvitsa::reader {
 

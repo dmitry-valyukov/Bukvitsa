@@ -2,8 +2,8 @@
 
 // Свои заголовки — после системных: settings.h и store.h несут импорт, а
 // заголовок после импорта MSVC принимает не всякий.
-#include "settings.h"
-#include "store.h"
+#include "bukvitsa/reader/settings.h"
+#include "bukvitsa/reader/store.h"
 
 import wxl.core;
 import wxl.fmt;

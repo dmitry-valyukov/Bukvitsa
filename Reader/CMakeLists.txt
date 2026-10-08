@@ -13,50 +13,30 @@
 wxl_add_executable(Reader
     src/main.cpp
     src/start_screen.cpp
-    src/book.cpp
     src/book_view.cpp
     src/library_screen.cpp
     src/reader_panel.cpp
     src/note_popup.cpp
-    src/book_index.cpp
-    src/imaging.cpp
-    src/library.cpp
-    src/settings.cpp
-    src/skins.cpp
     src/skin_wizard.cpp
-    src/store.cpp
     src/file_dialog.cpp
-    src/book.h
     src/book_view.h
     src/file_dialog.h
-    src/imaging.h
-    src/library.h
     src/library_screen.h
     src/reader_panel.h
     src/note_popup.h
-    src/book_index.h
-    src/settings.h
-    src/skins.h
     src/skin_wizard.h
     src/start_screen.h
-    src/store.h
-    src/theme.h
     src/pch.h
     src/app.manifest
 )
 
-# bukvitsa::typography тянет за собой bukvitsa::fb3, DirectWrite и Direct2D:
-# страницу читалка рисует своими глифами, и рисует их та же вёрстка, что их
-# разложила. wxl::async — операции с файлами и корутины сценариев (main.cpp), wxl::xml и
-# wxl::fmt — файлы читалки. windowscodecs -- декодирование картинок книги
-# (WIC), dxguid -- CLSID встроенных эффектов D2D (изгиб страницы на подложке).
+# Модель — bukvitsa::lib, и с ней приходит всё, что ниже: вёрстка с FB3,
+# DirectWrite и Direct2D (страницу читалка рисует своими глифами, и рисует их
+# та же вёрстка, что их разложила), операции с файлами и корутины wxl::async,
+# windowscodecs. Своё у Reader одно: dxguid -- CLSID встроенных эффектов D2D
+# (изгиб страницы на подложке).
 target_link_libraries(Reader PRIVATE
-    wxl::async
-    wxl::xml
-    wxl::core
-    wxl::fmt
-    bukvitsa::typography
-    windowscodecs
+    bukvitsa::lib
     dxguid
 )
 
@@ -68,10 +48,6 @@ bukvitsa_consumes_wxl(Reader)
 # должны там лежать. Правилом на файл, а не хвостом линковки: правка картинки
 # не повод перелинковывать, а хвост линковки без линковки и не сработал бы.
 wxl_target_assets(Reader src/Assets)
-
-if(BUKVITSA_BUILD_TESTS)
-    add_subdirectory(tests)
-endif()
 
 # TODO: витрина хранилища, наблюдаемые каталоги, второй вариант листания.
 # Мастер обложек сделан -- его план остался в doc/skin-wizard-plan.txt.

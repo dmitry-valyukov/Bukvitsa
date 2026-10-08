@@ -2,10 +2,10 @@
 
 // Заголовки проекта после стандартных: store.h несёт импорт, после которого
 // стандартный заголовок MSVC уже не принимает. Свой первым.
-#include "skins.h"
+#include "bukvitsa/reader/skins.h"
 
-#include "settings.h"
-#include "store.h"
+#include "bukvitsa/reader/settings.h"
+#include "bukvitsa/reader/store.h"
 
 import wxl.fmt;
 

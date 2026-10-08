@@ -5,7 +5,7 @@
 // он единственный тянет за собой стандартные заголовки, которых нет здесь.
 #include "reader_panel.h"
 
-#include "book_index.h"
+#include "bukvitsa/reader/book_index.h"
 
 #include "Bind.h"
 

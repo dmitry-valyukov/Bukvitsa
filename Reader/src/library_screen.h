@@ -21,8 +21,8 @@
 #include "pch.h"
 
 // Последними: реестр и настройки импортируют wxl.core.
-#include "library.h"
-#include "settings.h"
+#include "bukvitsa/reader/library.h"
+#include "bukvitsa/reader/settings.h"
 
 namespace bukvitsa::reader {
 

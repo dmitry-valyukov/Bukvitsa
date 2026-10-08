@@ -32,11 +32,11 @@
 
 // Последними: они импортируют wxl.core (темы и обложки — сами, книга — через
 // модель), после чего стандартный заголовок MSVC уже не принимает.
-#include "book.h"
+#include "bukvitsa/reader/book.h"
 #include "note_popup.h"
-#include "settings.h"
-#include "skins.h"
-#include "theme.h"
+#include "bukvitsa/reader/settings.h"
+#include "bukvitsa/reader/skins.h"
+#include "bukvitsa/reader/theme.h"
 
 // Импорт — последним: хвост главы считает корутина async::task, которой владеет
 // полоса.

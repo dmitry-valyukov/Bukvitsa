@@ -4,7 +4,7 @@
 
 // Свой заголовок после всех стандартных: он ведёт к импорту модуля книги, а
 // стандартный заголовок после импорта MSVC уже не принимает.
-#include "book_index.h"
+#include "bukvitsa/reader/book_index.h"
 
 import wxl.core;
 
