@@ -359,7 +359,7 @@ task<> Workspace::deleteSkin(u16_view name) {
 task<bool> Workspace::isImage(std::filesystem::path image) {
     const std::string bytes = co_await async_file::read_all(poolPath(image));
 
-    co_return static_cast<bool>(decodeImage(bytes));
+    co_return !!decodeImage(bytes);   // ComPtr отвечает на `!`, как в прежней проверке мастера
 }
 
 task<std::string> Workspace::readBytes(std::filesystem::path file) {
