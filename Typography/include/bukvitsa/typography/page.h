@@ -78,9 +78,10 @@ public:
     ///        прогресса; по блокам его не восстановить, потому что вёрстка
     ///        выбрасывает пробелы между ними.
     /// @param imageSize размеры картинки по её индексу в книге; вёрстка
-    ///        картинок не декодирует, поэтому спрашивает у приложения.
+    ///        картинок не декодирует, поэтому спрашивает у приложения. Пусто —
+    ///        спросить не у кого, и картинкам места на полосе нет.
     Chapter(Engine& engine, std::span<const Block> blocks, uint32_t characterCount,
-              std::function<ImageSize(uint32_t)> imageSize = {});
+              nullable<function<ImageSize(uint32_t)>> imageSize = {});
     ~Chapter();
 
     Chapter(const Chapter&) = delete;

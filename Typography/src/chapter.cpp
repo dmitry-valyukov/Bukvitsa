@@ -18,6 +18,7 @@
 // вёрстка, а не окно. Читалка задаёт кегль и полосу, всё остальное отсюда.
 
 #include <algorithm>
+#include <concepts>
 #include <optional>
 
 // Свой заголовок после всех стандартных: он ведёт к импорту модуля книги, а
@@ -357,7 +358,7 @@ size_t nonEmptyLimit(const sta_vector<LaidOutBlock>& blocks) {
 struct Chapter::Impl {
     Engine& engine;
     std::span<const Block> blocks;   ///< книги: вид в мастер-список Book, не копия
-    std::function<ImageSize(uint32_t)> imageSize;
+    nullable<function<ImageSize(uint32_t)>> imageSize;   ///< пусто — картинкам места на полосе нет
 
     PageStyle style;
     uint32_t characterCount = 0;
@@ -380,7 +381,7 @@ struct Chapter::Impl {
     bool complete = true;
 
     Impl(Engine& engine_, std::span<const Block> blocks_, uint32_t characterCount_,
-         std::function<ImageSize(uint32_t)> imageSize_)
+         nullable<function<ImageSize(uint32_t)>> imageSize_)
         : engine(engine_), blocks(blocks_), imageSize(std::move(imageSize_)),
           characterCount(characterCount_) {}
 
@@ -401,7 +402,7 @@ struct Chapter::Impl {
     /// больше двух третей высоты: страница, целиком отданная под иллюстрацию,
     /// рвёт чтение.
     ImageSize fitImage(uint32_t index) const {
-        ImageSize size = imageSize ? imageSize(index) : ImageSize{};
+        ImageSize size = imageSize ? (*imageSize)(index) : ImageSize{};
         if (size.width <= 0.0f || size.height <= 0.0f)
             return ImageSize{0.0f, 0.0f};
 
@@ -481,7 +482,7 @@ struct Chapter::Impl {
     /// если так и не скажет. Этим досчитывают книгу до места, куда читатель
     /// уже пошёл: порции хороши, пока он читает, а не ждёт ответа.
     /// @return false, когда книга досчитана.
-    bool runUntil(const std::function<bool()>& done) {
+    bool runUntil(std::predicate auto done) {
         if (complete)
             return false;
         if (done())
@@ -547,7 +548,7 @@ struct Chapter::Impl {
 /* ================================================================== */
 
 Chapter::Chapter(Engine& engine, std::span<const Block> blocks, uint32_t characterCount,
-                     std::function<ImageSize(uint32_t)> imageSize)
+                     nullable<function<ImageSize(uint32_t)>> imageSize)
     : impl_(std::make_unique<Impl>(engine, blocks, characterCount, std::move(imageSize))) {}
 
 Chapter::~Chapter() = default;

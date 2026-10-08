@@ -16,7 +16,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -136,7 +135,7 @@ public:
     /// пишется один раз в конце, если было что регистрировать. Нечитаемый файл
     /// попадает в `unread`, не-книга молча пропускается: обход идёт дальше.
     wxl::async::task<FolderAdded> addFolder(std::filesystem::path folder,
-                                            std::function<void(const BookEntry&)> onNew);
+                                            function<void(const BookEntry&)> onNew);
 
     /// Книга, которую можно продолжить читать: путь из настроек, если файл на
     /// месте, иначе по guid из реестра. Пусто — нечего.
