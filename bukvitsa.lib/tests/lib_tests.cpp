@@ -471,7 +471,7 @@ void testWorkspaceRegistersBook() {
     Workspace ws(box.root);
 
     const std::string bytes = onDisk(kBook);
-    const fb3::Document document(std::string(bytes));
+    const fb3::Document document{std::string(bytes)};
 
     const Registered first = run(ws.registerBook(document, kBook, bytes.size()));
 
@@ -502,7 +502,7 @@ void testWorkspaceKeepsLastBookGuid() {
     Workspace ws(box.root);
 
     const std::string bytes = onDisk(kBook);
-    const fb3::Document document(std::string(bytes));
+    const fb3::Document document{std::string(bytes)};
 
     const u16_text kept = newGuid();
     ws.settings.lastBookPath = kBook;
@@ -513,7 +513,7 @@ void testWorkspaceKeepsLastBookGuid() {
     check(restored.isNew && restored.entry.guid == kept, "потерянная последняя книга — под прежним guid");
 
     const std::string otherBytes = onDisk(kOtherBook);
-    const fb3::Document other(std::string(otherBytes));
+    const fb3::Document other{std::string(otherBytes)};
 
     ws.settings.lastBookPath = kOtherBook;   // guid занят первой книгой
     const Registered fresh = run(ws.registerBook(other, kOtherBook, otherBytes.size()));
@@ -608,7 +608,7 @@ void testWorkspaceFindsLastBook() {
     Workspace ws(box.root);
 
     const std::string bytes = onDisk(kBook);
-    const fb3::Document document(std::string(bytes));
+    const fb3::Document document{std::string(bytes)};
     const Registered registered = run(ws.registerBook(document, kBook, bytes.size()));
 
     ws.settings.lastBookPath = box.root / L"moved-away.fb3";
