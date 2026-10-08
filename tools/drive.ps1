@@ -11,6 +11,9 @@
 #   tools\drive.ps1 -Do "wait 1500; shot start.png"
 #   tools\drive.ps1 -Exe build\x64\Reader\Debug\Reader.exe `
 #                   -Arguments "FB3\testdata\nightmare_example.fb3" `
+#   tools\drive.ps1 -DataDir M:\Temp\reader-data -Do "wait 2500; shot start.png"
+#                     данные читалки — в подопытном каталоге, а не в
+#                     %LOCALAPPDATA%: туда можно класть битые файлы
 #
 # Команды (-Do — одна строка, команды через ';'):
 #   wait <мс>         пауза
@@ -32,6 +35,7 @@
 param(
     [string]$Exe = 'build\x64\Reader\Debug\Reader.exe',
     [string]$Arguments = '',
+    [string]$DataDir = '',
     [string]$Do = 'wait 1500; shot shot.png',
     [string]$ShotDir = '.',
     [switch]$Keep,
@@ -70,7 +74,18 @@ if ($Arguments) {
     $startArgs.ArgumentList = $Arguments
     $startArgs.WorkingDirectory = $root
 }
-$process = Start-Process @startArgs
+# Подопытные данные: приложение берёт каталог из BUKVITSA_DATA. Переменную
+# видит дочерний процесс, выставляем её только на время запуска и возвращаем
+# как было — иначе она пережила бы скрипт в сеансе PowerShell, и следующий
+# запуск без -DataDir молча шёл бы на тех же подопытных данных.
+$dataWas = $env:BUKVITSA_DATA
+if ($DataDir) {
+    if (-not [System.IO.Path]::IsPathRooted($DataDir)) { $DataDir = Join-Path $root $DataDir }
+    New-Item -ItemType Directory -Force $DataDir | Out-Null
+    $env:BUKVITSA_DATA = $DataDir
+}
+try { $process = Start-Process @startArgs }
+finally { if ($DataDir) { $env:BUKVITSA_DATA = $dataWas } }
 
 # MainWindowHandle появляется не сразу и, что важнее, появляется раньше, чем
 # окно готово показать содержимое: композитору нужен первый кадр.
