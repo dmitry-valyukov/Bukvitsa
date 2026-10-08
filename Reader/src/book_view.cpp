@@ -1035,7 +1035,7 @@ void BookView::startTail() {
     paginationTail_.emplace(paginateTail());
 }
 
-async::task BookView::paginateTail() {
+async::task<> BookView::paginateTail() {
     // Порции продолжают счёт с курсора текущей главы, не начиная заново:
     // синхронно посчитанные страницы остаются на месте, а здесь добирается
     // лишь хвост главы ради общего числа страниц. Меняется от него только
