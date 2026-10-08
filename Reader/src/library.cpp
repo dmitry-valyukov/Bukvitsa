@@ -155,7 +155,7 @@ const BookEntry* Library::findSame(const BookEntry& candidate) const {
 }
 
 const BookEntry& Library::add(const fb3::Document& document, const std::filesystem::path& path,
-                              uint64_t fileSize) {
+                              uint64_t fileSize, u16_view rememberedGuid) {
     BookEntry entry = describe(document, path, fileSize);
 
     if (const BookEntry* known = findSame(entry)) {
@@ -168,7 +168,9 @@ const BookEntry& Library::add(const fb3::Document& document, const std::filesyst
         return stored;
     }
 
-    entry.guid = newGuid();
+    // Прежний guid — только свободный: занятый значил бы, что по пути из
+    // настроек лежит уже другая книга, а эта запись — чья-то ещё.
+    entry.guid = rememberedGuid.empty() || find(rememberedGuid) ? newGuid() : u16_text{rememberedGuid};
     entry.cover = coverOf(document, entry.guid).name;
     books_.push_back(std::move(entry));
     return books_.back();
