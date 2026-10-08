@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <array>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 // Свой заголовок после всех стандартных: он ведёт к импорту модуля книги, а
@@ -170,6 +172,15 @@ sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
     }
 
     return hits;
+}
+
+std::optional<u16_view> searchQuery(std::u16string_view typed) {
+    const std::optional<u16_view> needle = unicode::checked(typed);
+
+    // Пусто ли введённое — пробелы и табуляции не в счёт.
+    if (!needle || trim(needle->plain(), u" \t").empty()) return std::nullopt;
+
+    return needle;
 }
 
 u16_text hintAt(std::span<const typography::Block> blocks, uint32_t charOffset) {

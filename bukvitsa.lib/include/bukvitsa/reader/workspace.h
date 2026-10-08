@@ -15,6 +15,7 @@
 // Reader.
 
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -75,6 +76,12 @@ struct FolderAdded {
 /// приходит в кодировке потока (`FormatMessageA`), потому переводится через
 /// CP_ACP.
 std::wstring reasonOf(const wxl::async::system_exception& failure);
+
+/// Сбой сценария словами для читателя: то, что дошло до обработчика сбоев,
+/// потому что сам сценарий ответа на это не знал. Операция с файлом —
+/// причиной словами системы (`reasonOf`); всякое другое исключение — его
+/// текстом, если он UTF-8; что-то ещё — просто фактом.
+Notice noticeOf(std::exception_ptr error);
 
 /// Каталог данных по умолчанию: `%LOCALAPPDATA%\Bukvitsa\Reader`. Корень общий
 /// для семейства — рядом однажды встанет Writer; не Roaming: в реестре лежат

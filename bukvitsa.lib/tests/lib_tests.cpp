@@ -631,6 +631,10 @@ void testWorkspaceTellsImages() {
 
 }  // namespace
 
+// Мелкие куски модели, вынесенные из экранов (pieces_tests.cpp). Слот
+// прогретой книги открывает настоящую книгу — потому после COM.
+void runPiecesTests();
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -655,6 +659,8 @@ int main() {
     testWorkspaceAddsFolder();
     testWorkspaceFindsLastBook();
     testWorkspaceTellsImages();
+
+    runPiecesTests();
 
     sta_loop::stop();
     ::CoUninitialize();
