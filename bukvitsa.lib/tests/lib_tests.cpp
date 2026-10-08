@@ -631,6 +631,9 @@ void testWorkspaceTellsImages() {
 
 }  // namespace
 
+// Тесты других слоёв модели — каждый в своём файле.
+void runSkinEditorTests();
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -640,6 +643,7 @@ int main() {
     testSearchMatchesWhatTheReaderMeans();
     testEdgeThroughPoints();
     testSkinsReadSeparateLeaves();
+    runSkinEditorTests();
 
     // Петля операций wxl — одна на процесс, как у тестов самой wxl: её каналы
     // живут столько же, сколько процесс, и второй раз не стартуют. COM — для

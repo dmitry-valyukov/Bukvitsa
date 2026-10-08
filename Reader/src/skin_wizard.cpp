@@ -39,38 +39,24 @@ constexpr D2D1_COLOR_F kGripRing{0.15f, 0.12f, 0.08f, 0.7f};
 /// под основной — они оттеняют её на светлой бумаге.
 constexpr D2D1_COLOR_F kCurveShade{0.11f, 0.07f, 0.03f, 0.3f};
 
+// Зона захвата шире кружочка — она у модели правки (`SkinEditor::kGripReach`).
 constexpr float kGripRadius = 7.0f;   ///< рисуемый кружочек, DIP
-constexpr float kGripReach = 12.0f;   ///< зона захвата: шире кружочка, промах злит
 constexpr float kCurveStep = 4.0f;    ///< шаг ломаной, которой рисуется кривая
-
-/// Ближе этого точкам одной кривой не сойтись: кривой нужен ход X между
-/// соседями, иначе сегмент вырождается.
-constexpr float kMinGap = 0.02f;
 
 /// Сколько линий-подсказок между верхней и нижней кривыми, считая их самих.
 constexpr int kGuideRows = 9;
 
-/// Кривых у обложки две: верхняя и нижняя.
-constexpr int kCurves = 2;
+constexpr size_t kSpinePoint = static_cast<size_t>(EdgeCurve::kSpine);
 
-/// Пусто ли имя — пробелы не в счёт.
-bool blank(std::u16string_view text) {
-    return std::all_of(text.begin(), text.end(),
-                       [](char16_t c) { return c == u' ' || c == u'\t'; });
+/// Точка указателя на сетке — в тип модели правки, которая окна не знает.
+SkinEditor::Point onGrid(Point point) {
+    return {point.x, point.y};
 }
 
 }  // namespace
 
 SkinWizard::SkinWizard(const Compositor& compositor) : compositor_(compositor) {
     buildTree();
-}
-
-EdgeCurve& SkinWizard::curve(int index) {
-    return index == 0 ? skin_.top : skin_.bottom;
-}
-
-const EdgeCurve& SkinWizard::curve(int index) const {
-    return const_cast<SkinWizard*>(this)->curve(index);
 }
 
 Button SkinWizard::overlayButton(zstring_view said, float tall, float kegel, bool cancel,
@@ -216,64 +202,41 @@ void SkinWizard::buildTree() {
         const PointerPoint touch = args.getCurrentPoint(root_.value());
         if (!touch.properties().isLeftButtonPressed()) return;
 
-        int curveIndex = 0;
-        size_t pointIndex = 0;
-        if (!gripAt(touch.position(), curveIndex, pointIndex)) return;
+        const std::optional<SkinEditor::Grip> grip =
+            editor_.gripAt(onGrid(touch.position()), area());
+        if (!grip) return;
 
-        dragging_ = true;
-        dragCurve_ = curveIndex;
-        dragPoint_ = pointIndex;
+        dragged_ = grip;
         args.handled(true);
     });
 
     tree.add_onPointerMoved([this](Object const&, PointerRoutedEventArgs& args) {
-        const Point point = args.getCurrentPoint(root_.value()).position();
+        const SkinEditor::Point point = onGrid(args.getCurrentPoint(root_.value()).position());
 
-        constexpr size_t spine = static_cast<size_t>(EdgeCurve::kSpine);
-
-        bool overGrip = dragging_;
-        size_t pointIndex = dragPoint_;
-        if (dragging_) {
-            EdgeCurve& edited = curve(dragCurve_);
-            const size_t at = dragPoint_;
-            constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
-
-            // Точка ходит в обе оси. По вертикали — от кромки до четверти
-            // высоты; по горизонтали — между соседками, крайние — до кромок.
-            // Точка корешка по горизонтали не ходит: корешок — середина
-            // разворота, там режутся страницы и лежит тень шва, и излом
-            // кромки обязан стоять там же.
-            // Не top: это имя тега DSL, и локальная переменная его прятала бы.
-            const bool onTop = dragCurve_ == 0;
-
-            edited.y[at] = onTop ? std::clamp(point.y / height_, 0.0f, kEdgeReach)
-                                 : std::clamp(point.y / height_, 1.0f - kEdgeReach, 1.0f);
-
-            if (at != spine) {
-                const float low = at == 0 ? 0.0f : edited.x[at - 1] + kMinGap;
-                const float high = at == last ? 1.0f : edited.x[at + 1] - kMinGap;
-                edited.x[at] = std::clamp(point.x / width_, low, high);
-            }
-
+        // Куда встаёт точка — между соседками, корешок только по вертикали, —
+        // решает модель правки; здесь только перерисовка.
+        std::optional<SkinEditor::Grip> grip = dragged_;
+        if (dragged_) {
+            editor_.drag(*dragged_, point, area());
             redraw();
             args.handled(true);
         } else {
-            int curveIndex = 0;
-            overGrip = gripAt(point, curveIndex, pointIndex);
+            grip = editor_.gripAt(point, area());
         }
 
         // Курсор — каждое движение заново: WinUI возвращает свою стрелку, а
         // задать курсор элементу проекция не умеет. Макрос ресурса Windows
         // допустим здесь — спрашиваем саму Windows. Четыре стрелки у точки,
         // которая ходит в обе оси, две — у точки корешка.
-        if (overGrip) {
-            ::SetCursor(::LoadCursorW(nullptr, pointIndex == spine ? IDC_SIZENS : IDC_SIZEALL));
+        if (grip) {
+            ::SetCursor(
+                ::LoadCursorW(nullptr, grip->point == kSpinePoint ? IDC_SIZENS : IDC_SIZEALL));
         }
     });
 
     tree.add_onPointerReleased([this](Object const&, PointerRoutedEventArgs& args) {
-        if (!dragging_) return;
-        dragging_ = false;
+        if (!dragged_) return;
+        dragged_.reset();
         args.handled(true);
 
         // Точку отпустили — кривые устоялись: время пересчитать карту изгиба
@@ -286,30 +249,18 @@ void SkinWizard::buildTree() {
 }
 
 void SkinWizard::openNew(std::filesystem::path image) {
-    image_ = std::move(image);
-    skin_ = defaultSkin();
-    dragging_ = false;
+    editor_.openNew(std::move(image));
+    dragged_.reset();
     namePanel_.value().visibility(Visibility::Collapsed);
 
     redraw();
 }
 
 void SkinWizard::openEdit(const Skin& skin, std::filesystem::path image) {
-    image_ = std::move(image);
-    skin_ = skin;
-    dragging_ = false;
+    // Системная становится новой обложкой — это решает модель правки.
+    editor_.openEdit(skin, std::move(image));
+    dragged_.reset();
     namePanel_.value().visibility(Visibility::Collapsed);
-
-    // Системную правят «на основе», а не поверх: записать поверх нечего — в
-    // реестре её нет, она часть программы, и удалить такую запись потом было
-    // бы нечем. Поэтому здесь она становится новой обложкой: пустое `image`
-    // заставит сохранение скопировать снимок в skinDirectory(), а пустое имя —
-    // спросить его, как у новой. Своя обложка правится молча, под своим именем.
-    if (skin.system) {
-        skin_.system = false;
-        skin_.image = {};
-        skin_.name = {};
-    }
 
     redraw();
 }
@@ -324,7 +275,7 @@ void SkinWizard::show() {
 void SkinWizard::hide() {
     if (!open_) return;
     open_ = false;
-    dragging_ = false;
+    dragged_.reset();
     namePanel_.value().visibility(Visibility::Collapsed);
     root_.value().visibility(Visibility::Collapsed);
 }
@@ -394,8 +345,8 @@ void SkinWizard::redraw() {
         // всю ширину лишь мешала бы снимку. Корешок линия проходит насквозь:
         // точка там у обоих листов одна, и край в нём непрерывен.
         // Не top/bottom: это имена тегов DSL.
-        const EdgeCurve& upper = skin_.top;
-        const EdgeCurve& lower = skin_.bottom;
+        const EdgeCurve& upper = editor_.skin().top;
+        const EdgeCurve& lower = editor_.skin().bottom;
         const EdgeSpline upperEdge{upper};
         const EdgeSpline lowerEdge{lower};
         constexpr size_t last = static_cast<size_t>(EdgeCurve::kPoints) - 1;
@@ -430,36 +381,15 @@ void SkinWizard::redraw() {
             }
         }
 
-        for (int index = 0; index < kCurves; ++index) {
-            const EdgeCurve& edited = curve(index);
+        for (const EdgeCurve* edited : {&upper, &lower}) {
             for (size_t at = 0; at < static_cast<size_t>(EdgeCurve::kPoints); ++at) {
-                const D2D1_ELLIPSE circle{{edited.x[at] * width_, edited.y[at] * height_},
+                const D2D1_ELLIPSE circle{{edited->x[at] * width_, edited->y[at] * height_},
                                           kGripRadius, kGripRadius};
                 context->FillEllipse(circle, fill.Get());
                 context->DrawEllipse(circle, ring.Get(), 1.5f);
             }
         }
     });
-}
-
-bool SkinWizard::gripAt(Point point, int& curveIndex, size_t& pointIndex) const {
-    if (width_ <= 0.0f || height_ <= 0.0f) return false;
-
-    const float reach = kGripReach * kGripReach;
-
-    for (int index = 0; index < kCurves; ++index) {
-        const EdgeCurve& edited = curve(index);
-        for (size_t at = 0; at < static_cast<size_t>(EdgeCurve::kPoints); ++at) {
-            const float dx = point.x - edited.x[at] * width_;
-            const float dy = point.y - edited.y[at] * height_;
-            if (dx * dx + dy * dy <= reach) {
-                curveIndex = index;
-                pointIndex = at;
-                return true;
-            }
-        }
-    }
-    return false;
 }
 
 void SkinWizard::chooseAnother() {
@@ -473,15 +403,15 @@ void SkinWizard::exitWizard() {
 void SkinWizard::saveRequested() {
     // У правки старой обложки копия и имя уже есть — сохранение идёт сразу,
     // без диалога. Имя спрашивается только у новой.
-    if (!skin_.image.empty()) {
-        if (onSave) onSave(skin_, image_);
+    if (!editor_.needsName()) {
+        if (onSave) onSave(editor_.skin(), editor_.imagePath());
         return;
     }
     beginNaming();
 }
 
 void SkinWizard::beginNaming() {
-    nameBox_.value().text(skin_.name);   // у правки — прежнее имя, у новой пусто
+    nameBox_.value().text(editor_.skin().name);   // у правки — прежнее имя, у новой пусто
     namePanel_.value().visibility(Visibility::Visible);
     nameBox_.value().focus(FocusState::Programmatic);
 }
@@ -495,18 +425,14 @@ void SkinWizard::finishNaming(bool save) {
         return;
     }
 
-    // Текст поля — чужой: он пришёл из контрола строкой WinRT, и в обложку
-    // попадает проверенным, а не принятым на веру. Строка держится, пока
-    // жив вид на неё.
+    // Текст поля — чужой: он пришёл из контрола строкой WinRT, и проверяет
+    // его модель правки. Строка держится, пока жив вид на неё.
     const hstring typed = nameBox_.value().text();
-    const std::optional<u16_view> name = unicode::checked(std::u16string_view(typed));
-    if (!name || name->empty() || blank(name->plain())) return;   // безымянную сохранять некуда
-
-    Skin saved = skin_;
-    saved.name = u16_text{*name};
+    std::optional<Skin> saved = editor_.result(std::u16string_view(typed));
+    if (!saved) return;   // безымянную сохранять некуда
 
     namePanel_.value().visibility(Visibility::Collapsed);
-    if (onSave) onSave(std::move(saved), image_);
+    if (onSave) onSave(std::move(*saved), editor_.imagePath());
 }
 
 }  // namespace bukvitsa::reader

@@ -14,19 +14,22 @@
 //
 // Все координаты живут в долях ширины и высоты, поэтому смена размеров окна
 // ничего не теряет. Диска здесь нет: снимок мастер только проверяет, а копию
-// кладёт приложение — через свой рабочий поток.
+// кладёт приложение — через свой рабочий поток. Что делать с точками и именем
+// — куда встаёт перетащенная точка, в какой кружочек попал указатель, что
+// сохранять, — решает модель правки (`SkinEditor`); мастер её показывает.
 
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "DrawingSurface.h"
 #include "Object.h"
 #include "pch.h"
 
-// Последним: обложки импортируют wxl.core, после чего стандартный заголовок
-// MSVC уже не принимает.
-#include "bukvitsa/reader/skins.h"
+// Последним: модель правки импортирует wxl.core, после чего стандартный
+// заголовок MSVC уже не принимает.
+#include "bukvitsa/reader/skin_editor.h"
 
 namespace bukvitsa::reader {
 
@@ -54,8 +57,8 @@ public:
 
     /// Редактируемые кривые и снимок — то, что приложение отдаёт полосе как
     /// предпросмотр.
-    const Skin& skin() const { return skin_; }
-    const std::filesystem::path& imagePath() const { return image_; }
+    const Skin& skin() const { return editor_.skin(); }
+    const std::filesystem::path& imagePath() const { return editor_.imagePath(); }
 
     /// Точку отпустили — кривые устоялись, пора пересчитать карту изгиба.
     std::function<void()> onCurvesChanged;
@@ -76,18 +79,13 @@ private:
     wxl::Button overlayButton(zstring_view said, float tall, float kegel, bool cancel,
                               void (SkinWizard::*handler)());
 
-    /// Кривая по номеру: верхняя и нижняя. Номер и есть память о том, какую
-    /// точку тянут.
-    EdgeCurve& curve(int index);
-    const EdgeCurve& curve(int index) const;
-
     /// Пересчитывает поверхность сетки под размер окна и масштаб экрана.
     bool resizeSurface();
 
     void redraw();
 
-    /// Точка под курсором: номер кривой и номер точки. false — мимо.
-    bool gripAt(wxl::Point point, int& curveIndex, size_t& pointIndex) const;
+    /// Сетка в DIP — то, во что модель правки переводит доли снимка.
+    SkinEditor::Size area() const { return {width_, height_}; }
 
     void chooseAnother();
     void exitWizard();
@@ -111,13 +109,14 @@ private:
     nullable<wxl::Border> namePanel_ = nullptr;
     nullable<wxl::TextBox> nameBox_ = nullptr;
 
-    std::filesystem::path image_;   ///< снимок обложки: выбранный файл или копия из реестра
-    Skin skin_ = defaultSkin();     ///< редактируемые кривые (и имя с копией у правки)
+    /// Редактируемые кривые, имя и снимок: полоса держит ссылку на его
+    /// `skin()` как на предпросмотр, поэтому модель одна на всю жизнь мастера.
+    SkinEditor editor_;
 
     bool open_ = false;
-    bool dragging_ = false;
-    int dragCurve_ = 0;
-    size_t dragPoint_ = 0;
+
+    /// Кружочек, который тянут; пусто — не тянут.
+    std::optional<SkinEditor::Grip> dragged_;
 
     /// Размер в DIP и масштаб экрана; поверхность — в их произведении.
     float width_ = 0.0f;
