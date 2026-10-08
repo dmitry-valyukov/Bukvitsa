@@ -240,8 +240,8 @@ task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize) {
     co_await saveSettings();
 
     // Состояние — отдельной строкой, а не внутри фигурной инициализации:
-    // `co_await` в списке инициализаторов агрегата роняет бэкенд MSVC
-    // (C1001 в p2/main.cpp, 14.51).
+    // `co_await` в списке инициализаторов агрегата роняет бэкенд MSVC 14.51
+    // (C1001).
     BookState state = co_await readState(registered.entry.guid);
 
     Opened opened{registered.entry, std::move(state)};

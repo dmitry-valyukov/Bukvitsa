@@ -91,9 +91,10 @@ bool Library::loadFrom(std::string xml) {
 }
 
 std::string Library::toXml() const {
-    // Аллокатор -- STA-пул: и этот формирователь, и bookStateXml ниже зовутся
-    // из корутин между двумя `co_await`, то есть в интерфейсном потоке (см.
-    // main.cpp); на рабочий поток уходят только готовые байты.
+    // Аллокатор -- STA-пул: и этот формирователь, и bookStateXml ниже зовут
+    // корутины рабочего места (`Workspace`) до своего `co_await`, то есть на
+    // потоке вызова -- у читалки интерфейсном; на рабочий поток уходят только
+    // готовые байты.
     text_builder<sta_allocator> out;
 
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
