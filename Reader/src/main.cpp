@@ -26,6 +26,7 @@
 #include "reader_panel.h"
 #include "bukvitsa/reader/settings.h"
 #include "bukvitsa/reader/store.h"
+#include "bukvitsa/reader/warm_slot.h"
 #include "bukvitsa/reader/workspace.h"
 
 // Импорт последним, после всех обычных заголовков.
@@ -76,22 +77,6 @@ enum class Screen { Start, Library, Book };
 // девять отдельных параметров у каждой — это девять мест, где однажды забудут
 // один. Всё внутри — либо shared_ptr, либо обёртка wxl, то есть хендл; копия
 // такой связки ничего не копирует по существу.
-/// Прогретая книга — та, которую читатель скорее всего откроет следующей:
-/// прочитанная с диска и уже разобранная, пока он смотрит на заставку. Нажатие
-/// «Продолжить чтение» после этого не ждёт ни диска, ни разбора — самой долгой
-/// части открытия.
-///
-/// Держится ровно одна: греть больше нечего (продолжают одну книгу), а
-/// разобранная книга — это десятки мегабайт. `wanted` говорит, чью книгу ждём:
-/// прогрев кладёт туда путь, прежде чем уйти к диску, и, вернувшись, отдаёт
-/// разобранное только если путь всё ещё тот. Открытие книги путь снимает —
-/// и прогрев, шедший для неё же, выбросит своё, вместо того чтобы оставить в
-/// памяти вторую копию уже открытой книги.
-struct WarmBook {
-    std::filesystem::path wanted;   ///< чью книгу греем или уже прогрели
-    std::shared_ptr<Book> book;     ///< она же разобранная; пусто, пока прогрев идёт
-    uint64_t fileSize = 0;          ///< размер файла: его записывает реестр
-};
 
 /// Сообщения читателю — диалогом над показанным экраном, одним на всё
 /// приложение. XAML не держит двух ContentDialog разом (второй ShowAsync —
@@ -207,7 +192,7 @@ struct App {
     std::shared_ptr<StartScreen> screen;
     std::shared_ptr<Screen> shown;
     std::shared_ptr<Screen> bookCameFrom;
-    std::shared_ptr<WarmBook> warm;
+    std::shared_ptr<WarmSlot> warm;   ///< прогретая книга под «Продолжить чтение»
     std::shared_ptr<Notices> notices;
 };
 
@@ -231,18 +216,9 @@ struct App {
 // окно с причиной, сценарий на этом кончается.
 
 void Notices::failed(std::exception_ptr error) noexcept {
-    try {
-        std::rethrow_exception(error);
-    } catch (const system_exception& failure) {
-        complain(L"Не удалось выполнить операцию с файлом", reasonOf(failure));
-    } catch (const std::exception& failure) {
-        // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
-        // проверяется, а не принимается на веру.
-        const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
-        complain(L"Ошибка", said ? std::wstring(said->to_utf16().wchars()) : L"(сообщение не в UTF-8)");
-    } catch (...) {
-        complain(L"Неизвестная ошибка", L"Сценарий прерван.");
-    }
+    // Какими словами — решает модель (`noticeOf`); здесь только показ.
+    Notice notice = noticeOf(std::move(error));
+    complain(std::move(notice.headline), std::move(notice.details));
 }
 
 /// Говорит читателю, что не удалось, с чем и почему — словами системы.
@@ -472,7 +448,7 @@ detached_task deleteSkinFlow(App app, u16_text name) {
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого
 /// пути. Протух — спрашиваем реестр по guid; нет и там — читателю нечего
 /// продолжать, и он хотел открыть книгу.
-detached_task continueReading(std::shared_ptr<Workspace> ws, std::shared_ptr<WarmBook> warm,
+detached_task continueReading(std::shared_ptr<Workspace> ws, std::shared_ptr<WarmSlot> warm,
                      std::function<void(std::filesystem::path)> openBook,
                      std::function<void()> addBook) {
     std::filesystem::path path = ws->settings.lastBookPath;
@@ -481,7 +457,7 @@ detached_task continueReading(std::shared_ptr<Workspace> ws, std::shared_ptr<War
     // целиком, и файл ей больше не нужен — даже если его успели унести. Тем
     // самым у нажатия не остаётся ни одного ожидания: книга встаёт на экран в
     // том же обороте очереди.
-    if (!path.empty() && warm->book && warm->wanted == path) {
+    if (!path.empty() && warm->holds(path)) {
         openBook(path);
         co_return;
     }
@@ -520,16 +496,13 @@ detached_task warmBookFlow(App app, std::filesystem::path path) {
         // Молча: читатель ни о чём не просил, и жаловаться ему пока не на что.
         // Файл не прочитался или книга испорчена — он узнает об этом, когда
         // нажмёт, из openBookFlow, который прочитает её сам и скажет поимённо.
-        app.warm->wanted.clear();
+        app.warm->cancel();
         co_return;
     }
 
-    // Пока шло чтение, читатель мог открыть эту книгу и сам — тогда прогревать
-    // нечего, и вторая её копия в памяти никому не нужна.
-    if (app.warm->wanted != path) co_return;
-
-    app.warm->book = std::move(warmed.book);
-    app.warm->fileSize = warmed.fileSize;
+    // Пока шло чтение, читатель мог открыть эту книгу и сам — тогда слот её не
+    // примет: вторая копия в памяти никому не нужна.
+    app.warm->fill(path, std::move(warmed.book), warmed.fileSize);
 }
 
 /// Показывает полосу набора: страница — на сцену, экран — книга. Общее у двух
@@ -572,15 +545,15 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
     // Прогретая книга — та, что прочиталась и разобралась, пока читатель
     // смотрел на заставку (warmBookFlow). Забираем её из слота целиком: слот
     // держит одну книгу, и держать в нём ту, что сейчас откроется, незачем.
-    const bool warmed = app.warm->wanted == path && app.warm->book;
+    std::optional<Warmed> warmed = app.warm->take(path);
 
-    std::shared_ptr<Book> book = warmed ? std::move(app.warm->book) : nullptr;
-    uint64_t fileSize = warmed ? app.warm->fileSize : 0;
+    std::shared_ptr<Book> book = warmed ? std::move(warmed->book) : nullptr;
+    uint64_t fileSize = warmed ? warmed->fileSize : 0;
 
     // Прогрев для этой же книги мог ещё идти — пусть, вернувшись, выбросит
     // своё: книга открывается и без него, а вторая её копия в памяти не нужна.
-    app.warm->wanted.clear();
-    app.warm->book.reset();
+    // Прогретая для другой книги — тоже прочь: открывается эта.
+    app.warm->cancel();
 
     if (!book) {
         Warmed read;
@@ -755,7 +728,7 @@ wxl::Teardown wxl_launched() {
 
     // Слот прогретой книги: в него запуск кладёт ту, что стоит на кнопке
     // «Продолжить чтение», разобрав её заранее.
-    auto warm = std::make_shared<WarmBook>();
+    auto warm = std::make_shared<WarmSlot>();
 
     // Настройки чтения общие для всех книг: читателю нужен один привычный вид,
     // а не разный шрифт в каждой книге. Ставит их запуск, когда прочитает файл.
@@ -861,8 +834,7 @@ wxl::Teardown wxl_launched() {
     // как чтение уйдёт к диску. По этой записи прогрев потом и узнаёт, нужен
     // ли ещё его результат.
     auto const warmBook = [app](std::filesystem::path const& path) {
-        app.warm->wanted = path;
-        app.warm->book.reset();
+        app.warm->expect(path);
         warmBookFlow(app, path);
     };
 

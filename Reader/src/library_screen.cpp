@@ -2,7 +2,8 @@
 
 #include "Bind.h"
 
-import wxl.fmt;
+// Последним из своих: несёт импорт wxl.core.
+#include "bukvitsa/reader/shelf_text.h"
 
 namespace bukvitsa::reader {
 
@@ -32,25 +33,6 @@ ImageSource coverOf(const std::filesystem::path& coverDirectory, const BookEntry
     std::u16string full = (coverDirectory / entry.cover.wchars()).u16string();
     std::replace(full.begin(), full.end(), u'\\', u'/');
     return ImageSource{u"file:///" + full};
-}
-
-/// Сколько прочитано, словами витрины.
-///
-/// Место чтения лежит в отдельном файле на книгу, и читает его фоновая
-/// корутина -- уже после того, как карточка встала на полку. Поэтому здесь
-/// два состояния: «ещё не знаем» и то, что принесли.
-u16_text progressOf(const BookEntry& entry, uint32_t charOffset, size_t bookmarks) {
-    if (entry.characterCount == 0 || charOffset == 0) return u16_text{u"не открывалась"};
-
-    const double share = static_cast<double>(charOffset) / entry.characterCount;
-    u16_text said = core::format(u"прочитано {:.0f}%", share * 100.0);
-
-    // Закладки видно прямо на полке: их наличие -- признак книги, к которой
-    // возвращаются, и его стоит показать раньше, чем её откроют.
-    if (bookmarks != 0) {
-        said += core::format(u"    закладок: {}", bookmarks);
-    }
-    return said;
 }
 
 }  // namespace
@@ -140,7 +122,11 @@ void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookm
 
     if (!entry) return;
 
-    found->second.text(progressOf(*entry, charOffset, bookmarks));
+    // Место чтения лежит в отдельном файле на книгу, и читает его фоновая
+    // корутина -- уже после того, как карточка встала на полку. Поэтому у
+    // строки два состояния: «ещё не знаем» (пусто, см. shelfItem) и то, что
+    // принесли.
+    found->second.text(shelfLine(charOffset, entry->characterCount, bookmarks));
 }
 
 void LibraryScreen::show(const Library& library) {
@@ -171,7 +157,7 @@ Button LibraryScreen::shelfItem(const BookEntry& book) {
     // появиться раньше, чем он будет прочитан. Настоящий текст приносит
     // setProgress().
     TextBlock progress = TextBlock{
-        book.characterCount == 0 ? u16_text{u"не открывалась"} : u16_text{},
+        book.characterCount == 0 ? progressLine(0, 0) : u16_text{},
         fontSize = 13,
         foreground = SolidColorBrush{kDim},
         Margin{0, 8, 0, 0},
