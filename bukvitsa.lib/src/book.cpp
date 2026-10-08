@@ -25,11 +25,17 @@ IDWriteFactory* dwriteFactory() {
 }
 
 Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFactory* dwrite)
-    : path_(path), document_(std::move(fileBytes)), engine_(dwrite) {
+    : path_(path), document_(std::move(fileBytes)), engine_(dwrite),
+      // Пагинатор спрашивает размеры картинок у нас: вёрстка их не декодирует и
+      // про WIC не знает. Главы заводятся по требованию (chapterAt), то есть
+      // после тела конструктора, которое картинки и раскодирует.
+      imageSize_([this](uint32_t index) {
+          if (index >= images_.size())
+              return typography::ImageSize{};
+          return typography::ImageSize{images_[index].width, images_[index].height};
+      }) {
     decodeImages();
 
-    // Пагинатор спрашивает размеры картинок у нас: вёрстка не декодирует
-    // картинки и знать про WIC не должна.
     blocks_ = typography::flatten(document_.body());
 
     // Границы глав верхнего уровня: начало книги и каждый блок, открывающий
@@ -40,14 +46,6 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
             if (blocks_[i].startsSection == 1)
                 chapterStarts_.push_back(i);
     }
-
-    // Главы заводятся по требованию (ensureChapter); размеры картинок каждой из
-    // них нужны у нас — вёрстка их не декодирует и про WIC не знает.
-    imageSize_ = [this](uint32_t index) {
-        if (index >= images_.size())
-            return typography::ImageSize{};
-        return typography::ImageSize{images_[index].width, images_[index].height};
-    };
 }
 
 Book::~Book() = default;
