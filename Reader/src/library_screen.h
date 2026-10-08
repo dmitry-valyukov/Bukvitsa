@@ -23,14 +23,16 @@
 // Последними: реестр и настройки импортируют wxl.core.
 #include "bukvitsa/reader/library.h"
 #include "bukvitsa/reader/settings.h"
+#include "bukvitsa/reader/workspace.h"
 
 namespace bukvitsa::reader {
 
 class LibraryScreen {
 public:
-    /// @param settings настройки: галочка «продолжать чтение при старте»
-    ///        привязана к их полю прямо в разметке.
-    explicit LibraryScreen(Settings& settings);
+    /// @param workspace рабочее место: галочка «продолжать чтение при старте»
+    ///        привязана к полю его настроек прямо в разметке, а обложки
+    ///        карточек лежат в его кэше.
+    explicit LibraryScreen(Workspace& workspace);
 
     /// Корень, который отдаётся окну как содержимое.
     const wxl::UIElement& root() const { return root_.value(); }
@@ -69,6 +71,7 @@ private:
     /// Реестр, по которому построена нынешняя полка. Не владеет: реестр живёт
     /// в приложении и переживает витрину.
     const Library* shown_ = nullptr;
+    const Workspace& workspace_;   ///< где лежат обложки книг
 };
 
 }  // namespace bukvitsa::reader

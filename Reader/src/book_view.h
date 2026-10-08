@@ -37,6 +37,7 @@
 #include "bukvitsa/reader/settings.h"
 #include "bukvitsa/reader/skins.h"
 #include "bukvitsa/reader/theme.h"
+#include "bukvitsa/reader/workspace.h"
 
 // Импорт — последним: хвост главы считает корутина async::task, которой владеет
 // полоса.
@@ -52,7 +53,9 @@ public:
     ///        перевёрстывается сама, а колесом и клавишами пишет в них же —
     ///        так одно и то же поле видят и ползунки панели, и файл. Живут
     ///        дольше полосы; слушателей полоса снимает за собой.
-    BookView(const wxl::CompositionWindow& window, Settings& settings);
+    /// @param workspace рабочее место: его настройки вида полоса слушает и
+    ///        пишет, у него же спрашивает, где лежит снимок обложки.
+    BookView(const wxl::CompositionWindow& window, Workspace& workspace);
     ~BookView();
 
     /// Корень, который отдаётся окну как содержимое.
@@ -441,6 +444,7 @@ private:
     wxl::CompositionWindow window_;              ///< хендл окна: его сцена и мера
     wxl::EventToken sizeToken_;                  ///< наша подписка на меру окна — снять за собой
     Settings& settings_;                         ///< настройки вида: слушаем и пишем
+    const Workspace& workspace_;                 ///< где лежат снимки обложек
     /// Наши слушатели в полях настроек — снять за собой: настройки живут дольше.
     std::vector<std::pair<observable<double>*, cookie_t>> settingsWatches_;
     wxl::Compositor compositor_;                 ///< композитор окна: на нём визуалы страницы

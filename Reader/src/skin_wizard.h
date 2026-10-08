@@ -45,7 +45,8 @@ public:
 
     /// Открывает существующую обложку на правку: её кривые, её снимок, её
     /// имя в диалоге сохранения. Снимок проверен владельцем, как у openNew().
-    void openEdit(const Skin& skin);
+    /// @param image где лежит её снимок: это знает рабочее место, не мастер.
+    void openEdit(const Skin& skin, std::filesystem::path image);
 
     void show();
     void hide();

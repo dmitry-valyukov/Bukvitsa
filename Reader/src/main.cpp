@@ -10,7 +10,6 @@
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
 #include "file_dialog.h"
-#include "bukvitsa/reader/imaging.h"
 
 #include "ApplicationFolder.h"
 #include "CompositionWindow.h"
@@ -27,6 +26,7 @@
 #include "reader_panel.h"
 #include "bukvitsa/reader/settings.h"
 #include "bukvitsa/reader/store.h"
+#include "bukvitsa/reader/workspace.h"
 
 // Импорт последним, после всех обычных заголовков.
 import wxl.async;
@@ -39,8 +39,6 @@ namespace {
 
 using namespace bukvitsa::reader;
 
-using wxl::async::async_directory;
-using wxl::async::async_file;
 using wxl::async::detached_task;
 using wxl::async::system_exception;
 
@@ -201,8 +199,7 @@ private:
 
 struct App {
     wxl::CompositionWindow window;
-    std::shared_ptr<Settings> settings;
-    std::shared_ptr<Library> library;
+    std::shared_ptr<Workspace> ws;   ///< рабочее место: настройки, реестр, обложки и все файлы
     std::shared_ptr<BookState> state;
     std::shared_ptr<BookView> view;
     std::shared_ptr<ReaderPanel> panel;
@@ -210,18 +207,9 @@ struct App {
     std::shared_ptr<StartScreen> screen;
     std::shared_ptr<Screen> shown;
     std::shared_ptr<Screen> bookCameFrom;
-    std::shared_ptr<Skins> skins;
     std::shared_ptr<WarmBook> warm;
     std::shared_ptr<Notices> notices;
 };
-
-/// Guid, под которым настройки помнят этот файл, — для `Library::add`: реестр
-/// мог книгу потерять (битый `library.xml`), а её место чтения в
-/// `books\{guid}.xml` цело, и «Продолжить чтение» не должно открывать книгу с
-/// начала. Другой файл — пусто.
-u16_view rememberedGuid(const App& app, const std::filesystem::path& path) {
-    return app.settings->lastBookPath == path ? u16_view{app.settings->lastBookGuid} : u16_view{};
-}
 
 // ---- корутины приложения --------------------------------------------------
 //
@@ -230,48 +218,17 @@ u16_view rememberedGuid(const App& app, const std::filesystem::path& path) {
 // обычный: он трогает XAML и общее состояние, потому что он и есть тот самый
 // поток.
 //
-// Правило без исключений: **в потоке, на котором стоит окно, читалка не трогает
-// диск ни разу.** Файлы целиком читают и пишут операции wxl по имени
-// (`async_file::read_all`, `write_all`, `exists`, `async_directory::list`):
-// каждая владеет своим путём и буфером, идёт в пуле системы и возвращается
-// возобновлением корутины. **Разбор остаётся здесь**, и это не недоделка:
-// `wxl.xml` разбирает документ в память STA-пула, а пул принадлежит одному
-// потоку — тому, где его построили. Асинхронным бывает чтение байтов, не разбор.
+// Правило без исключений: **Reader диска не трогает вовсе.** Файлы читает и
+// пишет рабочее место (`Workspace`, bukvitsa.lib) операциями wxl из своих
+// корутин `task<T>`; сценарий ждёт их `co_await` и получает значение, а сбой
+// операции — исключением `system_exception` с кодом системы. Разбор при этом
+// идёт на потоке окна, в STA-пуле, — тоже у рабочего места.
 //
 // Сценарии — `detached_task`: кадр живёт, пока идёт сценарий, и уходит сам.
-// Кусок, общий двум сценариям, с ожиданием внутри — `task<T>`: корутина,
-// которую сценарий ждёт `co_await` и получает значение (`registerBook`).
-// Сбой операции приходит исключением `system_exception` с кодом системы.
 // Сценарий ловит то, на что у него есть ответ читателю, — файл книги, снимок,
 // каталог; «файла нет» там, где его может и не быть, — не сбой. Остальное
 // всплывает в `on_detached_task_failure` (см. wxl_launched): читатель видит
 // окно с причиной, сценарий на этом кончается.
-
-/// Путь читалки, переведённый в путь wxl. Строится в потоке окна -- там, где
-/// STA-пул, -- и уезжает в операцию копией.
-path poolPath(const std::filesystem::path& system) {
-    return path(std::wstring_view(system.native()));
-}
-
-/// Файла нет — обычное дело для настроек при первом запуске и для состояния
-/// книги, которую ещё не открывали; всё остальное -- настоящая ошибка, у
-/// которой есть имя.
-bool absent(const system_exception& failure) {
-    return failure.err_code() == ERROR_FILE_NOT_FOUND || failure.err_code() == ERROR_PATH_NOT_FOUND;
-}
-
-/// Причина сбоя для диалога сообщения. Текст системы приходит в кодировке
-/// потока (`FormatMessageA`), а не в UTF-8, потому переводится через CP_ACP.
-std::wstring reasonOf(const system_exception& failure) {
-    const std::string_view narrow = failure.what();
-    const int size = static_cast<int>(narrow.size());
-
-    std::wstring wide(static_cast<size_t>(::MultiByteToWideChar(CP_ACP, 0, narrow.data(), size, nullptr, 0)),
-                      L'\0');
-    ::MultiByteToWideChar(CP_ACP, 0, narrow.data(), size, wide.data(), static_cast<int>(wide.size()));
-
-    return wide;
-}
 
 void Notices::failed(std::exception_ptr error) noexcept {
     try {
@@ -296,65 +253,15 @@ void complain(App const& app, std::wstring headline, std::wstring details,
     app.notices->complain(std::move(headline), std::move(details));
 }
 
-/// Пишет настройки. Текст собирается у вызывающего в тот момент, когда решили
-/// писать: между co_await читатель успеет поменять что-нибудь ещё, а на диск
-/// должно уйти решённое. Сами настройки не копируются — у них наблюдаемые
-/// поля, к которым привязаны контролы и полоса.
-detached_task saveSettingsLater(std::string xml) {
-    co_await async_file::write_all(poolPath(settingsPath()), std::move(xml));
+/// Пишет настройки — сценарием без владельца, по таймеру или при закрытии:
+/// текст рабочее место собирает в момент вызова, до ожидания.
+detached_task saveSettingsLater(std::shared_ptr<Workspace> ws) {
+    co_await ws->saveSettings();
 }
 
 /// Пишет состояние книги: место чтения и закладки.
-detached_task saveStateLater(u16_text guid, BookState state) {
-    if (guid.empty()) co_return;
-
-    co_await async_file::write_all(poolPath(statePath(guid)), bookStateXml(state));
-}
-
-/// Испорченный файл читалки — копией рядом, под тем же именем с «.bad»: первая
-/// же запись заменит сам файл, а в копии остаются пути книг, места чтения по
-/// guid и кривые обложек, которые можно вытащить руками. Байты — те, что
-/// прочли и не разобрали; копия одна, прежняя перезаписывается: истории порч
-/// хранить незачем. Сбой записи копии придёт в обработчик сбоев, как у всех.
-detached_task keepBrokenCopy(std::filesystem::path file, std::string bytes) {
-    file += L".bad";
-    co_await async_file::write_all(poolPath(file), std::move(bytes));
-}
-
-/// Пишет реестр.
-detached_task saveLibraryLater(std::string xml) {
-    co_await async_file::write_all(poolPath(libraryPath()), std::move(xml));
-}
-
-/// Что вернула регистрация книги: запись реестра и была ли книга новой.
-struct Registered {
-    BookEntry entry;
-    bool isNew;   ///< в реестре её не было — полке есть что добавить
-};
-
-/// Регистрирует книгу: запись в реестре и обложка в кэше. Общее у открытия
-/// книги и обхода каталога; запись самого реестра остаётся у вызывающего —
-/// открытие пишет его сразу, обход каталога один раз после цикла.
-///
-/// `task<Registered>`, а не `detached_task`: вызывающему нужен результат, и
-/// он ждёт `co_await` — кадр этой корутины временный в его выражении ожидания
-/// и живёт ровно до возобновления. Потому и документ — ссылкой, а не копией:
-/// его держит кадр ждущего, а тот до конца этой корутины никуда не денется.
-/// Новизна считается до ожидания: пока пишется обложка, соседний сценарий
-/// может дополнить реестр, и длина его после возврата уже ни о чём не говорит.
-async::task<Registered> registerBook(App app, const fb3::Document& document, std::filesystem::path path,
-                                     uint64_t fileSize) {
-    const size_t knownBefore = app.library->books().size();
-
-    // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
-    // переедет вместе со всеми ссылками в него.
-    Registered registered{app.library->add(document, path, fileSize, rememberedGuid(app, path)),
-                          app.library->books().size() != knownBefore};
-
-    if (const CoverBytes cover = coverOf(document, registered.entry.guid); !cover.name.empty())
-        co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
-
-    co_return registered;
+detached_task saveStateLater(std::shared_ptr<Workspace> ws, u16_text guid, BookState state) {
+    co_await ws->saveState(std::move(guid), std::move(state));
 }
 
 /// Достраивает полку: у каждой книги свой файл состояния, и читаются они по
@@ -363,20 +270,15 @@ async::task<Registered> registerBook(App app, const fb3::Document& document, std
 /// Это и есть «библиотека наполняется по мере чтения»: карточки встают сразу,
 /// а «прочитано 42%» проступает на каждой, как только её файл прочитан. Полка
 /// с сотней книг не ждёт сотни обращений к диску, чтобы показать первую.
-detached_task fillProgress(std::shared_ptr<LibraryScreen> shelf, std::vector<BookEntry> books) {
+detached_task fillProgress(std::shared_ptr<Workspace> ws, std::shared_ptr<LibraryScreen> shelf,
+                           std::vector<BookEntry> books) {
     for (const BookEntry& book : books) {
         if (book.characterCount == 0) continue;   // не открывалась -- и читать нечего
 
-        std::string xml;
+        const BookState state = co_await ws->readState(book.guid);
 
-        try {
-            xml = co_await async_file::read_all(poolPath(statePath(book.guid)));
-        } catch (const system_exception& failure) {
-            if (absent(failure)) continue;   // открывалась, а записать место не успела
-            throw;
-        }
-
-        const BookState state = parseBookState(xml);
+        // Открывалась, а записать место не успела — показывать нечего.
+        if (state.charOffset == 0 && state.bookmarks.empty()) continue;
 
         shelf->setProgress(book.guid, state.charOffset, state.bookmarks.size());
     }
@@ -400,63 +302,23 @@ detached_task addFolderFlow(App app, std::filesystem::path folder, std::function
     // происходит.
     showLibrary();
 
-    std::vector<async_directory::listed_entry> found;
+    FolderAdded result;
 
     try {
-        found = co_await async_directory::list(poolPath(folder / L"*.fb3"));
+        // Карточка — на каждую новую книгу сразу, пока обход идёт: одной
+        // карточкой, а не пересборкой всей полки — та стоила бы квадрата от
+        // числа книг и стирала бы прогресс, который уже проступил на соседях.
+        result = co_await app.ws->addFolder(folder, [app](const BookEntry& entry) {
+            if (*app.shown == Screen::Library) app.shelf->appendBook(entry);
+        });
     } catch (const system_exception& failure) {
-        complain(app, L"Не удалось прочитать каталог", folder.wstring(), failure);
+        complain(app, L"Не удалось добавить каталог", folder.wstring(), failure);
         co_return;
     }
 
-    bool added = false;
-
-    // Файлы, которые не прочитались, называются читателю разом в конце: каталог
-    // с сотней книг не должен спотыкаться об один файл, но и молчать о нём нельзя.
-    std::vector<std::wstring> unread;
-
-    for (const async_directory::listed_entry& entry : found) {
-        if (entry.is_directory) continue;
-
-        const std::filesystem::path path = folder / entry.name;
-
-        std::string bytes;
-
-        try {
-            bytes = co_await async_file::read_all(poolPath(path));
-        } catch (const system_exception& failure) {
-            unread.push_back(entry.name + L" — " + reasonOf(failure));
-            continue;
-        }
-
-        const uint64_t fileSize = bytes.size();
-
-        // Разбор ловится вокруг разбора, а не вокруг всего шага: не книга, битая
-        // книга, книга от будущего формата — не повод бросать обход.
-        std::optional<fb3::Document> document;
-
-        try {
-            document.emplace(std::move(bytes));
-        } catch (const std::exception&) {
-            continue;
-        }
-
-        const Registered registered = co_await registerBook(app, *document, path, fileSize);
-
-        added = true;
-
-        // Полка растёт на каждой книге, а не в конце: в этом и смысл — читатель
-        // видит, как она наполняется. Одной карточкой, а не пересборкой всей
-        // полки: та стоила бы квадрата от числа книг и стирала бы прогресс,
-        // который к тому времени уже проступил на соседях.
-        if (registered.isNew && *app.shown == Screen::Library) app.shelf->appendBook(registered.entry);
-    }
-
-    if (added) co_await async_file::write_all(poolPath(libraryPath()), app.library->toXml());
-
-    if (!unread.empty()) {
+    if (!result.unread.empty()) {
         std::wstring text;
-        for (const std::wstring& line : unread) {
+        for (const std::wstring& line : result.unread) {
             if (!text.empty()) text += L"\n";
             text += line;
         }
@@ -468,36 +330,16 @@ detached_task addFolderFlow(App app, std::filesystem::path folder, std::function
 /// применение — сохранённая обложка тут же становится текущей темой.
 detached_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
                   std::function<void()> leaveWizard) {
-    // У правки старой обложки копия снимка уже лежит в skins\ — скопировать
-    // надо только новый. Имя копии — новый guid с родным расширением: имена
-    // обложек выбирает читатель и они могут повторить друг друга, а guid —
-    // нет.
-    if (skin.image.empty()) {
-        std::string bytes;
+    const u16_text skinName = skin.name;
 
-        try {
-            bytes = co_await async_file::read_all(poolPath(photo));
-        } catch (const system_exception& failure) {
-            complain(app, L"Не удалось прочитать снимок", photo.wstring(), failure);
-            co_return;
-        }
-
-        // Расширение — от файла снимка, то есть от файловой системы: имя файла
-        // Windows не обязано быть правильным UTF-16, потому чинится.
-        u16_text file = newGuid();
-        file += unicode::repaired(photo.extension().native());
-
-        co_await async_file::write_all(poolPath(skinDirectory() / file.wchars()), std::move(bytes));
-
-        skin.image = std::move(file);
+    try {
+        co_await app.ws->saveSkin(std::move(skin), photo);
+    } catch (const system_exception& failure) {
+        complain(app, L"Не удалось сохранить обложку", photo.wstring(), failure);
+        co_return;
     }
 
-    const u16_text skinName = skin.name;
-    app.skins->put(std::move(skin));
-
-    co_await async_file::write_all(poolPath(skinsPath()), app.skins->toXml());
-
-    app.view->setSkins(app.skins->list());
+    app.view->setSkins(app.ws->skins.list());
     app.panel->refreshThemes();
 
     // По полному списку полосы, а не по реестру: номера считаются вместе с
@@ -522,7 +364,7 @@ detached_task saveSkinFlow(App app, Skin skin, std::filesystem::path photo,
 /// обложки не стоит окна с ошибкой при каждой смене темы.
 detached_task loadBackdropFlow(App app, std::filesystem::path file) {
     try {
-        std::string bytes = co_await async_file::read_all(poolPath(file));
+        std::string bytes = co_await app.ws->readBytes(file);
 
         app.view->setBackdrop(file, std::move(bytes));
     } catch (const system_exception&) {
@@ -536,17 +378,13 @@ detached_task loadBackdropFlow(App app, std::filesystem::path file) {
 /// у loadBackdropFlow сама: второе чтение того же файла дешевле, чем нести
 /// байты через мастер в полосу.
 detached_task checkImageFlow(App app, std::filesystem::path image, std::function<void()> proceed) {
-    std::string bytes;
-
     try {
-        bytes = co_await async_file::read_all(poolPath(image));
+        if (!co_await app.ws->isImage(image)) {
+            app.notices->complain(L"Это не изображение", image.wstring());
+            co_return;
+        }
     } catch (const system_exception& failure) {
         complain(app, L"Не удалось открыть изображение", image.wstring(), failure);
-        co_return;
-    }
-
-    if (!decodeImage(bytes)) {
-        app.notices->complain(L"Это не изображение", image.wstring());
         co_return;
     }
 
@@ -567,7 +405,7 @@ detached_task checkImageFlow(App app, std::filesystem::path image, std::function
 /// Удалили ту, что была на экране, — читатель возвращается на встроенную
 /// тему, номер которой читалка держит в настройках ровно на этот случай.
 detached_task deleteSkinFlow(App app, u16_text name) {
-    if (!app.skins->find(name)) co_return;   // реестр успел перемениться под руками
+    if (!app.ws->skins.find(name)) co_return;   // реестр успел перемениться под руками
 
     // Удаление спрашивает: точки по снимку читатель расставлял руками, вернуть
     // их нечем, а корзина стоит вплотную к шестерёнке. Ответ по умолчанию —
@@ -597,23 +435,21 @@ detached_task deleteSkinFlow(App app, u16_text name) {
         if (co_await dialog.showAsync() != ContentDialogResult::Primary) co_return;
     }
 
-    if (!app.skins->find(name)) co_return;   // реестр мог перемениться, пока спрашивали
+    if (!app.ws->skins.find(name)) co_return;   // реестр мог перемениться, пока спрашивали
 
     // Спрашиваем, пока старый список цел: activeSkin() смотрит в него номером.
     const Skin* active = app.view->activeSkin();
     const u16_text activeName = active ? active->name : u16_text{};
     const bool leavingActive = activeName == name;
 
-    app.skins->remove(name);
+    co_await app.ws->deleteSkin(name);
 
-    co_await async_file::write_all(poolPath(skinsPath()), app.skins->toXml());
-
-    app.view->setSkins(app.skins->list());
+    app.view->setSkins(app.ws->skins.list());
 
     int theme = app.view->theme.get();   // встроенная тема удалением не двигается
 
     if (leavingActive) {
-        theme = themeById(app.settings->theme);
+        theme = themeById(app.ws->settings.theme);
     } else if (!activeName.empty()) {
         const std::vector<Skin>& list = app.view->skins();
 
@@ -636,11 +472,10 @@ detached_task deleteSkinFlow(App app, u16_text name) {
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого
 /// пути. Протух — спрашиваем реестр по guid; нет и там — читателю нечего
 /// продолжать, и он хотел открыть книгу.
-detached_task continueReading(std::shared_ptr<Settings> settings, std::shared_ptr<Library> library,
-                     std::shared_ptr<WarmBook> warm,
+detached_task continueReading(std::shared_ptr<Workspace> ws, std::shared_ptr<WarmBook> warm,
                      std::function<void(std::filesystem::path)> openBook,
                      std::function<void()> addBook) {
-    std::filesystem::path path = settings->lastBookPath;
+    std::filesystem::path path = ws->settings.lastBookPath;
 
     // Прогретую книгу открываем не спрашивая диск вовсе: она уже в памяти
     // целиком, и файл ей больше не нужен — даже если его успели унести. Тем
@@ -651,13 +486,7 @@ detached_task continueReading(std::shared_ptr<Settings> settings, std::shared_pt
         co_return;
     }
 
-    if (!path.empty() && !co_await async_file::exists(poolPath(path))) path.clear();
-
-    if (path.empty()) {
-        if (const BookEntry* entry = library->find(settings->lastBookGuid)) path = entry->path;
-
-        if (!path.empty() && !co_await async_file::exists(poolPath(path))) path.clear();
-    }
+    path = co_await ws->lastBookPath();
 
     if (path.empty()) {
         addBook();
@@ -683,13 +512,15 @@ detached_task continueReading(std::shared_ptr<Settings> settings, std::shared_pt
 /// память разбора берётся из STA-пула, а он чужого потока не терпит. Поток на
 /// это время занят — но занят он до нажатия, а не после.
 detached_task warmBookFlow(App app, std::filesystem::path path) {
-    // Не const: байты уходят в книгу перемещением (см. openBookFlow).
-    std::string bytes;
+    Warmed warmed;
 
     try {
-        bytes = co_await async_file::read_all(poolPath(path));
-    } catch (const system_exception&) {
-        // Молча, как и разбор ниже: читатель ни о чём не просил.
+        warmed = co_await app.ws->readBook(path);
+    } catch (std::exception const&) {
+        // Молча: читатель ни о чём не просил, и жаловаться ему пока не на что.
+        // Файл не прочитался или книга испорчена — он узнает об этом, когда
+        // нажмёт, из openBookFlow, который прочитает её сам и скажет поимённо.
+        app.warm->wanted.clear();
         co_return;
     }
 
@@ -697,17 +528,8 @@ detached_task warmBookFlow(App app, std::filesystem::path path) {
     // нечего, и вторая её копия в памяти никому не нужна.
     if (app.warm->wanted != path) co_return;
 
-    const uint64_t fileSize = bytes.size();
-
-    try {
-        app.warm->book = std::make_shared<Book>(path, std::move(bytes), dwriteFactory());
-        app.warm->fileSize = fileSize;
-    } catch (std::exception const&) {
-        // Молча: читатель ни о чём не просил, и жаловаться ему пока не на что.
-        // Книга испорчена — он узнает об этом, когда нажмёт, из openBookFlow,
-        // который прочитает её сам и покажет разбор поимённо.
-        app.warm->wanted.clear();
-    }
+    app.warm->book = std::move(warmed.book);
+    app.warm->fileSize = warmed.fileSize;
 }
 
 /// Показывает полосу набора: страница — на сцену, экран — книга. Общее у двух
@@ -761,21 +583,13 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
     app.warm->book.reset();
 
     if (!book) {
-        // Не const: байты уходят в книгу перемещением, а const-значение
-        // перемещать нечем — оно молча скопировалось бы целиком.
-        std::string bytes;
+        Warmed read;
 
         try {
-            bytes = co_await async_file::read_all(poolPath(path));
+            read = co_await app.ws->readBook(path);
         } catch (const system_exception& failure) {
             complain(app, L"Не удалось прочитать файл книги", path.wstring(), failure);
             co_return;
-        }
-
-        fileSize = bytes.size();
-
-        try {
-            book = std::make_shared<Book>(path, std::move(bytes), dwriteFactory());
         } catch (std::exception const& failure) {
             // Разговор с читателем, а не запись в лог: он только что выбрал этот
             // файл и вправе узнать, что с ним не так.
@@ -784,33 +598,24 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
                                   path.wstring() + L"\n\n" + std::wstring(reason.wchars()));
             co_return;
         }
+
+        book = std::move(read.book);
+        fileSize = read.fileSize;
     }
 
-    // Место чтения предыдущей книги — на диск сразу: сейчас settings укажет на
-    // другую, и записывать станет некуда.
-    if (!app.settings->lastBookGuid.empty() && app.view->isOpen()) {
+    // Место чтения предыдущей книги — на диск сразу: сейчас настройки укажут
+    // на другую, и записывать станет некуда.
+    if (!app.ws->settings.lastBookGuid.empty() && app.view->isOpen()) {
         app.state->charOffset = app.view->readingPosition();
 
-        co_await async_file::write_all(poolPath(statePath(app.settings->lastBookGuid)), bookStateXml(*app.state));
+        co_await app.ws->saveState(app.ws->settings.lastBookGuid, *app.state);
     }
 
-    const BookEntry stored = (co_await registerBook(app, book->document(), path, fileSize)).entry;
+    // Реестр, обложка, настройки, состояние — у рабочего места; здесь только
+    // то, что видно: книга на полосе и её закладки в панели.
+    Opened opened = co_await app.ws->openBook(*book, fileSize);
 
-    co_await async_file::write_all(poolPath(libraryPath()), app.library->toXml());
-
-    app.settings->lastBookGuid = stored.guid;
-    app.settings->lastBookPath = stored.path;
-
-    co_await async_file::write_all(poolPath(settingsPath()), settingsXml(*app.settings));
-
-    // Состояния у книги может и не быть: её только что добавили, или место
-    // чтения ещё не записывалось. Это не ошибка, а чистый лист.
-    try {
-        *app.state = parseBookState(co_await async_file::read_all(poolPath(statePath(stored.guid))));
-    } catch (const system_exception& failure) {
-        if (!absent(failure)) throw;
-        *app.state = BookState{};
-    }
+    *app.state = std::move(opened.state);
 
     app.view->open(std::move(book), app.state->charOffset);
     app.panel->setState(app.state.get());
@@ -830,84 +635,41 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
                  std::function<void()> showStartScreen,
                  std::function<void(std::filesystem::path)> warmBook,
                  std::function<void()> watchSettings) {
-    std::string settingsXmlText;
+    // Настройки, обложки, реестр — у рабочего места, одной корутиной; что
+    // при этом не удалось, читатель узнаёт словами, а запуск идёт дальше с
+    // умолчаниями.
+    const Started started = co_await app.ws->start();
 
-    try {
-        settingsXmlText = co_await async_file::read_all(poolPath(settingsPath()));
-    } catch (const system_exception& failure) {
-        // Нет файла -- первый запуск, и это не ошибка; всё остальное -- ошибка,
-        // о которой читателю говорится, а запуск идёт дальше с умолчаниями.
-        if (!absent(failure))
-            complain(app, L"Не удалось прочитать настройки", settingsPath().wstring(), failure);
-    }
+    for (const Notice& notice : started.notices) app.notices->complain(notice.headline, notice.details);
 
-    // В те настройки, что уже есть: к их полям привязаны ползунки панели и
-    // полоса набора, и о прочитанном они узнают сами. Запись на диск начинает
-    // слушать поля только теперь: прочитанное из файла — не перемена, которую
-    // надо записать обратно.
-    // Файл прочитан, но не разобран — читателю об этом говорят, а байты
-    // остаются рядом копией. Сам файл заменит первая же запись настроек, и
-    // ждать её не придётся: окно встаёт на место по умолчанию, и таймер места
-    // окна запишет его через kSaveQuiet — сообщение читатель увидит уже над
-    // переписанным файлом, о чём оно и говорит. Байты у копии свои, в
-    // памяти, так что порядок двух записей безразличен.
-    if (!readSettings(settingsXmlText, *app.settings)) {
-        keepBrokenCopy(settingsPath(), std::move(settingsXmlText));
-        app.notices->complain(L"Настройки не прочитаны",
-                              settingsPath().wstring() +
-                                  L"\n\nФайл испорчен: взяты умолчания, и они же сейчас лягут "
-                                  L"в него — место окна пишется само, через секунды после "
-                                  L"старта. Испорченный остаётся рядом копией "
-                                  L"(settings.xml.bad).");
-    }
+    // Запись на диск начинает слушать поля настроек только теперь:
+    // прочитанное из файла — не перемена, которую надо записать обратно.
     watchSettings();
 
-    // Прогрев книги — сразу, как только стало известно, какая она: он не
-    // зависит ни от обложек, ни от реестра, ни от места окна, а разбор длится
-    // дольше всего остального запуска вместе взятого. Заказ уходит и
-    // возвращается тут же, так что строки ниже его не ждут; работать он будет
-    // параллельно с ними — это и есть тот параллельный запуск, ради которого
-    // всё здесь и написано корутинами.
+    // Прогрев книги — сразу, как только стало известно, какая она: разбор
+    // длится дольше всего остального запуска вместе взятого. Заказ уходит и
+    // возвращается тут же, так что строки ниже его не ждут.
     //
     // Только когда книга не открывается сама: при continueReading её откроет
     // startupFlow ниже, и греть значило бы разобрать её дважды. Протухший путь
     // безвреден — прогрев не прочитает файла и тихо кончится, а «Продолжить
     // чтение» найдёт книгу по guid в реестре и откроет обычной дорогой.
-    if (!app.settings->continueReading.get() && !app.settings->lastBookPath.empty())
-        warmBook(app.settings->lastBookPath);
+    if (!app.ws->settings.continueReading.get() && !app.ws->settings.lastBookPath.empty())
+        warmBook(app.ws->settings.lastBookPath);
 
     // Обложки — раньше темы: выбранной темой может оказаться обложка, а её
     // индекс продолжает список за встроенными и без реестра не существует.
-    std::string skinsXmlText;
-
-    try {
-        skinsXmlText = co_await async_file::read_all(poolPath(skinsPath()));
-    } catch (const system_exception& failure) {
-        // Нет файла -- первый запуск, и это не ошибка; всё остальное -- ошибка,
-        // о которой читателю говорится, а запуск идёт дальше с умолчаниями.
-        if (!absent(failure))
-            complain(app, L"Не удалось прочитать реестр обложек", skinsPath().wstring(), failure);
-    }
-
-    if (!app.skins->loadFrom(skinsXmlText)) {
-        keepBrokenCopy(skinsPath(), std::move(skinsXmlText));
-        app.notices->complain(L"Реестр обложек не прочитан",
-                              skinsPath().wstring() +
-                                  L"\n\nФайл испорчен: обложек нет. Копия лежит рядом "
-                                  L"(skins.xml.bad), снимки в skins\\ целы, а первая же "
-                                  L"запись реестра заменит сам файл.");
-    }
-    app.view->setSkins(app.skins->list());
+    app.view->setSkins(app.ws->skins.list());
     app.panel->refreshThemes();
 
-    int theme = themeById(app.settings->theme);
+    int theme = themeById(app.ws->settings.theme);
 
-    if (!app.settings->skin.empty()) {
+    if (!app.ws->settings.skin.empty()) {
         // По полному списку полосы, а не по реестру: номера считаются вместе с
         // системными обложками, которые стоят впереди реестровых.
         const std::vector<Skin>& list = app.view->skins();
         for (size_t index = 0; index < list.size(); ++index) {
-            if (list[index].name == app.settings->skin) {
+            if (list[index].name == app.ws->settings.skin) {
                 theme = kThemeCount + static_cast<int>(index);
                 break;
             }
@@ -915,45 +677,7 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     }
     app.view->setTheme(theme);
 
-    // Реестр читается всегда, а не только когда показывают полку: он маленький,
-    // читает его чужой поток, и без него не ответить на «продолжить чтение» по
-    // guid, если путь в настройках протух.
-    std::string libraryXmlText;
-
-    try {
-        libraryXmlText = co_await async_file::read_all(poolPath(libraryPath()));
-    } catch (const system_exception& failure) {
-        // Нет файла -- первый запуск, и это не ошибка; всё остальное -- ошибка,
-        // о которой читателю говорится, а запуск идёт дальше с умолчаниями.
-        if (!absent(failure))
-            complain(app, L"Не удалось прочитать реестр книг", libraryPath().wstring(), failure);
-    }
-
-    if (!app.library->loadFrom(libraryXmlText)) {
-        keepBrokenCopy(libraryPath(), std::move(libraryXmlText));
-        app.notices->complain(L"Реестр книг не прочитан",
-                              libraryPath().wstring() +
-                                  L"\n\nФайл испорчен: полка пуста. Копия лежит рядом "
-                                  L"(library.xml.bad), сами книги лежат там, где лежали; "
-                                  L"первая же запись реестра — добавление книги или "
-                                  L"«Продолжить чтение» — заменит сам файл, место чтения "
-                                  L"последней книги при этом сохранится.");
-    }
-
-    // Продолжать чтение — только если книга на месте. Путь в настройках копия
-    // того, что в реестре, и она здесь ради быстрого пути; протухла —
-    // спрашиваем реестр по guid.
-    std::filesystem::path lastBook = app.settings->lastBookPath;
-
-    if (!lastBook.empty() && !co_await async_file::exists(poolPath(lastBook))) lastBook.clear();
-
-    if (lastBook.empty()) {
-        if (const BookEntry* entry = app.library->find(app.settings->lastBookGuid)) {
-            lastBook = entry->path;
-
-            if (!co_await async_file::exists(poolPath(lastBook))) lastBook.clear();
-        }
-    }
+    const std::filesystem::path& lastBook = started.lastBook;
 
     app.window.resize({kInitialWidth, kInitialHeight});
 
@@ -962,9 +686,9 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
     // таким, каким его открыл WinUI: placement молча ничего не делает, когда
     // разбирать нечего, — и это правильно, но своё умолчание к тому моменту
     // должно быть уже на месте.
-    if (!app.settings->windowPlacement.empty()) app.window.placement(app.settings->windowPlacement);
+    if (!app.ws->settings.windowPlacement.empty()) app.window.placement(app.ws->settings.windowPlacement);
 
-    if (app.settings->continueReading.get() && !lastBook.empty()) {
+    if (app.ws->settings.continueReading.get() && !lastBook.empty()) {
         openBook(lastBook);
     } else {
         showStartScreen();
@@ -985,8 +709,7 @@ wxl::Teardown wxl_launched() {
 
     // Пустые: их наполнит запуск, и наполнит асинхронно. Ни настройки, ни
     // реестр здесь не читаются — в этом потоке к диску не обращаются вовсе.
-    auto settings = std::make_shared<Settings>();
-    auto library = std::make_shared<Library>();
+    auto ws = std::make_shared<Workspace>(standardDataDirectory());
 
     // Своё окно верхнего уровня на композиторе, а не генерируемое wxl::Window:
     // у того верхнее окно перенаправляемое, и при быстрой растяжке за угол в
@@ -1016,14 +739,13 @@ wxl::Teardown wxl_launched() {
     window.backgroundAsync(applicationFolder() / L"Assets/splash-screen-1k.png");
 
     auto screen = std::make_shared<StartScreen>(window.chromeCompositor());
-    auto view = std::make_shared<BookView>(window, *settings);
-    auto shelf = std::make_shared<LibraryScreen>(*settings);
-    auto skins = std::make_shared<Skins>();
+    auto view = std::make_shared<BookView>(window, *ws);
+    auto shelf = std::make_shared<LibraryScreen>(*ws);
     auto wizard = std::make_shared<SkinWizard>(window.chromeCompositor());
 
     // Панель живёт поверх полосы набора: «поверх страницы» — это внутри полосы,
     // а не рядом с ней.
-    auto panel = std::make_shared<ReaderPanel>(window.chromeCompositor(), *view, *settings);
+    auto panel = std::make_shared<ReaderPanel>(window.chromeCompositor(), *view, ws->settings);
     view->addOverlay(panel->root());
 
     // Состояние открытой книги: место чтения и закладки. Читается и пишется
@@ -1046,12 +768,12 @@ wxl::Teardown wxl_launched() {
     positionTimer.interval(kPositionQuiet);
     positionTimer.isRepeating(false);
 
-    auto const rememberPosition = [view, settings, bookState] {
+    auto const rememberPosition = [view, ws, bookState] {
         // Книга закрыта -- писать нечего: место чтения принадлежит ей, а не
         // окну, и ноль незанятой полосы стёр бы то, что уже записано.
-        if (settings->lastBookGuid.empty() || !view->isOpen()) return;
+        if (ws->settings.lastBookGuid.empty() || !view->isOpen()) return;
         bookState->charOffset = view->readingPosition();
-        saveStateLater(settings->lastBookGuid, *bookState);
+        saveStateLater(ws, ws->settings.lastBookGuid, *bookState);
     };
 
     positionTimer.add_onTick([positionTimer, rememberPosition](Object const&, Object const&) {
@@ -1078,8 +800,8 @@ wxl::Teardown wxl_launched() {
 
     auto const closePanel = [panel] { panel->close(); };
 
-    auto const showStartScreen = [window, screen, view, settings, library, shown, rememberPosition,
-                                  closePanel, notices] {
+    auto const showStartScreen = [window, screen, view, ws, shown, rememberPosition, closePanel,
+                                  notices] {
         closePanel();
         // Уходя из книги, место чтения пишем сразу: отложенная запись ждёт
         // паузы, а читатель уже ушёл -- и, может быть, закроет приложение
@@ -1096,10 +818,10 @@ wxl::Teardown wxl_launched() {
         // Большой кнопке — её книга: обложка, название, автор. На каждом
         // показе, потому что последняя открытая книга могла смениться, пока
         // экрана не было видно; при запуске реестр к этому моменту прочитан.
-        if (const BookEntry* known = library->find(settings->lastBookGuid)) {
+        if (const BookEntry* known = ws->library.find(ws->settings.lastBookGuid)) {
             screen->setContinueBook(known->title, known->authors,
                                     known->cover.empty() ? std::filesystem::path{}
-                                                         : coverDirectory() / known->cover.wchars());
+                                                         : ws->coverDirectory() / known->cover.wchars());
         }
 
         *shown = Screen::Start;
@@ -1108,11 +830,9 @@ wxl::Teardown wxl_launched() {
     };
 
     // Всё, из чего собрано приложение, одной связкой: её берут корутины.
-    App const app{window, settings, library, bookState,    view,  panel,  shelf,
-                  screen, shown,    bookCameFrom, skins,   warm,  notices};
+    App const app{window, ws, bookState, view, panel, shelf, screen, shown, bookCameFrom, warm, notices};
 
-    auto const showLibrary = [app, window, shelf, library, settings, shown, rememberPosition,
-                              closePanel] {
+    auto const showLibrary = [app, window, shelf, ws, shown, rememberPosition, closePanel] {
         closePanel();
         rememberPosition();   // и полка тут же покажет свежий процент
 
@@ -1123,14 +843,14 @@ wxl::Teardown wxl_launched() {
 
         // Полка пересобирается на каждый показ: книга могла добавиться, а
         // место чтения — уехать с тех пор, как её видели в прошлый раз.
-        shelf->show(*library);
+        shelf->show(ws->library);
         *shown = Screen::Library;
         window.content(shelf->root());
         app.notices->flush();
 
         // Карточки уже стоят; проценты проступят на них по мере того, как
         // рабочий поток прочитает файлы состояния — по одному на книгу.
-        fillProgress(shelf, library->books());
+        fillProgress(ws, shelf, ws->library.books());
     };
 
     auto const openBook = [app](std::filesystem::path const& path) {
@@ -1167,11 +887,11 @@ wxl::Teardown wxl_launched() {
 
     shelf->onAddBook = addBook;
     shelf->onBack = showStartScreen;
-    shelf->onOpen = [library, openBook](u16_text guid) {
-        if (BookEntry const* known = library->find(guid)) openBook(known->path);
+    shelf->onOpen = [ws, openBook](u16_text guid) {
+        if (BookEntry const* known = ws->library.find(guid)) openBook(known->path);
     };
-    panel->onStateChanged = [settings, bookState] {
-        saveStateLater(settings->lastBookGuid, *bookState);
+    panel->onStateChanged = [ws, bookState] {
+        saveStateLater(ws, ws->settings.lastBookGuid, *bookState);
     };
 
     panel->onLibrary = showLibrary;
@@ -1196,9 +916,9 @@ wxl::Teardown wxl_launched() {
     auto viewTimer = window.dispatcherQueue().createTimer();
     viewTimer.interval(kSaveQuiet);
     viewTimer.isRepeating(false);
-    viewTimer.add_onTick([viewTimer, settings](Object const&, Object const&) {
+    viewTimer.add_onTick([viewTimer, ws](Object const&, Object const&) {
         viewTimer.stop();
-        saveSettingsLater(settingsXml(*settings));
+        saveSettingsLater(ws);
     });
 
     // Слушатели поля — noexcept по контракту observable: им некому отдать
@@ -1211,7 +931,7 @@ wxl::Teardown wxl_launched() {
         viewTimer.stop();
         viewTimer.start();
     };
-    auto const watchSettings = [prefs = settings.get(), page = view.get(), persistLater] {
+    auto const watchSettings = [prefs = &ws->settings, page = view.get(), persistLater] {
         static_cast<void>(prefs->fontSize.on_change([persistLater](double) noexcept { persistLater(); }));
         static_cast<void>(prefs->lineHeight.on_change([persistLater](double) noexcept { persistLater(); }));
         static_cast<void>(prefs->margin.on_change([persistLater](double) noexcept { persistLater(); }));
@@ -1289,10 +1009,12 @@ wxl::Teardown wxl_launched() {
         // перемениться, и указатель в него протухнет.
         const Skin skin = *known;
 
+        const std::filesystem::path image = app.ws->skinImagePath(skin);
+
         checkImageFlow(
-            app, skinImagePath(skin),
-            [wizard, skin, closePanel, previewSkin] {
-                wizard->openEdit(skin);
+            app, image,
+            [wizard, skin, image, closePanel, previewSkin] {
+                wizard->openEdit(skin, image);
                 closePanel();
                 wizard->show();
                 previewSkin();
@@ -1325,7 +1047,7 @@ wxl::Teardown wxl_launched() {
     };
 
     screen->onContinueReading = [settings, library, warm, openBook, addBook] {
-        continueReading(settings, library, warm, openBook, addBook);
+        continueReading(ws, warm, openBook, addBook);
     };
 
     // ---- клавиши, общие для обоих экранов ----
@@ -1434,11 +1156,11 @@ wxl::Teardown wxl_launched() {
     saveTimer.interval(kSaveQuiet);
     saveTimer.isRepeating(false);
 
-    auto const rememberWindow = [window, settings] {
+    auto const rememberWindow = [window, ws] {
         // Место отдаётся строкой WinRT; к нам она приходит чужим текстом, и
         // проверенным становится так же, как любой другой чужой.
-        settings->windowPlacement = unicode::repaired(window.placement());
-        saveSettingsLater(settingsXml(*settings));
+        ws->settings.windowPlacement = unicode::repaired(window.placement());
+        saveSettingsLater(ws);
     };
 
     saveTimer.add_onTick([saveTimer, rememberWindow](Object const&, Object const&) {
@@ -1486,6 +1208,6 @@ wxl::Teardown wxl_launched() {
     //
     // Сценарии держат себя сами (`detached_task`), а петлю ввода-вывода wxl
     // гасит уже после этого обработчика, дождавшись операций в полёте.
-    return [screen, shelf, view, library, settings, skins, wizard, saveTimer, positionTimer,
-            viewTimer, splashTimer](TeardownReason) {};
+    return [screen, shelf, view, ws, wizard, saveTimer, positionTimer, viewTimer,
+            splashTimer](TeardownReason) {};
 }

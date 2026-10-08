@@ -1,5 +1,3 @@
-#include <shlobj.h>
-
 // Свои заголовки — после системных: settings.h и store.h несут импорт, а
 // заголовок после импорта MSVC принимает не всякий.
 #include "bukvitsa/reader/settings.h"
@@ -10,32 +8,6 @@ import wxl.fmt;
 import wxl.xml;
 
 namespace bukvitsa::reader {
-
-std::filesystem::path dataDirectory() {
-    // Подопытный каталог: сценарии прогона портят settings.xml и реестры, и
-    // гонять их на настоящих данных читателя нельзя. Переменная подменяет
-    // каталог целиком. Длина не ограничена MAX_PATH: путь к рабочей папке
-    // сессии длиннее обычного, потому буфер спрашивается у самой Windows.
-    if (const DWORD size = ::GetEnvironmentVariableW(L"BUKVITSA_DATA", nullptr, 0); size > 1) {
-        std::wstring sandbox(size - 1, L'\0');
-        if (::GetEnvironmentVariableW(L"BUKVITSA_DATA", sandbox.data(), size) == size - 1)
-            return std::filesystem::path{std::move(sandbox)};
-    }
-
-    PWSTR folder = nullptr;
-    if (FAILED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &folder))) {
-        return {};
-    }
-    std::filesystem::path path{folder};
-    ::CoTaskMemFree(folder);
-    return path / L"Bukvitsa" / L"Reader";
-}
-
-std::filesystem::path settingsPath() {
-    const std::filesystem::path directory = dataDirectory();
-
-    return directory.empty() ? std::filesystem::path{} : directory / L"settings.xml";
-}
 
 bool readSettings(std::string xml, Settings& into) {
     if (xml.empty()) return true;   // первого запуска ещё не было

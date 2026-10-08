@@ -327,9 +327,10 @@ bool controlHeld() {
 
 }  // namespace
 
-BookView::BookView(const CompositionWindow& window, Settings& settings)
+BookView::BookView(const CompositionWindow& window, Workspace& workspace)
     : window_(window),
-      settings_(settings),
+      settings_(workspace.settings),
+      workspace_(workspace),
       compositor_(window.compositor()),
       releaseTimer_(window.dispatcherQueue().createTimer()),
       // Всплывашка сноски — XAML-остров, её рисунок висит в дереве острова, а не
@@ -790,7 +791,7 @@ void BookView::setPreview(const Skin* skin, const std::filesystem::path& image) 
 
 std::filesystem::path BookView::backdropFile() const {
     if (preview_) return previewImage_;
-    if (const Skin* skin = activeSkin()) return skinImagePath(*skin);
+    if (const Skin* skin = activeSkin()) return workspace_.skinImagePath(*skin);
     return {};
 }
 

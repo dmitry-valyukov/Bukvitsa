@@ -294,8 +294,8 @@ void SkinWizard::openNew(std::filesystem::path image) {
     redraw();
 }
 
-void SkinWizard::openEdit(const Skin& skin) {
-    image_ = skinImagePath(skin);
+void SkinWizard::openEdit(const Skin& skin, std::filesystem::path image) {
+    image_ = std::move(image);
     skin_ = skin;
     dragging_ = false;
     namePanel_.value().visibility(Visibility::Collapsed);

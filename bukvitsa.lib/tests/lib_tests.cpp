@@ -1,20 +1,29 @@
 // Тесты модели читалки (bukvitsa.lib): чистые функции над блоками книги и над
 // кривыми обложек. Как у FB3 и вёрстки, без фреймворка.
 
+#include <objbase.h>
+
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // Заголовки читалки после всех стандартных: индекс книги ведёт к импорту
-// модуля книги, и обложки — перед ним.
+// модуля книги, и обложки — перед ним; рабочее место — последним, оно
+// импортирует wxl.async.
 #include "bukvitsa/reader/skins.h"
 
 #include "bukvitsa/reader/book_index.h"
+#include "bukvitsa/reader/workspace.h"
 
+import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;
+using namespace bukvitsa::reader;
 
 namespace {
 
@@ -322,6 +331,308 @@ void testSkinsReadSeparateLeaves() {
           "точки не по порядку — кромка становится начальной прямой");
 }
 
+
+// ---- Рабочее место: файлы читалки без окна ----------------------------------
+//
+// Корутины рабочего места ждут операций wxl, а те живут на петле sta_loop:
+// тест поднимает её один раз на процесс (как тесты самой wxl) и крутит до
+// конца каждой корутины. Разбор идёт на этом же потоке, в STA-пуле.
+
+using wxl::async::sta_loop;
+using wxl::async::task;
+
+const std::filesystem::path testdata = BUKVITSA_TESTDATA_DIR;
+
+/// Временный каталог на один тест: рабочее место живёт в нём, после теста он
+/// стирается. Имя — с номером процесса: два прогона рядом не пересекутся.
+struct Sandbox {
+    std::filesystem::path root;
+
+    explicit Sandbox(const char* name)
+        : root(std::filesystem::temp_directory_path() /
+               (L"bukvitsa-lib-tests-" + std::to_wstring(::GetCurrentProcessId())) / name) {
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+        std::filesystem::create_directories(root);
+    }
+
+    ~Sandbox() {
+        std::error_code ignored;
+        std::filesystem::remove_all(root.parent_path(), ignored);
+    }
+};
+
+template <class T>
+T run(task<T> work) {
+    sta_loop::run_until([&] { return work.done(); });
+    return work.result();
+}
+
+void run(task<> work) {
+    sta_loop::run_until([&] { return work.done(); });
+    work.result();
+}
+
+/// Байты файла, прочитанные обычным способом: проверка того, что записало
+/// рабочее место.
+std::string onDisk(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+void putOnDisk(const std::filesystem::path& file, std::string_view bytes) {
+    std::filesystem::create_directories(file.parent_path());
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+bool holds(const std::wstring& text, std::wstring_view piece) {
+    return text.find(piece) != std::wstring::npos;
+}
+
+const std::filesystem::path kBook = testdata / L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
+const std::filesystem::path kOtherBook = testdata / L"nightmare_example.fb3";
+
+/// Пустой каталог — первый запуск: умолчания, ни одного слова читателю.
+void testWorkspaceStartsEmpty() {
+    std::printf("\n=== рабочее место: первый запуск ===\n");
+
+    Sandbox box("empty");
+    Workspace ws(box.root);
+
+    const Started started = run(ws.start());
+
+    check(started.notices.empty(), "первый запуск: ни одного сообщения");
+    check(started.lastBook.empty(), "первый запуск: продолжать нечего");
+    check(ws.library.books().empty(), "первый запуск: реестр пуст");
+    check(ws.skins.list().empty(), "первый запуск: обложек нет");
+    check(ws.settings.fontSize.get() == kFontSizeDefault, "первый запуск: кегль по умолчанию");
+    check(!std::filesystem::exists(ws.settingsPath()), "первый запуск ничего не пишет");
+}
+
+/// Три испорченных файла: слово о каждом, копия .bad байт в байт, умолчания;
+/// первая запись заменяет файл, копия остаётся одна и перезаписывается.
+void testWorkspaceKeepsBrokenFiles() {
+    std::printf("\n=== рабочее место: битые файлы ===\n");
+
+    Sandbox box("broken");
+
+    const std::string brokenSettings = "<settings version=\"4\"><view fontSize=\"2";
+    const std::string brokenSkins = "<skins><skin name=\"Проба\" x=\"0.14";
+    const std::string brokenLibrary = "<library><book authors=\"Фрэнк";
+
+    {
+        Workspace ws(box.root);
+        putOnDisk(ws.settingsPath(), brokenSettings);
+        putOnDisk(ws.skinsPath(), brokenSkins);
+        putOnDisk(ws.libraryPath(), brokenLibrary);
+
+        const Started started = run(ws.start());
+
+        check(started.notices.size() == 3, "три битых файла — три сообщения");
+        if (started.notices.size() == 3) {
+            check(started.notices[0].headline == L"Настройки не прочитаны" &&
+                      holds(started.notices[0].details, ws.settingsPath().wstring()),
+                  "сообщение о настройках называет файл");
+            check(started.notices[1].headline == L"Реестр обложек не прочитан", "сообщение об обложках");
+            check(started.notices[2].headline == L"Реестр книг не прочитан", "сообщение о реестре книг");
+        }
+        check(ws.settings.fontSize.get() == kFontSizeDefault, "битые настройки — умолчания");
+        check(ws.skins.list().empty() && ws.library.books().empty(), "битые реестры — пусто");
+
+        check(onDisk(box.root / L"settings.xml.bad") == brokenSettings, "копия settings.xml.bad байт в байт");
+        check(onDisk(box.root / L"skins.xml.bad") == brokenSkins, "копия skins.xml.bad байт в байт");
+        check(onDisk(box.root / L"library.xml.bad") == brokenLibrary, "копия library.xml.bad байт в байт");
+
+        run(ws.saveSettings());
+
+        Settings fresh;
+        check(readSettings(onDisk(ws.settingsPath()), fresh), "первая запись заменила файл целым");
+        check(onDisk(box.root / L"settings.xml.bad") == brokenSettings, "копия после замены на месте");
+    }
+
+    const std::string brokenAgain = "<settings version=\"4\"><view margin=\"0.0";
+    {
+        Workspace ws(box.root);
+        putOnDisk(ws.settingsPath(), brokenAgain);
+
+        run(ws.start());
+
+        check(onDisk(box.root / L"settings.xml.bad") == brokenAgain, "повторная порча — копия перезаписана");
+        check(!std::filesystem::exists(box.root / L"settings.xml.bad.bad"), "копия одна, не множится");
+    }
+}
+
+/// Регистрация: запись в реестре, обложка в кэше, повтор — та же запись.
+void testWorkspaceRegistersBook() {
+    std::printf("\n=== рабочее место: регистрация книги ===\n");
+
+    Sandbox box("register");
+    Workspace ws(box.root);
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document(std::string(bytes));
+
+    const Registered first = run(ws.registerBook(document, kBook, bytes.size()));
+
+    check(first.isNew, "первая регистрация — новая книга");
+    check(ws.library.books().size() == 1, "в реестре одна книга");
+    check(!first.entry.guid.empty(), "у записи есть guid");
+    check(first.entry.path == kBook, "путь записи — путь файла");
+
+    const CoverBytes cover = coverOf(document, first.entry.guid);
+    check(first.entry.cover == cover.name, "имя обложки в записи — имя файла в кэше");
+    check(cover.name.empty() || std::filesystem::exists(ws.coverDirectory() / cover.name.wchars()),
+          "обложка книги лежит в кэше");
+    check(!std::filesystem::exists(ws.libraryPath()), "регистрация сама реестр не пишет");
+
+    const Registered again = run(ws.registerBook(document, kBook, bytes.size()));
+
+    check(!again.isNew, "повторная регистрация — не новая");
+    check(again.entry.guid == first.entry.guid, "повторная регистрация — тот же guid");
+    check(ws.library.books().size() == 1, "реестр не раздвоился");
+}
+
+/// Реестр потерян, а настройки помнят guid последней книги: запись заводится
+/// под ним, и место чтения находится; занятый guid не берётся.
+void testWorkspaceKeepsLastBookGuid() {
+    std::printf("\n=== рабочее место: guid последней книги ===\n");
+
+    Sandbox box("remembered");
+    Workspace ws(box.root);
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document(std::string(bytes));
+
+    const u16_text kept = newGuid();
+    ws.settings.lastBookPath = kBook;
+    ws.settings.lastBookGuid = kept;
+
+    const Registered restored = run(ws.registerBook(document, kBook, bytes.size()));
+
+    check(restored.isNew && restored.entry.guid == kept, "потерянная последняя книга — под прежним guid");
+
+    const std::string otherBytes = onDisk(kOtherBook);
+    const fb3::Document other(std::string(otherBytes));
+
+    ws.settings.lastBookPath = kOtherBook;   // guid занят первой книгой
+    const Registered fresh = run(ws.registerBook(other, kOtherBook, otherBytes.size()));
+
+    check(fresh.isNew && fresh.entry.guid != kept, "занятый guid не берётся — новый");
+    check(ws.library.books().size() == 2, "две разные книги");
+}
+
+/// Открытие: реестр и настройки на диске указывают на книгу, состояние
+/// читается и пишется, последняя книга находится.
+void testWorkspaceOpensBook() {
+    std::printf("\n=== рабочее место: открытие книги ===\n");
+
+    Sandbox box("open");
+    Workspace ws(box.root);
+
+    const Warmed warmed = run(ws.readBook(kBook));
+
+    check(warmed.book != nullptr, "книга прочитана и разобрана");
+    check(warmed.fileSize == std::filesystem::file_size(kBook), "размер файла — настоящий");
+
+    const Opened opened = run(ws.openBook(*warmed.book, warmed.fileSize));
+
+    check(opened.state.charOffset == 0 && opened.state.bookmarks.empty(), "новая книга — с чистого листа");
+    check(ws.settings.lastBookGuid == opened.entry.guid && ws.settings.lastBookPath == kBook,
+          "настройки указывают на книгу");
+
+    Library onDiskLibrary;
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.books().size() == 1,
+          "реестр записан");
+    Settings onDiskSettings;
+    check(readSettings(onDisk(ws.settingsPath()), onDiskSettings) &&
+              onDiskSettings.lastBookGuid == opened.entry.guid,
+          "настройки записаны");
+
+    BookState state;
+    state.charOffset = 12345;
+    run(ws.saveState(opened.entry.guid, state));
+
+    const Opened reopened = run(ws.openBook(*warmed.book, warmed.fileSize));
+
+    check(reopened.entry.guid == opened.entry.guid, "повторное открытие — та же запись");
+    check(reopened.state.charOffset == 12345, "повторное открытие — то же место");
+    check(run(ws.lastBookPath()) == kBook, "последняя книга — она");
+
+    Workspace later(box.root);
+    const Started started = run(later.start());
+    check(started.notices.empty() && started.lastBook == kBook, "следующий запуск продолжит её");
+}
+
+/// Обход каталога: книги регистрируются по одной, о каждой новой говорят
+/// сразу, мусор пропускается, реестр пишется один раз; повтор ничего не
+/// добавляет.
+void testWorkspaceAddsFolder() {
+    std::printf("\n=== рабочее место: обход каталога ===\n");
+
+    Sandbox box("folder");
+    Workspace ws(box.root);
+
+    const std::filesystem::path folder = box.root / L"shelf";
+    std::filesystem::create_directories(folder);
+    std::filesystem::copy_file(kBook, folder / kBook.filename());
+    std::filesystem::copy_file(kOtherBook, folder / kOtherBook.filename());
+    putOnDisk(folder / L"not-a-book.fb3", "this is not a book");
+    putOnDisk(folder / L"note.txt", "and this is not even fb3");
+
+    std::vector<BookEntry> appeared;
+    const auto onNew = [&appeared](const BookEntry& entry) { appeared.push_back(entry); };
+
+    const FolderAdded first = run(ws.addFolder(folder, onNew));
+
+    check(first.added, "каталог с книгами — реестр записан");
+    check(first.unread.empty(), "все файлы прочитались");
+    check(appeared.size() == 2 && ws.library.books().size() == 2, "две книги, мусор пропущен");
+
+    Library onDiskLibrary;
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.books().size() == 2,
+          "реестр на диске — две книги");
+
+    const FolderAdded second = run(ws.addFolder(folder, onNew));
+
+    check(second.unread.empty() && appeared.size() == 2, "повторный обход — ни одной новой");
+    check(ws.library.books().size() == 2, "повторный обход не множит записи");
+}
+
+/// Последняя книга: путь из настроек протух — по guid из реестра; нет и там —
+/// пусто.
+void testWorkspaceFindsLastBook() {
+    std::printf("\n=== рабочее место: последняя книга ===\n");
+
+    Sandbox box("last");
+    Workspace ws(box.root);
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document(std::string(bytes));
+    const Registered registered = run(ws.registerBook(document, kBook, bytes.size()));
+
+    ws.settings.lastBookPath = box.root / L"moved-away.fb3";
+    ws.settings.lastBookGuid = registered.entry.guid;
+
+    check(run(ws.lastBookPath()) == kBook, "путь протух — книга найдена по guid");
+
+    ws.settings.lastBookGuid = newGuid();
+
+    check(run(ws.lastBookPath()).empty(), "guid неизвестен — продолжать нечего");
+}
+
+/// Картинка или нет — по байтам, а не по имени.
+void testWorkspaceTellsImages() {
+    std::printf("\n=== рабочее место: снимок ===\n");
+
+    Sandbox box("image");
+    Workspace ws(box.root);
+
+    check(run(ws.isImage(testdata / L"bg_paper2.jpg")), "jpeg — картинка");
+    check(!run(ws.isImage(kBook)), "книга — не картинка");
+    check(run(ws.readBytes(kBook)) == onDisk(kBook), "байты файла целиком");
+}
+
 }  // namespace
 
 int main() {
@@ -333,6 +644,24 @@ int main() {
     testSearchMatchesWhatTheReaderMeans();
     testEdgeThroughPoints();
     testSkinsReadSeparateLeaves();
+
+    // Петля операций wxl — одна на процесс, как у тестов самой wxl: её каналы
+    // живут столько же, сколько процесс, и второй раз не стартуют. COM — для
+    // декодера картинок (WIC).
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    sta_loop::start("bukvitsa.lib tests: I/O");
+
+    testWorkspaceStartsEmpty();
+    testWorkspaceKeepsBrokenFiles();
+    testWorkspaceRegistersBook();
+    testWorkspaceKeepsLastBookGuid();
+    testWorkspaceOpensBook();
+    testWorkspaceAddsFolder();
+    testWorkspaceFindsLastBook();
+    testWorkspaceTellsImages();
+
+    sta_loop::stop();
+    ::CoUninitialize();
 
     std::printf("\n%s\n", failures == 0 ? "OK" : "ЕСТЬ ОШИБКИ");
     return failures;
