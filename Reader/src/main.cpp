@@ -239,6 +239,8 @@ u16_view rememberedGuid(const App& app, const std::filesystem::path& path) {
 // потоку — тому, где его построили. Асинхронным бывает чтение байтов, не разбор.
 //
 // Сценарии — `detached_task`: кадр живёт, пока идёт сценарий, и уходит сам.
+// Кусок, общий двум сценариям, с ожиданием внутри — `task<T>`: корутина,
+// которую сценарий ждёт `co_await` и получает значение (`registerBook`).
 // Сбой операции приходит исключением `system_exception` с кодом системы.
 // Сценарий ловит то, на что у него есть ответ читателю, — файл книги, снимок,
 // каталог; «файла нет» там, где его может и не быть, — не сбой. Остальное
@@ -309,7 +311,6 @@ detached_task saveStateLater(u16_text guid, BookState state) {
     co_await async_file::write_all(poolPath(statePath(guid)), bookStateXml(state));
 }
 
-/// Пишет реестр.
 /// Испорченный файл читалки — копией рядом, под тем же именем с «.bad»: первая
 /// же запись заменит сам файл, а в копии остаются пути книг, места чтения по
 /// guid и кривые обложек, которые можно вытащить руками. Байты — те, что
@@ -320,8 +321,40 @@ detached_task keepBrokenCopy(std::filesystem::path file, std::string bytes) {
     co_await async_file::write_all(poolPath(file), std::move(bytes));
 }
 
+/// Пишет реестр.
 detached_task saveLibraryLater(std::string xml) {
     co_await async_file::write_all(poolPath(libraryPath()), std::move(xml));
+}
+
+/// Что вернула регистрация книги: запись реестра и была ли книга новой.
+struct Registered {
+    BookEntry entry;
+    bool isNew;   ///< в реестре её не было — полке есть что добавить
+};
+
+/// Регистрирует книгу: запись в реестре и обложка в кэше. Общее у открытия
+/// книги и обхода каталога; запись самого реестра остаётся у вызывающего —
+/// открытие пишет его сразу, обход каталога один раз после цикла.
+///
+/// `task<Registered>`, а не `detached_task`: вызывающему нужен результат, и
+/// он ждёт `co_await` — кадр этой корутины временный в его выражении ожидания
+/// и живёт ровно до возобновления. Потому и документ — ссылкой, а не копией:
+/// его держит кадр ждущего, а тот до конца этой корутины никуда не денется.
+/// Новизна считается до ожидания: пока пишется обложка, соседний сценарий
+/// может дополнить реестр, и длина его после возврата уже ни о чём не говорит.
+async::task<Registered> registerBook(App app, const fb3::Document& document, std::filesystem::path path,
+                                     uint64_t fileSize) {
+    const size_t knownBefore = app.library->books().size();
+
+    // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
+    // переедет вместе со всеми ссылками в него.
+    Registered registered{app.library->add(document, path, fileSize, rememberedGuid(app, path)),
+                          app.library->books().size() != knownBefore};
+
+    if (const CoverBytes cover = coverOf(document, registered.entry.guid); !cover.name.empty())
+        co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
+
+    co_return registered;
 }
 
 /// Достраивает полку: у каждой книги свой файл состояния, и читаются они по
@@ -408,14 +441,7 @@ detached_task addFolderFlow(App app, std::filesystem::path folder, std::function
             continue;
         }
 
-        const size_t knownBefore = app.library->books().size();
-
-        const BookEntry stored = app.library->add(*document, path, fileSize, rememberedGuid(app, path));
-
-        const bool isNew = app.library->books().size() != knownBefore;
-
-        if (const CoverBytes cover = coverOf(*document, stored.guid); !cover.name.empty())
-            co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
+        const Registered registered = co_await registerBook(app, *document, path, fileSize);
 
         added = true;
 
@@ -423,7 +449,7 @@ detached_task addFolderFlow(App app, std::filesystem::path folder, std::function
         // видит, как она наполняется. Одной карточкой, а не пересборкой всей
         // полки: та стоила бы квадрата от числа книг и стирала бы прогресс,
         // который к тому времени уже проступил на соседях.
-        if (isNew && *app.shown == Screen::Library) app.shelf->appendBook(stored);
+        if (registered.isNew && *app.shown == Screen::Library) app.shelf->appendBook(registered.entry);
     }
 
     if (added) co_await async_file::write_all(poolPath(libraryPath()), app.library->toXml());
@@ -768,12 +794,7 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
         co_await async_file::write_all(poolPath(statePath(app.settings->lastBookGuid)), bookStateXml(*app.state));
     }
 
-    // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
-    // переедет вместе со всеми ссылками в него.
-    const BookEntry stored = app.library->add(book->document(), path, fileSize, rememberedGuid(app, path));
-
-    if (const CoverBytes cover = coverOf(book->document(), stored.guid); !cover.name.empty())
-        co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
+    const BookEntry stored = (co_await registerBook(app, book->document(), path, fileSize)).entry;
 
     co_await async_file::write_all(poolPath(libraryPath()), app.library->toXml());
 
