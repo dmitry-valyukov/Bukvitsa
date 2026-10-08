@@ -6,6 +6,7 @@ add_library(bukvitsa_typography STATIC
     src/formula.cpp
     src/glyph_painter.cpp
     src/chapter.cpp
+    src/note.cpp
     src/typography.cpp
 )
 add_library(bukvitsa::typography ALIAS bukvitsa_typography)
