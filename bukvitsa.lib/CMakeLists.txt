@@ -12,6 +12,7 @@ add_library(bukvitsa_lib STATIC
     src/book.cpp
     src/book_index.cpp
     src/imaging.cpp
+    src/key_map.cpp
     src/library.cpp
     src/settings.cpp
     src/skins.cpp
@@ -20,6 +21,7 @@ add_library(bukvitsa_lib STATIC
     include/bukvitsa/reader/book.h
     include/bukvitsa/reader/book_index.h
     include/bukvitsa/reader/imaging.h
+    include/bukvitsa/reader/key_map.h
     include/bukvitsa/reader/library.h
     include/bukvitsa/reader/settings.h
     include/bukvitsa/reader/skins.h

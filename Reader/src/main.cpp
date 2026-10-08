@@ -10,6 +10,7 @@
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
 #include "file_dialog.h"
+#include "keys.h"
 
 #include "ApplicationFolder.h"
 #include "CompositionWindow.h"
@@ -63,12 +64,6 @@ constexpr auto kSaveQuiet = 800ms;
 
 // То же для места чтения: страницы листают подряд, а файл на книгу один.
 constexpr auto kPositionQuiet = 1500ms;
-
-// Что сейчас в окне. Три экрана, и переход между ними — присваивание
-// содержимого; перечисление нужно только затем, чтобы Escape знал, куда
-// возвращать. Мастер обложек — не экран, а оверлей поверх полосы: под ним
-// читатель видит свою страницу, изогнутую редактируемыми кривыми.
-enum class Screen { Start, Library, Book };
 
 // ---- то, из чего собрано приложение ---------------------------------------
 //
@@ -1056,9 +1051,10 @@ wxl::Teardown wxl_launched() {
     // не на всплытии: событие начинается у того, на чём фокус, и клавиша
     // должна работать независимо от того, на какой кнопке он сейчас стоит.
     //
-    // Escape решается здесь, а не в полосе набора: приоритет один на всё
-    // приложение — сперва закрыть открытое поверх, потом выйти из полного
-    // экрана, и лишь потом вернуться из книги на стартовый экран.
+    // Что значит клавиша, решает карта клавиш (`resolve`, bukvitsa.lib): там
+    // вся матрица — полоса, мастер, ползунок и поле ввода, приоритет Escape.
+    // Здесь — только контекст для неё и исполнение ответа.
+    //
     // Флага «мы в полном экране» нет намеренно: он был бы вторым местом, где это
     // записано, — а состояние знает само окно (window.fullScreen()), и второй
     // его слепок разошёлся бы с первым.
@@ -1069,73 +1065,81 @@ wxl::Teardown wxl_launched() {
     auto const installKeys = [setFullScreen, isFullScreen, shown, bookCameFrom, showStartScreen,
                               showLibrary, panel, view, wizard](UIElement const& element) {
         element.add_onPreviewKeyDown([=](Object const&, KeyRoutedEventArgs& args) {
+            // Листание, кегль и тему полоса пока разбирает сама — её
+            // обработчик стоит на том же корне раньше этого и помечает свои
+            // клавиши. Помеченная сюда не доходит, и команд полосы приложение
+            // не исполняет; карта отвечает за них так же, как полоса.
             if (args.handled()) return;   // полоса набора своё уже разобрала
 
-            // Пока открыт мастер обложек, клавиши экранов молчат: Escape увёл
-            // бы с полосы прямо под ним. Дороги из мастера — его кнопки.
-            if (wizard->isOpen()) return;
+            const KeyPress press = keyPressOf(args.key());
 
-            // Панель — только над книгой: над заставкой ей нечего показывать.
-            bool const reading = *shown == Screen::Book;
-            bool const control = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            // Открыта ли сноска, полоса пока не говорит: dismissOverlays()
+            // спрашивает и закрывает разом. Поэтому сноска считается открытой,
+            // пока полоса не ответит, что закрывать было нечего, — тогда
+            // клавиша разбирается заново без неё. Спрашивает только Escape над
+            // книгой без панели: прочие клавиши от сноски не зависят.
+            KeyContext context{
+                .shown = *shown,
+                .cameFrom = *bookCameFrom,
+                .wizardOpen = wizard->isOpen(),
+                .panelOpen = panel->isOpen(),
+                .noteOpen = true,
+                .fullScreen = isFullScreen(),
+                .origin = focusOriginOf(args.originalSource()),
+                .bookOpen = view->isOpen(),
+            };
 
-            // Полка — отовсюду, а не только из книги: выбрать другую книгу
-            // читатель вправе в любой момент, и это единственная клавиша,
-            // которой не мешает то, что сейчас на экране.
-            if (control && args.key() == VirtualKey::L) {
-                if (*shown != Screen::Library) showLibrary();
-                args.handled(true);
-                return;
+            Command command = resolve(press, context);
+            if (command == Command::DismissNote && !view->dismissOverlays()) {
+                context.noteOpen = false;
+                command = resolve(press, context);
             }
 
-            if (reading && control) {
-                switch (args.key()) {
-                    case VirtualKey::T: panel->open(ReaderPanel::Tab::Contents); break;
-                    case VirtualKey::F: panel->open(ReaderPanel::Tab::Search); break;
-                    case VirtualKey::B: panel->open(ReaderPanel::Tab::Bookmarks); break;
-                    default:
-                        // Ctrl с чем-то другим — не наше: кегль и тему разбирает
-                        // сама полоса, до сюда они не доходят.
-                        return;
-                }
-                args.handled(true);
-                return;
-            }
-
-            switch (args.key()) {
-                case VirtualKey::F2:
-                    if (!reading) return;
+            switch (command) {
+                case Command::ShowLibrary:
+                case Command::BackToLibrary:
+                    showLibrary();
+                    break;
+                case Command::BackToStart:
+                    showStartScreen();
+                    break;
+                case Command::OpenContents:
+                    panel->open(ReaderPanel::Tab::Contents);
+                    break;
+                case Command::OpenSearch:
+                    panel->open(ReaderPanel::Tab::Search);
+                    break;
+                case Command::OpenBookmarks:
+                    panel->open(ReaderPanel::Tab::Bookmarks);
+                    break;
+                case Command::TogglePanel:
                     panel->toggle();
                     break;
-                case VirtualKey::F11:
+                case Command::ClosePanel:
+                    panel->close();   // фокус полосе возвращает сама панель
+                    break;
+                case Command::DismissNote:
+                    break;   // сноску закрыла полоса — больше ничего не нужно
+                case Command::ToggleFullScreen:
                     setFullScreen(!isFullScreen());
                     break;
-                case VirtualKey::Escape:
-                    // Один приоритет на всё приложение: сперва убрать то, что
-                    // лежит поверх страницы, потом выйти из полного экрана, и
-                    // лишь потом уйти с экрана.
-                    if (panel->isOpen()) {
-                        panel->close();   // фокус полосе возвращает сама панель
-                    } else if (reading && view->dismissOverlays()) {
-                        // сноску закрыла полоса — больше ничего не нужно
-                    } else if (isFullScreen()) {
-                        setFullScreen(false);
-                    } else if (reading) {
-                        // Обратно туда, откуда книгу открыли: выбравший её на
-                        // полке ждёт полку, а не заставку.
-                        if (*bookCameFrom == Screen::Library) {
-                            showLibrary();
-                        } else {
-                            showStartScreen();
-                        }
-                    } else if (*shown == Screen::Library) {
-                        showStartScreen();
-                    } else {
-                        return;
-                    }
+                case Command::LeaveFullScreen:
+                    setFullScreen(false);
                     break;
-                default:
-                    return;
+
+                // Команды полосы — фаза 2: их исполнит приложение, когда
+                // полоса отдаст свой обработчик карте. Сейчас они сюда не
+                // доходят (см. выше), а дошедшую — не метим.
+                case Command::TurnForward:
+                case Command::TurnBackward:
+                case Command::GoToStart:
+                case Command::GoToEnd:
+                case Command::FontLarger:
+                case Command::FontSmaller:
+                case Command::FontReset:
+                case Command::NextTheme:
+                case Command::None:
+                    return;   // не наша клавиша: пусть идёт дальше
             }
             args.handled(true);
         });
