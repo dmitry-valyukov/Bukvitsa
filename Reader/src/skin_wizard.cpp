@@ -13,9 +13,15 @@ using namespace wxl;
 
 namespace {
 
+// Цвет для Direct2D из той же записи `rgb`/`rgba`, что у XAML: одна запись
+// цвета на всё дерево, и редактор узнаёт её и ставит рядом образец.
+constexpr D2D1_COLOR_F colorF(Color color) {
+    return {color.R / 255.0f, color.G / 255.0f, color.B / 255.0f, color.A / 255.0f};
+}
+
 // Обстановка мастера — те же цвета, что у панели читалки: диалог имени и
 // кнопки не бумага, а инструмент.
-constexpr Color kChrome = rgba(30, 30, 34, 242 / 255.0);
+constexpr Color kChrome = rgba(30, 30, 34, 0.95);
 constexpr Color kInk = rgb(232, 228, 220);
 constexpr Color kEdge = rgba(255, 255, 255, 0.2);
 
@@ -31,13 +37,13 @@ constexpr Color kCancelFacePressed = rgb(199, 196, 192);
 // Сетка поверх страницы — подсказка, а не занавес: все линии сильно
 // полупрозрачны, центральная ярче тоном, чтобы читаться сквозь текст.
 // Кружочки полупрозрачны, как кнопки: под ними тоже страница.
-constexpr D2D1_COLOR_F kCurveColor{1.0f, 0.85f, 0.45f, 0.6f};
-constexpr D2D1_COLOR_F kGripFill{1.0f, 1.0f, 1.0f, 0.55f};
-constexpr D2D1_COLOR_F kGripRing{0.15f, 0.12f, 0.08f, 0.7f};
+constexpr D2D1_COLOR_F kCurveColor = colorF(rgba(255, 217, 115, 0.6));
+constexpr D2D1_COLOR_F kGripFill = colorF(rgba(255, 255, 255, 0.55));
+constexpr D2D1_COLOR_F kGripRing = colorF(rgba(38, 31, 20, 0.7));
 
 /// Тень кривой: две чёрно-коричневые полупрозрачные линии в пиксель над и
 /// под основной — они оттеняют её на светлой бумаге.
-constexpr D2D1_COLOR_F kCurveShade{0.11f, 0.07f, 0.03f, 0.3f};
+constexpr D2D1_COLOR_F kCurveShade = colorF(rgba(28, 18, 8, 0.3));
 
 // Зона захвата шире кружочка — она у модели правки (`SkinEditor::kGripReach`).
 constexpr float kGripRadius = 7.0f;   ///< рисуемый кружочек, DIP
