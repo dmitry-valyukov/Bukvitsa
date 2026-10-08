@@ -463,6 +463,10 @@ void ReaderPanel::close() {
         if (!open_) root_.value().visibility(Visibility::Collapsed);
     });
     batch.end();
+
+    // Фокус — обратно полосе: он мог остаться на ползунке или кнопке ящика, а
+    // уехавший и спрятанный элемент клавиш не получает — полоса бы оглохла.
+    view_.root().focus(FocusState::Programmatic);
 }
 
 void ReaderPanel::setState(BookState* state) {
