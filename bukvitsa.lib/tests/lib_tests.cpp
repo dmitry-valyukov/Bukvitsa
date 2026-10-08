@@ -14,6 +14,8 @@
 // Заголовки читалки после всех стандартных: индекс книги ведёт к импорту
 // модуля книги, и обложки — перед ним; рабочее место — последним, оно
 // импортирует wxl.async.
+#include "check.h"
+
 #include "bukvitsa/reader/skins.h"
 
 #include "bukvitsa/reader/book_index.h"
@@ -24,16 +26,10 @@ import wxl.core;
 
 using namespace bukvitsa;
 using namespace bukvitsa::reader;
+using bukvitsa::reader::tests::check;
+using bukvitsa::reader::tests::failures;
 
 namespace {
-
-int failures = 0;
-
-void check(bool condition, std::string_view what) {
-    std::printf("%s %.*s\n", condition ? "  ok  " : "FAILED", static_cast<int>(what.size()),
-                what.data());
-    if (!condition) ++failures;
-}
 
 bool isLetterStart(std::wstring_view text, size_t at) {
     return at >= text.size() || unicode::floor_grapheme_boundary(text, at) == at;
