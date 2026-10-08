@@ -15,7 +15,8 @@ namespace bukvitsa::reader {
 
 using namespace wxl;
 
-Notices::Notices(wxl::CompositionWindow window) : window_(std::move(window)) {
+Notices::Notices(wxl::CompositionWindow window, observable<ElementTheme const>& screenTheme)
+    : window_(std::move(window)), screenTheme_(screenTheme) {
     instance_ = this;
     previous_ = wxl::async::on_detached_task_failure();
     wxl::async::on_detached_task_failure() = [](std::exception_ptr error) noexcept {
@@ -43,8 +44,7 @@ void Notices::complain(std::wstring headline, std::wstring details) {
 
     // Над тем островом, что показан: диалог — не часть дерева, и без
     // XamlRoot показ падает; его ставит showDialog. Тема — показанного
-    // экрана: полоса тёмная, полка и стартовый экран светлые, а корни их
-    // все — Grid.
+    // экрана (screenTheme_): полоса тёмная, полка и стартовый экран светлые.
     UIElement const host = window_.content();
     if (!host) {
         // Показывать ещё не над чем: так падает чтение настроек и реестров
@@ -63,7 +63,7 @@ void Notices::complain(std::wstring headline, std::wstring details) {
         defaultButton = ContentDialogButton::Close,
         onClosed = [this](ContentDialog const&) { lines_ = nullptr; },
     };
-    dialog.requestedTheme(host.try_as<FrameworkElement>().actualTheme());
+    dialog.requestedTheme(screenTheme_.get());
 
     // Открыт чужой диалог — XAML откажет исключением. Зовут отсюда и из
     // noexcept-обработчика сбоев, так что отказ — не ошибка, а очередь.
