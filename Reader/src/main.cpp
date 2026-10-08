@@ -215,6 +215,14 @@ struct App {
     std::shared_ptr<Notices> notices;
 };
 
+/// Guid, под которым настройки помнят этот файл, — для `Library::add`: реестр
+/// мог книгу потерять (битый `library.xml`), а её место чтения в
+/// `books\{guid}.xml` цело, и «Продолжить чтение» не должно открывать книгу с
+/// начала. Другой файл — пусто.
+u16_view rememberedGuid(const App& app, const std::filesystem::path& path) {
+    return app.settings->lastBookPath == path ? u16_view{app.settings->lastBookGuid} : u16_view{};
+}
+
 // ---- корутины приложения --------------------------------------------------
 //
 // Каждая исполняется в интерфейсном потоке и уходит с него ровно на `co_await`
@@ -402,7 +410,7 @@ detached_task addFolderFlow(App app, std::filesystem::path folder, std::function
 
         const size_t knownBefore = app.library->books().size();
 
-        const BookEntry stored = app.library->add(*document, path, fileSize);
+        const BookEntry stored = app.library->add(*document, path, fileSize, rememberedGuid(app, path));
 
         const bool isNew = app.library->books().size() != knownBefore;
 
@@ -762,7 +770,7 @@ detached_task openBookFlow(App app, std::filesystem::path path) {
 
     // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
     // переедет вместе со всеми ссылками в него.
-    const BookEntry stored = app.library->add(book->document(), path, fileSize);
+    const BookEntry stored = app.library->add(book->document(), path, fileSize, rememberedGuid(app, path));
 
     if (const CoverBytes cover = coverOf(book->document(), stored.guid); !cover.name.empty())
         co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
@@ -905,8 +913,10 @@ detached_task startupFlow(App app, wxl::DispatcherQueueTimer splashTimer,
         app.notices->complain(L"Реестр книг не прочитан",
                               libraryPath().wstring() +
                                   L"\n\nФайл испорчен: полка пуста. Копия лежит рядом "
-                                  L"(library.xml.bad), сами книги лежат там, где лежали, а "
-                                  L"добавление книги заменит сам файл.");
+                                  L"(library.xml.bad), сами книги лежат там, где лежали; "
+                                  L"первая же запись реестра — добавление книги или "
+                                  L"«Продолжить чтение» — заменит сам файл, место чтения "
+                                  L"последней книги при этом сохранится.");
     }
 
     // Продолжать чтение — только если книга на месте. Путь в настройках копия
