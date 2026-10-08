@@ -8,22 +8,24 @@
 // исчезает по Escape. Читателю она к тому же удобнее — не нужно искать глазами
 // низ полосы и возвращаться обратно.
 //
-// Внутри — тот же движок вёрстки, что и у книги: сноска набирается по тем же
-// правилам, только уже и мельче. Не поместилась — прокручивается.
+// Набирает сноску вёрстка (`typography::layoutNote`) тем же движком, что и
+// книгу, только уже и мельче; здесь — место всплывашки, подложка и рисунок.
+// Не поместилась — прокручивается.
 
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core.
 #include <optional>
-#include <vector>
 
 #include "DrawingSurface.h"
 #include "Object.h"
 #include "pch.h"
 
-// Последними: они импортируют wxl.core (тема — сама, книга — через модель),
-// после чего стандартный заголовок MSVC уже не принимает.
+// Последними: они импортируют wxl.core (тема — сама, книга — через модель,
+// сноска — через заголовки вёрстки), после чего стандартный заголовок MSVC уже
+// не принимает.
 #include "bukvitsa/reader/book.h"
 #include "bukvitsa/reader/theme.h"
+#include "bukvitsa/typography/note.h"
 
 namespace bukvitsa::reader {
 
@@ -46,8 +48,6 @@ public:
     bool visible() const { return visible_; }
 
 private:
-    /// Верстает тело сноски и возвращает её высоту.
-    float layout(Book& book, const fb3::Node* note, float width, float fontSize);
     void draw(const Theme& theme, float width, float height, float scale);
 
     wxl::Compositor compositor_;
@@ -57,8 +57,7 @@ private:
     nullable<wxl::SpriteVisual> sprite_ = nullptr;
     std::optional<wxl::DrawingSurface> surface_;
 
-    std::vector<typography::Line> lines_;
-    std::vector<float> baselines_;
+    typography::NoteLayout body_;   ///< тело показанной сноски; шрифты — у движка книги
     bool visible_ = false;
 };
 
