@@ -34,63 +34,12 @@ using namespace std::chrono_literals;
 
 namespace {
 
-/// Мера полосы — длина строки в знаках, а не доля окна: слишком длинная строка
-/// перестаёт читаться, глаз теряет начало следующей. Сколько знаков в строке —
-/// известно точно, потому что известны шрифт и кегль; правило «шире трёх пятых
-/// окна» кегля не знает и ошибается там, где важнее всего: на кегле 28 широкое
-/// окно прекрасно читается в одну колонку, на кегле 14 то же окно — уже нет.
-///
-/// Восемьдесят пять, а не классические семьдесят: колонка на экране не то же
-/// самое, что колонка в книге. Экран шире разворота, строка на нём длиннее
-/// естественным образом, и разбивать её на колонки раньше времени — значит
-/// дробить страницу там, где читателю удобнее целая.
-constexpr float kMaxLineChars = 85.0f;
-
-/// Нижняя граница новой колонки. Сорок три — половина верхней, округлённая
-/// вверх (85 / 2 = 42,5): мера остаётся одна, и строка, переросшая восемьдесят
-/// пять знаков, делится на колонки, которые попадают в ту же меру. Стоявшие
-/// здесь прежде шестьдесят оставляли провал — окно между 85 и 130 знаками было
-/// широко для одной колонки и узко для двух, и читатель получал строку в
-/// полтораста знаков там, где просил разворот. Цена известна: пока нет
-/// переносов, выключенная по формату строка в сорок с небольшим знаков идёт
-/// с широкими пробелами, — но провал в мере обходился дороже.
-///
-/// Точно сомкнуть границы константой нельзя: средник вычитается до деления, и
-/// половина строки выходит короче половины — при полях 7,5 % это 0,46 целой
-/// строки, при 25 % четверть. Провал поэтому не исчезает, а сжимается: при
-/// обычных полях вторая колонка приходит на 94 знаках вместо 85.
-constexpr float kMinLineChars = 43.0f;
-
-/// Гистерезис в знаках. Один знак и только для окна, которое тянут мышью:
-/// см. обработчик sizeChanged.
-constexpr float kColumnHysteresis = 1.0f;
-
-/// Средник — расстояние между колонками, в долях поля. Равен полю: просветы
-/// у краёв окна и посередине разворота — одной ширины. Слиться колонкам это
-/// не даёт, потому что по среднику лежит тень корешка — граница у них есть,
-/// и шире зазора для неё не нужно.
-constexpr float kGutterOfMargin = 1.0f;
-
-/// Отступы сверху и снизу, в DIP. Регулировка «Поля» правит только
-/// горизонтальные поля: ими читатель выбирает ширину строки, а высоте полосы
-/// выбирать нечего — она и так вся, что осталось от окна.
-constexpr float kVerticalMargin = 50.0f;
-
 /// Размытие набора под конфигуратором изгиба, в DIP. Лёгкое, не туман:
 /// тексту достаточно отступить на второй план, чтобы направляющие мастера
 /// читались чётче, — но кривые укладывают по строкам, и строки должны
 /// оставаться различимыми.
 constexpr float kPreviewBlur = 1.5f;
 
-/// На чём меряется средняя ширина знака. Не алфавит: в строке книги есть
-/// пробелы и запятые, и они тоже знаки. Обе фразы — панграммы, то есть в
-/// каждой все буквы своего алфавита ровно по разу.
-constexpr wchar_t kCyrillicSample[] =
-    L"съешь же ещё этих мягких французских булок, да выпей чаю";
-constexpr wchar_t kLatinSample[] = L"the quick brown fox jumps over the lazy dog";
-
-/// Пауза, после которой отложенная перевёрстка случается. Короче автоповтора
-/// клавиши: пока плюс держат, перевёрстка так и не начинается.
 // Сколько времени пагинатору отдаётся за раз. Порция кончается не раньше
 // срока, а позже — на цену одного блока: разорвать вёрстку абзаца нечем.
 // Самый дорогой блок из четырёх тестовых книг стоит 27 мс, так что худшая
@@ -369,9 +318,9 @@ BookView::BookView(const CompositionWindow& window, Workspace& workspace)
         &settings_.margin, settings_.margin.on_change([this](double percent) noexcept {
             applyMargin(static_cast<float>(percent) / 100.0f);
         }));
-    fontSize_ = static_cast<float>(settings_.fontSize.get());
-    lineHeight_ = static_cast<float>(settings_.lineHeight.get()) / 100.0f;
-    marginFraction_ = static_cast<float>(settings_.margin.get()) / 100.0f;
+    flow_.setStyle(static_cast<float>(settings_.fontSize.get()),
+                   static_cast<float>(settings_.lineHeight.get()) / 100.0f,
+                   static_cast<float>(settings_.margin.get()) / 100.0f);
 
     // Смена темы — своя перекраска; поле своё, его слушатель умрёт вместе с
     // полосой, снимать нечего.
@@ -526,10 +475,10 @@ Grid BookView::buildTree() {
                     turnPage(-1);
                     break;
                 case VirtualKey::Home:
-                    if (book_) goToCharOffset(0);
+                    if (flow_.isOpen()) goToCharOffset(0);
                     break;
                 case VirtualKey::End:
-                    if (book_) goToCharOffset(book_->characterCount());
+                    if (flow_.isOpen()) goToCharOffset(flow_.book()->characterCount());
                     break;
                 default: return;
             }
@@ -549,12 +498,12 @@ Grid BookView::buildTree() {
                 turnPage(-1);
                 break;
             case VirtualKey::Home:
-                if (book_) goToCharOffset(0);
+                if (flow_.isOpen()) goToCharOffset(0);
                 break;
             case VirtualKey::End:
                 // Конец книги известен только досчитанной, поэтому здесь
                 // чистовой набор доводится до самого конца.
-                if (book_) goToCharOffset(book_->characterCount());
+                if (flow_.isOpen()) goToCharOffset(flow_.book()->characterCount());
                 break;
             case VirtualKey::Add:
                 if (controlHeld()) nudgeFontSize(kFontSizeStep);
@@ -602,10 +551,10 @@ Grid BookView::buildTree() {
         // только щелчки мимо точек сетки: попавшие мастер разобрал сам.
         if (preview_) {
             if (!touch.properties().isLeftButtonPressed()) return;
-            const float third = width_ / 3.0f;
+            const float third = flow_.width() / 3.0f;
             if (point.x < third) {
                 turnPage(-1);
-            } else if (point.x > width_ - third) {
+            } else if (point.x > flow_.width() - third) {
                 turnPage(1);
             }
             return;
@@ -623,9 +572,10 @@ Grid BookView::buildTree() {
 
         // Знак сноски важнее перелистывания: он мелкий, и промах по нему из-за
         // того, что страница уже перевернулась, читателя злит.
-        Point anchor;
-        if (const fb3::Node* mark = noteAt(point, anchor)) {
-            note_.show(*book_, mark, anchor, {width_, height_}, paper(), fontSize_, scale_);
+        const PageFlow::NoteHit mark = flow_.noteAt(PageFlow::Point{point.x, point.y});
+        if (mark.target) {
+            note_.show(*flow_.book(), mark.target, Point{mark.anchor.x, mark.anchor.y},
+                       {flow_.width(), flow_.height()}, paper(), flow_.fontSize(), scale_);
             return;
         }
 
@@ -638,10 +588,10 @@ Grid BookView::buildTree() {
 
         // Щелчок по левой трети полосы — назад, по правой — вперёд. Середина
         // не делает ничего: там текст, и промах по ссылке не должен листать.
-        const float third = width_ / 3.0f;
+        const float third = flow_.width() / 3.0f;
         if (point.x < third) {
             turnPage(-1);
-        } else if (point.x > width_ - third) {
+        } else if (point.x > flow_.width() - third) {
             turnPage(1);
         }
     });
@@ -663,26 +613,8 @@ void BookView::addOverlay(const UIElement& element) {
 
 void BookView::open(std::shared_ptr<Book> book, uint32_t charOffset) {
     note_.hide();
-    book_ = std::move(book);
-    readingPosition_ = charOffset;
-    page_ = 0;
+    flow_.open(std::move(book), charOffset);
     requestRelayout();
-}
-
-std::span<const typography::Block> BookView::blocks() const {
-    if (!book_) return {};
-    return book_->blocks();
-}
-
-size_t BookView::pageCount() const {
-    return book_ ? book_->paginator().pageCount() : 0;
-}
-
-float BookView::progress() const {
-    if (!book_ || book_->characterCount() == 0) return 0.0f;
-    return std::clamp(
-        static_cast<float>(readingPosition_) / static_cast<float>(book_->characterCount()), 0.0f,
-        1.0f);
 }
 
 bool BookView::dismissOverlays() {
@@ -800,27 +732,15 @@ void BookView::nudgeFontSize(double by) {
 }
 
 void BookView::applyFontSize(float size) {
-    const float wanted =
-        std::clamp(size, static_cast<float>(kFontSizeMin), static_cast<float>(kFontSizeMax));
-    if (wanted == fontSize_) return;
-    fontSize_ = wanted;
-    requestRelayout();
+    if (flow_.setStyle(size, flow_.lineHeight(), flow_.marginFraction())) requestRelayout();
 }
 
 void BookView::applyLineHeight(float multiplier) {
-    const float wanted = std::clamp(multiplier, static_cast<float>(kLineHeightMin) / 100.0f,
-                                    static_cast<float>(kLineHeightMax) / 100.0f);
-    if (wanted == lineHeight_) return;
-    lineHeight_ = wanted;
-    requestRelayout();
+    if (flow_.setStyle(flow_.fontSize(), multiplier, flow_.marginFraction())) requestRelayout();
 }
 
 void BookView::applyMargin(float fraction) {
-    const float wanted = std::clamp(fraction, static_cast<float>(kMarginMin) / 100.0f,
-                                    static_cast<float>(kMarginMax) / 100.0f);
-    if (wanted == marginFraction_) return;
-    marginFraction_ = wanted;
-    requestRelayout();
+    if (flow_.setStyle(flow_.fontSize(), flow_.lineHeight(), fraction)) requestRelayout();
 }
 
 bool BookView::applySize(SizeInt32 pixels, float scale) {
@@ -829,10 +749,10 @@ bool BookView::applySize(SizeInt32 pixels, float scale) {
     // Пиксели — мера; DIP, в которых верстается и рисуется полоса, — их доля.
     const float width = static_cast<float>(pixels.width) / scale;
     const float height = static_cast<float>(pixels.height) / scale;
-    if (width == width_ && height == height_ && scale == scale_ && settled_) return false;
+    if (width == flow_.width() && height == flow_.height() && scale == scale_ && settled_)
+        return false;
 
-    width_ = width;
-    height_ = height;
+    flow_.resize(width, height);
     scale_ = scale;
 
     if (pixels.width <= 0 || pixels.height <= 0) return false;
@@ -870,86 +790,10 @@ void BookView::requestRelayout(bool windowResize) {
     // Прямо здесь, в обработчике события: грязная страница стоит единицы
     // миллисекунд, и откладывать её значило бы показать читателю его же
     // движение мыши с опозданием на кадр без всякой на то причины.
-    windowResize_ = windowResize;
-    relayoutNow();
+    relayoutNow(windowResize);
 }
 
-float BookView::characterWidth() const {
-    if (!book_) return fontSize_ * 0.5f;
-
-    const typography::TextStyle& text = book_->engine().textStyle();
-
-    // Мерить каждый раз незачем: ответ зависит только от шрифта и кегля, а
-    // спрашивают его на каждой перевёрстке.
-    if (charWidth_ > 0.0f && charFontSize_ == fontSize_ && charFamily_ == text.fontFamily) {
-        return charWidth_;
-    }
-
-    IDWriteFactory* const dwrite = dwriteFactory();
-    if (!dwrite) return fontSize_ * 0.5f;
-
-    // Латиница или кириллица — по языку книги: средняя ширина знака у них
-    // разная, и мерить английскую фразу для русской книги значило бы мерить
-    // не то.
-    const bool cyrillic = text.locale.starts_with(L"ru");
-    const std::wstring_view sample = cyrillic ? std::wstring_view{kCyrillicSample}
-                                              : std::wstring_view{kLatinSample};
-
-    Microsoft::WRL::ComPtr<IDWriteTextFormat> format;
-    if (FAILED(dwrite->CreateTextFormat(text.fontFamily.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                                        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                        fontSize_, text.locale.c_str(), format.GetAddressOf()))) {
-        return fontSize_ * 0.5f;
-    }
-
-    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
-    if (FAILED(dwrite->CreateTextLayout(sample.data(), static_cast<UINT32>(sample.size()),
-                                        format.Get(), 1.0e6f, 1.0e6f, layout.GetAddressOf()))) {
-        return fontSize_ * 0.5f;
-    }
-
-    DWRITE_TEXT_METRICS metrics{};
-    if (FAILED(layout->GetMetrics(&metrics)) || metrics.width <= 0.0f) return fontSize_ * 0.5f;
-
-    charWidth_ = metrics.width / static_cast<float>(sample.size());
-    charFontSize_ = fontSize_;
-    charFamily_ = text.fontFamily;
-    return charWidth_;
-}
-
-float BookView::lineChars(int columns) const {
-    const float margin = width_ * marginFraction_;
-    const float available = width_ - margin * 2.0f;
-    const float gutters = margin * kGutterOfMargin * static_cast<float>(columns - 1);
-    return (available - gutters) / static_cast<float>(columns) / characterWidth();
-}
-
-int BookView::chooseColumns(bool sticky) const {
-    const float margin = width_ * marginFraction_;
-    if (width_ - margin * 2.0f <= 0.0f) return 1;
-
-    // Колонки заполняют место между полями целиком, поэтому мера решает
-    // единственный вопрос — сколько их. Добавляем колонку, пока строка длиннее
-    // меры и пока следующая колонка не выйдет слишком узкой: на мелком кегле
-    // широкое окно — это не одна строка в двести знаков, а три по семьдесят.
-    int wanted = 1;
-    while (lineChars(wanted) > kMaxLineChars && lineChars(wanted + 1) >= kMinLineChars) {
-        ++wanted;
-    }
-
-    if (sticky) {
-        // Держимся за нынешнее число, пока оно не стало откровенно плохим.
-        if (wanted > columns_ && lineChars(columns_) <= kMaxLineChars + kColumnHysteresis) {
-            return columns_;
-        }
-        if (wanted < columns_ && lineChars(columns_) >= kMinLineChars - kColumnHysteresis) {
-            return columns_;
-        }
-    }
-    return wanted;
-}
-
-void BookView::relayoutNow() {
+void BookView::relayoutNow(bool windowResize) {
     // Всякая новая вёрстка отменяет досчёт, который шёл: считать книгу по
     // прежней полосе больше незачем. Сброс владельца уничтожает кадр корутины
     // вместе с её ожиданием простоя — очередь потока его уже не разбудит.
@@ -961,73 +805,19 @@ void BookView::relayoutNow() {
     // бы листать вслепую.
     cancelTurn();
 
-    if (!book_ || width_ <= 0.0f || height_ <= 0.0f) {
-        redraw();
-        return;
-    }
-
-    // Пагинатор верстает по одной главе: наводим его на ту, где стоит читатель,
-    // прежде чем считать. Та же глава — вызов ничего не делает, и тяга кегля не
-    // пере-шейпит; другая (открыли книгу на запомненном месте) — глава
-    // посчитается заново.
-    book_->setCurrentChapter(readingPosition_);
-
-    const float margin = width_ * marginFraction_;
-    const float statusHeight = fontSize_ * 1.6f;
-
-    columns_ = chooseColumns(windowResize_);
-    windowResize_ = false;
-
-    const float gutters = margin * kGutterOfMargin * static_cast<float>(columns_ - 1);
-    const float share = (width_ - margin * 2.0f - gutters) / static_cast<float>(columns_);
-
-    typography::PageStyle style;
-    // Ширину полосы задают поля, и ничто больше: место между ними делится
-    // между колонками поровну. Свой предел здесь стоял бы поперёк ползунка
-    // «Поля» — читатель просит колонку уже, а она не слушается.
-    style.width = std::max(share, fontSize_ * 8.0f);
-    style.height = std::max(height_ - kVerticalMargin * 2.0f - statusHeight, fontSize_ * 4.0f);
-    style.fontSize = fontSize_;
-    style.lineHeight = lineHeight_;
-
-    pageStyle_ = style;
-
-    // Вот ради чего книга режется на главы: полоса стала другой, а перевёрстка
-    // считает не всю книгу, а одну текущую главу — единицы миллисекунд, — и
-    // потому идёт начисто прямо здесь, в обработчике события. Черновика больше
-    // нет: с разбивкой по главам чистовой набор сам достаточно дёшев.
-    //
-    // Досчитываем ровно до видимого разворота — этого хватает, чтобы показать
-    // страницу; остаток главы добирается порциями в простое, и с него
-    // становится известно общее число страниц («из M»).
-    typography::Chapter& paginator = book_->paginator();
-    paginator.beginLayout(pageStyle_);
-    paginator.advanceTo(readingPosition_);
-
-    // Колонка, где лежит буква места чтения, становится левой колонкой
-    // разворота — разворот начинается ровно с неё, а не с округлённого вниз
-    // края. Так на стыке глав не пропадает колонка: лента идёт от места чтения
-    // подряд, и правую сторону разворота при нужде занимает начало следующей
-    // главы. Саму букву перевёрстка не трогает: место чтения ставят открытие
-    // книги, листание и прыжок — действия читателя, — а перевёрстка лишь
-    // находит, где эта буква лежит теперь. Прижать место к началу колонки
-    // здесь нельзя: при новой ширине начало колонки с буквой лежит не позже
-    // самой буквы, и каждая перевёрстка уводила бы место назад — растяжка
-    // мышью рождает десятки WM_SIZE, каждый со своей шириной, и за одну
-    // растяжку так терялось по нескольку разворотов. С неподвижной буквой
-    // кегль туда и обратно возвращает на ту же колонку.
-    page_ = paginator.pageCount() == 0 ? 0 : paginator.pageForCharOffset(readingPosition_);
-    paginator.advanceToPage(page_ + static_cast<size_t>(columns_));
-
+    // Глава до видимого разворота — начисто, тем же кадром; место чтения
+    // перевёрстка не двигает (PageFlow::relayout). Без книги или меры вёрстки
+    // нет — рисуется приглашение или ничего.
+    const bool laidOut = flow_.relayout(windowResize);
     redraw();
 
     // Остаток главы — порциями в свободное время потока: с него узнаётся общее
     // число страниц.
-    startTail();
+    if (laidOut) startTail();
 }
 
 void BookView::startTail() {
-    if (!book_ || book_->paginator().isComplete()) return;   // досчитывать нечего
+    if (!flow_.needsTail()) return;   // досчитывать нечего
     if (paginationTail_ && !paginationTail_->done()) return;   // идёт — возьмёт и эту главу
 
     // Корутина доходит до первого ожидания ещё внутри вызова, так что в
@@ -1055,165 +845,28 @@ async::task<> BookView::paginateTail() {
     // просто не досчитан, как и всё остальное в закрывающемся окне.
     for (;;) {
         co_await UiThread::onIdle();
-        if (!book_->paginator().advance(kPaginationSlice)) break;
+        if (!flow_.advanceTail(kPaginationSlice)) break;
     }
 
     redraw();   // глава досчитана: «из …» стало «из M»
 }
 
-BookView::Column BookView::columnOf(uint32_t charOffset) {
-    // Место может лежать в другой главе — наводим на неё и верстаем начисто.
-    book_->setCurrentChapter(charOffset);
-
-    typography::Chapter& paginator = book_->paginator();
-    if (paginator.pageCount() == 0)
-        paginator.beginLayout(pageStyle_);
-
-    // Энергично, без срока: читатель прыгнул по закладке и ждёт ответа. Остаток
-    // главы по-прежнему добирается порциями — досчёт заведёт showColumn, когда
-    // колонка показана, и продолжит с того, на чём мы кончили.
-    paginator.advanceTo(charOffset);
-    if (paginator.pageCount() == 0)
-        return Column{book_->currentChapter(), 0};
-
-    // Колонка, в которой лежит символ, — левая колонка разворота. К числу
-    // колонок не прижимаем: разворот начинается ровно с места чтения, а не с
-    // округлённого вниз края, — иначе на стыке глав пропадала бы колонка.
-    return Column{book_->currentChapter(), paginator.pageForCharOffset(charOffset)};
-}
-
-BookView::Column BookView::anchorColumn() const {
-    const size_t chapter =
-        book_->currentChapter() == static_cast<size_t>(-1) ? 0 : book_->currentChapter();
-    return Column{chapter, page_};
-}
-
-typography::Chapter& BookView::chapterLaidTo(size_t index, size_t pages) {
-    typography::Chapter& chapter = book_->chapterAt(index);
-
-    // Разложена ли она под нынешнюю полосу? Свежая (ни одной страницы) или
-    // соседняя, оставшаяся в кэше от прежней полосы, — переложить под текущую.
-    // Текущую главу это не трогает: её стиль уже совпадает.
-    if (chapter.pageCount() == 0 || !(chapter.style() == pageStyle_))
-        chapter.beginLayout(pageStyle_);
-    chapter.advanceToPage(pages);
-    return chapter;
-}
-
-bool BookView::ribbonStep(Column& pos, bool forward) {
-    if (forward) {
-        // В пределах главы — следующая колонка, если она есть. advanceToPage до
-        // pos.index+2 доводит счёт настолько, чтобы знать: либо колонка есть,
-        // либо глава на ней и кончилась (тогда она уже complete).
-        typography::Chapter& chapter = chapterLaidTo(pos.chapter, pos.index + 2);
-        if (pos.index + 1 < chapter.pageCount()) {
-            ++pos.index;
-            return true;
-        }
-        // Глава кончилась — на начало первой непустой следующей.
-        for (size_t next = pos.chapter + 1; next < book_->chapterCount(); ++next) {
-            if (chapterLaidTo(next, 1).pageCount() > 0) {
-                pos.chapter = next;
-                pos.index = 0;
-                return true;
-            }
-        }
-        return false;   // последняя колонка книги
-    }
-
-    if (pos.index > 0) {
-        --pos.index;
-        return true;
-    }
-    // Начало главы — в конец предыдущей непустой. Её нужно знать целиком, чтобы
-    // взять последнюю колонку, — верстаем до конца (глава мала).
-    for (size_t prev = pos.chapter; prev-- > 0;) {
-        typography::Chapter& chapter = chapterLaidTo(prev, static_cast<size_t>(-1));
-        if (chapter.pageCount() > 0) {
-            pos.chapter = prev;
-            pos.index = chapter.pageCount() - 1;
-            return true;
-        }
-    }
-    return false;   // первая колонка книги
-}
-
-bool BookView::ribbonSpread(Column& pos, bool forward) {
-    Column probe = pos;
-    for (int i = 0; i < columns_; ++i) {
-        if (!ribbonStep(probe, forward)) {
-            if (forward)
-                return false;         // конец книги — разворот не сдвинуть
-            probe = Column{};         // начало книги — на самый первый разворот
-            break;
-        }
-    }
-    if (probe.chapter == pos.chapter && probe.index == pos.index)
-        return false;
-    pos = probe;
-    return true;
-}
-
-void BookView::buildSpread() {
-    spread_.clear();
-    spreadOwnColumns_ = 0;
-    if (!book_ || width_ <= 0.0f)
-        return;
-
-    // Кэш держим ровно вокруг текущей главы. Радиус обязан покрыть весь
-    // показанный разворот: он тянется на несколько глав вперёд, если они короче
-    // него. Чистим до сборки — иначе трим уронил бы главу, чью страницу лента
-    // уже держит.
-    book_->trimChapters(static_cast<size_t>(columns_) + 1);
-
-    const Column anchor = anchorColumn();
-    Column pos = anchor;
-
-    for (int slot = 0; slot < columns_; ++slot) {
-        // Довести колонку до реальной страницы, перешагивая исчерпанные главы:
-        // короткая глава бывает уже разворота, и на неё приходится не одна его
-        // колонка.
-        const typography::Page* page = nullptr;
-        while (pos.chapter < book_->chapterCount()) {
-            typography::Chapter& chapter = chapterLaidTo(pos.chapter, pos.index + 1);
-            if (pos.index < chapter.pageCount()) {
-                page = &chapter.page(pos.index);
-                break;
-            }
-            ++pos.chapter;   // в этой главе такой колонки нет — на начало следующей
-            pos.index = 0;
-        }
-        if (!page)
-            break;   // конец книги — дальше пусто
-
-        spread_.push_back(page);
-        if (pos.chapter == anchor.chapter)
-            ++spreadOwnColumns_;
-        ++pos.index;
-    }
-}
-
-void BookView::showColumn(const Column& target) {
+void BookView::showColumn(const PageFlow::Column& target) {
     cancelTurn();
     note_.hide();
 
-    if (target.chapter != book_->currentChapter())
-        book_->makeCurrentChapter(target.chapter);
-    page_ = target.index;
-    if (book_->paginator().pageCount() != 0)
-        readingPosition_ = book_->paginator().page(page_).firstCharOffset;
+    flow_.show(target);
     startTail();   // глава могла смениться — её хвост тоже нужен
 
     redraw();
-    if (onPositionChanged) onPositionChanged(readingPosition_);
+    if (onPositionChanged) onPositionChanged(flow_.position());
 }
 
 void BookView::redraw() {
-    if (!settled_ || width_ <= 0.0f || height_ <= 0.0f) return;
+    if (!settled_ || flow_.width() <= 0.0f || flow_.height() <= 0.0f) return;
 
-    // Собираем показанный разворот из ленты колонок до отрисовки: дальше и
-    // рисование, и попадание по сноске читают уже готовый spread_.
-    buildSpread();
+    // Разворот собран потоком страниц, когда он менялся (перевёрстка, прыжок,
+    // переворот): рисование и попадание по сноске читают уже готовый.
 
     // Посреди книжного переворота нынешний разворот несёт самый новый лист, а
     // не осевший: рисуем в его поверхность — перелистываемая страница и
@@ -1257,16 +910,16 @@ void BookView::drawSpread(DrawingSurface& surface) {
         context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         context->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-        if (!spread_.empty()) {
-            drawPage(context, width_, height_);
+        if (!flow_.spread().pages.empty()) {
+            drawPage(context, flow_.width(), flow_.height());
         } else {
-            drawInvitation(context, width_, height_);
+            drawInvitation(context, flow_.width(), flow_.height());
         }
     });
 }
 
 void BookView::turnPage(int delta) {
-    if (!book_ || pageCount() == 0 || delta == 0)
+    if (delta == 0)
         return;
     const bool forward = delta > 0;
 
@@ -1275,21 +928,21 @@ void BookView::turnPage(int delta) {
     // и страницы двигаются сразу, а лист летит вдогонку — поэтому быстрые
     // нажатия в одну сторону пускают несколько листов внахлёст, а не ждут в
     // очереди; встречное в режиме книги сперва сажает летящие (startTurn).
-    Column target = anchorColumn();
-    if (!ribbonSpread(target, forward))
-        return;   // край книги — листать некуда
+    const std::optional<PageFlow::Column> target = flow_.turnTarget(forward);
+    if (!target)
+        return;   // нет книги или край книги — листать некуда
 
-    startTurn(target, forward);
+    startTurn(*target, forward);
 }
 
-void BookView::startTurn(const Column& target, bool forward) {
+void BookView::startTurn(const PageFlow::Column& target, bool forward) {
     note_.hide();   // страница ушла, а сноска на ней осталась бы висеть
 
     // Режим книги — разворот в две колонки: там есть корешок и переворот листа
     // у него. Одна колонка и три с лишним — режим газеты: уезжает целая
     // страница. Страницы ведут себя в них по-разному, поэтому режим решаем
     // сразу.
-    const bool book = columns_ == 2;
+    const bool book = flow_.columns() == 2;
 
     // Встречное листание в режиме книги сперва сажает всё, что летит. Бумага
     // снимается с осевшего разворота, а у летящего листа перелистываемая
@@ -1316,12 +969,9 @@ void BookView::startTurn(const Column& target, bool forward) {
         drawSpread(*flip.surface);
 
     // Двигаем книгу на целевой разворот. Целевая колонка может лежать в соседней
-    // главе: делаем её текущей, не теряя вёрстки (buildSpread разложил её как
-    // соседнюю на стыке).
-    if (target.chapter != book_->currentChapter())
-        book_->makeCurrentChapter(target.chapter);
-    page_ = target.index;
-    readingPosition_ = book_->paginator().page(page_).firstCharOffset;
+    // главе: поток делает её текущей, не теряя вёрстки (лента разложила её как
+    // соседнюю на стыке), ставит место чтения и собирает новый разворот.
+    flow_.show(target);
     startTail();   // вошли в соседнюю главу — её «из M» тоже надо досчитать
 
     if (book) {
@@ -1336,7 +986,6 @@ void BookView::startTurn(const Column& target, bool forward) {
         // сменит обменом поверхностей, без отрисовки (landFlip), — до того
         // нынешний разворот несёт самый новый лист, а не settled_
         // (settledStale_).
-        buildSpread();
         drawSpread(*flip.surface);
         settledStale_ = true;
     } else {
@@ -1352,7 +1001,7 @@ void BookView::startTurn(const Column& target, bool forward) {
     else
         animateTurn(flip, forward);
 
-    if (onPositionChanged) onPositionChanged(readingPosition_);
+    if (onPositionChanged) onPositionChanged(flow_.position());
 }
 
 BookView::Flip& BookView::acquireFlip() {
@@ -1401,13 +1050,13 @@ BookView::Flip* BookView::newestFlip() {
 
 BookView::Flip BookView::makeFlip() {
 
-    const SizeInt32 pixels{static_cast<int32_t>(width_ * scale_ + 0.5f),
-                           static_cast<int32_t>(height_ * scale_ + 0.5f)};
+    const SizeInt32 pixels{static_cast<int32_t>(flow_.width() * scale_ + 0.5f),
+                           static_cast<int32_t>(flow_.height() * scale_ + 0.5f)};
     DrawingSurface surface(compositor_, pixels);
 
     SpriteVisual sheet = compositor_.createSpriteVisual();
     sheet.brush(surface.brush());
-    sheet.size({width_, height_});
+    sheet.size({flow_.width(), flow_.height()});
     // Крой в покое отпущен на вылет тени: нулевые отступы — ровно лист, а тени
     // положено лежать за его краем.
     InsetClip clip = compositor_.createInsetClip(-kShadowReach, -kShadowReach, -kShadowReach,
@@ -1436,7 +1085,7 @@ BookView::Flip BookView::makeFlip() {
     foldBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
     SpriteVisual fold = compositor_.createSpriteVisual();
     fold.brush(foldBrush);
-    fold.size({width_, height_});
+    fold.size({flow_.width(), flow_.height()});
     fold.isVisible(false);
 
     // Тень наружного края приходящего листа: узкая и неизменная, градиент
@@ -1447,7 +1096,7 @@ BookView::Flip BookView::makeFlip() {
     edgeBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
     SpriteVisual edge = compositor_.createSpriteVisual();
     edge.brush(edgeBrush);
-    edge.size({width_ * kEdgeOfWindow, height_});
+    edge.size({flow_.width() * kEdgeOfWindow, flow_.height()});
     edge.isVisible(false);
 
     // Приходящий лист (кисть выдаётся на каждый переворот — задника) и полутон
@@ -1455,7 +1104,7 @@ BookView::Flip BookView::makeFlip() {
     SpriteVisual leaf = compositor_.createSpriteVisual();
     InsetClip leafClip = compositor_.createInsetClip();
     leaf.clip(leafClip);
-    leaf.size({width_, height_});
+    leaf.size({flow_.width(), flow_.height()});
     leaf.isVisible(false);
     CompositionLinearGradientBrush bendBrush = compositor_.createLinearGradientBrush();
     bendBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
@@ -1463,7 +1112,7 @@ BookView::Flip BookView::makeFlip() {
     bendBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
     SpriteVisual bend = compositor_.createSpriteVisual();
     bend.brush(bendBrush);
-    bend.size({width_ * kBendOfWindow, height_});
+    bend.size({flow_.width() * kBendOfWindow, flow_.height()});
     leaf.children().insertAtTop(bend);
 
     // Подъём листа к глазу (книжное листание): доля подъёма — скаляр в
@@ -1669,7 +1318,7 @@ void BookView::animateTurn(Flip& flip, bool forward) {
     // Ставится здесь, а не раз на лист: центр преобразования принадлежит
     // плоскому листанию, а книжное его обнуляет — там лист не поворачивается, а
     // гнётся трапецией от собственного начала координат.
-    flip.sheet.centerPoint({0.0f, height_ * 0.5f, 0.0f});
+    flip.sheet.centerPoint({0.0f, flow_.height() * 0.5f, 0.0f});
 
     // Плоское листание: новые листы — под старыми. Только что заведённый лист
     // кладём в самый низ контейнера, над страницами; уже летящие остаются выше
@@ -1684,7 +1333,8 @@ void BookView::animateTurn(Flip& flip, bool forward) {
     // гипотенузу (ширина·cos + полвысоты·sin); плюс тень, сдвинутую вправо и
     // размытую, иначе она осталась бы у края серой полоской. Вперёд лист уходит
     // влево, назад — вправо.
-    const float reach = width_ * kTurnCos + height_ * 0.5f * kTurnSin + kShadowShift + kShadowBlur;
+    const float reach =
+        flow_.width() * kTurnCos + flow_.height() * 0.5f * kTurnSin + kShadowShift + kShadowBlur;
     const float to = forward ? -reach : reach;
     const float angleTo = forward ? -kTurnAngle : kTurnAngle;
 
@@ -1775,8 +1425,8 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     children.remove(coming);
     children.insertAtTop(coming);
 
-    const float leftPage = spine();
-    const float rightPage = width_ - leftPage;
+    const float leftPage = flow_.spine();
+    const float rightPage = flow_.width() - leftPage;
 
     // Кромка уходящего листа доходит до корешка: вперёд едет правая, назад —
     // левая.
@@ -1800,8 +1450,10 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // обнуляется: трапеция задана от начала координат листа, а центр нужен
     // только плоскому листанию, где вокруг него идёт поворот.
     going.centerPoint({0.0f, 0.0f, 0.0f});
-    liftSheet(flip.sheetLift, flip.lift, going, leftPage, forward ? width_ : 0.0f, height_);
-    liftSheet(flip.leafLift, flip.lift, coming, leftPage, forward ? 0.0f : width_, height_);
+    liftSheet(flip.sheetLift, flip.lift, going, leftPage, forward ? flow_.width() : 0.0f,
+              flow_.height());
+    liftSheet(flip.leafLift, flip.lift, coming, leftPage, forward ? 0.0f : flow_.width(),
+              flow_.height());
 
     // Пологая S-кривая: рука, тянущая бумагу, слегка разгоняется в начале и
     // тормозит к корешку — не роняет тяжесть, но и не тянет мёртво-равномерно
@@ -1820,8 +1472,8 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     //
     // Полоска лежит за кромкой: вперёд — справа от неё, назад — слева, и
     // тогда же разворачивается градиент, чтобы гуще было у бумаги.
-    const float edge = forward ? width_ : 0.0f;
-    const float lead = forward ? 0.0f : -width_;
+    const float edge = forward ? flow_.width() : 0.0f;
+    const float lead = forward ? 0.0f : -flow_.width();
     const float direction = forward ? 1.0f : -1.0f;
 
     flip.foldBrush.startPoint({forward ? 0.0f : 1.0f, 0.0f});
@@ -1837,13 +1489,13 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // полоска раздаётся от неё наружу, никуда не съезжая. Градиент растянут в
     // долях полоски, так что вместе с ней растягивается и спад — половину
     // мягкости даёт уже одно это.
-    fold.centerPoint({forward ? 0.0f : width_, 0.0f, 0.0f});
+    fold.centerPoint({forward ? 0.0f : flow_.width(), 0.0f, 0.0f});
 
     // Полоска нарезана целым разворотом, а ширину тени задаёт доля от неё:
     // от нуля в начале до целой страницы в конце. Прямая через эти две точки
     // проходит серединой ровно по половине страницы — то, чем переворот и
     // меряется на глаз.
-    const float span = width_ > 0.0f ? leftPage * kFoldOfPage / width_ : 0.0f;
+    const float span = flow_.width() > 0.0f ? leftPage * kFoldOfPage / flow_.width() : 0.0f;
 
     auto widen = compositor_.createVector3KeyFrameAnimation();
     widen.duration(kLeafSlide);
@@ -1880,14 +1532,14 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // На середине окно доходит до половины страницы ровно тогда, когда кромка
     // проходит половину своего пути, — потому старая правая страница там и
     // скрывается целиком, ни раньше ни позже.
-    const float shift = forward ? width_ : -width_;
+    const float shift = forward ? flow_.width() : -flow_.width();
     const wchar_t* const opening = forward ? L"RightInset" : L"LeftInset";
     const float openTo = forward ? rightPage : leftPage;
 
     // Внешняя сторона окна стоит на краю разворота и не двигается; та, что у
     // корешка, открывает страницу от края к нему.
-    comingCrop.leftInset(forward ? 0.0f : width_);
-    comingCrop.rightInset(forward ? width_ : 0.0f);
+    comingCrop.leftInset(forward ? 0.0f : flow_.width());
+    comingCrop.rightInset(forward ? flow_.width() : 0.0f);
 
     auto slide = compositor_.createVector3KeyFrameAnimation();
     slide.duration(kLeafSlide);
@@ -1896,13 +1548,13 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
 
     auto open = compositor_.createScalarKeyFrameAnimation();
     open.duration(kLeafSlide);
-    open.insertKeyFrame(0.0f, width_, easing);
+    open.insertKeyFrame(0.0f, flow_.width(), easing);
     open.insertKeyFrame(1.0f, openTo, easing);
 
     // Тень наружного края идёт за самим краем. Край — это ведущая сторона
     // листа, и едет она через всё окно: от дальнего края разворота до
     // ближнего, то есть ровно вдвое быстрее кромки.
-    const float band = width_ * kEdgeOfWindow;
+    const float band = flow_.width() * kEdgeOfWindow;
     const float behind = forward ? -band : 0.0f;
 
     flip.edgeBrush.startPoint({forward ? 1.0f : 0.0f, 0.0f});
@@ -1911,14 +1563,15 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     auto trail = compositor_.createVector3KeyFrameAnimation();
     trail.duration(kLeafSlide);
     trail.insertKeyFrame(0.0f, Vector3{edge + behind, 0.0f, 0.0f}, easing);
-    trail.insertKeyFrame(1.0f, Vector3{edge - direction * width_ + behind, 0.0f, 0.0f}, easing);
+    trail.insertKeyFrame(1.0f, Vector3{edge - direction * flow_.width() + behind, 0.0f, 0.0f},
+                         easing);
 
     // Полутон изгиба живёт в координатах самого листа, а не полосы: лист
     // едет, и вместе с ним едет всё, что на нём нарисовано. Двигаться ему
     // остаётся ровно настолько, насколько открывается окно кроя, — тем он и
     // держится у той стороны листа, что уходит в сгиб.
-    const float bendWidth = width_ * kBendOfWindow;
-    const float bendFrom = forward ? -bendWidth : width_;
+    const float bendWidth = flow_.width() * kBendOfWindow;
+    const float bendFrom = forward ? -bendWidth : flow_.width();
     const float bendTo = forward ? leftPage - bendWidth : leftPage;
 
     flip.bendBrush.startPoint({forward ? 1.0f : 0.0f, 0.0f});
@@ -1989,65 +1642,14 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
 }
 
 void BookView::goToCharOffset(uint32_t charOffset) {
-    if (!book_) return;
+    if (!flow_.isOpen()) return;
 
     // Прыжок по закладке, оглавлению или находке поиска — это разрыв ленты, а
     // не листание: разворот встаёт с колонки, где лежит место, без анимации
     // перехода. Досчёт нужной главы делает columnOf; фоновые порции прежней
     // главы, если ушли в другую, устаревают — их отменяет relayout при первом
     // же движении, а до того они молча пройдут по новой текущей главе.
-    showColumn(columnOf(charOffset));
-}
-
-float BookView::columnLeft(size_t index) const {
-    if (!book_) return 0.0f;
-
-    const float margin = width_ * marginFraction_;
-    const float column = book_->paginator().style().width;
-    const float gutter = margin * kGutterOfMargin;
-
-    // Первая колонка начинается ровно от поля: колонки занимают всё место
-    // между полями, и центрировать тут нечего.
-    return margin + static_cast<float>(index) * (column + gutter);
-}
-
-float BookView::spine() const {
-    // Считается от колонок, а не как половина полосы. Поля симметричны, и
-    // ответ тот же, но зависеть от этого незачем: корешок — это середина
-    // средника, и сказано это должно быть про средник.
-    const float gutter = width_ * marginFraction_ * kGutterOfMargin;
-    return columnLeft(1) - gutter * 0.5f;
-}
-
-const fb3::Node* BookView::noteAt(Point point, Point& anchor) const {
-    if (!book_) return nullptr;
-
-    for (size_t column = 0; column < spread_.size(); ++column) {
-        const float left = columnLeft(column);
-
-        for (const typography::PlacedLine& placed : spread_[column]->lines) {
-            const typography::Line& line = *placed.line;
-            const float baseline = kVerticalMargin + placed.baseline;
-
-            // По вертикали засчитываем всю строку, а не только надстрочный
-            // знак: попасть мышью в шесть пикселей высотой нельзя.
-            if (point.y < baseline - line.ascent || point.y > baseline + line.descent) continue;
-
-            // Зона щелчка шире самого знака на треть кегля с каждой стороны —
-            // по той же причине.
-            const float slack = fontSize_ * 0.33f;
-
-            for (const typography::PlacedNote& note : line.notes) {
-                const float x = left + placed.x + note.x;
-                if (point.x < x - slack || point.x > x + note.width + slack) continue;
-
-                anchor = {x + note.width * 0.5f, baseline + line.descent};
-                return note.target;
-            }
-        }
-    }
-
-    return nullptr;
+    showColumn(flow_.columnOf(charOffset));
 }
 
 void BookView::updateBackdrop() {
@@ -2086,8 +1688,8 @@ void BookView::setBackdrop(const std::filesystem::path& file, std::string bytes)
 }
 
 bool BookView::ensureWarp(ID2D1DeviceContext* context) {
-    const D2D1_SIZE_U pixels{static_cast<UINT32>(width_ * scale_ + 0.5f),
-                             static_cast<UINT32>(height_ * scale_ + 0.5f) * 2};
+    const D2D1_SIZE_U pixels{static_cast<UINT32>(flow_.width() * scale_ + 0.5f),
+                             static_cast<UINT32>(flow_.height() * scale_ + 0.5f) * 2};
     if (pixels.width == 0 || pixels.height == 0) return false;
 
     if (!warpLayer_ || warpPixels_.width != pixels.width || warpPixels_.height != pixels.height) {
@@ -2212,11 +1814,11 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     warpDisplace_->SetInput(0, warpLayer_.Get());
     warpDisplace_->SetInput(1, warpMap_.Get());
     // Размах — в пикселях слоя: наибольшее отклонение краёв в долях высоты —
-    // это warpAmplitude_·height_·scale_ пикселей поверхности и вдвое больше в
+    // это warpAmplitude_·высота·scale_ пикселей поверхности и вдвое больше в
     // слое двойной высоты; ещё двойка — потому что карта отклоняется от
     // середины не дальше половины размаха.
     warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_SCALE,
-                            4.0f * warpAmplitude_ * height_ * scale_);
+                            4.0f * warpAmplitude_ * flow_.height() * scale_);
     return true;
 }
 
@@ -2320,7 +1922,8 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
 
 void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = paper();
-    const float margin = width_ * marginFraction_;
+    const float margin = flow_.margin();
+    const float top = flow_.verticalMargin();
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;
@@ -2328,26 +1931,26 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     context->CreateSolidColorBrush(shade.dim, &dimBrush);
     if (!textBrush || !dimBrush) return;
 
-    // Колонки разворота — готовая лента (buildSpread): каждая своя страница,
-    // идущие подряд, при нужде со стыка из следующей главы. Разворот стоит по
-    // середине окна, остаток ширины уходит в поля поровну.
-    for (size_t column = 0; column < spread_.size(); ++column) {
-        const float left = columnLeft(column);
-        const typography::Page& page = *spread_[column];
+    // Колонки разворота — готовая лента потока страниц: каждая своя
+    // страница, идущие подряд, при нужде со стыка из следующей главы. Разворот
+    // стоит по середине окна, остаток ширины уходит в поля поровну.
+    const std::vector<const typography::Page*>& columns = flow_.spread().pages;
+    for (size_t column = 0; column < columns.size(); ++column) {
+        const float left = flow_.columnLeft(column);
+        const typography::Page& page = *columns[column];
 
         for (const typography::PlacedImage& image : page.images) {
-            if (ID2D1Bitmap1* bitmap = book_->bitmap(image.imageIndex, context)) {
+            if (ID2D1Bitmap1* bitmap = flow_.book()->bitmap(image.imageIndex, context)) {
                 const D2D1_RECT_F target =
-                    D2D1::RectF(left + image.x, kVerticalMargin + image.y,
-                                left + image.x + image.width,
-                                kVerticalMargin + image.y + image.height);
+                    D2D1::RectF(left + image.x, top + image.y, left + image.x + image.width,
+                                top + image.y + image.height);
                 context->DrawBitmap(bitmap, target, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
             }
         }
 
         for (const typography::PlacedLine& placed : page.lines) {
-            typography::drawLine(context, *placed.line, left + placed.x,
-                                 kVerticalMargin + placed.baseline, textBrush.Get());
+            typography::drawLine(context, *placed.line, left + placed.x, top + placed.baseline,
+                                 textBrush.Get());
         }
     }
 
@@ -2361,8 +1964,8 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     //
     // Поверх текста, а не под ним: тень у корешка ложится на страницу целиком,
     // вместе с набором.
-    if (columns_ == 2) {
-        const float centre = spine();
+    if (flow_.columns() == 2) {
+        const float centre = flow_.spine();
         const float band = width * kBendOfWindow;
         const D2D1_COLOR_F& hue = paper().shadow;
         const D2D1_COLOR_F clear = tintedF(hue, 0.0f);
@@ -2407,24 +2010,25 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
         // книги, а место чтения перевёрстка почти не двигает.
         // Номера — по левой главе: разворот на стыке кончается колонками
         // следующей, но «стр. X из M» называет ту главу, где стоит читатель, и
-        // не залезает в номера соседней. Сколько колонок разворота её —
-        // spreadOwnColumns_.
-        const size_t first = page_;
-        const size_t own = std::max<size_t>(spreadOwnColumns_, 1);
+        // не залезает в номера соседней. Числа решает поток страниц (status);
+        // здесь они только становятся строкой.
+        const PageFlow::Status status = flow_.status();
+        const size_t first = status.first;
+        const size_t own = status.own;
         const u16_text numbers = own <= 1 ? core::format(u"{}", first + 1)
                                           : core::format(u"{}–{}", first + 1, first + own);
-        const u16_text total = book_->paginator().isComplete()
-                                   ? core::format(u"{}", std::max<size_t>(pageCount(), 1))
-                                   : u16_text{u"…"};
+        const u16_text total =
+            status.total ? core::format(u"{}", *status.total) : u16_text{u"…"};
 
         // Номер и общее число — по главе: пагинатор знает лишь её, и «из M»
         // здесь значит «из стольких страниц в этой главе». Процент — по всей
         // книге, по символам; им читатель и меряет весь путь.
-        const u16_text status = core::format(u"Глава {} · стр. {} из {}     {:.0f}%",
-                                             book_->currentChapter() + 1, numbers, total,
-                                             progress() * 100.0f);
-        context->DrawText(status.wchars().data(), static_cast<UINT32>(status.size()), statusFormat_.Get(),
-                          D2D1::RectF(margin, height - kVerticalMargin, width - margin, height),
+        const u16_text line = core::format(u"Глава {} · стр. {} из {}     {:.0f}%",
+                                           status.chapter + 1, numbers, total,
+                                           status.progress * 100.0f);
+        context->DrawText(line.wchars().data(), static_cast<UINT32>(line.size()),
+                          statusFormat_.Get(),
+                          D2D1::RectF(margin, height - top, width - margin, height),
                           dimBrush.Get());
     }
 }

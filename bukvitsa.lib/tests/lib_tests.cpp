@@ -631,6 +631,9 @@ void testWorkspaceTellsImages() {
 
 }  // namespace
 
+// Пробы слоёв модели — каждая в своём файле.
+void runPageFlowTests();
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -655,6 +658,9 @@ int main() {
     testWorkspaceAddsFolder();
     testWorkspaceFindsLastBook();
     testWorkspaceTellsImages();
+
+    // Поток страниц верстает настоящую книгу: DirectWrite и WIC — после COM.
+    runPageFlowTests();
 
     sta_loop::stop();
     ::CoUninitialize();

@@ -13,6 +13,7 @@ add_library(bukvitsa_lib STATIC
     src/book_index.cpp
     src/imaging.cpp
     src/library.cpp
+    src/page_flow.cpp
     src/settings.cpp
     src/skins.cpp
     src/store.cpp
@@ -21,6 +22,7 @@ add_library(bukvitsa_lib STATIC
     include/bukvitsa/reader/book_index.h
     include/bukvitsa/reader/imaging.h
     include/bukvitsa/reader/library.h
+    include/bukvitsa/reader/page_flow.h
     include/bukvitsa/reader/settings.h
     include/bukvitsa/reader/skins.h
     include/bukvitsa/reader/store.h
