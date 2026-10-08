@@ -48,9 +48,9 @@ public:
     Notices(const Notices&) = delete;
     Notices& operator=(const Notices&) = delete;
 
-    /// @param headline что не удалось — заголовок диалога
-    /// @param details  с чем и почему: путь, причина системы; может быть пусто
-    void complain(std::wstring headline, std::wstring details);
+    /// Публикует сообщение: диалогом сразу, строкой в уже открытый диалог
+    /// или в очередь до `flush()`, если показывать ещё не над чем.
+    void post(Notice notice);
 
     /// Экран показан: сообщения, пришедшие, пока показывать было не над чем,
     /// выходят теперь. Зовётся там же, где окну ставят содержимое.
@@ -67,7 +67,7 @@ private:
     wxl::CompositionWindow window_;
     observable<wxl::ElementTheme const>& screenTheme_;
     nullable<wxl::StackPanel> lines_ = nullptr;   ///< содержимое открытого диалога; пусто — диалога нет
-    std::vector<std::pair<std::wstring, std::wstring>> pending_;   ///< до первого экрана
+    std::vector<Notice> pending_;   ///< до первого экрана или до закрытия чужого диалога
 };
 
 }  // namespace bukvitsa::reader

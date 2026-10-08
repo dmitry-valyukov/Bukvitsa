@@ -30,15 +30,15 @@ Notices::~Notices() {
     instance_ = nullptr;
 }
 
-void Notices::complain(std::wstring headline, std::wstring details) {
+void Notices::post(Notice notice) {
     using namespace wxl::dsl;
 
     if (lines_) {
         // Диалог открыт — дописываем. Заголовок второго сообщения — строкой
         // в содержимом: title у диалога один, и он принадлежит первому.
         lines_.value().children().append(
-            TextBlock{headline, FontWeight{600}, Margin{0, 12, 0, 0}, textWrapping.wrap});
-        if (!details.empty()) lines_.value().children().append(TextBlock{details, textWrapping.wrap});
+            TextBlock{notice.headline, FontWeight{600}, Margin{0, 12, 0, 0}, textWrapping.wrap});
+        if (!notice.details.empty()) lines_.value().children().append(TextBlock{notice.details, textWrapping.wrap});
         return;
     }
 
@@ -49,15 +49,15 @@ void Notices::complain(std::wstring headline, std::wstring details) {
     if (!host) {
         // Показывать ещё не над чем: так падает чтение настроек и реестров
         // на старте, до первого экрана. Сообщение дождётся его (flush).
-        pending_.emplace_back(std::move(headline), std::move(details));
+        pending_.push_back(std::move(notice));
         return;
     }
 
     auto lines = StackPanel{};
-    if (!details.empty()) lines.children().append(TextBlock{details, textWrapping.wrap});
+    if (!notice.details.empty()) lines.children().append(TextBlock{notice.details, textWrapping.wrap});
 
     auto dialog = ContentDialog{
-        title = headline,
+        title = notice.headline,
         content = lines,
         closeButtonText = u"Закрыть",
         defaultButton = ContentDialogButton::Close,
@@ -70,22 +70,21 @@ void Notices::complain(std::wstring headline, std::wstring details) {
     try {
         showDialog(dialog, host);
     } catch (...) {
-        pending_.emplace_back(std::move(headline), std::move(details));
+        pending_.push_back(std::move(notice));
         return;
     }
     lines_ = lines;
 }
 
 void Notices::flush() {
-    std::vector<std::pair<std::wstring, std::wstring>> waiting = std::move(pending_);
+    std::vector<Notice> waiting = std::move(pending_);
     pending_.clear();
-    for (auto& [headline, details] : waiting) complain(std::move(headline), std::move(details));
+    for (Notice& notice : waiting) post(std::move(notice));
 }
 
 void Notices::failed(std::exception_ptr error) noexcept {
     // Какими словами — решает модель (`noticeOf`); здесь только показ.
-    Notice notice = noticeOf(std::move(error));
-    complain(std::move(notice.headline), std::move(notice.details));
+    post(noticeOf(std::move(error)));
 }
 
 }  // namespace bukvitsa::reader

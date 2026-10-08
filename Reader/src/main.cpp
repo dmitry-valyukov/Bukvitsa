@@ -185,14 +185,6 @@ using AppPtr = intrusive_ptr<App>;
 // сбой. Остальное всплывает в `on_detached_task_failure` (его ставит
 // `Notices`): читатель видит окно с причиной, сценарий на этом кончается.
 
-/// Говорит читателю, что не удалось, с чем и почему — словами системы.
-void complain(App& app, std::wstring headline, std::wstring details,
-              const system_exception& failure) {
-    if (!details.empty()) details += L"\n\n";
-    details += reasonOf(failure);
-    app.notices.complain(std::move(headline), std::move(details));
-}
-
 /// Пишет настройки — сценарием без владельца, по таймеру или при закрытии:
 /// текст рабочее место собирает в момент вызова, до ожидания.
 detached_task saveSettingsLater(AppPtr app) {
@@ -251,7 +243,7 @@ detached_task addFolderFlow(AppPtr app, std::filesystem::path folder) {
             if (app->shown.get() == Screen::Library) app->shelf.appendBook(entry);
         });
     } catch (const system_exception& failure) {
-        complain(*app, L"Не удалось добавить каталог", folder.wstring(), failure);
+        app->notices.post(noticeOf(L"Не удалось добавить каталог", folder.wstring(), failure));
         co_return;
     }
 
@@ -261,7 +253,7 @@ detached_task addFolderFlow(AppPtr app, std::filesystem::path folder) {
             if (!text.empty()) text += L"\n";
             text += line;
         }
-        app->notices.complain(L"Не удалось прочитать", std::move(text));
+        app->notices.post({L"Не удалось прочитать", std::move(text)});
     }
 }
 
@@ -273,7 +265,7 @@ detached_task saveSkinFlow(AppPtr app, Skin skin, std::filesystem::path photo) {
     try {
         co_await app->ws.saveSkin(std::move(skin), photo);
     } catch (const system_exception& failure) {
-        complain(*app, L"Не удалось сохранить обложку", photo.wstring(), failure);
+        app->notices.post(noticeOf(L"Не удалось сохранить обложку", photo.wstring(), failure));
         co_return;
     }
 
@@ -317,11 +309,11 @@ detached_task loadBackdropFlow(AppPtr app, std::filesystem::path file) {
 detached_task checkImageFlow(AppPtr app, std::filesystem::path image, std::function<void()> proceed) {
     try {
         if (!co_await app->ws.isImage(image)) {
-            app->notices.complain(L"Это не изображение", image.wstring());
+            app->notices.post({L"Это не изображение", image.wstring()});
             co_return;
         }
     } catch (const system_exception& failure) {
-        complain(*app, L"Не удалось открыть изображение", image.wstring(), failure);
+        app->notices.post(noticeOf(L"Не удалось открыть изображение", image.wstring(), failure));
         co_return;
     }
 
@@ -508,14 +500,14 @@ detached_task openBookFlow(AppPtr app, std::filesystem::path path) {
         try {
             read = co_await app->ws.readBook(path);
         } catch (const system_exception& failure) {
-            complain(*app, L"Не удалось прочитать файл книги", path.wstring(), failure);
+            app->notices.post(noticeOf(L"Не удалось прочитать файл книги", path.wstring(), failure));
             co_return;
         } catch (std::exception const& failure) {
             // Разговор с читателем, а не запись в лог: он только что выбрал этот
             // файл и вправе узнать, что с ним не так.
             u16_text const reason = unicode::assume_valid(failure.what()).to_utf16();
-            app->notices.complain(L"Не удалось открыть книгу",
-                                  path.wstring() + L"\n\n" + std::wstring(reason.wchars()));
+            app->notices.post({L"Не удалось открыть книгу",
+                               path.wstring() + L"\n\n" + std::wstring(reason.wchars())});
             co_return;
         }
 
@@ -556,7 +548,7 @@ detached_task startupFlow(AppPtr app) {
     // умолчаниями.
     const Started started = co_await app->ws.start();
 
-    for (const Notice& notice : started.notices) app->notices.complain(notice.headline, notice.details);
+    for (const Notice& notice : started.notices) app->notices.post(notice);
 
     // Запись на диск начинает слушать поля настроек только теперь:
     // прочитанное из файла — не перемена, которую надо записать обратно.
