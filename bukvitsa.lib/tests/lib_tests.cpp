@@ -19,6 +19,7 @@
 #include "bukvitsa/reader/skins.h"
 
 #include "bukvitsa/reader/book_index.h"
+#include "bukvitsa/reader/shelf_text.h"
 #include "bukvitsa/reader/workspace.h"
 
 import wxl.async;
@@ -389,6 +390,72 @@ bool holds(const std::wstring& text, std::wstring_view piece) {
 const std::filesystem::path kBook = testdata / L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
 const std::filesystem::path kOtherBook = testdata / L"nightmare_example.fb3";
 
+/// Реестр — карточками полки: новая книга — одна карточка в конце, та же книга
+/// снова — без перемен, переложенная — замена своей карточки на её месте,
+/// прочитанный файл — один сброс; строка прогресса — поле карточки, и полка о
+/// ней не слышит.
+void testLibraryCards() {
+    std::printf("\n=== реестр: карточки полки ===\n");
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document{std::string(bytes)};
+    const std::string otherBytes = onDisk(kOtherBook);
+    const fb3::Document other{std::string(otherBytes)};
+
+    // Слышанное — раньше реестра: слушатель уходит вместе с ним.
+    std::vector<list_change> heard;
+
+    Library library;
+    static_cast<void>(library.cards().on_change(
+        [&heard](const list_change& change) noexcept { heard.push_back(change); }));
+
+    const u16_text guid = library.add(document, kBook, bytes.size()).guid;
+    check(heard.size() == 1 && heard[0] == list_change{list_change::inserted, 0, 1},
+          "новая книга — одна карточка в конце");
+
+    library.add(other, kOtherBook, otherBytes.size());
+    check(heard.size() == 2 && heard[1] == list_change{list_change::inserted, 1, 1}, "вторая — за первой");
+
+    heard.clear();
+    ShelfCard* const card = library.cards()[0].get();
+    library.add(document, kBook, bytes.size());
+    check(heard.empty() && library.cards()[0].get() == card,
+          "та же книга снова — та же карточка, полка не слышит");
+
+    check(card->progress.get().empty(), "пока файл состояния не прочитан, строка прогресса пуста");
+
+    BookState state;
+    state.charOffset = card->entry.characterCount / 2;
+    state.bookmarks.push_back(Bookmark{10, u16_text{u"закладка"}});
+    card->showState(state);
+    const u16_text line = shelfLine(state.charOffset, card->entry.characterCount, 1);
+    check(card->progress.get() == line && heard.empty(), "прогресс — поле карточки: строка своя, полка не слышит");
+
+    card->showState(BookState{});
+    check(card->progress.get() == line, "книгу открывали, а места не записали — строка остаётся");
+
+    // Тот же UUID книги под другим путём — её переложили: запись другая,
+    // карточка новая, место на полке и guid прежние.
+    const std::filesystem::path moved = kBook.parent_path() / L"moved" / kBook.filename();
+    library.add(document, moved, bytes.size());
+    check(heard.size() == 1 && heard[0] == list_change{list_change::replaced, 0, 1},
+          "переложенная книга — замена своей карточки");
+    check(library.cards()[0]->entry.guid == guid && library.cards()[0]->entry.path == moved,
+          "guid прежний, путь новый");
+    check(library.cards()[0]->progress.get() == line, "строка прогресса переходит на новую карточку");
+
+    const std::string xml = library.toXml();
+    heard.clear();
+    check(library.loadFrom(xml), "свой же реестр читается");
+    check(heard.size() == 1 && heard[0] == list_change{list_change::reset, 0, 2}, "прочитанный реестр — один сброс");
+    check(library.find(guid) && library.find(guid)->path == moved, "записи — из файла");
+
+    heard.clear();
+    check(!library.loadFrom("<library><book authors=\"Фрэнк"), "битый реестр — не разобран");
+    check(heard.size() == 1 && heard[0] == list_change{list_change::reset, 0, 0} && library.cards().empty(),
+          "битый реестр — пустая полка одним сбросом");
+}
+
 /// Пустой каталог — первый запуск: умолчания, ни одного слова читателю.
 void testWorkspaceStartsEmpty() {
     std::printf("\n=== рабочее место: первый запуск ===\n");
@@ -400,7 +467,7 @@ void testWorkspaceStartsEmpty() {
 
     check(started.notices.empty(), "первый запуск: ни одного сообщения");
     check(started.lastBook.empty(), "первый запуск: продолжать нечего");
-    check(ws.library.books().empty(), "первый запуск: реестр пуст");
+    check(ws.library.cards().empty(), "первый запуск: реестр пуст");
     check(ws.skins.list().empty(), "первый запуск: обложек нет");
     check(ws.settings.fontSize.get() == kFontSizeDefault, "первый запуск: кегль по умолчанию");
     check(!std::filesystem::exists(ws.settingsPath()), "первый запуск ничего не пишет");
@@ -434,7 +501,7 @@ void testWorkspaceKeepsBrokenFiles() {
             check(started.notices[2].headline == L"Реестр книг не прочитан", "сообщение о реестре книг");
         }
         check(ws.settings.fontSize.get() == kFontSizeDefault, "битые настройки — умолчания");
-        check(ws.skins.list().empty() && ws.library.books().empty(), "битые реестры — пусто");
+        check(ws.skins.list().empty() && ws.library.cards().empty(), "битые реестры — пусто");
 
         check(onDisk(box.root / L"settings.xml.bad") == brokenSettings, "копия settings.xml.bad байт в байт");
         check(onDisk(box.root / L"skins.xml.bad") == brokenSkins, "копия skins.xml.bad байт в байт");
@@ -472,7 +539,7 @@ void testWorkspaceRegistersBook() {
     const Registered first = run(ws.registerBook(document, kBook, bytes.size()));
 
     check(first.isNew, "первая регистрация — новая книга");
-    check(ws.library.books().size() == 1, "в реестре одна книга");
+    check(ws.library.cards().size() == 1, "в реестре одна книга");
     check(!first.entry.guid.empty(), "у записи есть guid");
     check(first.entry.path == kBook, "путь записи — путь файла");
 
@@ -486,7 +553,7 @@ void testWorkspaceRegistersBook() {
 
     check(!again.isNew, "повторная регистрация — не новая");
     check(again.entry.guid == first.entry.guid, "повторная регистрация — тот же guid");
-    check(ws.library.books().size() == 1, "реестр не раздвоился");
+    check(ws.library.cards().size() == 1, "реестр не раздвоился");
 }
 
 /// Реестр потерян, а настройки помнят guid последней книги: запись заводится
@@ -515,7 +582,7 @@ void testWorkspaceKeepsLastBookGuid() {
     const Registered fresh = run(ws.registerBook(other, kOtherBook, otherBytes.size()));
 
     check(fresh.isNew && fresh.entry.guid != kept, "занятый guid не берётся — новый");
-    check(ws.library.books().size() == 2, "две разные книги");
+    check(ws.library.cards().size() == 2, "две разные книги");
 }
 
 /// Открытие: реестр и настройки на диске указывают на книгу, состояние
@@ -538,7 +605,7 @@ void testWorkspaceOpensBook() {
           "настройки указывают на книгу");
 
     Library onDiskLibrary;
-    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.books().size() == 1,
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 1,
           "реестр записан");
     Settings onDiskSettings;
     check(readSettings(onDisk(ws.settingsPath()), onDiskSettings) &&
@@ -576,23 +643,30 @@ void testWorkspaceAddsFolder() {
     putOnDisk(folder / L"not-a-book.fb3", "this is not a book");
     putOnDisk(folder / L"note.txt", "and this is not even fb3");
 
-    std::vector<BookEntry> appeared;
-    const auto onNew = [&appeared](const BookEntry& entry) { appeared.push_back(entry); };
+    // Полка слышит обход сама: карточка за карточкой, по мере разбора.
+    std::vector<list_change> heard;
+    const cookie_t watch = ws.library.cards().on_change(
+        [&heard](const list_change& change) noexcept { heard.push_back(change); });
 
-    const FolderAdded first = run(ws.addFolder(folder, onNew));
+    const FolderAdded first = run(ws.addFolder(folder));
 
     check(first.added, "каталог с книгами — реестр записан");
     check(first.unread.empty(), "все файлы прочитались");
-    check(appeared.size() == 2 && ws.library.books().size() == 2, "две книги, мусор пропущен");
+    check(ws.library.cards().size() == 2, "две книги, мусор пропущен");
+    check(heard.size() == 2 && heard[0] == list_change{list_change::inserted, 0, 1} &&
+              heard[1] == list_change{list_change::inserted, 1, 1},
+          "полка растёт по одной карточке в конец");
 
     Library onDiskLibrary;
-    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.books().size() == 2,
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 2,
           "реестр на диске — две книги");
 
-    const FolderAdded second = run(ws.addFolder(folder, onNew));
+    const FolderAdded second = run(ws.addFolder(folder));
 
-    check(second.unread.empty() && appeared.size() == 2, "повторный обход — ни одной новой");
-    check(ws.library.books().size() == 2, "повторный обход не множит записи");
+    check(second.unread.empty() && ws.library.cards().size() == 2, "повторный обход не множит записи");
+    check(heard.size() == 2, "повторный обход — ни одной новой карточки, полка не тронута");
+
+    ws.library.cards().remove_change(watch);
 }
 
 /// Последняя книга: путь из настроек протух — по guid из реестра; нет и там —
@@ -636,10 +710,12 @@ void runSkinEditorTests();
 // Мелкие куски модели, вынесенные из экранов (pieces_tests.cpp). Слот
 // прогретой книги открывает настоящую книгу — потому после COM.
 void runPiecesTests();
-// Слои модели своими файлами: карта клавиш, список тем, поиск по книге.
+// Слои модели своими файлами: карта клавиш, список тем, поиск по книге, места
+// открытой книги.
 void runKeyMapTests();
 void runThemeListTests();
 void runBookSearchTests();
+void runBookPlacesTests();
 // Пробы слоёв модели — каждая в своём файле.
 void runPageFlowTests();
 
@@ -656,6 +732,7 @@ int main() {
     runKeyMapTests();
     runThemeListTests();
     runBookSearchTests();
+    runBookPlacesTests();
 
     // Петля операций wxl — одна на процесс, как у тестов самой wxl: её каналы
     // живут столько же, сколько процесс, и второй раз не стартуют. COM — для
@@ -663,6 +740,7 @@ int main() {
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     sta_loop::start("bukvitsa.lib tests: I/O");
 
+    testLibraryCards();
     testWorkspaceStartsEmpty();
     testWorkspaceKeepsBrokenFiles();
     testWorkspaceRegistersBook();

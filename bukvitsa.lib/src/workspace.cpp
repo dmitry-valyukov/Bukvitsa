@@ -189,11 +189,11 @@ task<Registered> Workspace::registerBook(const fb3::Document& document, std::fil
     // пусто, и guid будет новым.
     const u16_view remembered = settings.lastBookPath == path ? u16_view{settings.lastBookGuid} : u16_view{};
 
-    const size_t knownBefore = library.books().size();
+    const size_t knownBefore = library.cards().size();
 
     // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
     // переедет вместе со всеми ссылками в него.
-    Registered registered{library.add(document, path, fileSize, remembered), library.books().size() != knownBefore};
+    Registered registered{library.add(document, path, fileSize, remembered), library.cards().size() != knownBefore};
 
     if (const CoverBytes cover = coverOf(document, registered.entry.guid); !cover.name.empty())
         co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
@@ -223,7 +223,7 @@ task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize) {
     co_return opened;
 }
 
-task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, function<void(const BookEntry&)> onNew) {
+task<FolderAdded> Workspace::addFolder(std::filesystem::path folder) {
     FolderAdded result;
 
     const std::vector<async_directory::listed_entry> found =
@@ -258,13 +258,12 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, function<vo
             continue;
         }
 
-        const Registered registered = co_await registerBook(*document, path, fileSize);
+        // Полка растёт на каждой книге, а не в конце: в этом и смысл — читатель
+        // видит, как она наполняется. Новая книга встаёт карточкой реестра
+        // прямо в регистрации, и полка, привязанная к карточкам, слышит её сама.
+        co_await registerBook(*document, path, fileSize);
 
         result.added = true;
-
-        // Полка растёт на каждой книге, а не в конце: в этом и смысл — читатель
-        // видит, как она наполняется.
-        if (registered.isNew) onNew(registered.entry);
     }
 
     if (result.added) co_await saveLibrary();

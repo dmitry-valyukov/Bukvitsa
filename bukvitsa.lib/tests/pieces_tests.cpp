@@ -1,6 +1,6 @@
 // Тесты мелких кусков модели читалки:
-// закладка туда-обратно, слова о сбое сценария, слот прогретой книги, строка
-// карточки полки, запрос поиска. Каждый — чистая функция или маленький
+// слова о сбое сценария, слот прогретой книги, строка карточки полки, запрос
+// поиска. Каждый — чистая функция или маленький
 // объект, и проверяется без окна.
 
 #include <cstdio>
@@ -38,39 +38,6 @@ const std::filesystem::path testdata = BUKVITSA_TESTDATA_DIR;
 std::string bytesOf(const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-}
-
-std::vector<uint32_t> offsetsOf(const BookState& state) {
-    std::vector<uint32_t> offsets;
-    for (const Bookmark& mark : state.bookmarks) offsets.push_back(mark.charOffset);
-    return offsets;
-}
-
-/// Закладка: одна кнопка ставит и снимает; список всегда по порядку книги,
-/// куда бы ни встала новая.
-void testBookmarkToggles() {
-    std::printf("\n=== закладка: поставить и снять ===\n");
-
-    BookState state;
-
-    check(state.toggleBookmark(300, u16_text{u"триста"}), "на пустом месте — поставлена");
-    check(state.hasBookmark(300) && state.bookmarks.size() == 1, "поставленная видна");
-
-    state.toggleBookmark(100, u16_text{u"сто"});
-    check(state.toggleBookmark(200, u16_text{u"двести"}), "между двумя — поставлена");
-    check(offsetsOf(state) == std::vector<uint32_t>{100, 200, 300}, "вставка в середину держит порядок книги");
-    check(state.bookmarks[1].hint == L"двести", "подсказка — у своей закладки");
-
-    check(!state.toggleBookmark(200, u16_text{u"другие слова"}), "на том же месте — снята");
-    check(!state.hasBookmark(200) && offsetsOf(state) == std::vector<uint32_t>{100, 300},
-          "снята только она");
-
-    check(state.toggleBookmark(0, u16_text{}), "в самом начале книги — тоже ставится");
-    check(offsetsOf(state) == std::vector<uint32_t>{0, 100, 300}, "начало книги — первой");
-
-    check(state.toggleBookmark(200, u16_text{u"снова"}), "снятая ставится снова");
-    check(offsetsOf(state) == std::vector<uint32_t>{0, 100, 200, 300} && state.bookmarks[2].hint == L"снова",
-          "на своё место и с новой подсказкой");
 }
 
 /// Сбой сценария словами: операция с файлом — причиной системы, исключение с
@@ -199,7 +166,6 @@ void testSearchQuery() {
 }  // namespace
 
 void runPiecesTests() {
-    testBookmarkToggles();
     testNoticeOfFailure();
     testWarmSlotRace();
     testShelfLine();

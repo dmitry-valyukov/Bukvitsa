@@ -2,6 +2,7 @@
 // сохранения обложки. Номер плывёт при каждой перемене реестра, а на диск
 // уходят имена — здесь проверяется, что переводы между ними сходятся.
 
+#include <cstdint>
 #include <cstdio>
 #include <initializer_list>
 #include <vector>
@@ -32,10 +33,11 @@ std::vector<Skin> registry(std::initializer_list<u16_view> names) {
     return skins;
 }
 
+/// Список с этими обложками читателя. Возвращается значением прямо из
+/// конструктора: список держит поле строк, а поле не копируется и не
+/// переезжает.
 ThemeList listOf(std::initializer_list<u16_view> names) {
-    ThemeList list;
-    list.setSkins(registry(names));
-    return list;
+    return ThemeList{registry(names)};
 }
 
 /// Номер обложки, которая точно есть в списке.
@@ -190,6 +192,53 @@ void testPersistKeepsThemeKey() {
           "после удаления текущей — тот ключ, что держали настройки");
 }
 
+/// Строки для показа — тем же счётом, что номер: встроенные, системные
+/// обложки, обложки читателя; шестерёнка — у обложки, корзина — только у
+/// обложки читателя. Новый реестр — один сброс, тот же — без перемен.
+void testChoices() {
+    std::printf("\n=== темы: строки для показа ===\n");
+
+    ThemeList bare;
+    check(bare.choices().size() == static_cast<uint32_t>(kThemeCount), "до setSkins — строки одних встроенных тем");
+
+    // Слышанное — раньше списка: слушатель уходит вместе с ним.
+    std::vector<list_change> heard;
+
+    ThemeList list{registry({u"Альфа"})};
+    static_cast<void>(list.choices().on_change(
+        [&heard](const list_change& change) noexcept { heard.push_back(change); }));
+    observable_list<ThemeChoice const>& choices = list.choices();
+
+    check(choices.size() == static_cast<uint32_t>(list.count()), "строк столько же, сколько тем");
+
+    bool themesFirst = true;
+    for (int index = 0; index < kThemeCount; ++index) {
+        const ThemeChoice& choice = choices[static_cast<uint32_t>(index)];
+        themesFirst = themesFirst && choice.name == kThemes[index].name && !choice.skin && !choice.removable;
+    }
+    check(themesFirst, "встроенные — первыми, со своими подписями, без шестерёнки и корзины");
+
+    bool sameCount = true;
+    for (int index = kThemeCount; index < list.count(); ++index) {
+        const ThemeChoice& choice = choices[static_cast<uint32_t>(index)];
+        const Skin* skin = list.skinAt(index);
+        sameCount = sameCount && skin && choice.name == skin->name && choice.skin && choice.removable == !skin->system;
+    }
+    check(sameCount, "строка n — тема n: имя обложки, шестерёнка, корзина только у своей");
+
+    const int alpha = indexOf(list, u"Альфа");
+    check(choices[static_cast<uint32_t>(alpha)].removable, "обложка читателя удаляется");
+    check(!choices[static_cast<uint32_t>(kThemeCount)].removable, "системная — нет");
+
+    list.setSkins(registry({u"Альфа", u"Бета"}));
+    check(heard.size() == 1 && heard[0] == list_change{list_change::reset, 0, static_cast<uint32_t>(list.count())},
+          "новый реестр — один сброс на все строки");
+    check(choices[static_cast<uint32_t>(indexOf(list, u"Бета"))].name == u"Бета", "новая обложка — на своей строке");
+
+    list.setSkins(registry({u"Альфа", u"Бета"}));
+    check(heard.size() == 1, "тот же реестр ещё раз — без перемен");
+}
+
 }  // namespace
 
 void runThemeListTests() {
@@ -199,4 +248,5 @@ void runThemeListTests() {
     testSaveBecomesCurrent();
     testStartFromSettings();
     testPersistKeepsThemeKey();
+    testChoices();
 }

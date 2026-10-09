@@ -3,9 +3,6 @@
 #include "Bind.h"
 #include "look.h"
 
-// Последним из своих: несёт импорт wxl.core.
-#include "bukvitsa/reader/shelf_text.h"
-
 namespace bukvitsa::reader {
 
 using namespace wxl;
@@ -25,32 +22,59 @@ constexpr Color kEdge = rgb(227, 222, 212);
 constexpr double kCoverWidth = 72;
 constexpr double kCoverHeight = 108;
 
-/// Путь к обложке как источник картинки. Путь абсолютный, поэтому со схемой:
-/// без схемы wxl разрешает его рядом с исполняемым файлом.
-ImageSource coverOf(const std::filesystem::path& coverDirectory, const BookEntry& entry) {
-    if (entry.cover.empty()) return {};
+// Обложка раскодируется под высоту карточки, а не в полный размер снимка: в
+// книге он бывает в тысячи пикселей, а на полке — сотня. Высота — в
+// физических пикселях, вдвое против карточки: с запасом на масштаб экрана до
+// 200%. Ширину картинка берёт по своей пропорции, а лишнее срезает
+// UniformToFill.
+constexpr int32_t kCoverDecodeHeight = 2 * static_cast<int32_t>(kCoverHeight);
 
-    // Имя нарочно не text: одноимённый тег синтаксиса перекрылся бы им.
-    std::u16string full = (coverDirectory / entry.cover.wchars()).u16string();
+/// Карточка на полке — контейнер строки списка: бумага карточки, кромка,
+/// скругление и отбивка от соседок; содержимое — во всю ширину. Наведение и
+/// нажатие подсвечивает сам контейнер.
+constexpr auto shelfCardLook = Preset {
+    dsl::background = kCard,
+    dsl::borderBrush = kEdge,
+    BorderThickness{1},
+    CornerRadius{6},
+    Margin{0, 6},
+    Padding{0},
+    dsl::horizontalContentAlignment = HorizontalAlignment::Stretch,
+};
+
+/// Обложка книги как источник картинки, раскодированной под карточку. Путь
+/// абсолютный, поэтому со схемой: без схемы wxl разрешает его рядом с
+/// исполняемым файлом.
+ImageSource coverOf(const std::filesystem::path& coverDirectory, const BookEntry& book) {
+    if (book.cover.empty()) return {};
+
+    // Имя нарочно не text: одноимённый тег синтаксиса перекрылся бы им. Теги
+    // ниже — с квалификатором по той же причине.
+    std::u16string full = (coverDirectory / book.cover.wchars()).u16string();
     std::replace(full.begin(), full.end(), u'\\', u'/');
-    return ImageSource{u"file:///" + full};
+    return BitmapImage {
+        dsl::uriSource = Uri{u"file:///" + full},
+        dsl::decodePixelHeight = kCoverDecodeHeight,
+    };
 }
 
 /// Надпись «Пока пусто» видна, пока на полке нет ни одной карточки.
-Visibility shownWhenEmpty(bool empty) {
-    return empty ? Visibility::Visible : Visibility::Collapsed;
+Visibility shownWhenEmpty(uint32_t count) {
+    return count == 0 ? Visibility::Visible : Visibility::Collapsed;
 }
 
 }  // namespace
 
-LibraryScreen::LibraryScreen(const Library& library, observable<bool>& continueReading,
-                             std::filesystem::path covers, Actions& actions)
-    : actions_(actions), library_(library), covers_(std::move(covers)) {
+// Полка — список карточек реестра. Карточка строится, когда книга попадает на
+// экран, и тогда же получает обложку; строка прогресса привязана к полю
+// карточки и уходит вместе с ней, когда список отдаёт строку обратно.
+LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& cards,
+                             observable<bool>& continueReading, std::filesystem::path covers,
+                             Actions& actions)
+    : actions_(actions), cards_(cards) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
     // бы обычные слова (entry, text) и под /W4 каждое стало бы C4459.
     using namespace wxl::dsl;
-
-    Apply{shelf_, Margin{40, 8, 40, 32}};
 
     Apply {
         root_,
@@ -99,18 +123,76 @@ LibraryScreen::LibraryScreen(const Library& library, observable<bool>& continueR
             },
         },
 
-        ScrollViewer {
+        // Карточку по книге щёлкают: щелчок, наведение, фокус и клавиатуру
+        // даёт сам список, выбора у полки нет. Отбивка от краёв окна — внутри
+        // прокрутки, полоса прокрутки — у края.
+        ListView {
             row = 1,
-            content = StackPanel {
-                TextBlock {
-                    u"Пока пусто. Добавьте книгу — она останется там, где лежит.",
-                    fontSize = 16,
-                    foreground = kDimInk,
-                    Margin{40, 24, 40, 0},
-                    visibility = BindOutput{empty_, shownWhenEmpty},
-                },
-                shelf_,
-            },
+            Padding{40, 8, 40, 32},
+            selectionMode = ListViewSelectionMode::None,
+            isItemClickEnabled = true,
+            itemContainerStyle = shelfCardLook,
+            itemsSource = BindOutput {cards, [coverDirectory = std::move(covers)](intrusive_ptr<ShelfCard> const& card) {
+                const BookEntry& book = card->entry;
+                return Grid {
+                    // Карточка — обложка и надписи в сетке, и чтецу экрана
+                    // такая строка безымянна: имя берётся из содержимого,
+                    // только когда оно строка. Подсказка при наведении
+                    // повторяла бы то, что и так на карточке, — поэтому имя
+                    // отдельно, не toolTip.
+                    automationName = book.title,
+                    columnDefinitions = u"auto,*",
+                    columnSpacing = 16,
+                    Margin{12},
+
+                    Image {
+                        column = 0,
+                        source = coverOf(coverDirectory, book),
+                        width = kCoverWidth,
+                        height = kCoverHeight,
+                        stretch = Stretch::UniformToFill,
+                        vAlign.top,
+                    },
+
+                    StackPanel {
+                        column = 1,
+                        vAlign.center,
+                        TextBlock {
+                            book.title,
+                            fontSize = 18,
+                            FontWeight{600},
+                            foreground = kInk,
+                            twoLinesLook,
+                        },
+                        TextBlock {
+                            book.authors,
+                            fontSize = 14,
+                            foreground = kDimInk,
+                            Margin{0, 4, 0, 0},
+                            oneLineLook,
+                        },
+                        // Строка прогресса — поле карточки: пусто, пока файл
+                        // состояния не прочитан, и проступает сама, когда его
+                        // прочитают, — карточка не перестраивается.
+                        TextBlock {
+                            fontSize = 13,
+                            foreground = kDimInk,
+                            Margin{0, 8, 0, 0},
+                            text = BindOutput{card->progress},
+                        },
+                    },
+                };
+            }},
+            onItemClick = method(this, &LibraryScreen::cardClicked),
+        },
+
+        TextBlock {
+            u"Пока пусто. Добавьте книгу — она останется там, где лежит.",
+            row = 1,
+            fontSize = 16,
+            foreground = kDimInk,
+            Margin{40, 24, 40, 0},
+            visibility = BindOutput{cards.count(), shownWhenEmpty},
         },
 
         onLoaded = method(this, &LibraryScreen::loaded),
@@ -121,117 +203,12 @@ void LibraryScreen::loaded(Grid const& self) {
     self.focus(FocusState::Programmatic);
 }
 
-void LibraryScreen::appendBook(const BookEntry& entry) {
-    shelf_.children().append(shelfItem(entry));
-    empty_.set(false);
-}
-
-void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookmarks) {
-    const auto found = progress_.find(std::u16string(guid.plain()));
-
-    if (found == progress_.end()) return;   // полку успели пересобрать
-
-    const BookEntry* entry = library_.find(guid);
-
-    if (!entry) return;
-
-    // Место чтения лежит в отдельном файле на книгу, и читает его фоновая
-    // корутина -- уже после того, как карточка встала на полку. Поэтому у
-    // строки два состояния: «ещё не знаем» (пусто, см. shelfItem) и то, что
-    // принесли.
-    found->second.text(shelfLine(charOffset, entry->characterCount, bookmarks));
-}
-
-void LibraryScreen::show() {
-    progress_.clear();
-
-    // Полка пересобирается целиком. Сравнивать её с реестром и править
-    // разницу было бы дороже во всех смыслах: книг десятки, а не тысячи, и
-    // добавление одной — не повод заводить вторую модель того же списка.
-    shelf_.children().clear();
-    for (const BookEntry& entry : library_.books()) {
-        shelf_.children().append(shelfItem(entry));
+void LibraryScreen::cardClicked(ListView const&, ItemClickEventArgs& args) {
+    // Своя книга у каждой карточки: щелчок отдаёт строку списка, строка —
+    // карточку реестра, а намерение берёт guid её книги копией.
+    if (intrusive_ptr<ShelfCard> const* card = boundItem(cards_, args.clickedItem())) {
+        actions_.openBook((*card)->entry.guid);
     }
-
-    empty_.set(library_.books().empty());
-}
-
-Button LibraryScreen::shelfItem(const BookEntry& book) {
-    using namespace wxl::dsl;
-
-    // Карточка — это кнопка: по книге щёлкают, и всё, что кнопка умеет сама
-    // (наведение, нажатие, фокус, клавиатура), достаётся даром.
-    u16_text const guid = book.guid;
-
-    // Строка прогресса ставится пустой не просто так: «не открывалась» было бы
-    // неправдой, пока файл состояния ещё не прочитан, а карточка обязана
-    // появиться раньше, чем он будет прочитан. Настоящий текст приносит
-    // setProgress().
-    TextBlock progress = TextBlock {
-        book.characterCount == 0 ? progressLine(0, 0) : u16_text{},
-        fontSize = 13,
-        foreground = kDimInk,
-        Margin{0, 8, 0, 0},
-    };
-
-    progress_.insert_or_assign(guid.plain(), progress);
-
-    return Button {
-        // Карточка — обложка и надписи в сетке, и чтецу экрана такая кнопка
-        // безымянна: имя берётся из содержимого, только когда оно строка.
-        // Подсказка при наведении повторяла бы то, что и так на карточке, —
-        // поэтому имя отдельно, не toolTip.
-        automationName = book.title,
-        hAlign.stretch,
-        // Содержимое кнопки по умолчанию стоит по центру -- для карточки это
-        // значит текст посреди пустоты. Растянуть его надо явно, и это
-        // horizontalContentAlignment, а не hAlign: тот про саму кнопку.
-        horizontalContentAlignment = HorizontalAlignment::Stretch,
-        Margin{0, 6},
-        Padding{0},
-        background = kCard,
-        borderBrush = kEdge,
-        BorderThickness{1},
-        CornerRadius{6},
-        // Своя книга у каждой карточки — её guid держит замыкание; намерение
-        // берёт его копией.
-        onClick = [this, guid] { actions_.openBook(guid); },
-
-        content = Grid {
-            columnDefinitions = u"auto,*",
-            columnSpacing = 16,
-            Margin{12},
-
-            Image {
-                column = 0,
-                source = coverOf(covers_, book),
-                width = kCoverWidth,
-                height = kCoverHeight,
-                stretch = Stretch::UniformToFill,
-                vAlign.top,
-            },
-
-            StackPanel {
-                column = 1,
-                vAlign.center,
-                TextBlock {
-                    book.title,
-                    fontSize = 18,
-                    FontWeight{600},
-                    foreground = kInk,
-                    twoLinesLook,
-                },
-                TextBlock {
-                    book.authors,
-                    fontSize = 14,
-                    foreground = kDimInk,
-                    Margin{0, 4, 0, 0},
-                    oneLineLook,
-                },
-                progress,
-            },
-        },
-    };
 }
 
 }  // namespace bukvitsa::reader

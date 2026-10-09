@@ -71,10 +71,10 @@ App::App()
       notices_{window_, screenTheme_},
       start_{window_.chromeCompositor(), *this},
       view_{window_, ws_.settings, *this},
-      shelf_{ws_.library, ws_.settings.continueReading, ws_.coverDirectory(), *this},
+      shelf_{ws_.library.cards(), ws_.settings.continueReading, ws_.coverDirectory(), *this},
       wizard_{window_.chromeCompositor(), *this},
-      panel_{window_.chromeCompositor(), view_, ws_.settings, state_, themes_, search_, *this},
-      autosave_{*this, window_, ws_, themes_, view_, state_},
+      panel_{window_.chromeCompositor(), view_, ws_.settings, places_, themes_, search_, *this},
+      autosave_{*this, window_, ws_, themes_, view_, places_},
       splash_{window_.dispatcherQueue().createTimer()} {
     // Рамка окна тёмная, как и остров: системный светлый заголовок над тёмными
     // ящиками, мастером и полкой смотрелся бы чужим. Тега для неё в wxl пока
@@ -230,16 +230,15 @@ void App::show(Screen next) {
         return;
     }
 
-    // Полка пересобирается на каждый показ: книга могла добавиться, а место
-    // чтения — уехать с тех пор, как её видели в прошлый раз.
-    shelf_.show();
+    // Полка не пересобирается: она привязана к карточкам реестра и уже знает
+    // каждую книгу. А место чтения могло уехать с тех пор, как её видели в
+    // прошлый раз, — проценты проступят на карточках по мере того, как рабочий
+    // поток прочитает файлы состояния, по одному на книгу.
     shown_.set(Screen::Library);
     window_.content(shelf_.root());
     notices_.flush();
 
-    // Карточки уже стоят; проценты проступят на них по мере того, как рабочий
-    // поток прочитает файлы состояния — по одному на книгу.
-    fillProgress(ws_.library.books());
+    fillProgress();
 }
 
 detached_task App::showLibrary() {
