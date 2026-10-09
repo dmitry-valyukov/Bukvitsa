@@ -14,20 +14,12 @@ namespace {
 constexpr size_t kSpine = static_cast<size_t>(EdgeCurve::kSpine);
 constexpr size_t kLast = static_cast<size_t>(EdgeCurve::kPoints) - 1;
 
-/// Имя, которое можно сохранить: текст поля чужой — он пришёл из контрола, —
-/// и в обложку попадает проверенным, а не принятым на веру. Пустое и из одних
-/// пробелов и табуляций — не имя.
-std::optional<u16_view> nameOf(std::u16string_view typed) {
-    const std::optional<u16_view> name = unicode::checked(typed);
-    if (!name || trim(name->plain(), u" \t").empty()) return std::nullopt;
-    return name;
-}
-
 }  // namespace
 
 void SkinEditor::openNew(std::filesystem::path image) {
     image_ = std::move(image);
     skin_ = defaultSkin();
+    name.set({});
 }
 
 void SkinEditor::openEdit(const Skin& skin, std::filesystem::path image) {
@@ -44,6 +36,7 @@ void SkinEditor::openEdit(const Skin& skin, std::filesystem::path image) {
         skin_.image = {};
         skin_.name = {};
     }
+    name.set(skin_.name);
 }
 
 std::optional<SkinEditor::Grip> SkinEditor::gripAt(Point point, Size area) const {
@@ -97,16 +90,19 @@ void SkinEditor::drag(Grip grip, Point to, Size area) {
     }
 }
 
-bool SkinEditor::nameOk(std::u16string_view typed) {
-    return nameOf(typed).has_value();
+bool SkinEditor::nameOk() const {
+    // Пустое и из одних пробелов и табуляций — не имя. Проверять сам текст не
+    // нужно: поле держит `u16_text`, и привязка кладёт в него текст контрола
+    // уже исправленным.
+    const u16_view typed = name.get();
+    return !trim(typed.plain(), u" \t").empty();
 }
 
-std::optional<Skin> SkinEditor::result(std::u16string_view typed) const {
-    const std::optional<u16_view> name = nameOf(typed);
-    if (!name) return std::nullopt;
+std::optional<Skin> SkinEditor::result() const {
+    if (!nameOk()) return std::nullopt;
 
     Skin saved = skin_;
-    saved.name = u16_text{*name};
+    saved.name = name.get();
     return saved;
 }
 

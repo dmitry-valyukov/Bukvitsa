@@ -411,10 +411,10 @@ void SkinWizard::finishNaming(bool save) {
         return;
     }
 
-    // Текст поля — чужой: он пришёл из контрола строкой WinRT, и проверяет
-    // его модель правки. Строка держится, пока жив вид на неё.
-    const hstring typed = nameBox_.text();
-    std::optional<Skin> saved = editor_.result(std::u16string_view(typed));
+    // Поле ещё не привязано к имени модели: текст кладётся туда здесь,
+    // исправленным, — так, как положит его привязка.
+    editor_.name.set(unicode::repaired(nameBox_.text()));
+    std::optional<Skin> saved = editor_.result();
     if (!saved) return;   // безымянную сохранять некуда
 
     namePanel_.visibility(Visibility::Collapsed);

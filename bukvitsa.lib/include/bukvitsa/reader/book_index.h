@@ -41,6 +41,10 @@ sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks);
 struct SearchHit {
     u16_text context;         ///< отрывок абзаца, в котором нашлось
     uint32_t charOffset = 0;  ///< позиция самой находки в книге
+
+    /// Находки сравнимы: наблюдаемое поле находок молчит, когда тот же поиск
+    /// дал те же находки, и список под ним не перестраивается зря.
+    bool operator==(const SearchHit&) const = default;
 };
 
 /// Ищет по книге, не различая регистра.

@@ -183,6 +183,7 @@ void testOpen() {
     check(editor.skin().top.y == own.top.y && editor.skin().bottom.x == own.bottom.x,
           "правка своей: её точки");
     check(!editor.needsName(), "своя сохраняется под своим именем, не спрашивая");
+    check(editor.name.get().plain() == u"Осень", "правка своей: в поле имени — её имя");
     check(editor.imagePath() == std::filesystem::path(L"skins/autumn.png"), "снимок — её");
 
     const Skin& antique = systemSkins()[0];
@@ -192,36 +193,41 @@ void testOpen() {
     check(editor.skin().top.x == antique.top.x && editor.skin().bottom.y == antique.bottom.y,
           "правка системной: на её точках");
     check(editor.needsName(), "правленой системной имя спрашивается");
+    check(editor.name.get().empty(), "правка системной: поле имени пустое, как у новой");
 
     editor.drag(Grip{Edge::Top, 1}, {300.0f, 100.0f}, kWide);
+    editor.name.set(u16_text{u"Набранное"});
     editor.openNew(std::filesystem::path(L"photo.jpg"));
     check(editor.skin().top.x == fresh.top.x && editor.skin().top.y == fresh.top.y &&
               editor.skin().bottom.x == fresh.bottom.x && editor.skin().bottom.y == fresh.bottom.y,
           "новая: начальные прямые, прежняя правка забыта");
     check(editor.skin().name.empty() && editor.needsName(), "новая: имя пустое и спрашивается");
+    check(editor.name.get().empty(), "новая: поле имени пустое, набранное прежде забыто");
     check(editor.imagePath() == std::filesystem::path(L"photo.jpg"), "новая: выбранный снимок");
 }
 
-/// Имя проверяется как чужой текст: пустое, из пробелов и битое не годятся.
+/// Имя берётся из поля модели, к которому привязано поле мастера: пустое и из
+/// пробелов не годится, годное уходит в обложку как набрано.
 void testName() {
     std::printf("\n=== правка обложки: имя ===\n");
-
-    const char16_t lone[] = {0xD800, 0};
-
-    check(!SkinEditor::nameOk(u""), "пустое — не имя");
-    check(!SkinEditor::nameOk(u"   ") && !SkinEditor::nameOk(u" \t "),
-          "из пробелов и табуляций — не имя");
-    check(!SkinEditor::nameOk(std::u16string_view(lone, 1)), "одинокий суррогат — не имя");
-    check(SkinEditor::nameOk(u"Осень") && SkinEditor::nameOk(u" Осень "), "слово — имя");
 
     SkinEditor editor;
     editor.openNew(std::filesystem::path(L"photo.jpg"));
     editor.drag(Grip{Edge::Bottom, 3}, {350.0f, 700.0f}, kWide);
 
-    check(!editor.result(u"  "), "без имени сохранять нечего");
+    check(!editor.nameOk() && !editor.result(), "пустое поле — не имя, сохранять нечего");
 
-    const std::optional<Skin> saved = editor.result(u"Осень");
-    check(saved && saved->name.plain() == u"Осень", "сохраняется под введённым именем");
+    editor.name.set(u16_text{u"   "});
+    check(!editor.nameOk(), "из пробелов — не имя");
+    editor.name.set(u16_text{u" \t "});
+    check(!editor.nameOk() && !editor.result(), "из пробелов и табуляций — не имя");
+
+    editor.name.set(u16_text{u" Осень "});
+    check(editor.nameOk(), "слово с пробелами по краям — имя");
+
+    editor.name.set(u16_text{u"Осень"});
+    const std::optional<Skin> saved = editor.result();
+    check(saved && saved->name.plain() == u"Осень", "сохраняется под именем из поля");
     check(saved && saved->bottom.x == editor.skin().bottom.x &&
               saved->bottom.y == editor.skin().bottom.y,
           "с поправленными точками");
