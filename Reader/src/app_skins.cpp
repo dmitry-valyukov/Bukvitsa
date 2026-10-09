@@ -192,8 +192,8 @@ void App::setSkins() {
 
 /// Полоса рисуется с правимыми кривыми. Он же — пересчёт после отпускания
 /// точки: мастер объявляет правку, когда она устоялась.
-void App::preview() {
-    view_.setPreview(&wizard_.skin().get());
+void App::preview(Skin const& skin) noexcept {
+    view_.setPreview(&skin);
     showBackdrop();
 }
 

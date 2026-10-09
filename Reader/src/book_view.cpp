@@ -328,7 +328,7 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, Actions&
 
     // Смена темы — своя перекраска; поле своё, его слушатель умрёт вместе с
     // полосой, снимать нечего.
-    static_cast<void>(theme.on_change([this](int) noexcept { applyTheme(); }));
+    static_cast<void>(theme.on_change(method(this, &BookView::themeChanged)));
 
     // Таймер отпускания пула листов не повторяется — перезаводится сам с новой
     // паузой (armRelease/onReleaseTick).
@@ -655,13 +655,13 @@ void BookView::setActive(bool active) {
 
 void BookView::setTheme(int index) {
     // Приводится к списку и кладётся в поле; всё, что следует за сменой темы,
-    // делает слушатель (applyTheme) — так же, как если бы поле поменял кто-то
+    // делает слушатель (themeChanged) — так же, как если бы поле поменял кто-то
     // другой. Та же тема, что и была, слушателя не зовёт.
     const int count = themeCount();
     theme.set(((index % count) + count) % count);
 }
 
-void BookView::applyTheme() {
+void BookView::themeChanged(int) noexcept {
     note_.hide();   // подложка всплывашки покрашена прошлой темой
     applyShadowTint();   // тени тоже покрашены прошлой темой
 
