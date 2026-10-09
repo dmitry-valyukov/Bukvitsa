@@ -79,8 +79,8 @@ bool readSettings(std::string xml, Settings& into) {
 std::string settingsXml(const Settings& settings) {
     // text_builder, а не поток с нейтральной локалью: локали у него нет вовсе,
     // и дробное число пишется точкой, какие бы настройки ни стояли в Windows.
-    // Аллокатор -- STA-пул: формирователь зовёт корутина рабочего места
-    // (`Workspace::saveSettings`) до своего `co_await`, то есть на потоке
+    // Аллокатор -- STA-пул: формирователь зовёт рабочее место
+    // (`Workspace::saveSettings`) в момент просьбы, то есть на потоке
     // вызова -- у читалки интерфейсном; на рабочий поток уходят только байты.
     text_builder<sta_allocator> out;
 

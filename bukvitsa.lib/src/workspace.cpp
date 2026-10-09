@@ -12,6 +12,7 @@ import wxl.core;
 
 using wxl::async::async_directory;
 using wxl::async::async_file;
+using wxl::async::cancellable;
 using wxl::async::cancellation_token;
 using wxl::async::operation_canceled_exception;
 using wxl::async::system_exception;
@@ -100,6 +101,239 @@ std::filesystem::path Workspace::skinImagePath(const Skin& skin) const {
                        : skinDirectory() / skin.image.wchars();
 }
 
+// ---- очередь файла --------------------------------------------------------
+//
+// Узел очереди — в кадре корутины, которая делает операцию: очередь ничего не
+// выделяет, байты записи — её же, выброшенные освобождаются сразу. Очередь
+// файла — узлы `turns_` с его путём; порядок ожидания — место (`place_`):
+// запись, сменившая ждущую, встаёт на её место, а не в конец.
+//
+// Кто кого будит и где. Операция кончилась (`end`) — в своём кадре, на своём
+// ходу, до возврата вызывающему:
+//  1. уходит из очереди;
+//  2. отвечает записям, которые ехали с ней, — по одной, в порядке их просьб,
+//     каждую вынув из очереди перед тем, как возобновить;
+//  3. отдаёт ход файлу: ждущая операция с наименьшим местом становится идущей
+//     и возобновляется — ставит свою операцию wxl и встаёт на ней;
+//  4. возвращается вызывающему — своим значением или сбоем.
+// Ответы — раньше хода: продолжение ответа, попросившее тот же файл, встаёт в
+// очередь, и шаг 3 начнёт её голову, кто бы ни пришёл последним; если файл к
+// тому времени уже занят идущей, ход остаётся у неё. Так ответы приходят в
+// порядке просьб, а у файла никогда не идут две операции сразу.
+
+class Workspace::file_turn : public intrusive_list_node<Workspace::file_turn> {
+public:
+    /// Чтение — в очередь своего файла.
+    file_turn(Workspace& owner, const std::filesystem::path& file) noexcept
+        : file_turn(owner, file, std::string{}, false) {}
+
+    /// Запись — в очередь своего файла. Ждущую запись того же файла она
+    /// сменяет: та выбрасывает байты и едет с этой, а эта встаёт на её место.
+    file_turn(Workspace& owner, const std::filesystem::path& file, std::string bytes) noexcept
+        : file_turn(owner, file, std::move(bytes), true) {}
+
+    file_turn(const file_turn&) = delete;
+    file_turn& operator=(const file_turn&) = delete;
+
+    /// Кадр, ушедший из очереди, не кончив операции, — его бросил владелец, —
+    /// уходит так же, как кончившийся: ждущая запись отдаёт байты новейшей из
+    /// ехавших с ней, идущая — ход файлу, а ехавшим с ней — отмену: легли ли
+    /// её байты, не скажет никто.
+    ~file_turn() {
+        if (state_ == state::over) return;
+        end(state_ == state::running ? std::make_exception_ptr(operation_canceled_exception()) : nullptr);
+    }
+
+    // Ожидание очереди: идущая не ждёт; ждущую или едущую возобновляет та,
+    // что кончилась перед ней, — уже идущей или отвеченной.
+    bool await_ready() const noexcept { return state_ == state::running; }
+    void await_suspend(std::coroutine_handle<> waiting) noexcept { waiting_ = waiting; }
+    void await_resume() const noexcept {}
+
+    /// Ход дошёл до неё: пора делать свою операцию. Иначе её запись сменила
+    /// более новая, и та уже ответила.
+    bool running() const noexcept { return state_ == state::running; }
+
+    /// Ответ записи, ехавшей с более новой: сбой той, если та не легла.
+    void answer() const {
+        if (failure_) std::rethrow_exception(failure_);
+    }
+
+    std::string take_bytes() noexcept { return std::move(bytes_); }
+
+    /// Уходит из очереди: шаги 1–3 из шапки раздела. `failure` — исход записи
+    /// для тех, кто с ней ехал.
+    void end(std::exception_ptr failure) noexcept {
+        const state was = std::exchange(state_, state::over);
+        intrusive_list<file_turn>::remove(not_null<file_turn>(this));
+
+        if (was == state::waiting) {
+            hand_over();
+            return;
+        }
+        if (was != state::running) return;
+
+        while (file_turn* const rider = rider_of(this)) {
+            intrusive_list<file_turn>::remove(not_null<file_turn>(rider));
+            rider->state_ = state::over;
+            rider->failure_ = failure;
+            rider->waiting_.resume();
+        }
+
+        pass_on();
+    }
+
+private:
+    enum class state : uint8_t {
+        running,   ///< идёт: у файла такая одна
+        waiting,   ///< ждёт хода по месту в очереди
+        riding,    ///< её байты сменила более новая запись — ответ даст та (`carrier_`)
+        over,      ///< вне очереди
+    };
+
+    file_turn(Workspace& owner, const std::filesystem::path& file, std::string bytes, bool write) noexcept
+        : owner_(owner), file_(file), bytes_(std::move(bytes)), place_(++owner.asked_), write_(write) {
+        file_turn* waitingWrite = nullptr;
+        bool busy = false;
+
+        for (file_turn& other : owner_.turns_) {
+            if (!other.of(file_)) continue;
+            busy = true;
+            if (other.write_ && other.state_ == state::waiting) waitingWrite = &other;
+        }
+
+        if (!busy) {
+            state_ = state::running;
+        } else {
+            state_ = state::waiting;
+            if (write_ && waitingWrite) supersede(*waitingWrite);
+        }
+
+        owner_.turns_.push_back(not_null<file_turn>(this));
+    }
+
+    /// Путь сравнивается как строка: свои пути строит одно рабочее место, и
+    /// у одного файла строка одна.
+    bool of(const std::filesystem::path& file) const noexcept { return file_.native() == file.native(); }
+
+    /// Новее ждущей записи: её место — этой, её байты — прочь, она и все, кто
+    /// ехал с ней, едут с этой. Ждущая запись у файла одна — каждая новая
+    /// сменяет прежнюю, — потому и сменять приходится не больше одной.
+    void supersede(file_turn& older) noexcept {
+        place_ = older.place_;
+
+        for (file_turn& other : owner_.turns_)
+            if (other.carrier_ == &older) other.carrier_ = this;
+
+        older.state_ = state::riding;
+        older.carrier_ = this;
+        std::string{}.swap(older.bytes_);
+    }
+
+    /// Ждущая запись ушла, не начав: её байты новее байтов всех, кто с ней
+    /// ехал, и годятся им всем — их несёт новейшая из них, на её месте.
+    void hand_over() noexcept {
+        file_turn* newest = nullptr;
+
+        for (file_turn& other : owner_.turns_)
+            if (other.carrier_ == this) newest = &other;
+
+        if (!newest) return;
+
+        for (file_turn& other : owner_.turns_)
+            if (other.carrier_ == this) other.carrier_ = newest;
+
+        newest->carrier_ = nullptr;
+        newest->state_ = state::waiting;
+        newest->place_ = place_;
+        newest->bytes_ = std::move(bytes_);
+    }
+
+    /// Первая по порядку просьб из тех, кто едет с `carrier`.
+    file_turn* rider_of(const file_turn* carrier) const noexcept {
+        for (file_turn& other : owner_.turns_)
+            if (other.carrier_ == carrier) return &other;
+        return nullptr;
+    }
+
+    /// Шаг 3: ход файла — ждущей с наименьшим местом, если у файла никто не
+    /// идёт.
+    void pass_on() noexcept {
+        file_turn* next = nullptr;
+
+        for (file_turn& other : owner_.turns_) {
+            if (!other.of(file_)) continue;
+            if (other.state_ == state::running) return;
+            if (other.state_ == state::waiting && (!next || other.place_ < next->place_)) next = &other;
+        }
+
+        if (!next) return;
+
+        next->state_ = state::running;
+        next->waiting_.resume();
+    }
+
+    Workspace& owner_;
+    /// Путь — в кадре той же корутины, параметром: он переживает узел.
+    const std::filesystem::path& file_;
+    std::string bytes_;
+    uint64_t place_;
+    const bool write_;
+    state state_ = state::over;
+    file_turn* carrier_ = nullptr;
+    std::exception_ptr failure_;
+    std::coroutine_handle<> waiting_;
+};
+
+task<> Workspace::write_file(std::filesystem::path file, std::string bytes) {
+    file_turn turn(*this, file, std::move(bytes));
+
+    co_await turn;
+
+    if (!turn.running()) {
+        turn.answer();
+        co_return;
+    }
+
+    // Сбой ловится, а не летит: очередь отдаётся дальше в обычном ходе, а не
+    // из деструктора посреди раскрутки.
+    std::exception_ptr failure;
+
+    try {
+        co_await async_file::write_all(poolPath(file), turn.take_bytes());
+    } catch (...) {
+        failure = std::current_exception();
+    }
+
+    turn.end(failure);
+
+    if (failure) std::rethrow_exception(failure);
+}
+
+task<std::string> Workspace::read_file(std::filesystem::path file, cancellation_token stop) {
+    file_turn turn(*this, file);
+
+    std::exception_ptr failure;
+    std::string bytes;
+
+    try {
+        // Ожидание очереди не прерывается — у узла нет cancel(): просьба,
+        // пришедшая, пока чтение ждёт, кончает его, когда до него дошёл ход,
+        // и чтение не начинается.
+        co_await cancellable(turn, stop);
+
+        bytes = co_await async_file::read_all(poolPath(file), std::move(stop));
+    } catch (...) {
+        failure = std::current_exception();
+    }
+
+    turn.end(nullptr);
+
+    if (failure) std::rethrow_exception(failure);
+
+    co_return bytes;
+}
+
 // ---- запуск ---------------------------------------------------------------
 
 task<Started> Workspace::start(cancellation_token stop) {
@@ -113,7 +347,7 @@ task<Started> Workspace::start(cancellation_token stop) {
     // умолчаниями.
     const auto read = [&](const std::filesystem::path& file, std::wstring whatFailed) -> task<std::string> {
         try {
-            co_return co_await async_file::read_all(poolPath(file));
+            co_return co_await read_file(file, {});
         } catch (const system_exception& failure) {
             if (!absent(failure))
                 started.notices.push_back({std::move(whatFailed), file.wstring() + L"\n\n" + reasonOf(failure)});
@@ -202,7 +436,7 @@ task<Registered> Workspace::registerBook(const fb3::Document& document, std::fil
     Registered registered{library.add(document, path, fileSize, remembered), library.cards().size() != knownBefore};
 
     if (const CoverBytes cover = coverOf(document, registered.entry.guid); !cover.name.empty())
-        co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
+        co_await write_file(coverDirectory() / cover.name.wchars(), std::string(cover.bytes));
 
     co_return registered;
 }
@@ -316,29 +550,26 @@ task<BookState> Workspace::readState(u16_view guid, cancellation_token stop) {
     // Состояния у книги может и не быть: её только что добавили, или место
     // чтения ещё не записывалось. Это не ошибка, а чистый лист.
     try {
-        co_return parseBookState(co_await async_file::read_all(poolPath(statePath(guid)), std::move(stop)));
+        co_return parseBookState(co_await read_file(statePath(guid), std::move(stop)));
     } catch (const system_exception& failure) {
         if (!absent(failure)) throw;
         co_return BookState{};
     }
 }
 
-task<> Workspace::saveState(u16_text guid, BookState state) {
-    if (guid.empty()) co_return;
+// Записи моделей — не корутины: текст собирается здесь, в момент просьбы, а
+// кадр у записи один — тот, что стоит в очереди файла.
 
-    co_await async_file::write_all(poolPath(statePath(guid)), bookStateXml(state));
+task<> Workspace::saveState(u16_text guid, BookState state) {
+    return write_file(statePath(guid), bookStateXml(state));
 }
 
 task<> Workspace::saveSettings() {
-    std::string xml = settingsXml(settings);
-
-    co_await async_file::write_all(poolPath(settingsPath()), std::move(xml));
+    return write_file(settingsPath(), settingsXml(settings));
 }
 
 task<> Workspace::saveLibrary() {
-    std::string xml = library.toXml();
-
-    co_await async_file::write_all(poolPath(libraryPath()), std::move(xml));
+    return write_file(libraryPath(), library.toXml());
 }
 
 // ---- обложки читателя -----------------------------------------------------
@@ -358,24 +589,20 @@ task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_
         u16_text file = newGuid();
         file += unicode::repaired(photo.extension().native());
 
-        co_await async_file::write_all(poolPath(skinDirectory() / file.wchars()), std::move(bytes));
+        co_await write_file(skinDirectory() / file.wchars(), std::move(bytes));
 
         skin.image = std::move(file);
     }
 
     skins.put(std::move(skin));
 
-    std::string xml = skins.toXml();
-
-    co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
+    co_await write_file(skinsPath(), skins.toXml());
 }
 
 task<> Workspace::deleteSkin(u16_view name) {
     if (!skins.remove(name)) co_return;   // реестр успел перемениться под руками
 
-    std::string xml = skins.toXml();
-
-    co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
+    co_await write_file(skinsPath(), skins.toXml());
 }
 
 task<bool> Workspace::isImage(std::filesystem::path image, cancellation_token stop) {
@@ -385,14 +612,14 @@ task<bool> Workspace::isImage(std::filesystem::path image, cancellation_token st
 }
 
 task<std::string> Workspace::readBytes(std::filesystem::path file, cancellation_token stop) {
-    co_return co_await async_file::read_all(poolPath(file), std::move(stop));
+    return read_file(std::move(file), std::move(stop));
 }
 
 // ---- общее ----------------------------------------------------------------
 
 task<> Workspace::keepBrokenCopy(std::filesystem::path file, std::string bytes) {
     file += L".bad";
-    co_await async_file::write_all(poolPath(file), std::move(bytes));
+    return write_file(std::move(file), std::move(bytes));
 }
 
 }  // namespace bukvitsa::reader

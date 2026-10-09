@@ -8,9 +8,11 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 // Заголовки читалки после всех стандартных: индекс книги ведёт к импорту
@@ -937,6 +939,370 @@ void testWorkspaceFolderKeepsWhatShelfShowed() {
           "реестр на диске — с той книгой, что полка показала");
 }
 
+// ---- Очередь файла: одна операция за раз, последнее побеждает ----------------
+//
+// Рабочий поток петли у тестов один и берёт операции по очереди, так что
+// ответы приходят в порядке, в каком операции ушли к нему. Запись другого
+// файла, о которой попросили позже, — часы: легла она раньше — значит,
+// операция, о которой просили до неё, к рабочему потоку ещё не уходила.
+
+/// Одна операция вернулась: петля взяла её и возобновила того, кто её ждал.
+void step() {
+    while (!sta_loop::run_one()) {
+    }
+}
+
+/// Записывает, в каком порядке просившие слышат ответ: n — значение, −n — сбой.
+task<> noted(task<> work, std::vector<int>& order, int n) {
+    try {
+        co_await std::move(work);
+    } catch (...) {
+        order.push_back(-n);
+        throw;
+    }
+    order.push_back(n);
+}
+
+/// Ответ, а за ним из его продолжения — ещё запись того же файла.
+task<> thenAgain(task<> work, Workspace& ws, double fontSize, std::optional<task<>>& again) {
+    co_await std::move(work);
+    ws.settings.fontSize.set(fontSize);
+    again.emplace(ws.saveSettings());
+}
+
+/// Ответ, а за ним — две записи того же файла подряд.
+task<> thenTwice(task<> work, Workspace& ws, std::optional<task<>>& first, std::optional<task<>>& second) {
+    co_await std::move(work);
+    ws.settings.fontSize.set(41.0);
+    first.emplace(ws.saveSettings());
+    ws.settings.fontSize.set(42.0);
+    second.emplace(ws.saveSettings());
+}
+
+/// Каталог, который делает рабочий поток — после операций, уже стоящих в его
+/// очереди: препятствие следующей записи, и не раньше.
+task<> makeDirectoryOnWorker(std::filesystem::path directory) {
+    co_await sta_loop::async_call(wxl::async::orphanable, [directory] {
+        std::error_code ignored;
+        std::filesystem::create_directories(directory, ignored);
+    });
+}
+
+/// Сбой системы, не отмена и не значение.
+bool failedOnDisk(task<>& work) {
+    try {
+        work.result();
+    } catch (const wxl::async::system_exception&) {
+        return true;
+    } catch (...) {
+    }
+    return false;
+}
+
+double fontSizeOnDisk(const Workspace& ws) {
+    Settings onDiskSettings;
+    readSettings(onDisk(ws.settingsPath()), onDiskSettings);
+    return onDiskSettings.fontSize.get();
+}
+
+uint32_t placeOnDisk(const Workspace& ws, u16_view guid) {
+    return parseBookState(onDisk(ws.statePath(guid))).charOffset;
+}
+
+BookState placeAt(uint32_t charOffset) {
+    BookState state;
+    state.charOffset = charOffset;
+    return state;
+}
+
+/// Две записи настроек подряд: вторая не начинается, пока идёт первая, — запись
+/// реестра, о которой попросили после неё, ложится раньше: другой файл не ждёт;
+/// на диске — последняя.
+void testWorkspaceWritesOneAtATime() {
+    std::printf("\n=== очередь файла: две записи подряд ===\n");
+
+    Sandbox box("queue-two");
+    Workspace ws(box.root);
+
+    ws.settings.fontSize.set(21.0);
+    task<> first = ws.saveSettings();
+    ws.settings.fontSize.set(22.0);
+    task<> second = ws.saveSettings();
+    task<> library = ws.saveLibrary();
+
+    step();
+    check(first.done() && !second.done() && !library.done(), "первая легла, вторая ждёт");
+    step();
+    check(library.done() && !second.done(),
+          "реестр, о котором попросили позже, лёг раньше второй: она не начиналась, пока шла первая");
+    step();
+    check(second.done(), "вторая легла за ними");
+
+    first.result();
+    second.result();
+    library.result();
+    check(fontSizeOnDisk(ws) == 22.0, "на диске — последняя");
+}
+
+/// Четыре записи подряд: три ждущие сливаются в одну — последнюю; средние на
+/// диск не попадают, и ответ всем приходит от неё, в порядке просьб.
+void testWorkspaceWaitingWritesMerge() {
+    std::printf("\n=== очередь файла: ждущие записи сливаются ===\n");
+
+    Sandbox box("queue-merge");
+    Workspace ws(box.root);
+    std::vector<int> order;
+
+    ws.settings.fontSize.set(21.0);
+    task<> a = noted(ws.saveSettings(), order, 1);
+    ws.settings.fontSize.set(22.0);
+    task<> b = noted(ws.saveSettings(), order, 2);
+    ws.settings.fontSize.set(23.0);
+    task<> c = noted(ws.saveSettings(), order, 3);
+    ws.settings.fontSize.set(24.0);
+    task<> d = noted(ws.saveSettings(), order, 4);
+    task<> library = ws.saveLibrary();
+
+    step();
+    check(order == std::vector<int>{1}, "первая отвечена");
+    step();
+    check(library.done() && order == std::vector<int>{1}, "три другие ждут одной записи");
+    step();
+    check(order == (std::vector<int>{1, 2, 3, 4}), "одна запись отвечает всем трём, в порядке просьб");
+    check(a.done() && b.done() && c.done() && d.done(), "все четыре кончились");
+    check(fontSizeOnDisk(ws) == 24.0, "на диске — последняя: средних операций не было");
+}
+
+/// Продолжение ответа просит тот же файл, пока с той же записью ехал ещё
+/// один: просьба встаёт в очередь и получает ход, когда ответят всем.
+void testWorkspaceAnswerAsksAgain() {
+    std::printf("\n=== очередь файла: продолжение ответа пишет тот же файл ===\n");
+
+    Sandbox box("queue-again");
+    Workspace ws(box.root);
+    std::optional<task<>> again;
+
+    ws.settings.fontSize.set(21.0);
+    task<> a = ws.saveSettings();
+    ws.settings.fontSize.set(22.0);
+    task<> b1 = thenAgain(ws.saveSettings(), ws, 25.0, again);
+    ws.settings.fontSize.set(23.0);
+    task<> b2 = ws.saveSettings();
+    ws.settings.fontSize.set(24.0);
+    task<> b3 = ws.saveSettings();
+
+    step();   // первая легла; b3 пишет — b1 и b2 едут с ней
+    check(a.done() && !b3.done(), "пишет последняя из ждавших");
+    step();   // b3 легла: ответы b1 (оно просит снова) и b2, затем ход файла
+    check(b1.done() && b2.done() && b3.done(), "отвечены все трое");
+    check(again && !again->done(), "просьба из ответа получила ход");
+    step();
+    check(again && again->done() && fontSizeOnDisk(ws) == 25.0, "и легла: на диске — она");
+    a.result();
+}
+
+/// Последний ответ просит две записи подряд: первая идёт сразу — у файла
+/// никого, — вторая ждёт её, а не начинается рядом: ход файла не отдают, пока
+/// у него идёт операция.
+void testWorkspaceAnswerAsksTwice() {
+    std::printf("\n=== очередь файла: последний ответ пишет дважды ===\n");
+
+    Sandbox box("queue-twice");
+    Workspace ws(box.root);
+    std::optional<task<>> first;
+    std::optional<task<>> second;
+
+    ws.settings.fontSize.set(21.0);
+    task<> a = ws.saveSettings();
+    ws.settings.fontSize.set(22.0);
+    task<> b = thenTwice(ws.saveSettings(), ws, first, second);
+    ws.settings.fontSize.set(23.0);
+    task<> c = ws.saveSettings();
+
+    step();   // первая легла; c пишет, b едет с ней
+    step();   // c легла: ответ b — его первая запись идёт, вторая ждёт
+    check(b.done() && c.done() && first && second && !first->done() && !second->done(), "первая идёт, вторая ждёт");
+    task<> library = ws.saveLibrary();
+    step();
+    check(first->done() && !second->done(), "первая легла");
+    step();
+    check(library.done() && !second->done(),
+          "реестр, о котором попросили после обеих, лёг раньше второй: она не начиналась, пока шла первая");
+    step();
+    check(second->done() && fontSizeOnDisk(ws) == 42.0, "на диске — последняя");
+    a.result();
+    library.result();
+}
+
+/// Сбой записи — тем, чьи байты она несла, и только им: легшая раньше
+/// остаётся легшей, следующая — новая попытка. Препятствие — каталог на месте
+/// временного файла — рабочий поток ставит между первой записью и второй.
+void testWorkspaceWriteFailureGoesToThoseItCarried() {
+    std::printf("\n=== очередь файла: сбой — тем, чьи байты не легли ===\n");
+
+    Sandbox box("queue-failure");
+    Workspace ws(box.root);
+    std::vector<int> order;
+
+    const u16_text guid = newGuid();
+    std::filesystem::path obstacle = ws.statePath(guid);
+    obstacle += L".tmp";
+
+    task<> a = noted(ws.saveState(guid, placeAt(100)), order, 1);
+    task<> blocking = makeDirectoryOnWorker(obstacle);
+    task<> b = noted(ws.saveState(guid, placeAt(200)), order, 2);
+    task<> c = noted(ws.saveState(guid, placeAt(300)), order, 3);
+
+    step();   // a легла; c пишет, b едет с ней
+    step();   // препятствие
+    step();   // c не легла
+    check(order == (std::vector<int>{1, -2, -3}), "a легла; b и c — сбой записи, которая их несла");
+    check(failedOnDisk(b) && failedOnDisk(c), "сбой системы, а не отмена");
+    a.result();
+    blocking.result();
+    check(placeOnDisk(ws, guid) == 100, "на диске — то, что легло");
+
+    std::filesystem::remove_all(obstacle);
+    run(ws.saveState(guid, placeAt(400)));
+    check(placeOnDisk(ws, guid) == 400, "следующая запись — новая попытка, и она ложится");
+}
+
+/// Чтение видит записи, о которых попросили раньше него, — полка, показанная
+/// сразу за записью места, видит записанное; запись ждёт чтения того же
+/// файла: открытый им файл не дал бы себя заменить.
+void testWorkspaceReadsAfterWrites() {
+    std::printf("\n=== очередь файла: чтение после записей ===\n");
+
+    Sandbox box("queue-reads");
+    Workspace ws(box.root);
+    const u16_text guid = newGuid();
+
+    task<> a = ws.saveState(guid, placeAt(100));
+    task<> b = ws.saveState(guid, placeAt(200));
+    task<BookState> reading = ws.readState(guid, never);
+    task<> library = ws.saveLibrary();
+
+    step();   // a легла, b пишет
+    step();   // реестр
+    check(library.done() && !reading.done(), "чтение ждёт записей, о которых попросили раньше");
+    step();   // b легла, чтение идёт
+    step();
+    check(reading.done() && reading.result().charOffset == 200, "и видит последнюю из них");
+
+    task<BookState> again = ws.readState(guid, never);
+    task<> c = ws.saveState(guid, placeAt(300));
+    task<> libraryAgain = ws.saveLibrary();
+
+    step();   // чтение вернулось, c пишет
+    step();   // реестр
+    check(libraryAgain.done() && !c.done(), "запись ждёт чтения своего файла");
+    step();
+    check(c.done() && again.result().charOffset == 200 && placeOnDisk(ws, guid) == 300, "и ложится за ним");
+    a.result();
+    b.result();
+    library.result();
+    libraryAgain.result();
+}
+
+/// Запись, сменившая ждущую, встаёт на её место: чтение, о котором попросили
+/// после сменённой, видит её байты или новее, а не старше.
+void testWorkspaceNewerWriteTakesPlace() {
+    std::printf("\n=== очередь файла: новая запись — на место сменённой ===\n");
+
+    Sandbox box("queue-place");
+    Workspace ws(box.root);
+    const u16_text guid = newGuid();
+
+    task<> a = ws.saveState(guid, placeAt(100));
+    task<> b = ws.saveState(guid, placeAt(200));
+    task<BookState> reading = ws.readState(guid, never);
+    task<> c = ws.saveState(guid, placeAt(300));
+    task<> library = ws.saveLibrary();
+
+    step();   // a легла; c — на месте b — раньше чтения
+    step();   // реестр
+    check(library.done() && !reading.done() && !c.done(), "чтение ещё ждёт");
+    step();   // c легла, b отвечена, чтение идёт
+    check(b.done() && c.done() && !reading.done(), "запись на месте b прошла первой");
+    step();
+    check(reading.done() && reading.result().charOffset == 300, "чтение, просившее после b, видит не старше b");
+    a.result();
+}
+
+/// Чтение, которому сказали кончиться в очереди, не обрывается: оно кончается
+/// отменой, когда до него дошёл ход, — и отдаёт ход дальше; под отменённым
+/// токеном оно в очередь и не встаёт.
+void testWorkspaceCanceledReadPassesTurn() {
+    std::printf("\n=== очередь файла: отменённое чтение отдаёт ход ===\n");
+
+    Sandbox box("queue-cancel");
+    Workspace ws(box.root);
+    const u16_text guid = newGuid();
+
+    cancellation_source source;
+    task<> a = ws.saveState(guid, placeAt(100));
+    task<BookState> reading = ws.readState(guid, source.token());
+    task<> b = ws.saveState(guid, placeAt(200));
+    source.cancel();
+    check(!reading.done(), "чтение в очереди не оборвано: оно кончится с записью перед ним");
+
+    step();   // a легла: ход чтению — оно кончается отменой, ход записи за ним
+    check(a.done() && reading.done() && !b.done(), "чтение кончилось на своём ходу, запись за ним пошла");
+    check(canceled(std::move(reading)), "отменой, а не байтами");
+    step();
+    check(b.done() && placeOnDisk(ws, guid) == 200, "запись за ним легла");
+
+    cancellation_source before;
+    before.cancel();
+    task<> c = ws.saveState(guid, placeAt(300));
+    check(canceled(ws.readState(guid, before.token())), "под отменённым токеном чтение очереди не ждёт");
+    run(std::move(c));
+}
+
+/// Кадр, брошенный в очереди: ждущая запись отдаёт свои байты той, что ехала
+/// с ней, — на её месте; идущая — ход следующей, а ехавшим с ней — отмену.
+/// Очередь не встаёт ни в одном случае.
+void testWorkspaceDroppedTurns() {
+    std::printf("\n=== очередь файла: брошенные кадры ===\n");
+
+    Sandbox box("queue-dropped");
+    Workspace ws(box.root);
+
+    ws.settings.fontSize.set(21.0);
+    task<> a = ws.saveSettings();
+    ws.settings.fontSize.set(22.0);
+    task<> b = ws.saveSettings();
+    {
+        ws.settings.fontSize.set(23.0);
+        task<> dropped = ws.saveSettings();
+    }
+
+    step();   // a легла, b пишет
+    step();
+    check(a.done() && b.done() && fontSizeOnDisk(ws) == 23.0, "байты брошенной ждущей несёт та, что ехала с ней");
+
+    ws.settings.fontSize.set(31.0);
+    task<> p = ws.saveSettings();
+    ws.settings.fontSize.set(32.0);
+    task<> q = ws.saveSettings();
+    ws.settings.fontSize.set(33.0);
+    std::optional<task<>> carrier(ws.saveSettings());
+    step();   // p легла; пишет третья, q едет с ней
+    ws.settings.fontSize.set(34.0);
+    task<> e = ws.saveSettings();
+    carrier.reset();   // брошена посреди своей записи
+    check(q.done() && canceled(std::move(q)), "ехавшей с ней — отмена: легли ли байты, не скажет никто");
+    check(!e.done(), "ход ушёл к следующей");
+    step();   // брошенная операция вернулась, петля её удалила
+    step();
+    check(e.done(), "и кончилась: очередь не встала");
+    // Брошенная операция доделывается одна и может ещё держать файл, когда
+    // следующая начнётся: исход следующей зависит от того, где идут операции,
+    // и здесь не проверяется.
+    static_cast<void>(failedOnDisk(e));
+    p.result();
+}
+
 }  // namespace
 
 // Тесты других слоёв модели — каждый в своём файле.
@@ -989,6 +1355,15 @@ int main() {
     testWorkspaceOpenStopsOutsideWrites();
     testWorkspaceSaveSkinStopsBeforeWrites();
     testWorkspaceFolderKeepsWhatShelfShowed();
+    testWorkspaceWritesOneAtATime();
+    testWorkspaceWaitingWritesMerge();
+    testWorkspaceAnswerAsksAgain();
+    testWorkspaceAnswerAsksTwice();
+    testWorkspaceWriteFailureGoesToThoseItCarried();
+    testWorkspaceReadsAfterWrites();
+    testWorkspaceNewerWriteTakesPlace();
+    testWorkspaceCanceledReadPassesTurn();
+    testWorkspaceDroppedTurns();
 
     runPiecesTests();
     // Поток страниц верстает настоящую книгу: DirectWrite и WIC — после COM.
