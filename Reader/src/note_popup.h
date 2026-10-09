@@ -34,7 +34,7 @@ public:
     explicit NotePopup(const wxl::Compositor& compositor);
 
     /// Элемент, который кладут поверх полосы набора.
-    const wxl::UIElement& root() const { return root_.value(); }
+    const wxl::UIElement& root() const { return root_; }
 
     /// Показывает тело сноски, стараясь встать рядом с её знаком.
     ///
@@ -51,10 +51,12 @@ private:
     void draw(const Theme& theme, float width, float height, float scale);
 
     wxl::Compositor compositor_;
-    nullable<wxl::Border> root_ = nullptr;
-    nullable<wxl::ScrollViewer> scroll_ = nullptr;
-    nullable<wxl::Grid> paper_ = nullptr;   ///< подложка ростом с текст сноски
-    nullable<wxl::SpriteVisual> sprite_ = nullptr;
+
+    // Контролы — поля, построенные вместе со всплывашкой: дети выше корня.
+    wxl::Grid paper_;   ///< подложка ростом с текст сноски
+    wxl::SpriteVisual sprite_;
+    wxl::ScrollViewer scroll_;
+    wxl::Border root_;
     std::optional<wxl::DrawingSurface> surface_;
 
     typography::NoteLayout body_;   ///< тело показанной сноски; шрифты — у движка книги

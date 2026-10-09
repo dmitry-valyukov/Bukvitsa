@@ -8,6 +8,7 @@
 #include "bukvitsa/reader/book_index.h"
 
 #include "Bind.h"
+#include "look.h"
 
 import wxl.fmt;
 
@@ -18,34 +19,100 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Ящик, а не бумага: свои цвета при любой теме страницы. wxl:: — потому что
+// Обстановка ящиков — общая с мастером обложек (look.h); своё у панели —
+// тихий тон подписей и отметка того, что выбрано сейчас. wxl:: — потому что
 // rgb() темы страницы (theme.h) даёт цвет Direct2D и здесь заслонил бы этот.
-constexpr Color kChrome = wxl::rgba(30, 30, 34, 0.95);   ///< слегка прозрачный — под ним текст
-constexpr Color kInk = wxl::rgb(232, 228, 220);
-constexpr Color kDim = wxl::rgb(154, 150, 142);
-constexpr Color kEdge = wxl::rgba(255, 255, 255, 0.2);
-constexpr Color kActive = wxl::rgba(255, 255, 255, 0.132);
+constexpr Color kChromeDim = wxl::rgb(154, 150, 142);
+constexpr Color kChromeActive = wxl::rgba(255, 255, 255, 0.132);
 
 constexpr double kWidth = 380;
-
-/// Подпись над группой настроек: тише текста и с отбивкой сверху. Не лямбда
-/// внутри одного строителя, потому что групп теперь две и собирают их разные
-/// функции — вкладка «Вид» и пересборка списка тем.
-TextBlock groupCaption(zstring_view said) {
-    using namespace wxl::dsl;
-
-    return TextBlock{
-        said,
-        fontSize = 13,
-        foreground = SolidColorBrush{kDim},
-        Margin{0, 12, 0, 2},
-    };
-}
 
 // Выезд: короткий, потому что панель открывают между двумя строчками текста и
 // ждать её не должны. Двести миллисекунд — предел, за которым появление
 // читается как задержка.
 constexpr auto kSlide = 180ms;
+
+// Вид панели. Теги — с квалификатором `dsl::`: открытые на уровне файла, они
+// спрятали бы обычные слова (C4459); у константы нет строителя, где их открыть.
+
+/// Ящик у левой или правой стенки окна: тёмный, во всю высоту, с кромкой со
+/// стороны страницы; щелчки и колесо по себе гасит.
+auto drawerLook(HorizontalAlignment side) {
+    using namespace wxl::dsl;
+
+    // Кромка у ящика одна — та, что смотрит на страницу. Отбивку от стенок
+    // правому ящику даёт сам ящик; у левого её несут его ряды.
+    // Не left: это имя тега DSL, и локальная переменная его прятала бы.
+    const bool onLeft = side == HorizontalAlignment::Left;
+    const double pad = onLeft ? 0.0 : 12.0;
+
+    return Preset {
+        horizontalAlignment = side,
+        vAlign.stretch,
+        width = kWidth,
+        background = kChrome,
+        borderBrush = kChromeEdge,
+        BorderThickness{onLeft ? 0.0 : 1.0, 0.0, onLeft ? 1.0 : 0.0, 0.0},
+        Padding{pad, pad},
+
+        // Ящик — не страница: щелчок и колесо по его пустому месту здесь и
+        // кончаются, иначе они всплыли бы к полосе, и та листала бы книгу под
+        // открытой панелью и закрывала её правой кнопкой.
+        onPointerPressed = [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
+        onPointerWheelChanged = [](Object const&, PointerRoutedEventArgs& args) {
+            args.handled(true);
+        },
+    };
+}
+
+/// Кромка и скругление кнопки ящика; своей заливки нет — под кнопкой ящик.
+constexpr auto drawerFrameLook = Preset {
+    dsl::background = colors.transparent,
+    dsl::borderBrush = kChromeEdge,
+    BorderThickness{1},
+    CornerRadius{4},
+};
+
+/// Кнопка ящика светлыми чернилами — выход на полку, вкладки, закладка,
+/// темы и обложки.
+constexpr auto drawerButtonLook = Preset{dsl::foreground = kChromeInk, drawerFrameLook};
+
+/// Кнопка ящика тише — то, что рядом с главным: глифы у обложек и
+/// «Добавить обложку…».
+constexpr auto drawerQuietLook = Preset{dsl::foreground = kChromeDim, drawerFrameLook};
+
+/// Выбор темы или обложки в правом ящике. Выбранную отмечает markTheme() — тем
+/// же цветом, что открытую вкладку.
+constexpr auto themeChipLook = Preset{drawerButtonLook, dsl::fontSize = 13, Padding{12, 6}};
+
+/// Кнопка-глиф рядом с обложкой — шестерёнка и корзина. Их две, и обе
+/// одинаковы во всём, кроме глифа, подсказки и того, что делают. Слова на
+/// лице у неё нет, а кнопка без текста обязана иметь тултип (правило
+/// дизайна) — его ставит употребление, и он называет конкретную обложку, а
+/// не действие вообще. Не constexpr: имя шрифта — строка, которую надо
+/// завести.
+auto const glyphButtonLook = Preset {
+    drawerQuietLook,
+    dsl::fontFamily = FontFamily{u"Segoe Fluent Icons"},
+    dsl::fontSize = 13,
+    Padding{8, 6},
+};
+
+/// Подпись над группой настроек — «Тема», «Обложки», «Кегль»…: тише текста и
+/// с отбивкой сверху.
+constexpr auto groupCaptionLook = Preset {
+    dsl::fontSize = 13,
+    dsl::foreground = kChromeDim,
+    Margin{0, 12, 0, 2},
+};
+
+/// Пояснение над списком вкладки — «Нашлось: 3», «Закладок пока нет.»: тихое
+/// и с переносом.
+constexpr auto drawerNoteLook = Preset {
+    dsl::fontSize = 13,
+    dsl::foreground = kChromeDim,
+    dsl::textWrapping.wrap,
+};
 
 }  // namespace
 
@@ -53,11 +120,18 @@ constexpr auto kSlide = 180ms;
 // меняют и клавишей T мимо панели. Слушатель ставится в списке инициализации:
 // cookie_t не присваивается, а срабатывает он только на смену поля — не раньше,
 // чем дерево панели собрано.
+//
+// Контролы панели — поля, построенные вместе с ней; buildTree() их одевает и
+// складывает в дерево. Визуалы ящиков — здесь же, от самих ящиков: элемент
+// отдаёт свой визуал и пустым.
 ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings& settings)
     : compositor_(compositor),
       view_(view),
       prefs_(settings),
-      themeWatch_(view.theme.on_change([this](int) noexcept { markTheme(); })) {
+      themeWatch_(view.theme.on_change([this](int) noexcept { markTheme(); })),
+      navigationVisual_(slidingVisual(navigation_, -static_cast<float>(kWidth))),
+      settingsVisual_(slidingVisual(settings_, static_cast<float>(kWidth))),
+      linear_(compositor_.createLinearEasingFunction()) {
     buildTree();
 }
 
@@ -73,7 +147,8 @@ void ReaderPanel::buildTree() {
     // Выход на полку — первым, отдельной строкой над вкладками. Вкладки
     // говорят о книге, которая открыта; эта кнопка — о том, чтобы открыть
     // другую, и стоять в одном ряду с ними ей не за что.
-    auto shelf = Button{
+    auto const shelf = Button {
+        drawerButtonLook,
         row = 0,
         u"←  Моя библиотека",
         hAlign.stretch,
@@ -81,18 +156,15 @@ void ReaderPanel::buildTree() {
         fontSize = 14,
         Margin{12, 12, 12, 0},
         Padding{12, 8},
-        foreground = SolidColorBrush{kInk},
-        background = SolidColorBrush{colors.transparent},
-        borderBrush = SolidColorBrush{kEdge},
-        BorderThickness{1},
-        CornerRadius{4},
         onClick =
             [this](Object const&, RoutedEventArgs&) {
                 if (onLibrary) onLibrary();
             },
     };
 
-    auto strip = StackPanel{
+    // Вкладки. Открытую отмечает showTab() — заливкой, по кнопкам из
+    // tabButtons_ тем же счётом, что у страниц.
+    auto const strip = StackPanel {
         row = 1,
         Orientation::Horizontal,
         Margin{12, 12, 12, 6},
@@ -100,23 +172,34 @@ void ReaderPanel::buildTree() {
     for (auto&& [said, tab] : {std::pair{u"Оглавление", Tab::Contents},
                                   std::pair{u"Поиск", Tab::Search},
                                   std::pair{u"Закладки", Tab::Bookmarks}}) {
-        auto button = tabButton(said, tab);
+        auto const button = Button {
+            drawerButtonLook,
+            said,
+            fontSize = 14,
+            Margin{0, 0, 6, 0},
+            Padding{12, 6},
+            onClick = [this, tab = tab](Object const&, RoutedEventArgs&) { open(tab); },
+        };
         tabButtons_.push_back(button);
         strip.children().append(button);
     }
 
-    pages_ = Grid{row = 2, Margin{12, 6, 12, 12}};
+    Apply{pages_, row = 2, Margin{12, 6, 12, 12}};
     for (const UIElement& page : tabPages_) {
-        pages_.value().children().append(page);
+        pages_.children().append(page);
     }
 
-    navigation_ = box(HorizontalAlignment::Left, Grid{
-                                                     rowDefinitions = u"auto,auto,*",
-                                                     shelf,
-                                                     strip,
-                                                     pages_.value(),
-                                                 });
-    settings_ = box(HorizontalAlignment::Right, buildSettings());
+    Apply {
+        navigation_,
+        drawerLook(HorizontalAlignment::Left),
+        child = Grid {
+            rowDefinitions = u"auto,auto,*",
+            shelf,
+            strip,
+            pages_,
+        },
+    };
+    Apply{settings_, drawerLook(HorizontalAlignment::Right), child = buildSettings()};
 
     // Оба ящика — в одном холсте с прозрачной, но настоящей кистью: без неё
     // холст не участвует в проверке попадания, а с ней ловит щелчок мимо
@@ -124,56 +207,22 @@ void ReaderPanel::buildTree() {
     // Сам Flyout не подошёл: попапов со свет-дисмиссом у WinUI в один момент
     // один, второй закрывает первый. Пока панель закрыта, холст свёрнут, и
     // страница между ящиками остаётся страницей.
-    root_ = Grid{
+    Apply {
+        root_,
         visibility = Visibility::Collapsed,
-        background = SolidColorBrush{colors.transparent},
-        navigation_.value(),
-        settings_.value(),
+        background = colors.transparent,
+        navigation_,
+        settings_,
+        onPointerPressed =
+            [this](Object const&, PointerRoutedEventArgs& args) {
+                // Сюда доходят только щелчки по самому холсту: щелчки по ящикам
+                // они же и гасят.
+                close();
+                args.handled(true);
+            },
     };
-    root_.value().add_onPointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
-        // Сюда доходят только щелчки по самому холсту: щелчки по ящикам они
-        // же и гасят.
-        close();
-        args.handled(true);
-    });
-
-    linear_ = compositor_.createLinearEasingFunction();
-    navigationVisual_ = slidingVisual(navigation_.value(), -static_cast<float>(kWidth));
-    settingsVisual_ = slidingVisual(settings_.value(), static_cast<float>(kWidth));
 
     showTab(Tab::Contents);
-}
-
-Border ReaderPanel::box(HorizontalAlignment side, const UIElement& inside) {
-    using namespace wxl::dsl;
-
-    // Кромка у ящика одна — та, что смотрит на страницу. Отбивку от стенок
-    // правому ящику даёт сам ящик; у левого её несут его ряды.
-    // Не left: это имя тега DSL, и локальная переменная его прятала бы.
-    const bool onLeft = side == HorizontalAlignment::Left;
-    const double pad = onLeft ? 0.0 : 12.0;
-
-    auto border = Border{
-        horizontalAlignment = side,
-        vAlign.stretch,
-        width = kWidth,
-        background = SolidColorBrush{kChrome},
-        borderBrush = SolidColorBrush{kEdge},
-        BorderThickness{onLeft ? 0.0 : 1.0, 0.0, onLeft ? 1.0 : 0.0, 0.0},
-        Padding{pad, pad},
-        child = inside,
-    };
-
-    // Ящик — не страница: щелчок и колесо по его пустому месту здесь и
-    // кончаются, иначе они всплыли бы к полосе, и та листала бы книгу под
-    // открытой панелью и закрывала её правой кнопкой.
-    border.add_onPointerPressed([](Object const&, PointerRoutedEventArgs& args) {
-        args.handled(true);
-    });
-    border.add_onPointerWheelChanged([](Object const&, PointerRoutedEventArgs& args) {
-        args.handled(true);
-    });
-    return border;
 }
 
 Visual ReaderPanel::slidingVisual(const UIElement& box, float offscreen) {
@@ -188,54 +237,34 @@ Visual ReaderPanel::slidingVisual(const UIElement& box, float offscreen) {
 void ReaderPanel::slide(Visual& visual, float x) {
     auto animation = compositor_.createVector3KeyFrameAnimation();
     animation.duration(kSlide);
-    animation.insertKeyFrame(1.0f, Vector3{x, 0.0f, 0.0f}, linear_.value());
+    animation.insertKeyFrame(1.0f, Vector3{x, 0.0f, 0.0f}, linear_);
     visual.startAnimation(L"Translation", animation);
-}
-
-Button ReaderPanel::tabButton(zstring_view said, Tab tab) {
-    using namespace wxl::dsl;
-
-    return Button{
-        said,
-        fontSize = 14,
-        Margin{0, 0, 6, 0},
-        Padding{12, 6},
-        foreground = SolidColorBrush{kInk},
-        background = SolidColorBrush{colors.transparent},
-        borderBrush = SolidColorBrush{kEdge},
-        BorderThickness{1},
-        CornerRadius{4},
-        onClick = [this, tab](Object const&, RoutedEventArgs&) { open(tab); },
-    };
 }
 
 Button ReaderPanel::listItem(zstring_view said, zstring_view under, float indent,
                              std::function<void()> action) {
     using namespace wxl::dsl;
 
-    auto lines = StackPanel{
-        TextBlock{
+    auto const lines = StackPanel {
+        TextBlock {
             said,
             fontSize = 14,
-            foreground = SolidColorBrush{kInk},
-            textWrapping.wrap,
-            maxLines = 2,
-            textTrimming.characterEllipsis,
+            foreground = kChromeInk,
+            twoLinesLook,
         },
     };
 
     if (!under.empty()) {
-        lines.children().append(TextBlock{
+        lines.children().append(TextBlock {
             under,
             fontSize = 12,
-            foreground = SolidColorBrush{kDim},
+            foreground = kChromeDim,
             Margin{0, 2, 0, 0},
-            maxLines = 1,
-            textTrimming.characterEllipsis,
+            oneLineLook,
         });
     }
 
-    return Button{
+    return Button {
         // Лицо строки — панель из надписей, а не слово, и чтецу экрана кнопка с
         // такой начинкой безымянна: имя кнопки берётся из содержимого, только
         // когда оно строка. Подсказки при наведении строке не нужно — её слова
@@ -245,8 +274,8 @@ Button ReaderPanel::listItem(zstring_view said, zstring_view under, float indent
         horizontalContentAlignment = HorizontalAlignment::Stretch,
         Margin{indent, 1, 0, 1},
         Padding{8, 6},
-        background = SolidColorBrush{colors.transparent},
-        borderBrush = SolidColorBrush{colors.transparent},
+        background = colors.transparent,
+        borderBrush = colors.transparent,
         BorderThickness{0},
         CornerRadius{4},
         onClick = [action](Object const&, RoutedEventArgs&) { if (action) action(); },
@@ -259,50 +288,43 @@ Button ReaderPanel::listItem(zstring_view said, zstring_view under, float indent
 UIElement ReaderPanel::buildContents() {
     using namespace wxl::dsl;
 
-    contentsList_ = StackPanel{};
-    return ScrollViewer{
+    return ScrollViewer {
         horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
-        content = contentsList_.value(),
+        content = contentsList_,
     };
 }
 
 UIElement ReaderPanel::buildSearch() {
     using namespace wxl::dsl;
 
-    searchBox_ = TextBox{
+    Apply {
+        searchBox_,
         row = 0,
         // Подсказка в пустом поле — не имя: чтецу экрана поле зовётся отдельно.
         automationName = u"Поиск по книге",
         placeholderText = u"Что искать",
         Margin{0, 0, 0, 8},
+
+        // Поиск по Enter, а не по каждой букве: искать по одной букве в романе —
+        // это тысячи находок, из которых читателю не нужна ни одна.
+        onKeyDown =
+            [this](Object const&, KeyRoutedEventArgs& args) {
+                if (args.key() != VirtualKey::Enter) return;
+                runSearch();
+                args.handled(true);
+            },
     };
 
-    // Поиск по Enter, а не по каждой букве: искать по одной букве в романе —
-    // это тысячи находок, из которых читателю не нужна ни одна.
-    searchBox_.value().add_onKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
-        if (args.key() != VirtualKey::Enter) return;
-        runSearch();
-        args.handled(true);
-    });
+    Apply{searchNote_, drawerNoteLook, row = 1, u"Введите слово и нажмите Enter."};
 
-    searchNote_ = TextBlock{
-        row = 1,
-        u"Введите слово и нажмите Enter.",
-        fontSize = 13,
-        foreground = SolidColorBrush{kDim},
-        textWrapping.wrap,
-    };
-
-    searchList_ = StackPanel{};
-
-    return Grid{
+    return Grid {
         rowDefinitions = u"auto,auto,*",
-        searchBox_.value(),
-        searchNote_.value(),
-        ScrollViewer{
+        searchBox_,
+        searchNote_,
+        ScrollViewer {
             row = 2,
             horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
-            content = searchList_.value(),
+            content = searchList_,
         },
     };
 }
@@ -310,34 +332,24 @@ UIElement ReaderPanel::buildSearch() {
 UIElement ReaderPanel::buildBookmarks() {
     using namespace wxl::dsl;
 
-    bookmarkNote_ = TextBlock{
-        row = 1,
-        fontSize = 13,
-        foreground = SolidColorBrush{kDim},
-        textWrapping.wrap,
-    };
+    Apply{bookmarkNote_, drawerNoteLook, row = 1};
 
-    bookmarkList_ = StackPanel{};
-
-    return Grid{
+    return Grid {
         rowDefinitions = u"auto,auto,*",
-        Button{
+        Button {
+            drawerButtonLook,
             row = 0,
             u"Заложить эту страницу",
             hAlign.stretch,
             Margin{0, 0, 0, 8},
-            foreground = SolidColorBrush{kInk},
-            background = SolidColorBrush{kActive},
-            borderBrush = SolidColorBrush{kEdge},
-            BorderThickness{1},
-            CornerRadius{4},
+            background = kChromeActive,
             onClick = [this](Object const&, RoutedEventArgs&) { toggleBookmark(); },
         },
-        bookmarkNote_.value(),
-        ScrollViewer{
+        bookmarkNote_,
+        ScrollViewer {
             row = 2,
             horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
-            content = bookmarkList_.value(),
+            content = bookmarkList_,
         },
     };
 }
@@ -345,7 +357,6 @@ UIElement ReaderPanel::buildBookmarks() {
 UIElement ReaderPanel::buildSettings() {
     using namespace wxl::dsl;
 
-    themesPanel_ = StackPanel{};
     refreshThemes();
 
     // Ползунок, а не пара кнопок: кегль подбирают, а не выставляют числом, и
@@ -361,9 +372,9 @@ UIElement ReaderPanel::buildSettings() {
     // Одни слова на подпись и имя, поэтому группа собирается здесь целиком.
     auto setting = [](zstring_view said, double low, double high, double step,
                       observable<double>& field) {
-        return StackPanel{
-            groupCaption(said),
-            Slider{
+        return StackPanel {
+            TextBlock{groupCaptionLook, said},
+            Slider {
                 automationName = said,
                 minimum = low,
                 maximum = high,
@@ -374,21 +385,21 @@ UIElement ReaderPanel::buildSettings() {
         };
     };
 
-    return ScrollViewer{
+    return ScrollViewer {
         horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
-        content = StackPanel{
+        content = StackPanel {
             // Подписи «Тема» и «Обложки» ставит сама полоса набора: она знает,
             // где кончается одна группа и начинается другая, а собирается
             // заново при каждой смене реестра.
-            themesPanel_.value(),
+            themesPanel_,
             setting(u"Кегль", kFontSizeMin, kFontSizeMax, kFontSizeStep, prefs_.fontSize),
             setting(u"Интерлиньяж", kLineHeightMin, kLineHeightMax, kLineHeightStep,
                     prefs_.lineHeight),
             setting(u"Поля", kMarginMin, kMarginMax, kMarginStep, prefs_.margin),
-            TextBlock{
+            TextBlock {
                 u"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
                 fontSize = 12,
-                foreground = SolidColorBrush{kDim},
+                foreground = kChromeDim,
                 Margin{0, 16, 0, 0},
                 textWrapping.wrap,
             },
@@ -406,7 +417,7 @@ void ReaderPanel::showTab(Tab tab) {
     }
     for (size_t i = 0; i < tabButtons_.size(); ++i) {
         tabButtons_[i].background(
-            SolidColorBrush{static_cast<size_t>(tab) == i ? kActive : colors.transparent});
+            SolidColorBrush{static_cast<size_t>(tab) == i ? kChromeActive : colors.transparent});
     }
 }
 
@@ -421,7 +432,7 @@ void ReaderPanel::open(Tab tab) {
 
     show();
 
-    if (tab == Tab::Search) searchBox_.value().focus(FocusState::Programmatic);
+    if (tab == Tab::Search) searchBox_.focus(FocusState::Programmatic);
 }
 
 void ReaderPanel::toggle() {
@@ -436,9 +447,9 @@ void ReaderPanel::show() {
     if (open_) return;
     open_ = true;
 
-    root_.value().visibility(Visibility::Visible);
-    slide(navigationVisual_.value(), 0.0f);
-    slide(settingsVisual_.value(), 0.0f);
+    root_.visibility(Visibility::Visible);
+    slide(navigationVisual_, 0.0f);
+    slide(settingsVisual_, 0.0f);
 }
 
 void ReaderPanel::close() {
@@ -451,11 +462,11 @@ void ReaderPanel::close() {
     // последняя из двух анимаций в нём закончилась.
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
 
-    slide(navigationVisual_.value(), -static_cast<float>(kWidth));
-    slide(settingsVisual_.value(), static_cast<float>(kWidth));
+    slide(navigationVisual_, -static_cast<float>(kWidth));
+    slide(settingsVisual_, static_cast<float>(kWidth));
 
     batch.add_onCompleted([this](Object const&, CompositionBatchCompletedEventArgs&) {
-        if (!open_) root_.value().visibility(Visibility::Collapsed);
+        if (!open_) root_.visibility(Visibility::Collapsed);
     });
     batch.end();
 
@@ -472,18 +483,17 @@ void ReaderPanel::setState(BookState* state) {
 /* ---------------- содержимое вкладок ---------------- */
 
 void ReaderPanel::fillContents() {
-    contentsList_.value().children().clear();
+    contentsList_.children().clear();
 
     const sta_vector<ContentsEntry> contents = contentsOf(view_.blocks());
     if (contents.empty()) {
-        contentsList_.value().children().append(listItem(u"В этой книге нет заголовков", {}, 0,
-                                                         {}));
+        contentsList_.children().append(listItem(u"В этой книге нет заголовков", {}, 0, {}));
         return;
     }
 
     for (const ContentsEntry& entry : contents) {
         const uint32_t offset = entry.charOffset;
-        contentsList_.value().children().append(
+        contentsList_.children().append(
             // Заголовок оглавления — вид в текст блока, без нуля за ним: в разметку
             // он идёт строкой WinRT, которую мы и делаем сами.
             listItem(hstring{entry.title}, {}, std::min<float>(entry.level, 4) * 14.0f,
@@ -492,46 +502,46 @@ void ReaderPanel::fillContents() {
 }
 
 void ReaderPanel::fillBookmarks() {
-    bookmarkList_.value().children().clear();
+    bookmarkList_.children().clear();
 
     if (!state_ || state_->bookmarks.empty()) {
-        bookmarkNote_.value().text(u"Закладок пока нет.");
+        bookmarkNote_.text(u"Закладок пока нет.");
         return;
     }
 
-    bookmarkNote_.value().text({});
+    bookmarkNote_.text({});
 
     for (const Bookmark& mark : state_->bookmarks) {
         const uint32_t offset = mark.charOffset;
-        bookmarkList_.value().children().append(
+        bookmarkList_.children().append(
             listItem(mark.hint.empty() ? zstring_view{u"Закладка"} : zstring_view{mark.hint}, {}, 0,
                      [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
 
 void ReaderPanel::runSearch() {
-    searchList_.value().children().clear();
+    searchList_.children().clear();
 
     // Текст поля — чужой: пришёл из контрола строкой WinRT и в поиск идёт
     // проверенным (`searchQuery`). Строка держится, пока жив вид на неё.
-    const hstring typed = searchBox_.value().text();
+    const hstring typed = searchBox_.text();
     const std::optional<u16_view> needle = searchQuery(std::u16string_view(typed));
     if (!needle) {
-        searchNote_.value().text(u"Введите слово и нажмите Enter.");
+        searchNote_.text(u"Введите слово и нажмите Enter.");
         return;
     }
 
     const sta_vector<SearchHit> hits = searchBook(view_.blocks(), *needle);
     if (hits.empty()) {
-        searchNote_.value().text(core::format(u"«{}» в книге не нашлось.", *needle));
+        searchNote_.text(core::format(u"«{}» в книге не нашлось.", *needle));
         return;
     }
 
-    searchNote_.value().text(core::format(u"Нашлось: {}", hits.size()));
+    searchNote_.text(core::format(u"Нашлось: {}", hits.size()));
 
     for (const SearchHit& hit : hits) {
         const uint32_t offset = hit.charOffset;
-        searchList_.value().children().append(
+        searchList_.children().append(
             listItem(hit.context, {}, 0, [this, offset] { view_.goToCharOffset(offset); }));
     }
 }
@@ -551,61 +561,28 @@ void ReaderPanel::toggleBookmark() {
 void ReaderPanel::refreshThemes() {
     using namespace wxl::dsl;
 
-    themesPanel_.value().children().clear();
+    themesPanel_.children().clear();
     themeButtons_.clear();
-
-    // Индексы тем сквозные: сперва встроенные, затем обложки — ровно так их
-    // считает и полоса набора. markTheme() ходит по кнопкам тем же счётом.
-    auto themeButton = [this](zstring_view said, int index, Thickness gap) {
-        return Button{
-            said,
-            fontSize = 13,
-            Margin{gap},
-            Padding{12, 6},
-            foreground = SolidColorBrush{kInk},
-            background = SolidColorBrush{colors.transparent},
-            borderBrush = SolidColorBrush{kEdge},
-            BorderThickness{1},
-            CornerRadius{4},
-            onClick =
-                [this, index](Object const&, RoutedEventArgs&) { view_.setTheme(index); },
-        };
-    };
 
     // Тема — это ровный цвет бумаги, и таких три. Они коротки и помещаются в
     // строчку; фотография среди них не стоит больше — снимок носит обложка.
-    themesPanel_.value().children().append(groupCaption(u"Тема"));
+    //
+    // Индексы тем сквозные: сперва встроенные, затем обложки — ровно так их
+    // считает и полоса набора. markTheme() ходит по кнопкам тем же счётом.
+    themesPanel_.children().append(TextBlock{groupCaptionLook, u"Тема"});
 
-    auto builtins = StackPanel{Orientation::Horizontal};
+    auto const builtins = StackPanel{Orientation::Horizontal};
     for (int index = 0; index < kThemeCount; ++index) {
-        auto button = themeButton(kThemes[index].name, index, Thickness{0, 0, 6, 0});
+        auto const button = Button {
+            themeChipLook,
+            kThemes[index].name,
+            Margin{0, 0, 6, 0},
+            onClick = [this, index](Object const&, RoutedEventArgs&) { view_.setTheme(index); },
+        };
         themeButtons_.push_back(button);
         builtins.children().append(button);
     }
-    themesPanel_.value().children().append(builtins);
-
-    // Кнопка-глиф рядом с обложкой. Их две, и обе одинаковы во всём, кроме
-    // глифа, подсказки и того, что делают, — поэтому одно описание на двоих,
-    // а не два одинаковых подряд.
-    //
-    // Кнопка без текста обязана иметь тултип (правило дизайна) — и он
-    // называет конкретную обложку, а не действие вообще.
-    auto iconButton = [](zstring_view glyph, const u16_text& tip, auto action) {
-        return Button{
-            glyph,
-            fontFamily = FontFamily{u"Segoe Fluent Icons"},
-            toolTip = tip,
-            fontSize = 13,
-            Margin{6, 6, 0, 0},
-            Padding{8, 6},
-            foreground = SolidColorBrush{kDim},
-            background = SolidColorBrush{colors.transparent},
-            borderBrush = SolidColorBrush{kEdge},
-            BorderThickness{1},
-            CornerRadius{4},
-            onClick = [action](Object const&, RoutedEventArgs&) { action(); },
-        };
-    };
+    themesPanel_.children().append(builtins);
 
     // Обложки — по строке на каждую: имя даёт читатель, и в строчку они не
     // помещаются. Сперва системные, приехавшие с программой, потом заведённые
@@ -619,48 +596,60 @@ void ReaderPanel::refreshThemes() {
     // Спросить «точно ли» панель не может и не должна: окна у неё нет, а
     // удаление необратимо — вопрос задаёт приложение, которому принадлежат и
     // окно, и реестр.
-    themesPanel_.value().children().append(groupCaption(u"Обложки"));
+    themesPanel_.children().append(TextBlock{groupCaptionLook, u"Обложки"});
 
     const std::vector<Skin>& skins = view_.skins();
     for (size_t index = 0; index < skins.size(); ++index) {
-        auto button = themeButton(skins[index].name, kThemeCount + static_cast<int>(index),
-                                  Thickness{0, 6, 0, 0});
+        const int themeIndex = kThemeCount + static_cast<int>(index);
+        auto const button = Button {
+            themeChipLook,
+            skins[index].name,
+            Margin{0, 6, 0, 0},
+            onClick =
+                [this, themeIndex](Object const&, RoutedEventArgs&) { view_.setTheme(themeIndex); },
+        };
         themeButtons_.push_back(button);
 
         const u16_text skinName = skins[index].name;
 
-        auto line = StackPanel{
+        auto const line = StackPanel {
             Orientation::Horizontal,
             button,
-            iconButton(u"",   // шестерёнка Segoe Fluent Icons
-                       core::format(u"Настроить подложку «{}»", skinName),
-                       [this, skinName] {
-                           if (onEditSkin) onEditSkin(skinName);
-                       }),
+            Button {
+                glyphButtonLook,
+                u"",   // шестерёнка Segoe Fluent Icons
+                toolTip = core::format(u"Настроить подложку «{}»", skinName),
+                Margin{6, 6, 0, 0},
+                onClick =
+                    [this, skinName](Object const&, RoutedEventArgs&) {
+                        if (onEditSkin) onEditSkin(skinName);
+                    },
+            },
         };
 
         if (!skins[index].system) {
-            line.children().append(iconButton(u"",   // корзина оттуда же
-                                             core::format(u"Удалить обложку «{}»", skinName),
-                                             [this, skinName] {
-                                                 if (onDeleteSkin) onDeleteSkin(skinName);
-                                             }));
+            line.children().append(Button {
+                glyphButtonLook,
+                u"",   // корзина оттуда же
+                toolTip = core::format(u"Удалить обложку «{}»", skinName),
+                Margin{6, 6, 0, 0},
+                onClick =
+                    [this, skinName](Object const&, RoutedEventArgs&) {
+                        if (onDeleteSkin) onDeleteSkin(skinName);
+                    },
+            });
         }
 
-        themesPanel_.value().children().append(line);
+        themesPanel_.children().append(line);
     }
 
     // Дорога в мастер — последней строкой, после всех тем.
-    themesPanel_.value().children().append(Button{
+    themesPanel_.children().append(Button {
+        drawerQuietLook,
         u"Добавить обложку…",
         fontSize = 13,
         Margin{0, 6, 0, 0},
         Padding{12, 6},
-        foreground = SolidColorBrush{kDim},
-        background = SolidColorBrush{colors.transparent},
-        borderBrush = SolidColorBrush{kEdge},
-        BorderThickness{1},
-        CornerRadius{4},
         onClick =
             [this](Object const&, RoutedEventArgs&) {
                 if (onAddSkin) onAddSkin();
@@ -676,7 +665,7 @@ void ReaderPanel::markTheme() {
     // и та же мысль — «вот это сейчас».
     for (int index = 0; index < static_cast<int>(themeButtons_.size()); ++index) {
         themeButtons_[static_cast<size_t>(index)].background(
-            SolidColorBrush{index == view_.theme.get() ? kActive : colors.transparent});
+            SolidColorBrush{index == view_.theme.get() ? kChromeActive : colors.transparent});
     }
 }
 
