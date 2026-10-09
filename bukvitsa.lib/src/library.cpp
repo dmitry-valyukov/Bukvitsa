@@ -7,6 +7,7 @@
 
 // Последними: реестр и хранилище импортируют wxl.core.
 #include "bukvitsa/reader/library.h"
+#include "bukvitsa/reader/shelf_text.h"
 #include "bukvitsa/reader/store.h"
 
 // После своих заголовков: document.h тянет import wxl.core, а стандартный
@@ -40,7 +41,31 @@ void attribute(text_builder<sta_allocator>& out, std::string_view name, const au
 BookEntry describe(const fb3::Document& document, const std::filesystem::path& path,
                    uint64_t fileSize);
 
+/// Карточка записи. Самосчитающая рождается со счётчиком 1, и указатель эту
+/// ссылку принимает, а не добавляет свою.
+intrusive_ptr<ShelfCard> cardOf(BookEntry entry) {
+    return intrusive_ptr<ShelfCard>{new ShelfCard{std::move(entry)}, false};
+}
+
+/// Тот же файл: на Windows путь сравнивается без учёта регистра.
+bool samePath(const std::filesystem::path& a, const std::filesystem::path& b) {
+    const std::wstring& one = a.native();
+    const std::wstring& other = b.native();
+    return one.size() == other.size() &&
+           ::CompareStringOrdinal(one.c_str(), static_cast<int>(one.size()), other.c_str(),
+                                  static_cast<int>(other.size()), TRUE) == CSTR_EQUAL;
+}
+
 }  // namespace
+
+ShelfCard::ShelfCard(BookEntry book)
+    : entry(std::move(book)), progress(entry.characterCount == 0 ? progressLine(0, 0) : u16_text{}) {}
+
+void ShelfCard::showState(const BookState& state) {
+    if (state.charOffset == 0 && state.bookmarks.empty()) return;
+
+    progress.set(shelfLine(state.charOffset, entry.characterCount, state.bookmarks.size()));
+}
 
 u16_text newGuid() {
     GUID guid{};
@@ -56,9 +81,14 @@ u16_text newGuid() {
 }
 
 bool Library::loadFrom(std::string xml) {
-    books_.clear();
+    if (xml.empty()) {
+        cards_.clear();
+        return true;
+    }
 
-    if (xml.empty()) return true;
+    // Карточки собираются в стороне и встают разом: полка слышит один сброс,
+    // а не книгу за книгой, и битый файл не оставляет на ней половины реестра.
+    sta_vector<intrusive_ptr<ShelfCard>> cards;
 
     try {
         wxl::xml::document document;
@@ -78,15 +108,17 @@ bool Library::loadFrom(std::string xml) {
             // Без guid запись бесполезна: под ним лежит место чтения, и
             // выдать ей новый значило бы потерять прочитанное. Такого в файле,
             // который писали мы, не бывает — но файл могли и поправить руками.
-            if (!entry.guid.empty() && !entry.path.empty()) books_.push_back(std::move(entry));
+            if (!entry.guid.empty() && !entry.path.empty()) cards.push_back(cardOf(std::move(entry)));
         }
     } catch (...) {
         // Битый реестр — это пустая витрина, а не отказ запуститься. Книги
         // при этом никуда не денутся: они лежат там, где лежали, и добавятся
         // снова. Сказать об этом читателю — дело вызывающего.
-        books_.clear();
+        cards_.clear();
         return false;
     }
+
+    cards_.assign(std::move(cards));
     return true;
 }
 
@@ -100,7 +132,8 @@ std::string Library::toXml() const {
     out.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     out.format("<library version=\"{}\">\n", kVersion);
 
-    for (const BookEntry& entry : books_) {
+    for (const intrusive_ptr<ShelfCard>& card : cards_) {
+        const BookEntry& entry = card->entry;
         out.append("  <book");
         attribute(out, "guid", entry.guid);
         attribute(out, "title", entry.title);
@@ -117,53 +150,60 @@ std::string Library::toXml() const {
 }
 
 const BookEntry* Library::find(u16_view guid) const {
-    for (const BookEntry& entry : books_) {
-        if (entry.guid == guid) return &entry;
+    for (const intrusive_ptr<ShelfCard>& card : cards_) {
+        if (card->entry.guid == guid) return &card->entry;
     }
     return nullptr;
 }
 
 const BookEntry* Library::findSame(const BookEntry& candidate) const {
+    const std::optional<uint32_t> at = placeOfSame(candidate);
+    return at ? &cards_[*at]->entry : nullptr;
+}
+
+std::optional<uint32_t> Library::placeOfSame(const BookEntry& candidate) const {
     if (!candidate.bookId.empty()) {
-        for (const BookEntry& entry : books_) {
-            if (entry.bookId == candidate.bookId) return &entry;
+        for (uint32_t at = 0; at < cards_.size(); ++at) {
+            if (cards_[at]->entry.bookId == candidate.bookId) return at;
         }
     }
 
-    // По пути — только если UUID не помог. Сравнение без учёта регистра:
-    // на Windows это один и тот же файл.
-    const std::wstring& wanted = candidate.path.native();
-    for (const BookEntry& entry : books_) {
-        const std::wstring& known = entry.path.native();
-        if (known.size() == wanted.size() &&
-            ::CompareStringOrdinal(known.c_str(), static_cast<int>(known.size()), wanted.c_str(),
-                                   static_cast<int>(wanted.size()), TRUE) == CSTR_EQUAL) {
-            return &entry;
-        }
+    // По пути — только если UUID не помог.
+    for (uint32_t at = 0; at < cards_.size(); ++at) {
+        if (samePath(cards_[at]->entry.path, candidate.path)) return at;
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 const BookEntry& Library::add(const fb3::Document& document, const std::filesystem::path& path,
                               uint64_t fileSize, u16_view rememberedGuid) {
     BookEntry entry = describe(document, path, fileSize);
 
-    if (const BookEntry* known = findSame(entry)) {
+    if (const std::optional<uint32_t> known = placeOfSame(entry)) {
         // Guid остаётся прежним: за ним место чтения, и книга, которую
         // переложили в другую папку, должна открыться там же, где закрылась.
-        BookEntry& stored = books_[static_cast<size_t>(known - books_.data())];
-        entry.guid = stored.guid;
+        const ShelfCard& stored = *cards_[*known];
+        entry.guid = stored.entry.guid;
         entry.cover = coverOf(document, entry.guid).name;
-        stored = std::move(entry);
-        return stored;
+
+        // Та же запись — та же карточка: книгу открыли снова, и полке нечего
+        // перестраивать. Другая — новая карточка на том же месте; строку
+        // прогресса она берёт у прежней, пока полка не перечитает файл
+        // состояния.
+        if (entry == stored.entry) return stored.entry;
+
+        intrusive_ptr<ShelfCard> card = cardOf(std::move(entry));
+        card->progress.set(stored.progress.get());
+        cards_.replace(*known, std::move(card));
+        return cards_[*known]->entry;
     }
 
     // Прежний guid — только свободный: занятый значил бы, что по пути из
     // настроек лежит уже другая книга, а эта запись — чья-то ещё.
     entry.guid = rememberedGuid.empty() || find(rememberedGuid) ? newGuid() : u16_text{rememberedGuid};
     entry.cover = coverOf(document, entry.guid).name;
-    books_.push_back(std::move(entry));
-    return books_.back();
+    cards_.push_back(cardOf(std::move(entry)));
+    return cards_[cards_.size() - 1]->entry;
 }
 
 
@@ -213,29 +253,6 @@ BookEntry describe(const fb3::Document& document, const std::filesystem::path& p
 }
 
 }  // namespace
-
-bool BookState::hasBookmark(uint32_t offset) const {
-    for (const Bookmark& mark : bookmarks) {
-        if (mark.charOffset == offset) return true;
-    }
-    return false;
-}
-
-bool BookState::toggleBookmark(uint32_t offset, u16_text hint) {
-    const auto found = std::find_if(bookmarks.begin(), bookmarks.end(),
-                                    [offset](const Bookmark& mark) { return mark.charOffset == offset; });
-    if (found != bookmarks.end()) {
-        bookmarks.erase(found);
-        return false;
-    }
-
-    // Место — двоичным поиском: список и так по порядку, и вставка его не
-    // ломает.
-    const auto after = std::lower_bound(bookmarks.begin(), bookmarks.end(), offset,
-                                        [](const Bookmark& mark, uint32_t at) { return mark.charOffset < at; });
-    bookmarks.insert(after, Bookmark{offset, std::move(hint)});
-    return true;
-}
 
 BookState parseBookState(std::string xml) {
     BookState state;

@@ -113,8 +113,8 @@ constexpr auto drawerNoteLook = Preset {
 };
 
 /// Подпись над закладками: пока их нет — так и сказано, есть — подписи нет.
-u16_text bookmarksNote(BookState const& state) {
-    return state.bookmarks.empty() ? u16_text{u"Закладок пока нет."} : u16_text{};
+u16_text bookmarksNote(uint32_t count) {
+    return count == 0 ? u16_text{u"Закладок пока нет."} : u16_text{};
 }
 
 }  // namespace
@@ -130,17 +130,17 @@ u16_text bookmarksNote(BookState const& state) {
 // складывает в дерево. Визуалы ящиков — здесь же, от самих ящиков: элемент
 // отдаёт свой визуал и пустым.
 ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings& settings,
-                         observable<BookState const>& state, const ThemeList& themes,
-                         BookSearch& search, Actions& actions)
+                         BookPlaces& places, ThemeList& themes, BookSearch& search,
+                         Actions& actions)
     : actions_(actions),
       compositor_(compositor),
       view_(view),
       prefs_(settings),
-      state_(state),
+      places_(places),
       themes_(themes),
       search_(search),
       themeWatch_(view.theme.on_change(method(this, &ReaderPanel::markTheme))),
-      stateWatch_(state.on_change(method(this, &ReaderPanel::fillBookmarks))),
+      bookmarksWatch_(places.bookmarks().on_change(method(this, &ReaderPanel::fillBookmarks))),
       hitsWatch_(search.hits().on_change(method(this, &ReaderPanel::fillSearch))),
       navigationVisual_(slidingVisual(navigation_, -static_cast<float>(kWidth))),
       settingsVisual_(slidingVisual(settings_, static_cast<float>(kWidth))),
@@ -150,7 +150,7 @@ ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings&
 
 ReaderPanel::~ReaderPanel() {
     search_.hits().remove_change(hitsWatch_);
-    state_.remove_change(stateWatch_);
+    places_.bookmarks().remove_change(bookmarksWatch_);
     view_.theme.remove_change(themeWatch_);
 }
 
@@ -351,7 +351,7 @@ UIElement ReaderPanel::buildBookmarks() {
             background = kChromeActive,
             onClick = method(&actions_, &Actions::toggleBookmark),
         },
-        TextBlock{drawerNoteLook, row = 1, text = BindOutput{state_, bookmarksNote}},
+        TextBlock{drawerNoteLook, row = 1, text = BindOutput{places_.bookmarks().count(), bookmarksNote}},
         ScrollViewer {
             row = 2,
             horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
@@ -430,11 +430,9 @@ void ReaderPanel::showTab(Tab tab) {
 void ReaderPanel::open(Tab tab) {
     showTab(tab);
 
-    switch (tab) {
-        case Tab::Contents: fillContents(); break;
-        case Tab::Bookmarks: fillBookmarks(state_.get()); break;
-        case Tab::Search: break;   // список остаётся от прошлого поиска
-    }
+    // Закладки и находки идут за своими списками сами; оглавление
+    // строится при открытии вкладки.
+    if (tab == Tab::Contents) fillContents();
 
     show();
 
@@ -486,7 +484,7 @@ void ReaderPanel::close() {
 void ReaderPanel::fillContents() {
     contentsList_.children().clear();
 
-    const sta_vector<ContentsEntry> contents = contentsOf(view_.blocks());
+    observable_list<ContentsEntry const>& contents = places_.contents();
     if (contents.empty()) {
         contentsList_.children().append(
             listItem(u"В этой книге нет заголовков", {}, 0, std::nullopt));
@@ -502,12 +500,12 @@ void ReaderPanel::fillContents() {
     }
 }
 
-void ReaderPanel::fillBookmarks(BookState const& state) noexcept {
-    // Подпись «Закладок пока нет.» привязана к тому же состоянию; здесь —
-    // только сам список.
+void ReaderPanel::fillBookmarks(list_change const&) noexcept {
+    // Подпись «Закладок пока нет.» привязана к числу закладок; здесь — только
+    // сам список.
     bookmarkList_.children().clear();
 
-    for (const Bookmark& mark : state.bookmarks) {
+    for (const Bookmark& mark : places_.bookmarks()) {
         bookmarkList_.children().append(
             listItem(mark.hint.empty() ? zstring_view{u"Закладка"} : zstring_view{mark.hint}, {}, 0,
                      mark.charOffset));
@@ -520,12 +518,12 @@ void ReaderPanel::searchKeyDown(TextBox const&, KeyRoutedEventArgs& args) {
     args.handled(true);
 }
 
-void ReaderPanel::fillSearch(sta_vector<SearchHit> const& hits) noexcept {
+void ReaderPanel::fillSearch(list_change const&) noexcept {
     // Подпись — «Нашлось: N» или «…не нашлось» — привязана к модели поиска;
     // здесь — только сам список.
     searchList_.children().clear();
 
-    for (const SearchHit& hit : hits) {
+    for (const SearchHit& hit : search_.hits()) {
         searchList_.children().append(listItem(hit.context, {}, 0, hit.charOffset));
     }
 }
@@ -543,11 +541,13 @@ void ReaderPanel::refreshThemes() {
     // считает и полоса набора. markTheme() ходит по кнопкам тем же счётом.
     themesPanel_.children().append(TextBlock{groupCaptionLook, u"Тема"});
 
+    observable_list<ThemeChoice const>& choices = themes_.choices();
+
     auto const builtins = StackPanel{Orientation::Horizontal};
     for (int index = 0; index < kThemeCount; ++index) {
         auto const button = Button {
             themeChipLook,
-            kThemes[index].name,
+            choices[static_cast<uint32_t>(index)].name,
             Margin{0, 0, 6, 0},
             onClick = [this, index](Object const&, RoutedEventArgs&) { view_.setTheme(index); },
         };
@@ -570,19 +570,19 @@ void ReaderPanel::refreshThemes() {
     // окно, и реестр.
     themesPanel_.children().append(TextBlock{groupCaptionLook, u"Обложки"});
 
-    const std::vector<Skin>& skins = themes_.skins();
-    for (size_t index = 0; index < skins.size(); ++index) {
-        const int themeIndex = kThemeCount + static_cast<int>(index);
+    for (uint32_t index = static_cast<uint32_t>(kThemeCount); index < choices.size(); ++index) {
+        const ThemeChoice& choice = choices[index];
+        const int themeIndex = static_cast<int>(index);
         auto const button = Button {
             themeChipLook,
-            skins[index].name,
+            choice.name,
             Margin{0, 6, 0, 0},
             onClick =
                 [this, themeIndex](Object const&, RoutedEventArgs&) { view_.setTheme(themeIndex); },
         };
         themeButtons_.push_back(button);
 
-        const u16_text skinName = skins[index].name;
+        const u16_text skinName = choice.name;
 
         auto const line = StackPanel {
             Orientation::Horizontal,
@@ -596,7 +596,7 @@ void ReaderPanel::refreshThemes() {
             },
         };
 
-        if (!skins[index].system) {
+        if (choice.removable) {
             line.children().append(Button {
                 glyphButtonLook,
                 u"",   // корзина оттуда же

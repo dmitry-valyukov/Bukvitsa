@@ -31,8 +31,8 @@
 // Последними: они ведут к модели книги и реестру, а те импортируют wxl.core,
 // после чего стандартный заголовок MSVC уже не принимает.
 #include "book_view.h"
+#include "bukvitsa/reader/book_places.h"
 #include "bukvitsa/reader/book_search.h"
-#include "bukvitsa/reader/library.h"
 #include "bukvitsa/reader/theme_list.h"
 
 // Импорт — последним: намерения панели — корутины `detached_task`.
@@ -41,7 +41,7 @@ import wxl.async;
 namespace bukvitsa::reader {
 
 /// Два ящика поверх полосы. Владеет своим деревом и анимацией выезда; полоса,
-/// настройки, состояние книги, список тем, поиск и исполнитель намерений —
+/// настройки, места книги, список тем, поиск и исполнитель намерений —
 /// владельца, живут дольше панели.
 class ReaderPanel : private noncopyable {
 public:
@@ -84,13 +84,12 @@ public:
     /// @param settings настройки вида: ползунки привязаны к их полям (`Bind`),
     ///        и то же поле двигают колесо и клавиши полосы — панель узнаёт о
     ///        них привязкой, а не флагом «это мы сами».
-    /// @param state место чтения и закладки открытой книги: список закладок
-    ///        и подпись над ним идут за ним сами.
+    /// @param places оглавление и закладки открытой книги: списки вкладок и
+    ///        подпись над закладками идут за ними сами.
     /// @param themes темы и обложки одним списком — кнопки правого ящика.
     /// @param search модель поиска: поле, подпись и находки привязаны к ней.
     ReaderPanel(const wxl::Compositor& compositor, BookView& view, Settings& settings,
-                observable<BookState const>& state, const ThemeList& themes, BookSearch& search,
-                Actions& actions);
+                BookPlaces& places, ThemeList& themes, BookSearch& search, Actions& actions);
     ~ReaderPanel();
 
     /// Элемент, который кладут поверх полосы набора.
@@ -144,11 +143,11 @@ private:
     /// Слушатель поля `BookView::theme`: тему меняют и клавишей T мимо панели.
     void markTheme(int current) noexcept;
 
-    /// Список закладок этой книги. Слушатель состояния книги владельца.
-    void fillBookmarks(BookState const& state) noexcept;
+    /// Список закладок этой книги. Слушатель списка закладок владельца.
+    void fillBookmarks(list_change const& change) noexcept;
 
     /// Список находок. Слушатель находок модели поиска.
-    void fillSearch(sta_vector<SearchHit> const& hits) noexcept;
+    void fillSearch(list_change const& change) noexcept;
 
     void fillContents();
 
@@ -163,14 +162,14 @@ private:
     wxl::Compositor compositor_;
     BookView& view_;
     Settings& prefs_;   ///< настройки вида; settings_ ниже — правый ящик
-    observable<BookState const>& state_;
-    const ThemeList& themes_;
+    BookPlaces& places_;
+    ThemeList& themes_;
     BookSearch& search_;
 
-    /// Наши слушатели в чужих полях — снять за собой: полоса, состояние книги
-    /// и поиск живут дольше панели.
+    /// Наши слушатели в чужих полях — снять за собой: полоса, места книги и
+    /// поиск живут дольше панели.
     cookie_t themeWatch_;
-    cookie_t stateWatch_;
+    cookie_t bookmarksWatch_;
     cookie_t hitsWatch_;
 
     // Контролы — поля, построенные вместе с панелью: дети выше ящиков, ящики

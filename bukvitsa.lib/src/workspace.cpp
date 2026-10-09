@@ -189,11 +189,11 @@ task<Registered> Workspace::registerBook(const fb3::Document& document, std::fil
     // пусто, и guid будет новым.
     const u16_view remembered = settings.lastBookPath == path ? u16_view{settings.lastBookGuid} : u16_view{};
 
-    const size_t knownBefore = library.books().size();
+    const size_t knownBefore = library.cards().size();
 
     // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
     // переедет вместе со всеми ссылками в него.
-    Registered registered{library.add(document, path, fileSize, remembered), library.books().size() != knownBefore};
+    Registered registered{library.add(document, path, fileSize, remembered), library.cards().size() != knownBefore};
 
     if (const CoverBytes cover = coverOf(document, registered.entry.guid); !cover.name.empty())
         co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));

@@ -73,8 +73,8 @@ App::App()
       view_{window_, ws_.settings, *this},
       shelf_{ws_.library, ws_.settings.continueReading, ws_.coverDirectory(), *this},
       wizard_{window_.chromeCompositor(), *this},
-      panel_{window_.chromeCompositor(), view_, ws_.settings, state_, themes_, search_, *this},
-      autosave_{*this, window_, ws_, themes_, view_, state_},
+      panel_{window_.chromeCompositor(), view_, ws_.settings, places_, themes_, search_, *this},
+      autosave_{*this, window_, ws_, themes_, view_, places_},
       splash_{window_.dispatcherQueue().createTimer()} {
     // Рамка окна тёмная, как и остров: системный светлый заголовок над тёмными
     // ящиками, мастером и полкой смотрелся бы чужим. Тега для неё в wxl пока
@@ -239,7 +239,7 @@ void App::show(Screen next) {
 
     // Карточки уже стоят; проценты проступят на них по мере того, как рабочий
     // поток прочитает файлы состояния — по одному на книгу.
-    fillProgress(ws_.library.books());
+    fillProgress();
 }
 
 detached_task App::showLibrary() {

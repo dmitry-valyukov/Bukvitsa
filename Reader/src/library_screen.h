@@ -48,11 +48,12 @@ public:
         ~Actions() = default;
     };
 
-    /// @param library реестр книг: по нему строится полка при каждом показе.
+    /// @param library реестр книг: по его карточкам строится полка при каждом
+    ///        показе.
     /// @param continueReading галочка «продолжать чтение при старте»
     ///        привязана к этому полю настроек прямо в разметке.
     /// @param covers каталог, где лежат обложки книг из реестра.
-    LibraryScreen(const Library& library, observable<bool>& continueReading,
+    LibraryScreen(Library& library, observable<bool>& continueReading,
                   std::filesystem::path covers, Actions& actions);
 
     /// Корень, который отдаётся окну как содержимое.
@@ -72,16 +73,16 @@ public:
     ///
     /// Ничего не делает, если полку с тех пор пересобрали: карточки той книги
     /// уже нет, а есть новая, и её прогресс придёт своим чередом.
-    void setProgress(u16_view guid, uint32_t charOffset, size_t bookmarks);
+    void setProgress(const ShelfCard& card);
 
 private:
-    wxl::Button shelfItem(const BookEntry& book);
+    wxl::Button shelfItem(const ShelfCard& card);
 
     /// Корень берёт фокус, как только он в дереве.
     void loaded(wxl::Grid const& self);
 
     Actions& actions_;
-    const Library& library_;               ///< по нему строится полка
+    Library& library_;                     ///< по нему строится полка
     const std::filesystem::path covers_;   ///< где лежат обложки книг
 
     /// Пуста ли полка — к нему привязана надпись «Пока пусто» (`BindOutput`).

@@ -31,6 +31,7 @@
 #include "library_screen.h"
 #include "notices.h"
 #include "reader_panel.h"
+#include "bukvitsa/reader/book_places.h"
 #include "bukvitsa/reader/book_search.h"
 #include "bukvitsa/reader/key_map.h"
 #include "bukvitsa/reader/library.h"
@@ -114,7 +115,7 @@ private:
     detached_task warmBook(std::filesystem::path path);
 
     /// Достраивает полку прогрессом книг — по файлу состояния на книгу.
-    detached_task fillProgress(std::vector<BookEntry> books);
+    detached_task fillProgress();
 
     /// Приносит полосе снимок подложки, который ей теперь нужен.
     detached_task loadBackdrop(std::filesystem::path file);
@@ -190,9 +191,10 @@ private:
     /// Сообщения читателю и обработчик сбоев сценариев.
     Notices notices_;
 
-    /// Место чтения на открытии и закладки открытой книги. Панель показывает
-    /// закладки из него, запись берёт из него закладки, а место — у полосы.
-    observable<BookState> state_;
+    /// Оглавление и закладки открытой книги — списки, к которым привязана
+    /// панель; запись берёт из них закладки, а место — у полосы. Новая книга
+    /// меняет их содержимое раньше, чем прежняя уйдёт с полосы.
+    BookPlaces places_;
 
     /// Поиск по открытой книге: панель к нему привязана; новая книга его
     /// сбрасывает.

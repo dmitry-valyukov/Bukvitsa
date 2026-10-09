@@ -52,13 +52,13 @@ DispatcherQueueTimer quietTimer(const CompositionWindow& window, std::chrono::mi
 // окно, обязан оставаться свободным. Тики — методы: таймеры свои и умирают
 // вместе с Autosave.
 Autosave::Autosave(refcounted& owner, const CompositionWindow& window, Workspace& workspace,
-                   const ThemeList& themes, BookView& view, observable<BookState const>& state)
+                   const ThemeList& themes, BookView& view, const BookPlaces& places)
     : owner_(owner),
       window_(window),
       ws_(workspace),
       themes_(themes),
       view_(view),
-      state_(state),
+      places_(places),
       windowTimer_(quietTimer(window, kSaveQuiet)),
       positionTimer_(quietTimer(window, kPositionQuiet)),
       settingsTimer_(quietTimer(window, kSaveQuiet)),
@@ -145,10 +145,8 @@ void Autosave::saveSettings() {
 void Autosave::saveState() {
     if (ws_.settings.lastBookGuid.empty() || !view_.isOpen()) return;
 
-    // Место чтения — полосы, закладки — состояния книги: в файле они одно.
-    BookState state = state_.get();
-    state.charOffset = view_.position().get();
-    writeState(owner_, ws_, ws_.settings.lastBookGuid, std::move(state));
+    // Место чтения — полосы, закладки — мест книги: в файле они одно.
+    writeState(owner_, ws_, ws_.settings.lastBookGuid, places_.stateAt(view_.position().get()));
 }
 
 void Autosave::flush() {

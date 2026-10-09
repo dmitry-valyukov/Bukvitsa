@@ -3,9 +3,6 @@
 #include "Bind.h"
 #include "look.h"
 
-// Последним из своих: несёт импорт wxl.core.
-#include "bukvitsa/reader/shelf_text.h"
-
 namespace bukvitsa::reader {
 
 using namespace wxl;
@@ -43,7 +40,7 @@ Visibility shownWhenEmpty(bool empty) {
 
 }  // namespace
 
-LibraryScreen::LibraryScreen(const Library& library, observable<bool>& continueReading,
+LibraryScreen::LibraryScreen(Library& library, observable<bool>& continueReading,
                              std::filesystem::path covers, Actions& actions)
     : actions_(actions), library_(library), covers_(std::move(covers)) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
@@ -122,24 +119,24 @@ void LibraryScreen::loaded(Grid const& self) {
 }
 
 void LibraryScreen::appendBook(const BookEntry& entry) {
-    shelf_.children().append(shelfItem(entry));
+    // Карточка этой книги — в реестре: она встала туда раньше, чем о книге
+    // сказали.
+    for (const intrusive_ptr<ShelfCard>& card : library_.cards()) {
+        if (card->entry.guid == entry.guid) shelf_.children().append(shelfItem(*card));
+    }
     empty_.set(false);
 }
 
-void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookmarks) {
-    const auto found = progress_.find(std::u16string(guid.plain()));
+void LibraryScreen::setProgress(const ShelfCard& card) {
+    const auto found = progress_.find(card.entry.guid.plain());
 
     if (found == progress_.end()) return;   // полку успели пересобрать
 
-    const BookEntry* entry = library_.find(guid);
-
-    if (!entry) return;
-
     // Место чтения лежит в отдельном файле на книгу, и читает его фоновая
     // корутина -- уже после того, как карточка встала на полку. Поэтому у
-    // строки два состояния: «ещё не знаем» (пусто, см. shelfItem) и то, что
+    // строки два состояния: «ещё не знаем» (пусто, см. ShelfCard) и то, что
     // принесли.
-    found->second.text(shelfLine(charOffset, entry->characterCount, bookmarks));
+    found->second.text(card.progress.get());
 }
 
 void LibraryScreen::show() {
@@ -149,26 +146,26 @@ void LibraryScreen::show() {
     // разницу было бы дороже во всех смыслах: книг десятки, а не тысячи, и
     // добавление одной — не повод заводить вторую модель того же списка.
     shelf_.children().clear();
-    for (const BookEntry& entry : library_.books()) {
-        shelf_.children().append(shelfItem(entry));
+    for (const intrusive_ptr<ShelfCard>& card : library_.cards()) {
+        shelf_.children().append(shelfItem(*card));
     }
 
-    empty_.set(library_.books().empty());
+    empty_.set(library_.cards().empty());
 }
 
-Button LibraryScreen::shelfItem(const BookEntry& book) {
+Button LibraryScreen::shelfItem(const ShelfCard& card) {
     using namespace wxl::dsl;
+
+    const BookEntry& book = card.entry;
 
     // Карточка — это кнопка: по книге щёлкают, и всё, что кнопка умеет сама
     // (наведение, нажатие, фокус, клавиатура), достаётся даром.
     u16_text const guid = book.guid;
 
-    // Строка прогресса ставится пустой не просто так: «не открывалась» было бы
-    // неправдой, пока файл состояния ещё не прочитан, а карточка обязана
-    // появиться раньше, чем он будет прочитан. Настоящий текст приносит
-    // setProgress().
+    // Строка прогресса — та, что у карточки сейчас; настоящий текст приносит
+    // setProgress(), когда прочитан файл состояния.
     TextBlock progress = TextBlock {
-        book.characterCount == 0 ? progressLine(0, 0) : u16_text{},
+        card.progress.get(),
         fontSize = 13,
         foreground = kDimInk,
         Margin{0, 8, 0, 0},
