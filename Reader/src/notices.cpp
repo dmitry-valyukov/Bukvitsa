@@ -56,7 +56,7 @@ void Notices::post(Notice notice) {
     auto lines = StackPanel{};
     if (!notice.details.empty()) lines.children().append(TextBlock{notice.details, textWrapping.wrap});
 
-    auto dialog = ContentDialog{
+    auto dialog = ContentDialog {
         title = notice.headline,
         content = lines,
         closeButtonText = u"Закрыть",

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <chrono>
 
-#include "ThemeBrush.h"
+#include "look.h"
 
 namespace bukvitsa::reader {
 
@@ -12,9 +12,6 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Ширина колонки кнопок; где ей стоять, сказано у самой карточки.
-constexpr float kButtonWidth = 300.0f;
-
 // Проявление: длительность одной кнопки и разбег между соседними. Четыре
 // кнопки с шагом 40 мс успокаиваются к 320 мс — за 400 мс появление уже
 // читается как задержка, так что расти этому некуда: если кнопок станет
@@ -22,20 +19,10 @@ constexpr float kButtonWidth = 300.0f;
 constexpr auto kFadeDuration = 220ms;
 constexpr auto kStagger = 40ms;
 
-// Кнопки полупрозрачные: под ними картинка, и она должна просвечивать.
-constexpr float kRestingOpacity = 0.92f;
-
-// Лицо кнопки отмены: чуть серее остальных — она уводит, а не ведёт. Под
-// указателем и нажатой — на шаг темнее, как у штатной кнопки, но в своём сером.
-constexpr Color kCancelFace = rgb(217, 214, 210);
-constexpr Color kCancelFaceOver = rgb(208, 205, 201);
-constexpr Color kCancelFacePressed = rgb(199, 196, 192);
-
 // Большая кнопка, когда ей есть что продолжать: высота под обложку, обложка
 // в пропорции витрины, автор — тем же приглушённым тоном, что и там.
 constexpr float kContinueTall = 100.0f;
 constexpr double kCoverTall = 76.0;
-constexpr Color kDimInk = rgb(138, 133, 125);
 
 // Откуда кнопка приезжает. Одной прозрачности мало — появление «из ничего»
 // читается плоско, а десяток пикселей вверх делает его живым.
@@ -43,23 +30,71 @@ constexpr Vector3 kRiseFrom{0.0f, 14.0f, 0.0f};
 
 }  // namespace
 
-StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor) {
+// Визуал обёртки карточки берётся сразу, у ещё пустой обёртки: элемент
+// отдаёт свой визуал и без содержимого, а прозрачность нужна раньше первого
+// кадра.
+StartScreen::StartScreen(const Compositor& compositor)
+    : compositor_(compositor),
+      cardVisual_(ElementCompositionPreview::getElementVisual(cardShell_)) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
     // бы обычные слова (title, key, delay) и под /W4 каждое стало бы C4459.
     using namespace wxl::dsl;
 
-    // Кнопки собираются раньше корня: каждая должна успеть отдать свой визуал
-    // в revealing_ до того, как дерево уедет в конструктор Grid. Большая
-    // кнопка остаётся в руках: setContinueBook() наполнит её книгой.
-    auto continueButton = addButton(u"Продолжить чтение", 72.0f, 19.0f, &onContinueReading);
-    continueButton_ = continueButton;
+    // Кнопки — на карточке поверх картинки, вид у них общий с мастером
+    // обложек (look.h); своё у заставки — выравнивание и проявление. Каждая
+    // отдаёт свой визуал в revealing_ (revealLater) до того, как дерево уедет
+    // в конструктор Grid, и проступают они в том порядке, в каком встали.
+    // Большая кнопка — поле: setContinueBook() наполнит её книгой.
+    Apply {
+        continueButton_,
+        overlayMainLook,
+        hAlign.stretch,
+        u"Продолжить чтение",
+        onClick =
+            [this](Object const&, RoutedEventArgs&) {
+                if (onContinueReading) onContinueReading();
+            },
+    };
 
-    auto panel = StackPanel{
-        continueButton,
-        addButton(u"Моя библиотека", 46.0f, 15.0f, &onLibrary),
-        addButton(u"Добавить книгу", 46.0f, 15.0f, &onAddBook),
-        addButton(u"Добавить каталог", 46.0f, 15.0f, &onAddFolder),
-        addButton(u"Выйти из читалки", 46.0f, 15.0f, &onExit, true),
+    auto const panel = StackPanel {
+        revealLater(continueButton_),
+        revealLater(Button {
+            overlayButtonLook,
+            hAlign.stretch,
+            u"Моя библиотека",
+            onClick =
+                [this](Object const&, RoutedEventArgs&) {
+                    if (onLibrary) onLibrary();
+                },
+        }),
+        revealLater(Button {
+            overlayButtonLook,
+            hAlign.stretch,
+            u"Добавить книгу",
+            onClick =
+                [this](Object const&, RoutedEventArgs&) {
+                    if (onAddBook) onAddBook();
+                },
+        }),
+        revealLater(Button {
+            overlayButtonLook,
+            hAlign.stretch,
+            u"Добавить каталог",
+            onClick =
+                [this](Object const&, RoutedEventArgs&) {
+                    if (onAddFolder) onAddFolder();
+                },
+        }),
+        revealLater(Button {
+            overlayButtonLook,
+            cancelFaceLook(),
+            hAlign.stretch,
+            u"Выйти из читалки",
+            onClick =
+                [this](Object const&, RoutedEventArgs&) {
+                    if (onExit) onExit();
+                },
+        }),
     };
 
     // Кнопки лежат на карточке — той же, что у мастера обложек. Проступать
@@ -72,23 +107,24 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
     //
     // Сама карточка — библиотечная wxl::OverlayCard, та, что для страницы с
     // картинкой под ней. Своего здесь только место.
-    auto card = OverlayCard{
-        hAlign.right,
-        vAlign.top,
-        Margin{0, 64, 72, 0},
-        panel,
+    Apply {
+        cardShell_,
+        OverlayCard {
+            hAlign.right,
+            vAlign.top,
+            Margin{0, 64, 72, 0},
+            panel,
+        },
     };
-    auto cardShell = Grid{card};
-    Visual cardVisual = ElementCompositionPreview::getElementVisual(cardShell);
-    cardVisual.opacity(0.0f);
-    cardVisual_ = cardVisual;
+    cardVisual_.opacity(0.0f);
 
     // Заставки в этом дереве нет. Задняя картинка окна ровно одна — задник
     // сцены, который ставит main.cpp (window->backgroundAsync); остров
     // прозрачен, и сквозь него видна она. Второй вывод той же картинки
     // XAML-элементом Image был бы дублем, а дублей быть не должно: остров
     // несёт только карточку с кнопками.
-    root_ = Grid{
+    Apply {
+        root_,
         // Корень берёт фокус на себя, иначе клавиатура не работает вовсе:
         // событие клавиши начинается у того, на чём фокус, и пока фокуса нет
         // ни на чём, ловить нечего — ни на всплытии, ни на пути вниз.
@@ -99,67 +135,33 @@ StartScreen::StartScreen(const Compositor& compositor) : compositor_(compositor)
         // настройки, о которой читалка не знает.
         requestedTheme = ElementTheme::Light,
 
-        cardShell,
-    };
+        cardShell_,
 
-    // Просить фокус раньше, чем дерево живо, бесполезно: элемент вне
-    // визуального дерева тихо отказывает.
-    root_.value().add_onLoaded([this](Object const&, RoutedEventArgs&) {
-        root_.value().focus(FocusState::Programmatic);
-    });
+        // Просить фокус раньше, чем дерево живо, бесполезно: элемент вне
+        // визуального дерева тихо отказывает.
+        onLoaded =
+            [this](Object const&, RoutedEventArgs&) { root_.focus(FocusState::Programmatic); },
 
-    // Enter — действие по умолчанию, то же, что большая кнопка; Escape —
-    // отмена, то же, что «Выйти из читалки». На пути вниз, чтобы клавиша
-    // работала независимо от того, на какой кнопке стоит фокус.
-    root_.value().add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
-        switch (args.key()) {
-            case VirtualKey::Enter:
-                if (onContinueReading) onContinueReading();
-                break;
-            case VirtualKey::Escape:
-                if (onExit) onExit();
-                break;
-            default: return;
-        }
-        args.handled(true);
-    });
-}
-
-Button StartScreen::addButton(zstring_view said, float tall, float kegel,
-                              // Имена нарочно не height, не fontSize и не text:
-                              // параметр с именем свойства перекрыл бы одноимённый
-                              // тег DSL, и `height = height` стало бы
-                              // присваиванием float.
-                              std::function<void()>* action, bool cancel) {
-    using namespace wxl::dsl;
-
-    auto button = Button{
-        said,
-        width = kButtonWidth,
-        height = tall,
-        FontWeight{600},
-        Margin{0, 6},
-        fontSize = kegel,
-        hAlign.stretch,
-        onClick =
-            [action](Object const&, RoutedEventArgs&) {
-                if (*action) (*action)();
+        // Enter — действие по умолчанию, то же, что большая кнопка; Escape —
+        // отмена, то же, что «Выйти из читалки». На пути вниз, чтобы клавиша
+        // работала независимо от того, на какой кнопке стоит фокус.
+        onPreviewKeyDown =
+            [this](Object const&, KeyRoutedEventArgs& args) {
+                switch (args.key()) {
+                    case VirtualKey::Enter:
+                        if (onContinueReading) onContinueReading();
+                        break;
+                    case VirtualKey::Escape:
+                        if (onExit) onExit();
+                        break;
+                    default: return;
+                }
+                args.handled(true);
             },
     };
+}
 
-    // Лицо отмены — её собственное и под указателем тоже. Пока указатель над
-    // кнопкой, шаблон кладёт вместо фона кисть состояния, которую ищет по
-    // имени в словаре темы; кисть под тем же именем на самом элементе он
-    // находит первой. Состояния переключает фреймворк, цвет — наш.
-    if (cancel) {
-        Apply{
-            button,
-            background = SolidColorBrush{kCancelFace},
-            ThemeBrush{u"ButtonBackgroundPointerOver", SolidColorBrush{kCancelFaceOver}},
-            ThemeBrush{u"ButtonBackgroundPressed", SolidColorBrush{kCancelFacePressed}},
-        };
-    }
-
+Button StartScreen::revealLater(Button button) {
     // Подъём идёт по Translation, а НЕ по Offset. Offset — это то, чем XAML
     // расставляет элементы при разметке: анимация захватывает свойство себе,
     // и все четыре кнопки съезжаются в начало панели друг на друга. Проверено
@@ -204,17 +206,17 @@ void StartScreen::setContinueBook(u16_view bookTitle, u16_view bookAuthor,
     // Grid со звёздной колонкой, а не горизонтальный StackPanel: тот мерил бы
     // текст бесконечной шириной, и длинному названию не с чего было бы
     // обрезаться.
-    auto lines = StackPanel{
+    auto const lines = StackPanel {
         column = 1,
         vAlign.center,
         TextBlock{u"Продолжить чтение", fontSize = 19, FontWeight{600}},
         TextBlock{hstring{bookTitle}, fontSize = 13, Margin{0, 5, 0, 0},
-                  textTrimming.characterEllipsis},
+                   textTrimming.characterEllipsis},
         TextBlock{hstring{bookAuthor}, fontSize = 12, Margin{0, 2, 0, 0},
-                  foreground = SolidColorBrush{kDimInk}, textTrimming.characterEllipsis},
+                   foreground = kDimInk, textTrimming.characterEllipsis},
     };
 
-    Button button = continueButton_.value();
+    Button const& button = continueButton_;
 
     if (cover.empty()) {
         button.content(Grid{lines});
@@ -224,9 +226,9 @@ void StartScreen::setContinueBook(u16_view bookTitle, u16_view bookAuthor,
         std::u16string full = cover.u16string();
         std::replace(full.begin(), full.end(), u'\\', u'/');
 
-        button.content(Grid{
+        button.content(Grid {
             columnDefinitions = u"auto,*",
-            Image{
+            Image {
                 source = ImageSource{u"file:///" + full},
                 height = kCoverTall,
                 Margin{0, 0, 12, 0},
@@ -257,12 +259,10 @@ void StartScreen::reveal() {
 
     // Карточка — только прозрачностью и без разбега: подъём по Z несёт её
     // тень, и анимация Translation увела бы его в ноль.
-    if (cardVisual_) {
-        auto fade = compositor_.createScalarKeyFrameAnimation();
-        fade.duration(kFadeDuration);
-        fade.insertKeyFrame(1.0f, 1.0f, easing);
-        cardVisual_.value().startAnimation(L"Opacity", fade);
-    }
+    auto cardFade = compositor_.createScalarKeyFrameAnimation();
+    cardFade.duration(kFadeDuration);
+    cardFade.insertKeyFrame(1.0f, 1.0f, easing);
+    cardVisual_.startAnimation(L"Opacity", cardFade);
 
     for (size_t index = 0; index < revealing_.size(); ++index) {
         auto const delay = kStagger * static_cast<int>(index);
@@ -271,7 +271,7 @@ void StartScreen::reveal() {
         auto fade = compositor_.createScalarKeyFrameAnimation();
         fade.duration(kFadeDuration);
         fade.delayTime(delay);
-        fade.insertKeyFrame(1.0f, kRestingOpacity, easing);
+        fade.insertKeyFrame(1.0f, kOverlayButtonOpacity, easing);
 
         auto rise = compositor_.createVector3KeyFrameAnimation();
         rise.duration(kFadeDuration);

@@ -5,7 +5,7 @@
 // Заголовки проекта после стандартных. Свой первым.
 #include "skin_wizard.h"
 
-#include "ThemeBrush.h"
+#include "look.h"
 
 namespace bukvitsa::reader {
 
@@ -18,21 +18,6 @@ namespace {
 constexpr D2D1_COLOR_F colorF(Color color) {
     return {color.R / 255.0f, color.G / 255.0f, color.B / 255.0f, color.A / 255.0f};
 }
-
-// Обстановка мастера — те же цвета, что у панели читалки: диалог имени и
-// кнопки не бумага, а инструмент.
-constexpr Color kChrome = rgba(30, 30, 34, 0.95);
-constexpr Color kInk = rgb(232, 228, 220);
-constexpr Color kEdge = rgba(255, 255, 255, 0.2);
-
-// Кнопки — как на стартовом экране: та же ширина, та же полупрозрачность,
-// под ними должна просвечивать страница; где им стоять, сказано у самой
-// карточки. Отмена — чуть серее остальных, она уводит, а не ведёт.
-constexpr float kButtonWidth = 300.0f;
-constexpr float kRestingOpacity = 0.92f;
-constexpr Color kCancelFace = rgb(217, 214, 210);
-constexpr Color kCancelFaceOver = rgb(208, 205, 201);
-constexpr Color kCancelFacePressed = rgb(199, 196, 192);
 
 // Сетка поверх страницы — подсказка, а не занавес: все линии сильно
 // полупрозрачны, центральная ярче тоном, чтобы читаться сквозь текст.
@@ -59,97 +44,89 @@ SkinEditor::Point onGrid(Point point) {
     return {point.x, point.y};
 }
 
-}  // namespace
-
-SkinWizard::SkinWizard(const Compositor& compositor) : compositor_(compositor) {
-    buildTree();
+/// Кнопка карточки — полупрозрачная, как на стартовом экране, только без
+/// анимации появления: мастер открывают действием, ждать ему нечего.
+/// Прозрачность — визуалом, а не тегом, тоже как там.
+Button translucent(Button button) {
+    ElementCompositionPreview::getElementVisual(button).opacity(kOverlayButtonOpacity);
+    return button;
 }
 
-Button SkinWizard::overlayButton(zstring_view said, float tall, float kegel, bool cancel,
-                                 void (SkinWizard::*handler)()) {
-    using namespace wxl::dsl;
+}  // namespace
 
-    auto button = Button{
-        said,
-        width = kButtonWidth,
-        height = tall,
-        FontWeight{600},
-        Margin{0, 6},
-        fontSize = kegel,
-        onClick = [this, handler](Object const&, RoutedEventArgs&) { (this->*handler)(); },
-    };
-
-    // Как на стартовом экране: своё лицо и в состояниях указателя, иначе
-    // шаблон подменил бы серый фон кистью темы, пока курсор над кнопкой.
-    if (cancel) {
-        Apply{
-            button,
-            background = SolidColorBrush{kCancelFace},
-            ThemeBrush{u"ButtonBackgroundPointerOver", SolidColorBrush{kCancelFaceOver}},
-            ThemeBrush{u"ButtonBackgroundPressed", SolidColorBrush{kCancelFacePressed}},
-        };
-    }
-
-    // Полупрозрачность — визуалом, как у стартового экрана, только без
-    // анимации появления: мастер открывают действием, ждать ему нечего.
-    ElementCompositionPreview::getElementVisual(button).opacity(kRestingOpacity);
-    return button;
+// Визуал сетки — сразу, от композитора: поверхность под него заводит первый
+// размер окна (resizeSurface), тогда же он и встаёт в дерево.
+SkinWizard::SkinWizard(const Compositor& compositor)
+    : compositor_(compositor), visual_(compositor_.createSpriteVisual()) {
+    buildTree();
 }
 
 void SkinWizard::buildTree() {
     using namespace wxl::dsl;
 
-    surfaceHost_ = Grid{};
-
     // Кнопки — на той же карточке и на том же месте, что у стартового
-    // экрана: «Сохранить» увеличена, как «Продолжить чтение», — это действие
-    // по умолчанию, его же зовёт Enter; «Выйти из мастера обложек» — отмена,
-    // её зовёт Escape.
-    auto buttons = OverlayCard{
+    // экрана, и вида того же (look.h): «Сохранить» увеличена, как
+    // «Продолжить чтение», — это действие по умолчанию, его же зовёт Enter;
+    // «Выйти из мастера обложек» — отмена, её зовёт Escape.
+    auto const buttons = OverlayCard {
         hAlign.right,
         vAlign.top,
         Margin{0, 64, 72, 0},
-        StackPanel{
-            overlayButton(u"Сохранить", 72.0f, 19.0f, false, &SkinWizard::saveRequested),
-            overlayButton(u"Выбрать другое изображение", 46.0f, 15.0f, false,
-                          &SkinWizard::chooseAnother),
-            overlayButton(u"Выйти из мастера обложек", 46.0f, 15.0f, true,
-                          &SkinWizard::exitWizard),
+        StackPanel {
+            translucent(Button {
+                overlayMainLook,
+                u"Сохранить",
+                onClick = [this](Object const&, RoutedEventArgs&) { saveRequested(); },
+            }),
+            translucent(Button {
+                overlayButtonLook,
+                u"Выбрать другое изображение",
+                onClick = [this](Object const&, RoutedEventArgs&) { chooseAnother(); },
+            }),
+            translucent(Button {
+                overlayButtonLook,
+                cancelFaceLook(),
+                u"Выйти из мастера обложек",
+                onClick = [this](Object const&, RoutedEventArgs&) { exitWizard(); },
+            }),
         },
     };
 
     // Имя для чтеца экрана — слова подписи над полем: у поля ввода своего
     // слова на лице нет.
-    nameBox_ = TextBox{width = 320.0, automationName = u"Название обложки"};
+    Apply{nameBox_, width = 320.0, automationName = u"Название обложки"};
 
-    namePanel_ = Border{
+    // Диалог имени — в цветах обстановки, общих с панелью читалки (look.h):
+    // он не бумага, а инструмент.
+    Apply {
+        namePanel_,
         hAlign.center,
         vAlign.center,
         visibility = Visibility::Collapsed,
-        background = SolidColorBrush{kChrome},
-        borderBrush = SolidColorBrush{kEdge},
+        background = kChrome,
+        borderBrush = kChromeEdge,
         BorderThickness{1},
         CornerRadius{6},
         Padding{20, 16},
-        StackPanel{
-            TextBlock{
+        StackPanel {
+            TextBlock {
                 u"Название обложки",
                 fontSize = 13,
-                foreground = SolidColorBrush{kInk},
+                foreground = kChromeInk,
                 Margin{0, 0, 0, 8},
             },
-            nameBox_.value(),
-            StackPanel{
+            nameBox_,
+            StackPanel {
                 Orientation::Horizontal,
                 hAlign.right,
                 Margin{0, 12, 0, 0},
-                Button{
+                Button {
                     u"ОК",
                     Padding{18, 6},
                     Margin{0, 0, 8, 0},
                     onClick = [this](Object const&, RoutedEventArgs&) { finishNaming(true); },
                 },
-                Button{
+                Button {
                     u"Отмена",
                     Padding{18, 6},
                     onClick = [this](Object const&, RoutedEventArgs&) { finishNaming(false); },
@@ -158,106 +135,111 @@ void SkinWizard::buildTree() {
         },
     };
 
-    auto tree = Grid{
+    Apply {
+        root_,
         isTabStop = true,
         visibility = Visibility::Collapsed,
         // Прозрачная, но настоящая кисть: без неё оверлей не участвует в
         // проверке попадания, и тянуть точки было бы не за что.
-        background = SolidColorBrush{colors.transparent},
-        surfaceHost_.value(),
+        background = colors.transparent,
+        surfaceHost_,
         buttons,
-        namePanel_.value(),
+        namePanel_,
+
+        // Enter — действие по умолчанию: «Сохранить», а в открытом диалоге имени
+        // — его «ОК». Escape — отмена: «Выйти из мастера обложек», а в диалоге —
+        // его «Отмена». На пути вниз, чтобы клавиши работали при любом фокусе.
+        onPreviewKeyDown =
+            [this](Object const&, KeyRoutedEventArgs& args) {
+                const bool naming = namePanel_.visibility() == Visibility::Visible;
+                switch (args.key()) {
+                    case VirtualKey::Enter:
+                        if (naming) {
+                            finishNaming(true);
+                        } else {
+                            saveRequested();
+                        }
+                        break;
+                    case VirtualKey::Escape:
+                        if (naming) {
+                            finishNaming(false);
+                        } else {
+                            exitWizard();
+                        }
+                        break;
+                    default: return;
+                }
+                args.handled(true);
+            },
+
+        onSizeChanged =
+            [this](Object const&, SizeChangedEventArgs&) {
+                // Координаты в долях, поэтому смена размеров ничего не двигает
+                // по существу — точки остаются на своих местах снимка.
+                if (resizeSurface()) redraw();
+            },
+
+        onPointerPressed =
+            [this](Object const&, PointerRoutedEventArgs& args) {
+                // Фокус — себе на каждом нажатии: щелчок по книге уводил его с
+                // мастера, и Enter с Escape переставали работать.
+                root_.focus(FocusState::Programmatic);
+
+                const PointerPoint touch = args.getCurrentPoint(root_);
+                if (!touch.properties().isLeftButtonPressed()) return;
+
+                const std::optional<SkinEditor::Grip> grip =
+                    editor_.gripAt(onGrid(touch.position()), area());
+                if (!grip) return;
+
+                dragged_ = grip;
+                args.handled(true);
+            },
+
+        onPointerMoved =
+            [this](Object const&, PointerRoutedEventArgs& args) {
+                const SkinEditor::Point point = onGrid(args.getCurrentPoint(root_).position());
+
+                // Куда встаёт точка — между соседками, корешок только по
+                // вертикали, — решает модель правки; здесь только перерисовка.
+                std::optional<SkinEditor::Grip> grip = dragged_;
+                if (dragged_) {
+                    editor_.drag(*dragged_, point, area());
+                    redraw();
+                    args.handled(true);
+                } else {
+                    grip = editor_.gripAt(point, area());
+                }
+
+                // Курсор — каждое движение заново: WinUI возвращает свою
+                // стрелку, а задать курсор элементу проекция не умеет. Макрос
+                // ресурса Windows допустим здесь — спрашиваем саму Windows.
+                // Четыре стрелки у точки, которая ходит в обе оси, две — у
+                // точки корешка.
+                if (grip) {
+                    ::SetCursor(::LoadCursorW(
+                        nullptr, grip->point == kSpinePoint ? IDC_SIZENS : IDC_SIZEALL));
+                }
+            },
+
+        onPointerReleased =
+            [this](Object const&, PointerRoutedEventArgs& args) {
+                if (!dragged_) return;
+                dragged_.reset();
+                args.handled(true);
+
+                // Точку отпустили — кривые устоялись: время пересчитать карту
+                // изгиба и показать страницу по-новому. Не на каждом движении:
+                // пересборка карты стоит прохода по всем пикселям слоя.
+                if (onCurvesChanged) onCurvesChanged();
+            },
     };
-
-    // Enter — действие по умолчанию: «Сохранить», а в открытом диалоге имени
-    // — его «ОК». Escape — отмена: «Выйти из мастера обложек», а в диалоге —
-    // его «Отмена». На пути вниз, чтобы клавиши работали при любом фокусе.
-    tree.add_onPreviewKeyDown([this](Object const&, KeyRoutedEventArgs& args) {
-        const bool naming = namePanel_.value().visibility() == Visibility::Visible;
-        switch (args.key()) {
-            case VirtualKey::Enter:
-                if (naming) {
-                    finishNaming(true);
-                } else {
-                    saveRequested();
-                }
-                break;
-            case VirtualKey::Escape:
-                if (naming) {
-                    finishNaming(false);
-                } else {
-                    exitWizard();
-                }
-                break;
-            default: return;
-        }
-        args.handled(true);
-    });
-
-    tree.add_onSizeChanged([this](Object const&, SizeChangedEventArgs&) {
-        // Координаты в долях, поэтому смена размеров ничего не двигает по
-        // существу — точки остаются на своих местах снимка.
-        if (resizeSurface()) redraw();
-    });
-
-    tree.add_onPointerPressed([this](Object const&, PointerRoutedEventArgs& args) {
-        // Фокус — себе на каждом нажатии: щелчок по книге уводил его с
-        // мастера, и Enter с Escape переставали работать.
-        root_.value().focus(FocusState::Programmatic);
-
-        const PointerPoint touch = args.getCurrentPoint(root_.value());
-        if (!touch.properties().isLeftButtonPressed()) return;
-
-        const std::optional<SkinEditor::Grip> grip =
-            editor_.gripAt(onGrid(touch.position()), area());
-        if (!grip) return;
-
-        dragged_ = grip;
-        args.handled(true);
-    });
-
-    tree.add_onPointerMoved([this](Object const&, PointerRoutedEventArgs& args) {
-        const SkinEditor::Point point = onGrid(args.getCurrentPoint(root_.value()).position());
-
-        // Куда встаёт точка — между соседками, корешок только по вертикали, —
-        // решает модель правки; здесь только перерисовка.
-        std::optional<SkinEditor::Grip> grip = dragged_;
-        if (dragged_) {
-            editor_.drag(*dragged_, point, area());
-            redraw();
-            args.handled(true);
-        } else {
-            grip = editor_.gripAt(point, area());
-        }
-
-        // Курсор — каждое движение заново: WinUI возвращает свою стрелку, а
-        // задать курсор элементу проекция не умеет. Макрос ресурса Windows
-        // допустим здесь — спрашиваем саму Windows. Четыре стрелки у точки,
-        // которая ходит в обе оси, две — у точки корешка.
-        if (grip) {
-            ::SetCursor(
-                ::LoadCursorW(nullptr, grip->point == kSpinePoint ? IDC_SIZENS : IDC_SIZEALL));
-        }
-    });
-
-    tree.add_onPointerReleased([this](Object const&, PointerRoutedEventArgs& args) {
-        if (!dragged_) return;
-        dragged_.reset();
-        args.handled(true);
-
-        // Точку отпустили — кривые устоялись: время пересчитать карту изгиба
-        // и показать страницу по-новому. Не на каждом движении: пересборка
-        // карты стоит прохода по всем пикселям слоя.
-        if (onCurvesChanged) onCurvesChanged();
-    });
-
-    root_ = tree;
 }
 
 void SkinWizard::openNew(std::filesystem::path image) {
     editor_.openNew(std::move(image));
     dragged_.reset();
-    namePanel_.value().visibility(Visibility::Collapsed);
+    namePanel_.visibility(Visibility::Collapsed);
 
     redraw();
 }
@@ -266,7 +248,7 @@ void SkinWizard::openEdit(const Skin& skin, std::filesystem::path image) {
     // Системная становится новой обложкой — это решает модель правки.
     editor_.openEdit(skin, std::move(image));
     dragged_.reset();
-    namePanel_.value().visibility(Visibility::Collapsed);
+    namePanel_.visibility(Visibility::Collapsed);
 
     redraw();
 }
@@ -274,23 +256,23 @@ void SkinWizard::openEdit(const Skin& skin, std::filesystem::path image) {
 void SkinWizard::show() {
     if (open_) return;
     open_ = true;
-    root_.value().visibility(Visibility::Visible);
-    root_.value().focus(FocusState::Programmatic);
+    root_.visibility(Visibility::Visible);
+    root_.focus(FocusState::Programmatic);
 }
 
 void SkinWizard::hide() {
     if (!open_) return;
     open_ = false;
     dragged_.reset();
-    namePanel_.value().visibility(Visibility::Collapsed);
-    root_.value().visibility(Visibility::Collapsed);
+    namePanel_.visibility(Visibility::Collapsed);
+    root_.visibility(Visibility::Collapsed);
 }
 
 bool SkinWizard::resizeSurface() {
-    const auto width = static_cast<float>(root_.value().actualWidth());
-    const auto height = static_cast<float>(root_.value().actualHeight());
+    const auto width = static_cast<float>(root_.actualWidth());
+    const auto height = static_cast<float>(root_.actualHeight());
 
-    core::nullable<XamlRoot> const xamlRoot = root_.value().xamlRoot();
+    core::nullable<XamlRoot> const xamlRoot = root_.xamlRoot();
     float scale = xamlRoot ? static_cast<float>(xamlRoot->rasterizationScale()) : 1.0f;
     if (scale <= 0.0f) scale = 1.0f;
 
@@ -306,15 +288,13 @@ bool SkinWizard::resizeSurface() {
 
     if (surface_.empty()) {
         surface_.emplace_back(compositor_, pixels);
-        SpriteVisual visual = compositor_.createSpriteVisual();
-        visual.brush(surface_[0].brush());
-        ElementCompositionPreview::setElementChildVisual(surfaceHost_.value(), visual);
-        visual_ = visual;
+        visual_.brush(surface_[0].brush());
+        ElementCompositionPreview::setElementChildVisual(surfaceHost_, visual_);
     } else {
         surface_[0].resize(pixels);
     }
 
-    visual_.value().size({width, height});
+    visual_.size({width, height});
     return true;
 }
 
@@ -417,27 +397,27 @@ void SkinWizard::saveRequested() {
 }
 
 void SkinWizard::beginNaming() {
-    nameBox_.value().text(editor_.skin().name);   // у правки — прежнее имя, у новой пусто
-    namePanel_.value().visibility(Visibility::Visible);
-    nameBox_.value().focus(FocusState::Programmatic);
+    nameBox_.text(editor_.skin().name);   // у правки — прежнее имя, у новой пусто
+    namePanel_.visibility(Visibility::Visible);
+    nameBox_.focus(FocusState::Programmatic);
 }
 
 void SkinWizard::finishNaming(bool save) {
     if (!save) {
         // «Отмена» — остаёмся в мастере, ничего не потеряв: точки как стояли,
         // так и стоят.
-        namePanel_.value().visibility(Visibility::Collapsed);
-        root_.value().focus(FocusState::Programmatic);
+        namePanel_.visibility(Visibility::Collapsed);
+        root_.focus(FocusState::Programmatic);
         return;
     }
 
     // Текст поля — чужой: он пришёл из контрола строкой WinRT, и проверяет
     // его модель правки. Строка держится, пока жив вид на неё.
-    const hstring typed = nameBox_.value().text();
+    const hstring typed = nameBox_.text();
     std::optional<Skin> saved = editor_.result(std::u16string_view(typed));
     if (!saved) return;   // безымянную сохранять некуда
 
-    namePanel_.value().visibility(Visibility::Collapsed);
+    namePanel_.visibility(Visibility::Collapsed);
     if (onSave) onSave(std::move(*saved), editor_.imagePath());
 }
 

@@ -1,6 +1,7 @@
 #include "library_screen.h"
 
 #include "Bind.h"
+#include "look.h"
 
 // Последним из своих: несёт импорт wxl.core.
 #include "bukvitsa/reader/shelf_text.h"
@@ -12,10 +13,10 @@ using namespace wxl;
 namespace {
 
 // Полка бумажного цвета, как и полоса набора: витрина — часть той же книги,
-// а не отдельное приложение.
+// а не отдельное приложение. Приглушённый тон (kDimInk) — общий с заставкой,
+// он в look.h.
 constexpr Color kPaper = rgb(247, 244, 238);
 constexpr Color kInk = rgb(32, 30, 28);
-constexpr Color kDim = rgb(138, 133, 125);
 constexpr Color kCard = rgb(255, 253, 249);
 constexpr Color kEdge = rgb(227, 222, 212);
 
@@ -42,80 +43,81 @@ LibraryScreen::LibraryScreen(Workspace& workspace) : workspace_(workspace) {
     // бы обычные слова (entry, text) и под /W4 каждое стало бы C4459.
     using namespace wxl::dsl;
 
-    shelf_ = StackPanel{Margin{40, 8, 40, 32}};
+    Apply{shelf_, Margin{40, 8, 40, 32}};
 
-    emptyNote_ = TextBlock{
+    Apply {
+        emptyNote_,
         u"Пока пусто. Добавьте книгу — она останется там, где лежит.",
         fontSize = 16,
-        foreground = SolidColorBrush{kDim},
+        foreground = kDimInk,
         Margin{40, 24, 40, 0},
     };
 
-    root_ = Grid{
+    Apply {
+        root_,
         isTabStop = true,
 
         // Тема — светлая, явно: полка бумажная, а остров без своей темы берёт
         // тему приложений Windows, и в тёмной текст кнопок светлел бы на бумаге.
         requestedTheme = ElementTheme::Light,
 
-        background = SolidColorBrush{kPaper},
+        background = kPaper,
         rowDefinitions = u"auto,*",
 
-        Grid{
+        Grid {
             row = 0,
             Margin{40, 32, 40, 8},
             columnDefinitions = u"*,auto,auto,auto",
             columnSpacing = 12,
 
-            TextBlock{
+            TextBlock {
                 u"Моя библиотека",
                 column = 0,
                 fontSize = 26,
                 FontWeight{600},
-                foreground = SolidColorBrush{kInk},
+                foreground = kInk,
                 vAlign.center,
             },
             // Галочка привязана к полю настроек в обе стороны: показывает его и
             // пишет в него; запись файла слушает само поле. Место в сетке задано
             // при постройке: тег колонки живёт на самом элементе, а не на сетке.
-            CheckBox{
+            CheckBox {
                 u"Продолжать чтение при старте",
                 column = 1,
-                foreground = SolidColorBrush{kInk},
+                foreground = kInk,
                 vAlign.center,
                 isChecked = Bind{workspace.settings.continueReading},
             },
-            Button{
+            Button {
                 u"Добавить книгу",
                 column = 2,
                 onClick = [this](Object const&,
                                  RoutedEventArgs&) { if (onAddBook) onAddBook(); },
             },
-            Button{
+            Button {
                 u"Назад",
                 column = 3,
                 onClick = [this](Object const&, RoutedEventArgs&) { if (onBack) onBack(); },
             },
         },
 
-        ScrollViewer{
+        ScrollViewer {
             row = 1,
-            content = StackPanel{
-                emptyNote_.value(),
-                shelf_.value(),
+            content = StackPanel {
+                emptyNote_,
+                shelf_,
             },
         },
-    };
 
-    root_.value().add_onLoaded([this](Object const&, RoutedEventArgs&) {
-        root_.value().focus(FocusState::Programmatic);
-    });
+        onLoaded =
+            [this](Object const&, RoutedEventArgs&) { root_.focus(FocusState::Programmatic); },
+    };
 }
 
 void LibraryScreen::appendBook(const BookEntry& entry) {
-    shelf_.value().children().append(shelfItem(entry));
+    shelf_.children().append(shelfItem(entry));
 
-    emptyNote_.value().visibility(Visibility::Collapsed);
+    emptyNote_.visibility(Visibility::Collapsed);
 }
 
 void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookmarks) {
@@ -141,12 +143,12 @@ void LibraryScreen::show(const Library& library) {
     // Полка пересобирается целиком. Сравнивать её с реестром и править
     // разницу было бы дороже во всех смыслах: книг десятки, а не тысячи, и
     // добавление одной — не повод заводить вторую модель того же списка.
-    shelf_.value().children().clear();
+    shelf_.children().clear();
     for (const BookEntry& entry : library.books()) {
-        shelf_.value().children().append(shelfItem(entry));
+        shelf_.children().append(shelfItem(entry));
     }
 
-    emptyNote_.value().visibility(library.books().empty() ? Visibility::Visible
+    emptyNote_.visibility(library.books().empty() ? Visibility::Visible
                                                          : Visibility::Collapsed);
 }
 
@@ -161,10 +163,10 @@ Button LibraryScreen::shelfItem(const BookEntry& book) {
     // неправдой, пока файл состояния ещё не прочитан, а карточка обязана
     // появиться раньше, чем он будет прочитан. Настоящий текст приносит
     // setProgress().
-    TextBlock progress = TextBlock{
+    TextBlock progress = TextBlock {
         book.characterCount == 0 ? progressLine(0, 0) : u16_text{},
         fontSize = 13,
-        foreground = SolidColorBrush{kDim},
+        foreground = kDimInk,
         Margin{0, 8, 0, 0},
     };
 
@@ -183,19 +185,19 @@ Button LibraryScreen::shelfItem(const BookEntry& book) {
         horizontalContentAlignment = HorizontalAlignment::Stretch,
         Margin{0, 6},
         Padding{0},
-        background = SolidColorBrush{kCard},
-        borderBrush = SolidColorBrush{kEdge},
+        background = kCard,
+        borderBrush = kEdge,
         BorderThickness{1},
         CornerRadius{6},
         onClick = [this, guid](Object const&,
                                RoutedEventArgs&) { if (onOpen) onOpen(guid); },
 
-        content = Grid{
+        content = Grid {
             columnDefinitions = u"auto,*",
             columnSpacing = 16,
             Margin{12},
 
-            Image{
+            Image {
                 column = 0,
                 source = coverOf(workspace_.coverDirectory(), book),
                 width = kCoverWidth,
@@ -204,25 +206,22 @@ Button LibraryScreen::shelfItem(const BookEntry& book) {
                 vAlign.top,
             },
 
-            StackPanel{
+            StackPanel {
                 column = 1,
                 vAlign.center,
-                TextBlock{
+                TextBlock {
                     book.title,
                     fontSize = 18,
                     FontWeight{600},
-                    foreground = SolidColorBrush{kInk},
-                    textWrapping.wrap,
-                    maxLines = 2,
-                    textTrimming.characterEllipsis,
+                    foreground = kInk,
+                    twoLinesLook,
                 },
-                TextBlock{
+                TextBlock {
                     book.authors,
                     fontSize = 14,
-                    foreground = SolidColorBrush{kDim},
+                    foreground = kDimInk,
                     Margin{0, 4, 0, 0},
-                    maxLines = 1,
-                    textTrimming.characterEllipsis,
+                    oneLineLook,
                 },
                 progress,
             },
