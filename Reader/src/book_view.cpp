@@ -276,10 +276,10 @@ bool controlHeld() {
 
 }  // namespace
 
-BookView::BookView(const CompositionWindow& window, Workspace& workspace)
+BookView::BookView(const CompositionWindow& window, Settings& settings, Actions& actions)
     : window_(window),
-      settings_(workspace.settings),
-      workspace_(workspace),
+      settings_(settings),
+      actions_(actions),
       compositor_(window.compositor()),
       // Визуалы сцены — сразу, от композитора окна; buildTree() их одевает и
       // ставит на сцену.
@@ -333,8 +333,7 @@ BookView::BookView(const CompositionWindow& window, Workspace& workspace)
     // Таймер отпускания пула листов не повторяется — перезаводится сам с новой
     // паузой (armRelease/onReleaseTick).
     releaseTimer_.isRepeating(false);
-    releaseTimer_.add_onTick(
-        [this](wxl::Object const&, wxl::Object const&) { onReleaseTick(); });
+    releaseTimer_.add_onTick(method(this, &BookView::onReleaseTick));
 
     IDWriteFactory* const dwrite = dwriteFactory();
     if (!dwrite) return;
@@ -436,10 +435,7 @@ void BookView::buildTree() {
 
         note_.root(),
 
-        onLoaded =
-            [this](Object const&, RoutedEventArgs&) {
-                root_.focus(FocusState::Programmatic);
-            },
+        onLoaded = method(this, &BookView::loaded),
 
         onPreviewKeyDown =
             [this](Object const&, KeyRoutedEventArgs& args) {
@@ -572,7 +568,7 @@ void BookView::buildTree() {
                 // мышь: у страницы нет ни полосы меню, ни кнопок, и заводить их ради
                 // этого значило бы завесить книгу обстановкой.
                 if (touch.properties().isRightButtonPressed()) {
-                    if (onPanelRequested) onPanelRequested();
+                    actions_.togglePanel();
                     return;
                 }
 
@@ -604,6 +600,10 @@ void BookView::buildTree() {
     };
 }
 
+void BookView::loaded(Grid const& self) {
+    self.focus(FocusState::Programmatic);
+}
+
 BookView::~BookView() {
     // Настройки и окно переживают полосу: слушатели с нашим this снимаются,
     // иначе следующая перемена кегля или размера позвала бы уже разрушенную
@@ -620,6 +620,7 @@ void BookView::open(std::shared_ptr<Book> book, uint32_t charOffset) {
     note_.hide();
     flow_.open(std::move(book), charOffset);
     requestRelayout();
+    position_.set(flow_.position());
 }
 
 bool BookView::dismissOverlays() {
@@ -639,7 +640,6 @@ void BookView::setActive(bool active) {
     // асинхронно) берёт осевший разворот сам — иначе окно сквозило бы на стол.
     if (active) {
         window_.clearBackground();
-        updateBackdrop();
         redraw();
     } else if (settled_) {
         cancelTurn();   // летящие садятся: заднику положен нынешний разворот, а не прошлый
@@ -670,12 +670,14 @@ void BookView::applyTheme() {
     warpFlat_ = false;
 
     // Слой изгиба нужен только теме с подложкой, а весит как две полосы —
-    // на ровных темах он отпускается. Контекст и эффекты мелкие и остаются.
-    if (backdropFile().empty()) {
+    // на ровных темах он отпускается вместе со снимком. Контекст и эффекты
+    // мелкие и остаются. Снимок обложки отпускает и приносит владелец: ему
+    // видно, тот же это файл или другой (две обложки могут делить снимок).
+    if (!hasBackdrop()) {
         warpLayer_.Reset();
         warpPixels_ = {};
+        dropBackdrop();
     }
-    updateBackdrop();
     redraw();
 }
 
@@ -693,14 +695,11 @@ void BookView::setSkins(std::vector<Skin> skins) {
     // возвращается к первой встроенной.
     if (theme.get() >= themeCount()) theme.set(0);
 
-    // Пересохранённая обложка могла сменить и снимок, и кривые.
-    backdropWanted_.clear();
-    backdropSource_.Reset();
-    backdropBytes_.clear();
-    photoBitmap_.Reset();
+    // Пересохранённая обложка могла сменить и снимок, и кривые: снимок
+    // принесёт владелец заново.
+    dropBackdrop();
     warpMap_.Reset();
     warpFlat_ = false;
-    updateBackdrop();
     redraw();
 }
 
@@ -709,26 +708,18 @@ const Skin* BookView::activeSkin() const {
     return &skins_[static_cast<size_t>(theme.get() - kThemeCount)];
 }
 
-void BookView::setPreview(const Skin* skin, const std::filesystem::path& image) {
+void BookView::setPreview(const Skin* skin) {
     if (skin) {
         preview_ = *skin;
-        previewImage_ = image;
     } else {
         preview_.reset();
-        previewImage_.clear();
     }
 
-    // Карта держит форму прежних кривых, а подложка — прежний снимок.
+    // Карта держит форму прежних кривых; снимок, если он другой, принесёт
+    // владелец.
     warpMap_.Reset();
     warpFlat_ = false;
-    updateBackdrop();
     redraw();
-}
-
-std::filesystem::path BookView::backdropFile() const {
-    if (preview_) return previewImage_;
-    if (const Skin* skin = activeSkin()) return workspace_.skinImagePath(*skin);
-    return {};
 }
 
 void BookView::nudgeFontSize(double by) {
@@ -863,7 +854,7 @@ void BookView::showColumn(const PageFlow::Column& target) {
     startTail();   // глава могла смениться — её хвост тоже нужен
 
     redraw();
-    if (onPositionChanged) onPositionChanged(flow_.position());
+    position_.set(flow_.position());
 }
 
 void BookView::redraw() {
@@ -1005,7 +996,7 @@ void BookView::startTurn(const PageFlow::Column& target, bool forward) {
     else
         animateTurn(flip, forward);
 
-    if (onPositionChanged) onPositionChanged(flow_.position());
+    position_.set(flow_.position());
 }
 
 BookView::Flip& BookView::acquireFlip() {
@@ -1656,38 +1647,22 @@ void BookView::goToCharOffset(uint32_t charOffset) {
     showColumn(flow_.columnOf(charOffset));
 }
 
-void BookView::updateBackdrop() {
-    const std::filesystem::path wanted = backdropFile();
-    if (wanted.empty()) {
-        backdropWanted_.clear();
-        backdropSource_.Reset();
-        backdropBytes_.clear();
-        photoBitmap_.Reset();
-        return;
-    }
-
-    // Снимок держится, пока путь тот же: читать и раскодировать его заново на
-    // каждую смену темы незачем. Смена пути отпускает прежний снимок и кэш
-    // битмапа устройства — его заведёт заново drawThemeBackdrop, вкомпоновывая
-    // фото прямо в поверхность страницы — и заказывает новый у владельца; до
-    // его прихода страница рисуется бумагой темы.
-    if (backdropWanted_ != wanted) {
-        backdropWanted_ = wanted;
-        backdropSource_.Reset();
-        backdropBytes_.clear();
-        photoBitmap_.Reset();
-        if (onBackdropNeeded) onBackdropNeeded(wanted);
-    }
+void BookView::dropBackdrop() {
+    // Сначала снимок, потом байты: он читает из них. Кэш битмапа устройства
+    // заведёт заново drawThemeBackdrop, вкомпоновывая фото прямо в
+    // поверхность страницы.
+    backdropSource_.Reset();
+    backdropBytes_.clear();
+    photoBitmap_.Reset();
 }
 
-void BookView::setBackdrop(const std::filesystem::path& file, std::string bytes) {
-    if (file != backdropWanted_) return;   // пока читали, захотели другое
+void BookView::setBackdrop(std::string bytes) {
+    // Нечего ни отпускать, ни показывать — и перерисовывать незачем.
+    if (bytes.empty() && backdropBytes_.empty()) return;
 
-    // Сначала отпустить снимок, потом сменить байты: он читает из них.
-    backdropSource_.Reset();
+    dropBackdrop();
     backdropBytes_ = std::move(bytes);
-    backdropSource_ = decodeImage(backdropBytes_);
-    photoBitmap_.Reset();
+    if (!backdropBytes_.empty()) backdropSource_ = decodeImage(backdropBytes_);
     redraw();
 }
 
@@ -1860,7 +1835,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     // Ровная тема кроет лист бумагой; тема с подложкой начинает лист с самой
     // фотоподложки, а текст ложится поверх неё — всё в одну поверхность, одним
     // битмапом, без отдельного визуала под страницей.
-    if (backdropFile().empty()) {
+    if (!hasBackdrop()) {
         context->Clear(paper().background);
         drawPageContent(context, width, height);
         return;
@@ -2039,8 +2014,7 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
 
 void BookView::drawInvitation(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = paper();
-    context->Clear(backdropFile().empty() ? shade.background
-                                          : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+    context->Clear(!hasBackdrop() ? shade.background : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
     IDWriteFactory* const dwrite = dwriteFactory();
     if (!dwrite) return;
