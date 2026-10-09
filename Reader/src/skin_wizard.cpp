@@ -5,6 +5,7 @@
 // Заголовки проекта после стандартных. Свой первым.
 #include "skin_wizard.h"
 
+#include "Bind.h"
 #include "look.h"
 
 namespace bukvitsa::reader {
@@ -52,12 +53,20 @@ Button translucent(Button button) {
     return button;
 }
 
+/// Диалог имени виден, пока имя спрашивают.
+Visibility shownWhen(bool naming) {
+    return naming ? Visibility::Visible : Visibility::Collapsed;
+}
+
 }  // namespace
 
 // Визуал сетки — сразу, от композитора: поверхность под него заводит первый
 // размер окна (resizeSurface), тогда же он и встаёт в дерево.
-SkinWizard::SkinWizard(const Compositor& compositor)
-    : compositor_(compositor), visual_(compositor_.createSpriteVisual()) {
+SkinWizard::SkinWizard(const Compositor& compositor, Actions& actions)
+    : actions_(actions),
+      compositor_(compositor),
+      skin_(editor_.skin()),
+      visual_(compositor_.createSpriteVisual()) {
     buildTree();
 }
 
@@ -76,33 +85,38 @@ void SkinWizard::buildTree() {
             translucent(Button {
                 overlayMainLook,
                 u"Сохранить",
-                onClick = [this](Object const&, RoutedEventArgs&) { saveRequested(); },
+                onClick = method(this, &SkinWizard::saveRequested),
             }),
             translucent(Button {
                 overlayButtonLook,
                 u"Выбрать другое изображение",
-                onClick = [this](Object const&, RoutedEventArgs&) { chooseAnother(); },
+                onClick = method(&actions_, &Actions::chooseAnotherImage),
             }),
             translucent(Button {
                 overlayButtonLook,
                 cancelFaceLook(),
                 u"Выйти из мастера обложек",
-                onClick = [this](Object const&, RoutedEventArgs&) { exitWizard(); },
+                onClick = method(&actions_, &Actions::leaveWizard),
             }),
         },
     };
 
     // Имя для чтеца экрана — слова подписи над полем: у поля ввода своего
-    // слова на лице нет.
-    Apply{nameBox_, width = 320.0, automationName = u"Название обложки"};
+    // слова на лице нет. Текст поля привязан к имени модели правки в обе
+    // стороны и приходит туда уже проверенным.
+    Apply {
+        nameBox_,
+        width = 320.0,
+        automationName = u"Название обложки",
+        text = Bind{editor_.name},
+    };
 
     // Диалог имени — в цветах обстановки, общих с панелью читалки (look.h):
-    // он не бумага, а инструмент.
-    Apply {
-        namePanel_,
+    // он не бумага, а инструмент. Виден, пока имя спрашивают (naming_).
+    auto const namePanel = Border {
         hAlign.center,
         vAlign.center,
-        visibility = Visibility::Collapsed,
+        visibility = BindOutput{naming_, shownWhen},
         background = kChrome,
         borderBrush = kChromeEdge,
         BorderThickness{1},
@@ -124,12 +138,12 @@ void SkinWizard::buildTree() {
                     u"ОК",
                     Padding{18, 6},
                     Margin{0, 0, 8, 0},
-                    onClick = [this](Object const&, RoutedEventArgs&) { finishNaming(true); },
+                    onClick = method(this, &SkinWizard::confirmName),
                 },
                 Button {
                     u"Отмена",
                     Padding{18, 6},
-                    onClick = [this](Object const&, RoutedEventArgs&) { finishNaming(false); },
+                    onClick = method(this, &SkinWizard::cancelName),
                 },
             },
         },
@@ -144,113 +158,118 @@ void SkinWizard::buildTree() {
         background = colors.transparent,
         surfaceHost_,
         buttons,
-        namePanel_,
+        namePanel,
 
-        // Enter — действие по умолчанию: «Сохранить», а в открытом диалоге имени
-        // — его «ОК». Escape — отмена: «Выйти из мастера обложек», а в диалоге —
-        // его «Отмена». На пути вниз, чтобы клавиши работали при любом фокусе.
-        onPreviewKeyDown =
-            [this](Object const&, KeyRoutedEventArgs& args) {
-                const bool naming = namePanel_.visibility() == Visibility::Visible;
-                switch (args.key()) {
-                    case VirtualKey::Enter:
-                        if (naming) {
-                            finishNaming(true);
-                        } else {
-                            saveRequested();
-                        }
-                        break;
-                    case VirtualKey::Escape:
-                        if (naming) {
-                            finishNaming(false);
-                        } else {
-                            exitWizard();
-                        }
-                        break;
-                    default: return;
-                }
-                args.handled(true);
-            },
-
-        onSizeChanged =
-            [this](Object const&, SizeChangedEventArgs&) {
-                // Координаты в долях, поэтому смена размеров ничего не двигает
-                // по существу — точки остаются на своих местах снимка.
-                if (resizeSurface()) redraw();
-            },
-
-        onPointerPressed =
-            [this](Object const&, PointerRoutedEventArgs& args) {
-                // Фокус — себе на каждом нажатии: щелчок по книге уводил его с
-                // мастера, и Enter с Escape переставали работать.
-                root_.focus(FocusState::Programmatic);
-
-                const PointerPoint touch = args.getCurrentPoint(root_);
-                if (!touch.properties().isLeftButtonPressed()) return;
-
-                const std::optional<SkinEditor::Grip> grip =
-                    editor_.gripAt(onGrid(touch.position()), area());
-                if (!grip) return;
-
-                dragged_ = grip;
-                args.handled(true);
-            },
-
-        onPointerMoved =
-            [this](Object const&, PointerRoutedEventArgs& args) {
-                const SkinEditor::Point point = onGrid(args.getCurrentPoint(root_).position());
-
-                // Куда встаёт точка — между соседками, корешок только по
-                // вертикали, — решает модель правки; здесь только перерисовка.
-                std::optional<SkinEditor::Grip> grip = dragged_;
-                if (dragged_) {
-                    editor_.drag(*dragged_, point, area());
-                    redraw();
-                    args.handled(true);
-                } else {
-                    grip = editor_.gripAt(point, area());
-                }
-
-                // Курсор — каждое движение заново: WinUI возвращает свою
-                // стрелку, а задать курсор элементу проекция не умеет. Макрос
-                // ресурса Windows допустим здесь — спрашиваем саму Windows.
-                // Четыре стрелки у точки, которая ходит в обе оси, две — у
-                // точки корешка.
-                if (grip) {
-                    ::SetCursor(::LoadCursorW(
-                        nullptr, grip->point == kSpinePoint ? IDC_SIZENS : IDC_SIZEALL));
-                }
-            },
-
-        onPointerReleased =
-            [this](Object const&, PointerRoutedEventArgs& args) {
-                if (!dragged_) return;
-                dragged_.reset();
-                args.handled(true);
-
-                // Точку отпустили — кривые устоялись: время пересчитать карту
-                // изгиба и показать страницу по-новому. Не на каждом движении:
-                // пересборка карты стоит прохода по всем пикселям слоя.
-                if (onCurvesChanged) onCurvesChanged();
-            },
+        // На пути вниз, чтобы клавиши работали при любом фокусе.
+        onPreviewKeyDown = method(this, &SkinWizard::keyDown),
+        onSizeChanged = method(this, &SkinWizard::sizeChanged),
+        onPointerPressed = method(this, &SkinWizard::pointerPressed),
+        onPointerMoved = method(this, &SkinWizard::pointerMoved),
+        onPointerReleased = method(this, &SkinWizard::pointerReleased),
     };
+}
+
+void SkinWizard::keyDown(Object const&, KeyRoutedEventArgs& args) {
+    // Enter — действие по умолчанию: «Сохранить», а в открытом диалоге имени —
+    // его «ОК». Escape — отмена: «Выйти из мастера обложек», а в диалоге —
+    // его «Отмена».
+    switch (args.key()) {
+        case VirtualKey::Enter:
+            if (naming_.get()) {
+                confirmName();
+            } else {
+                saveRequested();
+            }
+            break;
+        case VirtualKey::Escape:
+            if (naming_.get()) {
+                cancelName();
+            } else {
+                actions_.leaveWizard();
+            }
+            break;
+        default: return;
+    }
+    args.handled(true);
+}
+
+void SkinWizard::sizeChanged() {
+    // Координаты в долях, поэтому смена размеров ничего не двигает по
+    // существу — точки остаются на своих местах снимка.
+    if (resizeSurface()) redraw();
+}
+
+void SkinWizard::pointerPressed(Grid const& self, PointerRoutedEventArgs& args) {
+    // Фокус — себе на каждом нажатии: щелчок по книге уводил его с мастера, и
+    // Enter с Escape переставали работать.
+    self.focus(FocusState::Programmatic);
+
+    const PointerPoint touch = args.getCurrentPoint(self);
+    if (!touch.properties().isLeftButtonPressed()) return;
+
+    const std::optional<SkinEditor::Grip> grip = editor_.gripAt(onGrid(touch.position()), area());
+    if (!grip) return;
+
+    dragged_ = grip;
+    args.handled(true);
+}
+
+void SkinWizard::pointerMoved(Grid const& self, PointerRoutedEventArgs& args) {
+    const SkinEditor::Point point = onGrid(args.getCurrentPoint(self).position());
+
+    // Куда встаёт точка — между соседками, корешок только по вертикали, —
+    // решает модель правки; здесь только перерисовка.
+    std::optional<SkinEditor::Grip> grip = dragged_;
+    if (dragged_) {
+        editor_.drag(*dragged_, point, area());
+        redraw();
+        args.handled(true);
+    } else {
+        grip = editor_.gripAt(point, area());
+    }
+
+    // Курсор — каждое движение заново: WinUI возвращает свою стрелку, а задать
+    // курсор элементу проекция не умеет. Макрос ресурса Windows допустим здесь
+    // — спрашиваем саму Windows. Четыре стрелки у точки, которая ходит в обе
+    // оси, две — у точки корешка.
+    if (grip) {
+        ::SetCursor(
+            ::LoadCursorW(nullptr, grip->point == kSpinePoint ? IDC_SIZENS : IDC_SIZEALL));
+    }
+}
+
+void SkinWizard::pointerReleased(Object const&, PointerRoutedEventArgs& args) {
+    if (!dragged_) return;
+    dragged_.reset();
+    args.handled(true);
+
+    // Точку отпустили — кривые устоялись: время пересчитать карту изгиба и
+    // показать страницу по-новому. Не на каждом движении: пересборка карты
+    // стоит прохода по всем пикселям слоя.
+    publish();
+}
+
+void SkinWizard::publish() {
+    skin_.set(editor_.skin());
 }
 
 void SkinWizard::openNew(std::filesystem::path image) {
     editor_.openNew(std::move(image));
     dragged_.reset();
-    namePanel_.visibility(Visibility::Collapsed);
+    naming_.set(false);
 
     redraw();
+    publish();
 }
 
 void SkinWizard::openEdit(const Skin& skin, std::filesystem::path image) {
     // Системная становится новой обложкой — это решает модель правки.
     editor_.openEdit(skin, std::move(image));
     dragged_.reset();
-    namePanel_.visibility(Visibility::Collapsed);
+    naming_.set(false);
 
     redraw();
+    publish();
 }
 
 void SkinWizard::show() {
@@ -264,7 +283,7 @@ void SkinWizard::hide() {
     if (!open_) return;
     open_ = false;
     dragged_.reset();
-    namePanel_.visibility(Visibility::Collapsed);
+    naming_.set(false);
     root_.visibility(Visibility::Collapsed);
 }
 
@@ -378,47 +397,36 @@ void SkinWizard::redraw() {
     });
 }
 
-void SkinWizard::chooseAnother() {
-    if (onChooseAnother) onChooseAnother();
-}
-
-void SkinWizard::exitWizard() {
-    if (onExit) onExit();
-}
-
 void SkinWizard::saveRequested() {
     // У правки старой обложки копия и имя уже есть — сохранение идёт сразу,
     // без диалога. Имя спрашивается только у новой.
     if (!editor_.needsName()) {
-        if (onSave) onSave(editor_.skin(), editor_.imagePath());
+        actions_.saveSkin(editor_.skin(), editor_.imagePath());
         return;
     }
     beginNaming();
 }
 
 void SkinWizard::beginNaming() {
-    nameBox_.text(editor_.skin().name);   // у правки — прежнее имя, у новой пусто
-    namePanel_.visibility(Visibility::Visible);
+    editor_.name.set(editor_.skin().name);   // у правки — прежнее имя, у новой пусто
+    naming_.set(true);
     nameBox_.focus(FocusState::Programmatic);
 }
 
-void SkinWizard::finishNaming(bool save) {
-    if (!save) {
-        // «Отмена» — остаёмся в мастере, ничего не потеряв: точки как стояли,
-        // так и стоят.
-        namePanel_.visibility(Visibility::Collapsed);
-        root_.focus(FocusState::Programmatic);
-        return;
-    }
-
-    // Поле ещё не привязано к имени модели: текст кладётся туда здесь,
-    // исправленным, — так, как положит его привязка.
-    editor_.name.set(unicode::repaired(nameBox_.text()));
+void SkinWizard::confirmName() {
+    // Имя — в модели правки: поле положило его туда само, проверенным.
     std::optional<Skin> saved = editor_.result();
     if (!saved) return;   // безымянную сохранять некуда
 
-    namePanel_.visibility(Visibility::Collapsed);
-    if (onSave) onSave(std::move(*saved), editor_.imagePath());
+    naming_.set(false);
+    actions_.saveSkin(std::move(*saved), editor_.imagePath());
+}
+
+void SkinWizard::cancelName() {
+    // «Отмена» — остаёмся в мастере, ничего не потеряв: точки как стояли,
+    // так и стоят.
+    naming_.set(false);
+    root_.focus(FocusState::Programmatic);
 }
 
 }  // namespace bukvitsa::reader

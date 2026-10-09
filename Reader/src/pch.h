@@ -18,3 +18,7 @@
 #include <wxl/Microsoft.UI.Xaml.Hosting.h>
 #include <wxl/styles.h>
 #include "launch.h"
+
+// Метод объекта как обработчик события — `onClick = method(this, &X::m)`;
+// последним: он импортирует wxl.async.
+#include "method.h"
