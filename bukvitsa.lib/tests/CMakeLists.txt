@@ -2,6 +2,7 @@
 # ни одного исходника из src здесь не компилируется заново.
 add_executable(bukvitsa_lib_tests
     lib_tests.cpp
+    book_search_tests.cpp
     key_map_tests.cpp
     page_flow_tests.cpp
     pieces_tests.cpp
