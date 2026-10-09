@@ -15,6 +15,7 @@ namespace bukvitsa::reader {
 
 using namespace wxl;
 
+using wxl::async::cancellable;
 using wxl::async::detached_task;
 using wxl::async::system_exception;
 
@@ -72,7 +73,7 @@ detached_task App::chooseAnotherImage() {
 /// мастер в полосу.
 wxl::async::task<bool> App::checkImage(std::filesystem::path image) {
     try {
-        if (co_await ws_.isImage(image)) co_return true;
+        if (co_await ws_.isImage(image, stop_.token())) co_return true;
         notices_.post({L"Это не изображение", image.wstring()});
     } catch (const system_exception& failure) {
         notices_.post(noticeOf(L"Не удалось открыть изображение", image.wstring(), failure));
@@ -91,12 +92,14 @@ detached_task App::leaveWizard() {
 /* ---------------- сохранить и удалить ---------------- */
 
 /// Копия снимка, запись реестра, немедленное применение — сохранённая обложка
-/// тут же становится текущей темой.
+/// тут же становится текущей темой. Отмена кончает сценарий, только пока
+/// рабочее место не начало писать: тогда не записано ничего и применять
+/// нечего; начатое сохранение доходит до конца и применяется.
 detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
     const u16_text skinName = skin.name;
 
     try {
-        co_await ws_.saveSkin(std::move(skin), photo);
+        co_await ws_.saveSkin(std::move(skin), photo, stop_.token());
     } catch (const system_exception& failure) {
         notices_.post(noticeOf(L"Не удалось сохранить обложку", photo.wstring(), failure));
         co_return;
@@ -140,6 +143,10 @@ detached_task App::deleteSkin(u16_text name) {
     // ответ ждётся здесь же, окно всё это время живо. Открытое сообщение сюда
     // не пустит — оно заслоняет остров; а сообщение, пришедшее, пока вопрос
     // открыт, ждёт в Notices и выходит, когда вопрос закрыт.
+    //
+    // Ответ ждётся под токеном: попросили кончиться, пока вопрос открыт, —
+    // удаление после него не начнётся, каким бы ни был ответ. Сам вопрос
+    // отмена не закрывает: ожидание операции WinRT ей нечем прервать.
     {
         using namespace wxl::dsl;
 
@@ -155,7 +162,7 @@ detached_task App::deleteSkin(u16_text name) {
             defaultButton = ContentDialogButton::Close,
             onClosed = method(&notices_, &Notices::flush),
         };
-        if (co_await dialog.showAsync() != ContentDialogResult::Primary) co_return;
+        if (co_await cancellable(dialog.showAsync(), stop_.token()) != ContentDialogResult::Primary) co_return;
     }
 
     if (!ws_.skins.find(name)) co_return;   // реестр мог перемениться, пока спрашивали
@@ -222,7 +229,7 @@ void App::showBackdrop() {
 /// тогда этот не нужен.
 detached_task App::loadBackdrop(std::filesystem::path file) {
     try {
-        std::string bytes = co_await ws_.readBytes(file);
+        std::string bytes = co_await ws_.readBytes(file, stop_.token());
         if (file == backdrop_) view_.setBackdrop(std::move(bytes));
     } catch (const system_exception&) {
     }
