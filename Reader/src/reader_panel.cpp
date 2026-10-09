@@ -5,8 +5,6 @@
 // он единственный тянет за собой стандартные заголовки, которых нет здесь.
 #include "reader_panel.h"
 
-#include "bukvitsa/reader/book_index.h"
-
 #include "Bind.h"
 #include "look.h"
 
@@ -114,21 +112,38 @@ constexpr auto drawerNoteLook = Preset {
     dsl::textWrapping.wrap,
 };
 
+/// Подпись над закладками: пока их нет — так и сказано, есть — подписи нет.
+u16_text bookmarksNote(BookState const& state) {
+    return state.bookmarks.empty() ? u16_text{u"Закладок пока нет."} : u16_text{};
+}
+
 }  // namespace
 
 // Отметка темы идёт за полем полосы, а не за нажатием здешней кнопки: тему
-// меняют и клавишей T мимо панели. Слушатель ставится в списке инициализации:
-// cookie_t не присваивается, а срабатывает он только на смену поля — не раньше,
-// чем дерево панели собрано.
+// меняют и клавишей T мимо панели. Список закладок идёт за состоянием книги,
+// список находок — за находками поиска: и закладку, и находки меняет не
+// панель. Слушатели ставятся в списке инициализации: cookie_t не
+// присваивается, а срабатывают они только на смену поля — не раньше, чем
+// дерево панели собрано. Слушатель поля — noexcept по контракту observable,
+// и метод ему отдаётся лямбдой: обёртка method() noexcept не переносит.
 //
 // Контролы панели — поля, построенные вместе с ней; buildTree() их одевает и
 // складывает в дерево. Визуалы ящиков — здесь же, от самих ящиков: элемент
 // отдаёт свой визуал и пустым.
-ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings& settings)
-    : compositor_(compositor),
+ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings& settings,
+                         observable<BookState const>& state, const ThemeList& themes,
+                         BookSearch& search, Actions& actions)
+    : actions_(actions),
+      compositor_(compositor),
       view_(view),
       prefs_(settings),
+      state_(state),
+      themes_(themes),
+      search_(search),
       themeWatch_(view.theme.on_change([this](int) noexcept { markTheme(); })),
+      stateWatch_(state.on_change([this](BookState const&) noexcept { fillBookmarks(); })),
+      hitsWatch_(search.hits().on_change(
+          [this](sta_vector<SearchHit> const&) noexcept { fillSearch(); })),
       navigationVisual_(slidingVisual(navigation_, -static_cast<float>(kWidth))),
       settingsVisual_(slidingVisual(settings_, static_cast<float>(kWidth))),
       linear_(compositor_.createLinearEasingFunction()) {
@@ -136,6 +151,8 @@ ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings&
 }
 
 ReaderPanel::~ReaderPanel() {
+    search_.hits().remove_change(hitsWatch_);
+    state_.remove_change(stateWatch_);
     view_.theme.remove_change(themeWatch_);
 }
 
@@ -156,10 +173,7 @@ void ReaderPanel::buildTree() {
         fontSize = 14,
         Margin{12, 12, 12, 0},
         Padding{12, 8},
-        onClick =
-            [this](Object const&, RoutedEventArgs&) {
-                if (onLibrary) onLibrary();
-            },
+        onClick = method(&actions_, &Actions::showLibrary),
     };
 
     // Вкладки. Открытую отмечает showTab() — заливкой, по кнопкам из
@@ -213,13 +227,7 @@ void ReaderPanel::buildTree() {
         background = colors.transparent,
         navigation_,
         settings_,
-        onPointerPressed =
-            [this](Object const&, PointerRoutedEventArgs& args) {
-                // Сюда доходят только щелчки по самому холсту: щелчки по ящикам
-                // они же и гасят.
-                close();
-                args.handled(true);
-            },
+        onPointerPressed = method(this, &ReaderPanel::canvasPressed),
     };
 
     showTab(Tab::Contents);
@@ -241,8 +249,15 @@ void ReaderPanel::slide(Visual& visual, float x) {
     visual.startAnimation(L"Translation", animation);
 }
 
+void ReaderPanel::canvasPressed(Object const&, PointerRoutedEventArgs& args) {
+    // Сюда доходят только щелчки по самому холсту: щелчки по ящикам они же и
+    // гасят.
+    close();
+    args.handled(true);
+}
+
 Button ReaderPanel::listItem(zstring_view said, zstring_view under, float indent,
-                             std::function<void()> action) {
+                             std::optional<uint32_t> jump) {
     using namespace wxl::dsl;
 
     auto const lines = StackPanel {
@@ -278,7 +293,9 @@ Button ReaderPanel::listItem(zstring_view said, zstring_view under, float indent
         borderBrush = colors.transparent,
         BorderThickness{0},
         CornerRadius{4},
-        onClick = [action](Object const&, RoutedEventArgs&) { if (action) action(); },
+        onClick = [this, jump] {
+            if (jump) view_.goToCharOffset(*jump);
+        },
         content = lines,
     };
 }
@@ -297,6 +314,8 @@ UIElement ReaderPanel::buildContents() {
 UIElement ReaderPanel::buildSearch() {
     using namespace wxl::dsl;
 
+    // Поле привязано к запросу модели в обе стороны и кладёт его уже
+    // проверенным; подпись под ним — к её подписи. Сам поиск — по Enter.
     Apply {
         searchBox_,
         row = 0,
@@ -304,23 +323,14 @@ UIElement ReaderPanel::buildSearch() {
         automationName = u"Поиск по книге",
         placeholderText = u"Что искать",
         Margin{0, 0, 0, 8},
-
-        // Поиск по Enter, а не по каждой букве: искать по одной букве в романе —
-        // это тысячи находок, из которых читателю не нужна ни одна.
-        onKeyDown =
-            [this](Object const&, KeyRoutedEventArgs& args) {
-                if (args.key() != VirtualKey::Enter) return;
-                runSearch();
-                args.handled(true);
-            },
+        text = Bind{search_.query},
+        onKeyDown = method(this, &ReaderPanel::searchKeyDown),
     };
-
-    Apply{searchNote_, drawerNoteLook, row = 1, u"Введите слово и нажмите Enter."};
 
     return Grid {
         rowDefinitions = u"auto,auto,*",
         searchBox_,
-        searchNote_,
+        TextBlock{drawerNoteLook, row = 1, text = BindOutput{search_.status()}},
         ScrollViewer {
             row = 2,
             horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
@@ -332,8 +342,6 @@ UIElement ReaderPanel::buildSearch() {
 UIElement ReaderPanel::buildBookmarks() {
     using namespace wxl::dsl;
 
-    Apply{bookmarkNote_, drawerNoteLook, row = 1};
-
     return Grid {
         rowDefinitions = u"auto,auto,*",
         Button {
@@ -343,9 +351,9 @@ UIElement ReaderPanel::buildBookmarks() {
             hAlign.stretch,
             Margin{0, 0, 0, 8},
             background = kChromeActive,
-            onClick = [this](Object const&, RoutedEventArgs&) { toggleBookmark(); },
+            onClick = method(&actions_, &Actions::toggleBookmark),
         },
-        bookmarkNote_,
+        TextBlock{drawerNoteLook, row = 1, text = BindOutput{state_, bookmarksNote}},
         ScrollViewer {
             row = 2,
             horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
@@ -475,11 +483,6 @@ void ReaderPanel::close() {
     view_.root().focus(FocusState::Programmatic);
 }
 
-void ReaderPanel::setState(BookState* state) {
-    state_ = state;
-    if (tab_ == Tab::Bookmarks) fillBookmarks();
-}
-
 /* ---------------- содержимое вкладок ---------------- */
 
 void ReaderPanel::fillContents() {
@@ -487,75 +490,46 @@ void ReaderPanel::fillContents() {
 
     const sta_vector<ContentsEntry> contents = contentsOf(view_.blocks());
     if (contents.empty()) {
-        contentsList_.children().append(listItem(u"В этой книге нет заголовков", {}, 0, {}));
+        contentsList_.children().append(
+            listItem(u"В этой книге нет заголовков", {}, 0, std::nullopt));
         return;
     }
 
     for (const ContentsEntry& entry : contents) {
-        const uint32_t offset = entry.charOffset;
         contentsList_.children().append(
             // Заголовок оглавления — вид в текст блока, без нуля за ним: в разметку
             // он идёт строкой WinRT, которую мы и делаем сами.
             listItem(hstring{entry.title}, {}, std::min<float>(entry.level, 4) * 14.0f,
-                     [this, offset] { view_.goToCharOffset(offset); }));
+                     entry.charOffset));
     }
 }
 
 void ReaderPanel::fillBookmarks() {
+    // Подпись «Закладок пока нет.» привязана к тому же состоянию; здесь —
+    // только сам список.
     bookmarkList_.children().clear();
 
-    if (!state_ || state_->bookmarks.empty()) {
-        bookmarkNote_.text(u"Закладок пока нет.");
-        return;
-    }
-
-    bookmarkNote_.text({});
-
-    for (const Bookmark& mark : state_->bookmarks) {
-        const uint32_t offset = mark.charOffset;
+    for (const Bookmark& mark : state_.get().bookmarks) {
         bookmarkList_.children().append(
             listItem(mark.hint.empty() ? zstring_view{u"Закладка"} : zstring_view{mark.hint}, {}, 0,
-                     [this, offset] { view_.goToCharOffset(offset); }));
+                     mark.charOffset));
     }
 }
 
-void ReaderPanel::runSearch() {
+void ReaderPanel::searchKeyDown(TextBox const&, KeyRoutedEventArgs& args) {
+    if (args.key() != VirtualKey::Enter) return;
+    search_.run(view_.blocks());
+    args.handled(true);
+}
+
+void ReaderPanel::fillSearch() {
+    // Подпись — «Нашлось: N» или «…не нашлось» — привязана к модели поиска;
+    // здесь — только сам список.
     searchList_.children().clear();
 
-    // Текст поля — чужой: пришёл из контрола строкой WinRT и в поиск идёт
-    // проверенным (`searchQuery`). Строка держится, пока жив вид на неё.
-    const hstring typed = searchBox_.text();
-    const std::optional<u16_view> needle = searchQuery(std::u16string_view(typed));
-    if (!needle) {
-        searchNote_.text(u"Введите слово и нажмите Enter.");
-        return;
+    for (const SearchHit& hit : search_.hits().get()) {
+        searchList_.children().append(listItem(hit.context, {}, 0, hit.charOffset));
     }
-
-    const sta_vector<SearchHit> hits = searchBook(view_.blocks(), *needle);
-    if (hits.empty()) {
-        searchNote_.text(core::format(u"«{}» в книге не нашлось.", *needle));
-        return;
-    }
-
-    searchNote_.text(core::format(u"Нашлось: {}", hits.size()));
-
-    for (const SearchHit& hit : hits) {
-        const uint32_t offset = hit.charOffset;
-        searchList_.children().append(
-            listItem(hit.context, {}, 0, [this, offset] { view_.goToCharOffset(offset); }));
-    }
-}
-
-void ReaderPanel::toggleBookmark() {
-    if (!state_ || !view_.isOpen()) return;
-
-    // Поставить или снять и где ей лежать — решает состояние книги; панель
-    // только перерисовывает список.
-    const uint32_t here = view_.readingPosition();
-    state_->toggleBookmark(here, hintAt(view_.blocks(), here));
-
-    fillBookmarks();
-    if (onStateChanged) onStateChanged();
 }
 
 void ReaderPanel::refreshThemes() {
@@ -598,7 +572,7 @@ void ReaderPanel::refreshThemes() {
     // окно, и реестр.
     themesPanel_.children().append(TextBlock{groupCaptionLook, u"Обложки"});
 
-    const std::vector<Skin>& skins = view_.skins();
+    const std::vector<Skin>& skins = themes_.skins();
     for (size_t index = 0; index < skins.size(); ++index) {
         const int themeIndex = kThemeCount + static_cast<int>(index);
         auto const button = Button {
@@ -620,10 +594,7 @@ void ReaderPanel::refreshThemes() {
                 u"",   // шестерёнка Segoe Fluent Icons
                 toolTip = core::format(u"Настроить подложку «{}»", skinName),
                 Margin{6, 6, 0, 0},
-                onClick =
-                    [this, skinName](Object const&, RoutedEventArgs&) {
-                        if (onEditSkin) onEditSkin(skinName);
-                    },
+                onClick = [this, skinName] { actions_.editSkin(skinName); },
             },
         };
 
@@ -633,10 +604,7 @@ void ReaderPanel::refreshThemes() {
                 u"",   // корзина оттуда же
                 toolTip = core::format(u"Удалить обложку «{}»", skinName),
                 Margin{6, 6, 0, 0},
-                onClick =
-                    [this, skinName](Object const&, RoutedEventArgs&) {
-                        if (onDeleteSkin) onDeleteSkin(skinName);
-                    },
+                onClick = [this, skinName] { actions_.deleteSkin(skinName); },
             });
         }
 
@@ -650,10 +618,7 @@ void ReaderPanel::refreshThemes() {
         fontSize = 13,
         Margin{0, 6, 0, 0},
         Padding{12, 6},
-        onClick =
-            [this](Object const&, RoutedEventArgs&) {
-                if (onAddSkin) onAddSkin();
-            },
+        onClick = method(&actions_, &Actions::addSkin),
     });
 
     markTheme();
