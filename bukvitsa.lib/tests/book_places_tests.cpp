@@ -70,7 +70,7 @@ void testContentsFollowBook() {
         countWhenHeard = places.contents().count().get();
     }));
 
-    places.open(first, {});
+    places.open(u16_text{u"первая"}, first, {});
     observable_list<ContentsEntry const>& contents = places.contents();
     check(isChange(heard, list_change::reset, 0, 2), "открыли книгу — один сброс на два заголовка");
     check(countWhenHeard == 2, "число строк — уже новое, когда перемену слышат");
@@ -80,13 +80,13 @@ void testContentsFollowBook() {
           "заголовок — вид в блок книги, не копия");
 
     heard.clear();
-    places.open(second, {});
+    places.open(u16_text{u"вторая"}, second, {});
     check(isChange(heard, list_change::reset, 0, 2), "та же картина заголовков у другой книги — всё равно сброс");
     check(contents.size() == 2 && contents[0].title.data() == second[0].paragraph.text.data(),
           "строки смотрят в блоки новой книги, а не прежней");
 
     heard.clear();
-    places.open(untitled, {});
+    places.open(u16_text{u"без заголовков"}, untitled, {});
     check(isChange(heard, list_change::reset, 0, 0) && contents.empty(),
           "книга без заголовков — оглавление пусто");
 }
@@ -135,7 +135,8 @@ void testBookmarkToggles() {
 }
 
 /// Закладки новой книги — из её состояния, одним сбросом и по порядку книги;
-/// состояние для записи несёт место чтения и те же закладки.
+/// состояние для записи несёт место чтения и те же закладки, а пишется под
+/// guid книги, которую места открыли последней.
 void testOpenAndState() {
     std::printf("\n=== места книги: закладки новой книги и запись ===\n");
 
@@ -147,11 +148,14 @@ void testOpenAndState() {
     static_cast<void>(places.bookmarks().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); }));
 
+    check(places.guid().empty(), "книги ещё не открывали — guid пуст");
+
     places.toggleBookmark(5, u16_text{u"прежняя книга"});
     heard.clear();
 
     // Файл поправлен руками: закладки не по порядку.
-    places.open(book, {Bookmark{300, u16_text{u"триста"}}, Bookmark{100, u16_text{u"сто"}}});
+    places.open(u16_text{u"{guid-1}"}, book, {Bookmark{300, u16_text{u"триста"}}, Bookmark{100, u16_text{u"сто"}}});
+    check(places.guid() == L"{guid-1}", "guid — книги, которую открыли");
     check(isChange(heard, list_change::reset, 0, 2), "новая книга — один сброс закладок");
     check(offsetsOf(places.bookmarks()) == std::vector<uint32_t>{100, 300}, "закладки по порядку книги");
 
@@ -166,9 +170,10 @@ void testOpenAndState() {
           "закладки для записи — те, что в списке");
 
     heard.clear();
-    places.open(book, {});
+    places.open(u16_text{u"{guid-2}"}, book, {});
     check(isChange(heard, list_change::reset, 0, 0) && places.bookmarks().empty(),
           "книга без закладок — список пуст");
+    check(places.guid() == L"{guid-2}", "новая книга — её guid, тем же шагом, что и закладки");
 }
 
 }  // namespace

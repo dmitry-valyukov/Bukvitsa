@@ -1,5 +1,7 @@
 #include <shlobj.h>
 
+#include <exception>
+
 // Свои заголовки — после системных: они несут импорт, а заголовок после
 // импорта MSVC принимает не всякий.
 #include "bukvitsa/reader/imaging.h"
@@ -10,6 +12,8 @@ import wxl.core;
 
 using wxl::async::async_directory;
 using wxl::async::async_file;
+using wxl::async::cancellation_token;
+using wxl::async::operation_canceled_exception;
 using wxl::async::system_exception;
 using wxl::async::task;
 
@@ -98,13 +102,15 @@ std::filesystem::path Workspace::skinImagePath(const Skin& skin) const {
 
 // ---- запуск ---------------------------------------------------------------
 
-task<Started> Workspace::start() {
+task<Started> Workspace::start(cancellation_token stop) {
     Started started;
 
     // Три файла по одной дороге: нет — первый запуск, молча; не читается —
     // слово читателю, а запуск идёт дальше с умолчаниями; прочитан, но не
     // разобран — слово и копия рядом. Разбор каждого — в его модель, у которой
-    // наблюдаемые поля: о прочитанном контролы узнают сами.
+    // наблюдаемые поля: о прочитанном контролы узнают сами. Без токена: из
+    // этих моделей потом пишется всё, и недочитанная легла бы на диск
+    // умолчаниями.
     const auto read = [&](const std::filesystem::path& file, std::wstring whatFailed) -> task<std::string> {
         try {
             co_return co_await async_file::read_all(poolPath(file));
@@ -162,17 +168,17 @@ task<Started> Workspace::start() {
         co_await keepBrokenCopy(libraryPath(), std::move(libraryXmlText));
     }
 
-    started.lastBook = co_await lastBookPath();
+    started.lastBook = co_await lastBookPath(std::move(stop));
 
     co_return started;
 }
 
 // ---- книги ----------------------------------------------------------------
 
-task<Warmed> Workspace::readBook(std::filesystem::path path) {
+task<Warmed> Workspace::readBook(std::filesystem::path path, cancellation_token stop) {
     // Не const: байты уходят в книгу перемещением. Разбор — здесь, на потоке
     // вызова: память разбора берётся из STA-пула, а он чужого потока не терпит.
-    std::string bytes = co_await async_file::read_all(poolPath(path));
+    std::string bytes = co_await async_file::read_all(poolPath(path), std::move(stop));
 
     Warmed warmed;
     warmed.fileSize = bytes.size();
@@ -201,7 +207,13 @@ task<Registered> Workspace::registerBook(const fb3::Document& document, std::fil
     co_return registered;
 }
 
-task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize) {
+task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize, cancellation_token stop) {
+    // Под отменённым токеном открытие не начинается — ни одной записи. Дальше
+    // токен слушает только чтение состояния, а оно стоит после всех записей:
+    // отмена, пришедшая посреди них, их не разделяет — реестр с обложкой и
+    // настройки уходят на диск все, — и кончает открытие на чтении.
+    stop.throw_if_canceled();
+
     // Порядок — это порядок обязательств: реестр с обложкой, затем настройки,
     // которые на книгу указывают, и лишь потом её состояние.
     const Registered registered = co_await registerBook(book.document(), book.path(), fileSize);
@@ -216,18 +228,24 @@ task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize) {
     // Состояние — отдельной строкой, а не внутри фигурной инициализации:
     // `co_await` в списке инициализаторов агрегата роняет бэкенд MSVC 14.51
     // (C1001).
-    BookState state = co_await readState(registered.entry.guid);
+    BookState state = co_await readState(registered.entry.guid, std::move(stop));
 
     Opened opened{registered.entry, std::move(state)};
 
     co_return opened;
 }
 
-task<FolderAdded> Workspace::addFolder(std::filesystem::path folder) {
+task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellation_token stop) {
     FolderAdded result;
 
     const std::vector<async_directory::listed_entry> found =
-        co_await async_directory::list(poolPath(folder / L"*.fb3"));
+        co_await async_directory::list(poolPath(folder / L"*.fb3"), stop);
+
+    // Отмена кончает обход на чтении следующей книги, но не раньше записи
+    // реестра: книги, зарегистрированные до неё, полка уже показала, и
+    // реестр на диске должен знать их так же. Исключение ждёт этой записи
+    // здесь — `co_await` в обработчике C++ не разрешает.
+    std::exception_ptr canceled;
 
     for (const async_directory::listed_entry& entry : found) {
         if (entry.is_directory) continue;
@@ -237,7 +255,10 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder) {
         std::string bytes;
 
         try {
-            bytes = co_await async_file::read_all(poolPath(path));
+            bytes = co_await async_file::read_all(poolPath(path), stop);
+        } catch (const operation_canceled_exception&) {
+            canceled = std::current_exception();
+            break;
         } catch (const system_exception& failure) {
             // Файлы, которые не прочитались, называются вызывающему разом в
             // конце: каталог с сотней книг не должен спотыкаться об один файл,
@@ -268,32 +289,34 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder) {
 
     if (result.added) co_await saveLibrary();
 
+    if (canceled) std::rethrow_exception(canceled);
+
     co_return result;
 }
 
-task<std::filesystem::path> Workspace::lastBookPath() {
+task<std::filesystem::path> Workspace::lastBookPath(cancellation_token stop) {
     // Путь в настройках — копия того, что в реестре, ради быстрой дороги;
     // протух — спрашиваем реестр по guid.
     std::filesystem::path last = settings.lastBookPath;
 
-    if (!last.empty() && !co_await async_file::exists(poolPath(last))) last.clear();
+    if (!last.empty() && !co_await async_file::exists(poolPath(last), stop)) last.clear();
 
     if (last.empty()) {
         if (const BookEntry* entry = library.find(settings.lastBookGuid)) {
             last = entry->path;
 
-            if (!co_await async_file::exists(poolPath(last))) last.clear();
+            if (!co_await async_file::exists(poolPath(last), stop)) last.clear();
         }
     }
 
     co_return last;
 }
 
-task<BookState> Workspace::readState(u16_view guid) {
+task<BookState> Workspace::readState(u16_view guid, cancellation_token stop) {
     // Состояния у книги может и не быть: её только что добавили, или место
     // чтения ещё не записывалось. Это не ошибка, а чистый лист.
     try {
-        co_return parseBookState(co_await async_file::read_all(poolPath(statePath(guid))));
+        co_return parseBookState(co_await async_file::read_all(poolPath(statePath(guid)), std::move(stop)));
     } catch (const system_exception& failure) {
         if (!absent(failure)) throw;
         co_return BookState{};
@@ -320,9 +343,15 @@ task<> Workspace::saveLibrary() {
 
 // ---- обложки читателя -----------------------------------------------------
 
-task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo) {
+task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_token stop) {
+    // Под отменённым токеном сохранение не начинается — и у правки, где читать
+    // нечего. Токен слушает только чтение снимка, а оно до записей: копия
+    // снимка без строки реестра — файл, на который никто не ссылается, и с
+    // первой записи сохранение доходит до конца.
+    stop.throw_if_canceled();
+
     if (skin.image.empty()) {
-        std::string bytes = co_await async_file::read_all(poolPath(photo));
+        std::string bytes = co_await async_file::read_all(poolPath(photo), std::move(stop));
 
         // Расширение — от файла снимка, то есть от файловой системы: имя файла
         // Windows не обязано быть правильным UTF-16, потому чинится.
@@ -349,14 +378,14 @@ task<> Workspace::deleteSkin(u16_view name) {
     co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
 }
 
-task<bool> Workspace::isImage(std::filesystem::path image) {
-    const std::string bytes = co_await async_file::read_all(poolPath(image));
+task<bool> Workspace::isImage(std::filesystem::path image, cancellation_token stop) {
+    const std::string bytes = co_await async_file::read_all(poolPath(image), std::move(stop));
 
     co_return !!decodeImage(bytes);   // ComPtr отвечает на `!`, как в прежней проверке мастера
 }
 
-task<std::string> Workspace::readBytes(std::filesystem::path file) {
-    co_return co_await async_file::read_all(poolPath(file));
+task<std::string> Workspace::readBytes(std::filesystem::path file, cancellation_token stop) {
+    co_return co_await async_file::read_all(poolPath(file), std::move(stop));
 }
 
 // ---- общее ----------------------------------------------------------------

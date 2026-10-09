@@ -4,9 +4,11 @@
 #include <objbase.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,6 +21,7 @@
 #include "bukvitsa/reader/skins.h"
 
 #include "bukvitsa/reader/book_index.h"
+#include "bukvitsa/reader/book_places.h"
 #include "bukvitsa/reader/shelf_text.h"
 #include "bukvitsa/reader/workspace.h"
 
@@ -334,9 +337,19 @@ void testSkinsReadSeparateLeaves() {
 // Корутины рабочего места ждут операций wxl, а те живут на петле sta_loop:
 // тест поднимает её один раз на процесс (как тесты самой wxl) и крутит до
 // конца каждой корутины. Разбор идёт на этом же потоке, в STA-пуле.
+//
+// Операция до хода петли не кончается: вызов корутины возвращается, когда
+// она встала на первом ожидании, и просьба кончиться, сделанная тут же, —
+// просьба посреди этого ожидания.
 
+using wxl::async::cancellation_source;
+using wxl::async::cancellation_token;
+using wxl::async::operation_canceled_exception;
 using wxl::async::sta_loop;
 using wxl::async::task;
+
+/// Токен, которого никто не отменит, — для проб без отмены.
+const auto never = cancellation_token{};
 
 const std::filesystem::path testdata = BUKVITSA_TESTDATA_DIR;
 
@@ -368,6 +381,19 @@ T run(task<T> work) {
 void run(task<> work) {
     sta_loop::run_until([&] { return work.done(); });
     work.result();
+}
+
+/// Кончилась ли работа отменой — не значением и не другим сбоем.
+template <class T>
+bool canceled(task<T> work) {
+    sta_loop::run_until([&] { return work.done(); });
+    try {
+        static_cast<void>(work.result());
+    } catch (const operation_canceled_exception&) {
+        return true;
+    } catch (...) {
+    }
+    return false;
 }
 
 /// Байты файла, прочитанные обычным способом: проверка того, что записало
@@ -463,7 +489,7 @@ void testWorkspaceStartsEmpty() {
     Sandbox box("empty");
     Workspace ws(box.root);
 
-    const Started started = run(ws.start());
+    const Started started = run(ws.start(never));
 
     check(started.notices.empty(), "первый запуск: ни одного сообщения");
     check(started.lastBook.empty(), "первый запуск: продолжать нечего");
@@ -490,7 +516,7 @@ void testWorkspaceKeepsBrokenFiles() {
         putOnDisk(ws.skinsPath(), brokenSkins);
         putOnDisk(ws.libraryPath(), brokenLibrary);
 
-        const Started started = run(ws.start());
+        const Started started = run(ws.start(never));
 
         check(started.notices.size() == 3, "три битых файла — три сообщения");
         if (started.notices.size() == 3) {
@@ -519,7 +545,7 @@ void testWorkspaceKeepsBrokenFiles() {
         Workspace ws(box.root);
         putOnDisk(ws.settingsPath(), brokenAgain);
 
-        run(ws.start());
+        run(ws.start(never));
 
         check(onDisk(box.root / L"settings.xml.bad") == brokenAgain, "повторная порча — копия перезаписана");
         check(!std::filesystem::exists(box.root / L"settings.xml.bad.bad"), "копия одна, не множится");
@@ -593,12 +619,12 @@ void testWorkspaceOpensBook() {
     Sandbox box("open");
     Workspace ws(box.root);
 
-    const Warmed warmed = run(ws.readBook(kBook));
+    const Warmed warmed = run(ws.readBook(kBook, never));
 
     check(warmed.book != nullptr, "книга прочитана и разобрана");
     check(warmed.fileSize == std::filesystem::file_size(kBook), "размер файла — настоящий");
 
-    const Opened opened = run(ws.openBook(*warmed.book, warmed.fileSize));
+    const Opened opened = run(ws.openBook(*warmed.book, warmed.fileSize, never));
 
     check(opened.state.charOffset == 0 && opened.state.bookmarks.empty(), "новая книга — с чистого листа");
     check(ws.settings.lastBookGuid == opened.entry.guid && ws.settings.lastBookPath == kBook,
@@ -616,14 +642,14 @@ void testWorkspaceOpensBook() {
     state.charOffset = 12345;
     run(ws.saveState(opened.entry.guid, state));
 
-    const Opened reopened = run(ws.openBook(*warmed.book, warmed.fileSize));
+    const Opened reopened = run(ws.openBook(*warmed.book, warmed.fileSize, never));
 
     check(reopened.entry.guid == opened.entry.guid, "повторное открытие — та же запись");
     check(reopened.state.charOffset == 12345, "повторное открытие — то же место");
-    check(run(ws.lastBookPath()) == kBook, "последняя книга — она");
+    check(run(ws.lastBookPath(never)) == kBook, "последняя книга — она");
 
     Workspace later(box.root);
-    const Started started = run(later.start());
+    const Started started = run(later.start(never));
     check(started.notices.empty() && started.lastBook == kBook, "следующий запуск продолжит её");
 }
 
@@ -648,7 +674,7 @@ void testWorkspaceAddsFolder() {
     const cookie_t watch = ws.library.cards().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); });
 
-    const FolderAdded first = run(ws.addFolder(folder));
+    const FolderAdded first = run(ws.addFolder(folder, never));
 
     check(first.added, "каталог с книгами — реестр записан");
     check(first.unread.empty(), "все файлы прочитались");
@@ -661,7 +687,7 @@ void testWorkspaceAddsFolder() {
     check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 2,
           "реестр на диске — две книги");
 
-    const FolderAdded second = run(ws.addFolder(folder));
+    const FolderAdded second = run(ws.addFolder(folder, never));
 
     check(second.unread.empty() && ws.library.cards().size() == 2, "повторный обход не множит записи");
     check(heard.size() == 2, "повторный обход — ни одной новой карточки, полка не тронута");
@@ -684,11 +710,11 @@ void testWorkspaceFindsLastBook() {
     ws.settings.lastBookPath = box.root / L"moved-away.fb3";
     ws.settings.lastBookGuid = registered.entry.guid;
 
-    check(run(ws.lastBookPath()) == kBook, "путь протух — книга найдена по guid");
+    check(run(ws.lastBookPath(never)) == kBook, "путь протух — книга найдена по guid");
 
     ws.settings.lastBookGuid = newGuid();
 
-    check(run(ws.lastBookPath()).empty(), "guid неизвестен — продолжать нечего");
+    check(run(ws.lastBookPath(never)).empty(), "guid неизвестен — продолжать нечего");
 }
 
 /// Картинка или нет — по байтам, а не по имени.
@@ -698,9 +724,217 @@ void testWorkspaceTellsImages() {
     Sandbox box("image");
     Workspace ws(box.root);
 
-    check(run(ws.isImage(testdata / L"bg_paper2.jpg")), "jpeg — картинка");
-    check(!run(ws.isImage(kBook)), "книга — не картинка");
-    check(run(ws.readBytes(kBook)) == onDisk(kBook), "байты файла целиком");
+    check(run(ws.isImage(testdata / L"bg_paper2.jpg", never)), "jpeg — картинка");
+    check(!run(ws.isImage(kBook, never)), "книга — не картинка");
+    check(run(ws.readBytes(kBook, never)) == onDisk(kBook), "байты файла целиком");
+}
+
+/// Место чтения пишется под guid мест книги, а не последней книги из
+/// настроек: открытие другой книги ставит её в настройки раньше, чем полоса и
+/// места её возьмут, и всё это время место на полосе — прежней книги.
+void testStateGoesUnderPlacesGuid() {
+    std::printf("\n=== место чтения — под guid мест книги ===\n");
+
+    Sandbox box("places");
+    Workspace ws(box.root);
+
+    const Warmed first = run(ws.readBook(kBook, never));
+    Opened firstOpened = run(ws.openBook(*first.book, first.fileSize, never));
+
+    BookPlaces places;
+    places.open(firstOpened.entry.guid, first.book->blocks(), std::move(firstOpened.state.bookmarks));
+    places.toggleBookmark(500, u16_text{u"пятьсот"});
+
+    const Warmed second = run(ws.readBook(kOtherBook, never));
+    const Opened secondOpened = run(ws.openBook(*second.book, second.fileSize, never));
+
+    check(ws.settings.lastBookGuid == secondOpened.entry.guid, "настройки уже указывают на новую книгу");
+    check(places.guid() == firstOpened.entry.guid, "места — ещё прежней: открытие их не трогает");
+
+    run(ws.saveState(places.guid(), places.stateAt(777)));
+
+    const BookState kept = run(ws.readState(firstOpened.entry.guid, never));
+    check(kept.charOffset == 777 && kept.bookmarks.size() == 1 && kept.bookmarks[0].charOffset == 500,
+          "место и закладки прежней — в её файле");
+    check(!std::filesystem::exists(ws.statePath(secondOpened.entry.guid)), "файл новой книги не тронут");
+}
+
+// ---- Отмена: чтения под токеном, записи до конца ----------------------------
+
+/// Чтение под отменённым токеном не начинается: файла, которого нет, оно и
+/// не ищет — кончается отменой, а не «файла нет»; начатое кончается отменой,
+/// хотя байты и пришли.
+void testWorkspaceReadsStopOnRequest() {
+    std::printf("\n=== отмена: чтения ===\n");
+
+    Sandbox box("stop-reads");
+    Workspace ws(box.root);
+
+    cancellation_source source;
+    source.cancel();
+    const cancellation_token stop = source.token();
+
+    const std::filesystem::path missing = box.root / L"missing.fb3";
+
+    check(canceled(ws.readBook(missing, stop)), "книга: не начинается — отмена, а не «файла нет»");
+    check(canceled(ws.readBytes(missing, stop)), "байты: не начинается");
+    check(canceled(ws.isImage(missing, stop)), "снимок: не начинается");
+    check(canceled(ws.addFolder(box.root / L"missing", stop)), "каталог: не начинается — отмена, а не «нет каталога»");
+
+    const u16_text guid = newGuid();
+    check(canceled(ws.readState(guid, stop)), "состояние: не начинается — отмена, а не чистый лист");
+
+    ws.settings.lastBookPath = missing;
+    check(canceled(ws.lastBookPath(stop)), "последняя книга: не начинается — отмена, а не «продолжать нечего»");
+
+    cancellation_source later;
+    task<Warmed> reading = ws.readBook(kBook, later.token());
+    check(!reading.done(), "чтение книги ушло к диску");
+    later.cancel();
+    check(canceled(std::move(reading)), "попросили посреди чтения — отмена, а не книга");
+}
+
+/// Запуск: настройки, обложки и реестр читаются и под отменённым токеном —
+/// из них потом пишется всё, — а поиск книги для продолжения уже нет.
+void testWorkspaceStartReadsModelsWhole() {
+    std::printf("\n=== отмена: запуск ===\n");
+
+    Sandbox box("stop-start");
+
+    {
+        Workspace ws(box.root);
+        ws.settings.fontSize.set(31.0);
+        ws.settings.lastBookGuid = newGuid();
+        ws.settings.lastBookPath = kBook;
+        run(ws.saveSettings());
+    }
+
+    Workspace ws(box.root);
+
+    cancellation_source source;
+    source.cancel();
+
+    check(canceled(ws.start(source.token())), "запуск кончился отменой — на поиске книги");
+    check(ws.settings.fontSize.get() == 31.0 && ws.settings.lastBookPath == kBook,
+          "настройки прочитаны целиком: запись при закрытии окна не ляжет умолчаниями");
+}
+
+/// Открытие под отменённым токеном не пишет ничего; отменённое посреди
+/// записей дописывает их все — реестр и настройки — и кончается отменой на
+/// чтении состояния.
+void testWorkspaceOpenStopsOutsideWrites() {
+    std::printf("\n=== отмена: открытие книги ===\n");
+
+    Sandbox box("stop-open");
+    Workspace ws(box.root);
+
+    const Warmed warmed = run(ws.readBook(kBook, never));
+
+    cancellation_source before;
+    before.cancel();
+
+    check(canceled(ws.openBook(*warmed.book, warmed.fileSize, before.token())), "под отменённым токеном — отмена");
+    check(ws.library.cards().empty() && ws.settings.lastBookGuid.empty(), "до записей: модель не тронута");
+    check(!std::filesystem::exists(ws.libraryPath()) && !std::filesystem::exists(ws.settingsPath()),
+          "до записей: на диске ничего");
+
+    cancellation_source during;
+    task<Opened> opening = ws.openBook(*warmed.book, warmed.fileSize, during.token());
+    check(!opening.done(), "открытие стоит на первой записи");
+    during.cancel();
+
+    check(canceled(std::move(opening)), "попросили посреди записей — открытие кончается отменой");
+    check(ws.library.cards().size() == 1 && ws.settings.lastBookGuid == ws.library.cards()[0]->entry.guid,
+          "модель: книга в реестре, настройки на неё указывают");
+
+    Library onDiskLibrary;
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 1,
+          "реестр дописан");
+    Settings onDiskSettings;
+    check(readSettings(onDisk(ws.settingsPath()), onDiskSettings) &&
+              onDiskSettings.lastBookGuid == ws.settings.lastBookGuid,
+          "настройки дописаны и указывают на ту же книгу");
+}
+
+/// Сохранение обложки: под отменённым токеном не начинается, отмена на
+/// чтении снимка ничего не пишет, а с первой записи — копии снимка — оно
+/// доходит до строки реестра.
+void testWorkspaceSaveSkinStopsBeforeWrites() {
+    std::printf("\n=== отмена: сохранение обложки ===\n");
+
+    Sandbox box("stop-skin");
+    Workspace ws(box.root);
+
+    const std::filesystem::path photo = testdata / L"bg_paper2.jpg";
+
+    Skin skin = defaultSkin();
+    skin.name = u16_text{u"Бумага"};
+
+    const auto nothingWritten = [&ws] {
+        return ws.skins.list().empty() && !std::filesystem::exists(ws.skinsPath()) &&
+               !std::filesystem::exists(ws.skinDirectory());
+    };
+
+    cancellation_source before;
+    before.cancel();
+    check(canceled(ws.saveSkin(skin, photo, before.token())), "под отменённым токеном — отмена");
+    check(nothingWritten(), "под отменённым токеном ничего не записано");
+
+    cancellation_source reading;
+    task<> onRead = ws.saveSkin(skin, photo, reading.token());
+    reading.cancel();
+    check(canceled(std::move(onRead)), "попросили на чтении снимка — отмена");
+    check(nothingWritten(), "на чтении снимка ничего не записано");
+
+    // Один ход петли — пришло чтение снимка, и сохранение встало на записи
+    // его копии. Других операций в полёте нет: каждая проба выше дождалась
+    // своих.
+    cancellation_source writing;
+    task<> onWrite = ws.saveSkin(skin, photo, writing.token());
+    while (!sta_loop::run_one()) {
+    }
+    check(!onWrite.done(), "снимок прочитан, копия пишется");
+    writing.cancel();
+
+    check(!canceled(std::move(onWrite)), "попросили на записи — сохранение дошло до конца");
+    check(ws.skins.list().size() == 1 && !ws.skins.list()[0].image.empty(), "обложка в реестре и с копией снимка");
+
+    Skins onDiskSkins;
+    check(onDiskSkins.loadFrom(onDisk(ws.skinsPath())) && onDiskSkins.list().size() == 1 &&
+              onDisk(ws.skinDirectory() / ws.skins.list()[0].image.wchars()) == onDisk(photo),
+          "на диске и строка реестра, и копия, на которую она ссылается");
+}
+
+/// Обход каталога, которому сказали кончиться на первой книге: дальше он не
+/// читает, а реестр с ней пишет — полка её уже показала — и лишь потом
+/// кончается отменой.
+void testWorkspaceFolderKeepsWhatShelfShowed() {
+    std::printf("\n=== отмена: обход каталога ===\n");
+
+    Sandbox box("stop-folder");
+    Workspace ws(box.root);
+
+    const std::filesystem::path folder = box.root / L"shelf";
+    std::filesystem::create_directories(folder);
+    std::filesystem::copy_file(kBook, folder / kBook.filename());
+    std::filesystem::copy_file(kOtherBook, folder / kOtherBook.filename());
+
+    // Просьба — в тот миг, когда полка слышит первую книгу: обход стоит между
+    // её регистрацией и чтением следующей.
+    cancellation_source source;
+    const cookie_t watch =
+        ws.library.cards().on_change([&source](const list_change&) noexcept { source.cancel(); });
+
+    check(canceled(ws.addFolder(folder, source.token())), "обход кончился отменой");
+
+    ws.library.cards().remove_change(watch);
+
+    check(ws.library.cards().size() == 1, "следующую книгу не читали");
+
+    Library onDiskLibrary;
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 1 &&
+              onDiskLibrary.cards()[0]->entry.guid == ws.library.cards()[0]->entry.guid,
+          "реестр на диске — с той книгой, что полка показала");
 }
 
 }  // namespace
@@ -749,6 +983,12 @@ int main() {
     testWorkspaceAddsFolder();
     testWorkspaceFindsLastBook();
     testWorkspaceTellsImages();
+    testStateGoesUnderPlacesGuid();
+    testWorkspaceReadsStopOnRequest();
+    testWorkspaceStartReadsModelsWhole();
+    testWorkspaceOpenStopsOutsideWrites();
+    testWorkspaceSaveSkinStopsBeforeWrites();
+    testWorkspaceFolderKeepsWhatShelfShowed();
 
     runPiecesTests();
     // Поток страниц верстает настоящую книгу: DirectWrite и WIC — после COM.
