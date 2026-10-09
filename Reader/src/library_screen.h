@@ -35,7 +35,7 @@ public:
     explicit LibraryScreen(Workspace& workspace);
 
     /// Корень, который отдаётся окну как содержимое.
-    const wxl::UIElement& root() const { return root_.value(); }
+    const wxl::UIElement& root() const { return root_; }
 
     /// Перестраивает полку под содержимое реестра. Зовётся каждый раз, когда
     /// витрину показывают: книга могла добавиться, а место чтения — уехать.
@@ -60,9 +60,10 @@ public:
 private:
     wxl::Button shelfItem(const BookEntry& book);
 
-    nullable<wxl::Grid> root_ = nullptr;
-    nullable<wxl::StackPanel> shelf_ = nullptr;
-    nullable<wxl::TextBlock> emptyNote_ = nullptr;
+    // Контролы — поля, построенные вместе с витриной: дети выше корня.
+    wxl::StackPanel shelf_;
+    wxl::TextBlock emptyNote_;
+    wxl::Grid root_;
 
     /// Строка прогресса каждой карточки, по guid книги. Живёт ровно от одного
     /// показа полки до другого -- как и сами карточки.

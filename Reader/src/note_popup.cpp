@@ -34,37 +34,40 @@ Color toXaml(D2D1_COLOR_F color) {
 
 }  // namespace
 
-NotePopup::NotePopup(const Compositor& compositor) : compositor_(compositor) {
+// Спрайт текста — сразу, от композитора: поверхность под него заводит
+// первый показ (draw), тогда же он и получает кисть.
+NotePopup::NotePopup(const Compositor& compositor)
+    : compositor_(compositor), sprite_(compositor_.createSpriteVisual()) {
     using namespace wxl::dsl;
 
     // Подложка ростом с текст сноски: она внутри прокрутки, и её высота — это
     // высота сноски. Сам текст живёт на поверхности композитора, привязанной
     // к этому элементу, поэтому прокрутка двигает его вместе с ним.
-    paper_ = Grid{};
-    sprite_ = compositor_.createSpriteVisual();
-    ElementCompositionPreview::setElementChildVisual(paper_.value(), sprite_.value());
+    ElementCompositionPreview::setElementChildVisual(paper_, sprite_);
 
-    scroll_ = ScrollViewer{
+    Apply {
+        scroll_,
         horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
         verticalScrollBarVisibility = ScrollBarVisibility::Auto,
-        content = paper_.value(),
+        content = paper_,
     };
 
-    root_ = Border{
+    Apply {
+        root_,
         hAlign.left,
         vAlign.top,
         visibility = Visibility::Collapsed,
         CornerRadius{kCorner},
         BorderThickness{1},
         Padding{kPadding},
-        scroll_.value(),
+        scroll_,
     };
 }
 
 void NotePopup::hide() {
     if (!visible_) return;
     visible_ = false;
-    root_.value().visibility(Visibility::Collapsed);
+    root_.visibility(Visibility::Collapsed);
 }
 
 void NotePopup::draw(const Theme& theme, float width, float height, float scale) {
@@ -76,9 +79,9 @@ void NotePopup::draw(const Theme& theme, float width, float height, float scale)
         surface_->resize(pixels);
     } else {
         surface_.emplace(compositor_, pixels);
-        sprite_.value().brush(surface_->brush());
+        sprite_.brush(surface_->brush());
     }
-    sprite_.value().size({width, height});
+    sprite_.size({width, height});
 
     surface_->draw([&](ID2D1DeviceContext* context) {
         D2D1_MATRIX_3X2_F atlas{};
@@ -124,18 +127,18 @@ void NotePopup::show(Book& book, const fb3::Node* note, Point anchor, Size area,
         y = std::max(anchor.y - height - kGapFromAnchor, 8.0f);
     }
 
-    root_.value().margin({x, y, 0, 0});
-    root_.value().width(width);
-    root_.value().height(height);
-    root_.value().background(SolidColorBrush{toXaml(theme.panel)});
-    root_.value().borderBrush(SolidColorBrush{toXaml(theme.dim)});
+    root_.margin({x, y, 0, 0});
+    root_.width(width);
+    root_.height(height);
+    root_.background(SolidColorBrush{toXaml(theme.panel)});
+    root_.borderBrush(SolidColorBrush{toXaml(theme.dim)});
 
-    paper_.value().height(noteHeight);
-    scroll_.value().changeView(std::nullopt, 0.0, std::nullopt);
+    paper_.height(noteHeight);
+    scroll_.changeView(std::nullopt, 0.0, std::nullopt);
 
     draw(theme, inner, noteHeight, scale);
 
-    root_.value().visibility(Visibility::Visible);
+    root_.visibility(Visibility::Visible);
     visible_ = true;
 }
 

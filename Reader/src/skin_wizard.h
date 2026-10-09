@@ -38,7 +38,7 @@ public:
     explicit SkinWizard(const wxl::Compositor& compositor);
 
     /// Оверлей, который кладётся поверх полосы набора.
-    const wxl::UIElement& root() const { return root_.value(); }
+    const wxl::UIElement& root() const { return root_; }
 
     /// Начинает новую обложку с этого снимка: точки на начальных местах, имя
     /// пустое. Снимок к этому моменту проверен владельцем: сценарий
@@ -75,11 +75,6 @@ public:
 private:
     void buildTree();
 
-    /// Кнопка карточки мастера. Главную от прочих отличают высота и кегль,
-    /// кнопку отмены — чуть более серое лицо, как на стартовом экране.
-    wxl::Button overlayButton(zstring_view said, float tall, float kegel, bool cancel,
-                              void (SkinWizard::*handler)());
-
     /// Пересчитывает поверхность сетки под размер окна и масштаб экрана.
     bool resizeSurface();
 
@@ -100,15 +95,18 @@ private:
     void finishNaming(bool save);
 
     wxl::Compositor compositor_;
-    nullable<wxl::Grid> root_ = nullptr;
-    nullable<wxl::Grid> surfaceHost_ = nullptr;   ///< несёт визуал сетки
-    nullable<wxl::SpriteVisual> visual_ = nullptr;
+
+    // Контролы — поля, построенные вместе с мастером: дети выше корня.
+    wxl::Grid surfaceHost_;   ///< несёт визуал сетки
+    wxl::SpriteVisual visual_;   ///< в дереве с первой поверхностью
     std::vector<wxl::DrawingSurface> surface_;   ///< ноль или одна — как листы полосы
 
     /// Диалог имени. Свой оверлей, а не системное окно: он живёт поверх той
     /// же страницы, и «Отмена» возвращает ровно туда, где читатель был.
-    nullable<wxl::Border> namePanel_ = nullptr;
-    nullable<wxl::TextBox> nameBox_ = nullptr;
+    wxl::TextBox nameBox_;
+    wxl::Border namePanel_;
+
+    wxl::Grid root_;
 
     /// Редактируемые кривые, имя и снимок: полоса держит ссылку на его
     /// `skin()` как на предпросмотр, поэтому модель одна на всю жизнь мастера.

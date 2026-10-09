@@ -49,7 +49,7 @@ public:
     ~ReaderPanel();
 
     /// Элемент, который кладут поверх полосы набора.
-    const wxl::UIElement& root() const { return root_.value(); }
+    const wxl::UIElement& root() const { return root_; }
 
     /// Открывает оба ящика, левый — на этой вкладке. Открытые — переключают
     /// вкладку.
@@ -96,10 +96,6 @@ private:
     wxl::UIElement buildBookmarks();
     wxl::UIElement buildSettings();
 
-    /// Ящик у левой или правой стенки окна: тёмный, во всю высоту, с кромкой
-    /// со стороны страницы; щелчки и колесо по себе гасит.
-    wxl::Border box(wxl::HorizontalAlignment side, const wxl::UIElement& inside);
-
     /// Визуал ящика с выездом по Translation; ящик ждёт за краем окна, на
     /// `offscreen` от своего места.
     wxl::Visual slidingVisual(const wxl::UIElement& box, float offscreen);
@@ -110,10 +106,9 @@ private:
     /// Показывает оба ящика, если они спрятаны.
     void show();
 
-    /// Кнопка вкладки: заголовок плюс переключение.
-    wxl::Button tabButton(zstring_view said, Tab tab);
-
-    /// Строка списка — то, из чего собраны все три списка панели.
+    /// Строка списка — то, из чего собраны все три списка панели. Функция, а
+    /// не пресет: одни слова идут и в надпись, и в имя для чтеца экрана, а
+    /// вторая строка ставится, только если есть.
     wxl::Button listItem(zstring_view said, zstring_view under, float indent,
                          std::function<void()> action);
 
@@ -137,25 +132,26 @@ private:
     cookie_t themeWatch_;
     BookState* state_ = nullptr;
 
-    nullable<wxl::Grid> root_ = nullptr;          ///< холст на оба ящика; щелчок по нему закрывает
-    nullable<wxl::Border> navigation_ = nullptr;   ///< левый ящик
-    nullable<wxl::Border> settings_ = nullptr;     ///< правый ящик
-    nullable<wxl::Visual> navigationVisual_ = nullptr;   ///< для выезда и ухода
-    nullable<wxl::Visual> settingsVisual_ = nullptr;
-    nullable<wxl::LinearEasingFunction> linear_ = nullptr;   ///< одна на все выезды
-
-    nullable<wxl::Grid> pages_ = nullptr;
+    // Контролы — поля, построенные вместе с панелью: дети выше ящиков, ящики
+    // выше холста, визуалы — у построенных ящиков.
+    wxl::StackPanel contentsList_;
+    wxl::StackPanel searchList_;
+    wxl::StackPanel bookmarkList_;
+    wxl::TextBox searchBox_;
+    wxl::TextBlock searchNote_;
+    wxl::TextBlock bookmarkNote_;
+    wxl::StackPanel themesPanel_;   ///< пересобирается
     std::vector<wxl::UIElement> tabPages_;
     std::vector<wxl::Button> tabButtons_;
     std::vector<wxl::Button> themeButtons_;
-    nullable<wxl::StackPanel> themesPanel_ = nullptr;   ///< пересобирается
 
-    nullable<wxl::StackPanel> contentsList_ = nullptr;
-    nullable<wxl::StackPanel> searchList_ = nullptr;
-    nullable<wxl::StackPanel> bookmarkList_ = nullptr;
-    nullable<wxl::TextBox> searchBox_ = nullptr;
-    nullable<wxl::TextBlock> searchNote_ = nullptr;
-    nullable<wxl::TextBlock> bookmarkNote_ = nullptr;
+    wxl::Grid pages_;
+    wxl::Border navigation_;   ///< левый ящик
+    wxl::Border settings_;     ///< правый ящик
+    wxl::Grid root_;           ///< холст на оба ящика; щелчок по нему закрывает
+    wxl::Visual navigationVisual_;   ///< для выезда и ухода
+    wxl::Visual settingsVisual_;
+    wxl::LinearEasingFunction linear_;   ///< одна на все выезды
 
     Tab tab_ = Tab::Contents;
     bool open_ = false;

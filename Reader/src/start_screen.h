@@ -29,7 +29,7 @@ public:
     explicit StartScreen(const wxl::Compositor& compositor);
 
     /// Корень, который отдаётся окну как содержимое.
-    const wxl::UIElement& root() const { return root_.value(); }
+    const wxl::UIElement& root() const { return root_; }
 
     /// Проявление с разбегом. Зовётся, когда приложение готово: до этого
     /// момента на экране одна заставка.
@@ -53,25 +53,26 @@ public:
     std::function<void()> onExit;
 
 private:
-    /// Одна ширина на всех; главную от прочих отличают высота и кегль, а
-    /// кнопку отмены — чуть более серое лицо.
-    wxl::Button addButton(zstring_view said, float tall, float kegel,
-                          std::function<void()>* action, bool cancel = false);
+    /// Ставит кнопку в очередь проявления — прозрачной и опущенной; reveal()
+    /// поднимет её в свой черёд. Вид кнопки — пресеты в разметке (look.h).
+    wxl::Button revealLater(wxl::Button button);
 
     wxl::Compositor compositor_;
-    nullable<wxl::Grid> root_ = nullptr;
     std::vector<wxl::Visual> revealing_;   ///< визуалы кнопок в порядке появления
-
-    /// Визуал обёртки карточки. Проступает вместе с кнопками, но своего
-    /// визуала у карточки не отнять: у неё заняты фасадные свойства (подъём
-    /// по Z несёт тень), а мешать их с handout-визуалом нельзя — ломается
-    /// попадание мыши. Подробности — у построения карточки в .cpp.
-    nullable<wxl::Visual> cardVisual_ = nullptr;
 
     /// Большая кнопка и то, чем она наполнена: setContinueBook() зовут на
     /// каждом показе экрана, и одинаковое наполнение не перестраивается.
-    nullable<wxl::Button> continueButton_ = nullptr;
+    wxl::Button continueButton_;
     std::u16string continueKey_;
+
+    /// Обёртка карточки и её визуал. Проступает обёртка вместе с кнопками, а
+    /// не сама карточка: у той заняты фасадные свойства (подъём по Z несёт
+    /// тень), а мешать их с handout-визуалом нельзя — ломается попадание
+    /// мыши. Подробности — у построения карточки в .cpp.
+    wxl::Grid cardShell_;
+    wxl::Visual cardVisual_;
+
+    wxl::Grid root_;
 
     bool revealed_ = false;
 };

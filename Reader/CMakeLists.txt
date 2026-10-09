@@ -27,6 +27,7 @@ wxl_add_executable(Reader
     src/file_dialog.h
     src/keys.h
     src/library_screen.h
+    src/look.h
     src/reader_panel.h
     src/note_popup.h
     src/notices.h
