@@ -79,14 +79,11 @@ detached_task App::chooseFolder() {
     FolderAdded result;
 
     try {
-        // Карточка — на каждую новую книгу сразу, пока обход идёт: одной
-        // карточкой, а не пересборкой всей полки — та стоила бы квадрата от
-        // числа книг и стирала бы прогресс, который уже проступил на соседях.
-        // Колбэк живёт в кадре задачи обхода, а этот кадр держит приложение,
-        // так что голый `this` в нём жив.
-        result = co_await ws_.addFolder(folder, [this](const BookEntry& entry) {
-            if (shown_.get() == Screen::Library) shelf_.appendBook(entry);
-        });
+        // Карточка — на каждую новую книгу сразу, пока обход идёт: реестр
+        // ставит её в конец своих карточек, и полка, привязанная к ним,
+        // встаёт одной карточкой больше, а не пересобирается — прогресс,
+        // который уже проступил на соседях, остаётся.
+        result = co_await ws_.addFolder(folder);
     } catch (const system_exception& failure) {
         notices_.post(noticeOf(L"Не удалось добавить каталог", folder.wstring(), failure));
         co_return;
@@ -239,7 +236,6 @@ detached_task App::fillProgress() {
 
         const BookState state = co_await ws_.readState(card->entry.guid);
         card->showState(state);
-        shelf_.setProgress(*card);
     }
 }
 

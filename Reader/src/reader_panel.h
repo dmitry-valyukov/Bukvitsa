@@ -21,8 +21,6 @@
 
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core.
-#include <cstdint>
-#include <optional>
 #include <vector>
 
 #include "Object.h"
@@ -85,8 +83,8 @@ public:
     ///        и то же поле двигают колесо и клавиши полосы — панель узнаёт о
     ///        них привязкой, а не флагом «это мы сами».
     /// @param places оглавление и закладки открытой книги: списки вкладок и
-    ///        подпись над закладками идут за ними сами.
-    /// @param themes темы и обложки одним списком — кнопки правого ящика.
+    ///        подписи над ними привязаны к ним.
+    /// @param themes темы и обложки одним списком — строки правого ящика.
     /// @param search модель поиска: поле, подпись и находки привязаны к ней.
     ReaderPanel(const wxl::Compositor& compositor, BookView& view, Settings& settings,
                 BookPlaces& places, ThemeList& themes, BookSearch& search, Actions& actions);
@@ -106,10 +104,6 @@ public:
     void close();
     bool isOpen() const { return open_; }
 
-    /// Пересобирает список тем: встроенные плюс обложки из списка тем.
-    /// Зовётся приложением, когда реестр обложек изменился.
-    void refreshThemes();
-
 private:
     void buildTree();
     wxl::UIElement buildContents();
@@ -127,29 +121,28 @@ private:
     /// Показывает оба ящика, если они спрятаны.
     void show();
 
-    /// Строка списка — то, из чего собраны все три списка панели. Функция, а
-    /// не пресет: одни слова идут и в надпись, и в имя для чтеца экрана, а
-    /// вторая строка ставится, только если есть.
-    /// @param jump куда ведёт строка; пусто — никуда («нет заголовков»).
-    wxl::Button listItem(zstring_view said, zstring_view under, float indent,
-                         std::optional<uint32_t> jump);
-
     void showTab(Tab tab);
 
+    /// Номер темы как выбор в списке тем: строка `n` — тема `n`; номер за
+    /// краем строк — без выбора.
+    int selectionOf(int theme) const;
+
     // Слушатели полей — члены noexcept: событию поля некому отдать
-    // исключение. Каждый показывает значение, которое ему пришло.
+    // исключение.
 
-    /// Отмечает кнопку темы `current` — как отмечена открытая вкладка.
-    /// Слушатель поля `BookView::theme`: тему меняют и клавишей T мимо панели.
-    void markTheme(int current) noexcept;
+    /// Тема полосы сменилась — выбор в списке тем идёт за ней: тему меняют и
+    /// клавишей T мимо панели. Слушатель поля `BookView::theme`.
+    void themeChanged(int index) noexcept;
 
-    /// Список закладок этой книги. Слушатель списка закладок владельца.
-    void fillBookmarks(list_change const& change) noexcept;
+    /// Строки тем собраны заново (сохранили или удалили обложку): список снял
+    /// выбор — вернуть его из номера темы полосы, а не из списка. Слушатель
+    /// строк списка тем.
+    void choicesChanged(list_change const& change) noexcept;
 
-    /// Список находок. Слушатель находок модели поиска.
-    void fillSearch(list_change const& change) noexcept;
-
-    void fillContents();
+    /// Читатель выбрал строку в списке тем. -1 — список снял выбор сам
+    /// (строки собраны заново), и тема от этого не меняется. Слушатель
+    /// выбора `chosen_`.
+    void themeChosen(int index) noexcept;
 
     /// Поиск по Enter, а не по каждой букве: искать по одной букве в романе —
     /// это тысячи находок, из которых читателю не нужна ни одна.
@@ -157,6 +150,11 @@ private:
 
     /// Щелчок по холсту мимо ящиков закрывает оба.
     void canvasPressed(wxl::Object const& sender, wxl::PointerRoutedEventArgs& args);
+
+    // Щелчок по строке списка вкладки — переход к её месту в книге.
+    void headingClicked(wxl::ListView const& sender, wxl::ItemClickEventArgs& args);
+    void hitClicked(wxl::ListView const& sender, wxl::ItemClickEventArgs& args);
+    void bookmarkClicked(wxl::ListView const& sender, wxl::ItemClickEventArgs& args);
 
     Actions& actions_;
     wxl::Compositor compositor_;
@@ -166,23 +164,23 @@ private:
     ThemeList& themes_;
     BookSearch& search_;
 
-    /// Наши слушатели в чужих полях — снять за собой: полоса, места книги и
-    /// поиск живут дольше панели.
+    /// Наши слушатели в чужих полях — снять за собой: полоса и список тем
+    /// живут дольше панели.
     cookie_t themeWatch_;
-    cookie_t bookmarksWatch_;
-    cookie_t hitsWatch_;
+    cookie_t choicesWatch_;
+
+    /// Выбранная строка списка тем — к нему привязан выбор списка. Своё поле,
+    /// а не номер темы полосы: собрав строки заново, список снимает выбор и
+    /// пишет -1, а тема полосы от этого меняться не должна. Идёт за темой
+    /// полосы (themeChanged, choicesChanged), сам ставит её (themeChosen).
+    observable<int> chosen_;
 
     // Контролы — поля, построенные вместе с панелью: дети выше ящиков, ящики
-    // выше холста, визуалы — у построенных ящиков. Списки перестраиваются
-    // руками, поле поиска держится ради фокуса при открытии вкладки.
-    wxl::StackPanel contentsList_;
-    wxl::StackPanel searchList_;
-    wxl::StackPanel bookmarkList_;
+    // выше холста, визуалы — у построенных ящиков. Поле поиска держится ради
+    // фокуса при открытии вкладки.
     wxl::TextBox searchBox_;
-    wxl::StackPanel themesPanel_;   ///< пересобирается
     std::vector<wxl::UIElement> tabPages_;
     std::vector<wxl::Button> tabButtons_;
-    std::vector<wxl::Button> themeButtons_;
 
     wxl::Grid pages_;
     wxl::Border navigation_;   ///< левый ящик

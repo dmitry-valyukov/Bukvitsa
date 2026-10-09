@@ -15,7 +15,9 @@
 #include <wxl/Microsoft.UI.Input.h>
 #include <wxl/Microsoft.UI.Windowing.h>
 #include <wxl/Microsoft.UI.Xaml.Controls.h>
+#include <wxl/Microsoft.UI.Xaml.Controls.EventArgs.h>
 #include <wxl/Microsoft.UI.Xaml.Hosting.h>
+#include <wxl/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <wxl/styles.h>
 #include "launch.h"
 

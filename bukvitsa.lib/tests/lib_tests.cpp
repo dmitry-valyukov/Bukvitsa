@@ -643,19 +643,16 @@ void testWorkspaceAddsFolder() {
     putOnDisk(folder / L"not-a-book.fb3", "this is not a book");
     putOnDisk(folder / L"note.txt", "and this is not even fb3");
 
-    std::vector<BookEntry> appeared;
-    const auto onNew = [&appeared](const BookEntry& entry) { appeared.push_back(entry); };
-
     // Полка слышит обход сама: карточка за карточкой, по мере разбора.
     std::vector<list_change> heard;
     const cookie_t watch = ws.library.cards().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); });
 
-    const FolderAdded first = run(ws.addFolder(folder, onNew));
+    const FolderAdded first = run(ws.addFolder(folder));
 
     check(first.added, "каталог с книгами — реестр записан");
     check(first.unread.empty(), "все файлы прочитались");
-    check(appeared.size() == 2 && ws.library.cards().size() == 2, "две книги, мусор пропущен");
+    check(ws.library.cards().size() == 2, "две книги, мусор пропущен");
     check(heard.size() == 2 && heard[0] == list_change{list_change::inserted, 0, 1} &&
               heard[1] == list_change{list_change::inserted, 1, 1},
           "полка растёт по одной карточке в конец");
@@ -664,11 +661,10 @@ void testWorkspaceAddsFolder() {
     check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 2,
           "реестр на диске — две книги");
 
-    const FolderAdded second = run(ws.addFolder(folder, onNew));
+    const FolderAdded second = run(ws.addFolder(folder));
 
-    check(second.unread.empty() && appeared.size() == 2, "повторный обход — ни одной новой");
-    check(ws.library.cards().size() == 2, "повторный обход не множит записи");
-    check(heard.size() == 2, "повторный обход полку не трогает");
+    check(second.unread.empty() && ws.library.cards().size() == 2, "повторный обход не множит записи");
+    check(heard.size() == 2, "повторный обход — ни одной новой карточки, полка не тронута");
 
     ws.library.cards().remove_change(watch);
 }
