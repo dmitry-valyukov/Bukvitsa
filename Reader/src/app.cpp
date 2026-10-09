@@ -103,11 +103,9 @@ App::App()
     view_.addOverlay(wizard_.root());
 
     // Подложка полосы идёт за темой, предпросмотр — за правимой обложкой.
-    // Слушатель поля — noexcept по контракту observable, и метод ему
-    // отдаётся лямбдой: обёртка method() noexcept не переносит. Поля — свои,
-    // слушатели уходят вместе с ними.
-    static_cast<void>(view_.theme.on_change([this](int const&) noexcept { showBackdrop(); }));
-    static_cast<void>(wizard_.skin().on_change([this](Skin const&) noexcept { preview(); }));
+    // Поля — свои, слушатели уходят вместе с ними.
+    static_cast<void>(view_.theme.on_change(method(this, &App::themeChanged)));
+    static_cast<void>(wizard_.skin().on_change(method(this, &App::preview)));
 
     // Клавиши, общие для всех экранов, — на корнях трёх экранов, после их
     // собственных: полоса и заставка разбирают свои раньше и метят их.
@@ -266,6 +264,10 @@ detached_task App::quit() {
 detached_task App::togglePanel() {
     panel_.toggle();
     co_return;
+}
+
+void App::themeChanged(int) noexcept {
+    showBackdrop();
 }
 
 void App::revealStart() {

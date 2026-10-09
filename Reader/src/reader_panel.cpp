@@ -124,8 +124,7 @@ u16_text bookmarksNote(BookState const& state) {
 // список находок — за находками поиска: и закладку, и находки меняет не
 // панель. Слушатели ставятся в списке инициализации: cookie_t не
 // присваивается, а срабатывают они только на смену поля — не раньше, чем
-// дерево панели собрано. Слушатель поля — noexcept по контракту observable,
-// и метод ему отдаётся лямбдой: обёртка method() noexcept не переносит.
+// дерево панели собрано.
 //
 // Контролы панели — поля, построенные вместе с ней; buildTree() их одевает и
 // складывает в дерево. Визуалы ящиков — здесь же, от самих ящиков: элемент
@@ -140,10 +139,9 @@ ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings&
       state_(state),
       themes_(themes),
       search_(search),
-      themeWatch_(view.theme.on_change([this](int) noexcept { markTheme(); })),
-      stateWatch_(state.on_change([this](BookState const&) noexcept { fillBookmarks(); })),
-      hitsWatch_(search.hits().on_change(
-          [this](sta_vector<SearchHit> const&) noexcept { fillSearch(); })),
+      themeWatch_(view.theme.on_change(method(this, &ReaderPanel::markTheme))),
+      stateWatch_(state.on_change(method(this, &ReaderPanel::fillBookmarks))),
+      hitsWatch_(search.hits().on_change(method(this, &ReaderPanel::fillSearch))),
       navigationVisual_(slidingVisual(navigation_, -static_cast<float>(kWidth))),
       settingsVisual_(slidingVisual(settings_, static_cast<float>(kWidth))),
       linear_(compositor_.createLinearEasingFunction()) {
@@ -434,7 +432,7 @@ void ReaderPanel::open(Tab tab) {
 
     switch (tab) {
         case Tab::Contents: fillContents(); break;
-        case Tab::Bookmarks: fillBookmarks(); break;
+        case Tab::Bookmarks: fillBookmarks(state_.get()); break;
         case Tab::Search: break;   // список остаётся от прошлого поиска
     }
 
@@ -504,12 +502,12 @@ void ReaderPanel::fillContents() {
     }
 }
 
-void ReaderPanel::fillBookmarks() {
+void ReaderPanel::fillBookmarks(BookState const& state) noexcept {
     // Подпись «Закладок пока нет.» привязана к тому же состоянию; здесь —
     // только сам список.
     bookmarkList_.children().clear();
 
-    for (const Bookmark& mark : state_.get().bookmarks) {
+    for (const Bookmark& mark : state.bookmarks) {
         bookmarkList_.children().append(
             listItem(mark.hint.empty() ? zstring_view{u"Закладка"} : zstring_view{mark.hint}, {}, 0,
                      mark.charOffset));
@@ -522,12 +520,12 @@ void ReaderPanel::searchKeyDown(TextBox const&, KeyRoutedEventArgs& args) {
     args.handled(true);
 }
 
-void ReaderPanel::fillSearch() {
+void ReaderPanel::fillSearch(sta_vector<SearchHit> const& hits) noexcept {
     // Подпись — «Нашлось: N» или «…не нашлось» — привязана к модели поиска;
     // здесь — только сам список.
     searchList_.children().clear();
 
-    for (const SearchHit& hit : search_.hits().get()) {
+    for (const SearchHit& hit : hits) {
         searchList_.children().append(listItem(hit.context, {}, 0, hit.charOffset));
     }
 }
@@ -621,16 +619,16 @@ void ReaderPanel::refreshThemes() {
         onClick = method(&actions_, &Actions::addSkin),
     });
 
-    markTheme();
+    markTheme(view_.theme.get());
 }
 
-void ReaderPanel::markTheme() {
+void ReaderPanel::markTheme(int current) noexcept {
     // Тема — выбор из трёх, а выбор видно только тогда, когда выбранное
     // отмечено. Отмечается тем же цветом, что и открытая вкладка: одна
     // и та же мысль — «вот это сейчас».
     for (int index = 0; index < static_cast<int>(themeButtons_.size()); ++index) {
         themeButtons_[static_cast<size_t>(index)].background(
-            SolidColorBrush{index == view_.theme.get() ? kChromeActive : colors.transparent});
+            SolidColorBrush{index == current ? kChromeActive : colors.transparent});
     }
 }
 

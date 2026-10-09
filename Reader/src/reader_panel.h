@@ -137,13 +137,20 @@ private:
 
     void showTab(Tab tab);
 
-    /// Отмечает кнопку нынешней темы — как отмечена открытая вкладка. Слушатель
-    /// поля `BookView::theme`: тему меняют и клавишей T мимо панели.
-    void markTheme();
+    // Слушатели полей — члены noexcept: событию поля некому отдать
+    // исключение. Каждый показывает значение, которое ему пришло.
+
+    /// Отмечает кнопку темы `current` — как отмечена открытая вкладка.
+    /// Слушатель поля `BookView::theme`: тему меняют и клавишей T мимо панели.
+    void markTheme(int current) noexcept;
+
+    /// Список закладок этой книги. Слушатель состояния книги владельца.
+    void fillBookmarks(BookState const& state) noexcept;
+
+    /// Список находок. Слушатель находок модели поиска.
+    void fillSearch(sta_vector<SearchHit> const& hits) noexcept;
 
     void fillContents();
-    void fillBookmarks();
-    void fillSearch();
 
     /// Поиск по Enter, а не по каждой букве: искать по одной букве в романе —
     /// это тысячи находок, из которых читателю не нужна ни одна.

@@ -50,8 +50,7 @@ DispatcherQueueTimer quietTimer(const CompositionWindow& window, std::chrono::mi
 
 // Таймеры — очереди интерфейсного потока, а не сон: поток, на котором стоит
 // окно, обязан оставаться свободным. Тики — методы: таймеры свои и умирают
-// вместе с Autosave. Слушатель поля — noexcept по контракту observable, и
-// метод ему отдаётся лямбдой: обёртка method() noexcept не переносит.
+// вместе с Autosave.
 Autosave::Autosave(refcounted& owner, const CompositionWindow& window, Workspace& workspace,
                    const ThemeList& themes, BookView& view, observable<BookState const>& state)
     : owner_(owner),
@@ -69,12 +68,10 @@ Autosave::Autosave(refcounted& owner, const CompositionWindow& window, Workspace
       // Место чтения — отложенно, как и место окна: перелистывание — самое
       // частое действие в читалке, а файл состояния книги переписывается
       // целиком.
-      positionWatch_(view.position().on_change(
-          [this](uint32_t const&) noexcept { later(positionTimer_); })),
+      positionWatch_(view.position().on_change(method(this, &Autosave::positionChanged))),
       // Тема — с самого начала: её слушатель пишет, только если имена в
       // настройках изменились, а до чтения настроек тему никто не меняет.
-      themeWatch_(view.theme.on_change(
-          [this](int const& index) noexcept { themeChanged(index); })) {
+      themeWatch_(view.theme.on_change(method(this, &Autosave::themeChanged))) {
     windowTimer_.add_onTick(method(this, &Autosave::saveWindow));
     positionTimer_.add_onTick(method(this, &Autosave::savePosition));
     settingsTimer_.add_onTick(method(this, &Autosave::saveSettings));
@@ -97,12 +94,11 @@ Autosave::~Autosave() {
 void Autosave::watchSettings() {
     Settings& settings = ws_.settings;
     for (observable<double>* field : {&settings.fontSize, &settings.lineHeight, &settings.margin}) {
-        styleWatches_.emplace_back(
-            field, field->on_change([this](double const&) noexcept { later(settingsTimer_); }));
+        styleWatches_.emplace_back(field, field->on_change(method(this, &Autosave::styleChanged)));
     }
-    flagWatches_.emplace_back(&settings.continueReading,
-                              settings.continueReading.on_change(
-                                  [this](bool const&) noexcept { later(settingsTimer_); }));
+    flagWatches_.emplace_back(
+        &settings.continueReading,
+        settings.continueReading.on_change(method(this, &Autosave::continueReadingChanged)));
 }
 
 void Autosave::later(const DispatcherQueueTimer& timer) {
@@ -112,6 +108,18 @@ void Autosave::later(const DispatcherQueueTimer& timer) {
 
 void Autosave::windowMoved() {
     later(windowTimer_);
+}
+
+void Autosave::positionChanged(uint32_t) noexcept {
+    later(positionTimer_);
+}
+
+void Autosave::styleChanged(double) noexcept {
+    later(settingsTimer_);
+}
+
+void Autosave::continueReadingChanged(bool) noexcept {
+    later(settingsTimer_);
 }
 
 void Autosave::saveWindow() {
@@ -152,7 +160,7 @@ void Autosave::flush() {
     saveState();
 }
 
-void Autosave::themeChanged(int index) {
+void Autosave::themeChanged(int index) noexcept {
     // Прежний ключ при обложке остаётся как то, куда вернуться, если реестр
     // обложек пропадёт. Запуск ставит ту же тему, что в файле, — её писать
     // незачем.

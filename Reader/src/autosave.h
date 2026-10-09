@@ -62,14 +62,24 @@ private:
     /// Перемена отодвигает свою запись на полную паузу.
     static void later(const wxl::DispatcherQueueTimer& timer);
 
+    /// Окно сдвинулось — запись его места отодвигается.
     void windowMoved();
-    void saveWindow();
-    void savePosition();
-    void saveSettings();
+
+    // Слушатели полей — члены noexcept: событию поля некому отдать
+    // исключение. Значение каждому лишь сигнал: запись отодвигается, а пишет
+    // она то, что в полях к своему часу.
+    void positionChanged(uint32_t position) noexcept;
+    void styleChanged(double value) noexcept;
+    void continueReadingChanged(bool value) noexcept;
 
     /// Тема — поле полосы, а в настройках она лежит именем: обложка — своим,
     /// встроенная тема — ключом. Пишется, только если имена изменились.
-    void themeChanged(int index);
+    void themeChanged(int index) noexcept;
+
+    // Тики таймеров — сами записи.
+    void saveWindow();
+    void savePosition();
+    void saveSettings();
 
     refcounted& owner_;
     wxl::CompositionWindow window_;
