@@ -67,6 +67,10 @@ SkinWizard::SkinWizard(const Compositor& compositor, Actions& actions)
       compositor_(compositor),
       skin_(editor_.skin()),
       visual_(compositor_.createSpriteVisual()) {
+    // Поле имени просит фокус, когда диалог открылся, и отпускает просьбу,
+    // когда закрылся; встал ли фокус, поле узнаёт само.
+    nameFocused_.follow(naming_, std::identity{});
+
     buildTree();
 }
 
@@ -101,16 +105,6 @@ void SkinWizard::buildTree() {
         },
     };
 
-    // Имя для чтеца экрана — слова подписи над полем: у поля ввода своего
-    // слова на лице нет. Текст поля привязан к имени модели правки в обе
-    // стороны и приходит туда уже проверенным.
-    Apply {
-        nameBox_,
-        width = 320.0,
-        automationName = u"Название обложки",
-        text = Bind{editor_.name},
-    };
-
     // Диалог имени — в цветах обстановки, общих с панелью читалки (look.h):
     // он не бумага, а инструмент. Виден, пока имя спрашивают (naming_).
     auto const namePanel = Border {
@@ -129,7 +123,16 @@ void SkinWizard::buildTree() {
                 foreground = kChromeInk,
                 Margin{0, 0, 0, 8},
             },
-            nameBox_,
+            // Имя для чтеца экрана — слова подписи над полем: у поля ввода
+            // своего слова на лице нет. Текст поля привязан к имени модели
+            // правки в обе стороны и приходит туда уже проверенным; фокус —
+            // к nameFocused_, который идёт за открытием диалога.
+            TextBox {
+                width = 320.0,
+                automationName = u"Название обложки",
+                text = Bind{editor_.name},
+                isFocused = Bind{nameFocused_},
+            },
             StackPanel {
                 Orientation::Horizontal,
                 hAlign.right,
@@ -409,8 +412,7 @@ void SkinWizard::saveRequested() {
 
 void SkinWizard::beginNaming() {
     editor_.name.set(editor_.skin().name);   // у правки — прежнее имя, у новой пусто
-    naming_.set(true);
-    nameBox_.focus(FocusState::Programmatic);
+    naming_.set(true);   // фокус поле имени возьмёт само — по nameFocused_
 }
 
 void SkinWizard::confirmName() {

@@ -79,14 +79,11 @@ detached_task App::chooseFolder() {
     FolderAdded result;
 
     try {
-        // Карточка — на каждую новую книгу сразу, пока обход идёт: одной
-        // карточкой, а не пересборкой всей полки — та стоила бы квадрата от
-        // числа книг и стирала бы прогресс, который уже проступил на соседях.
-        // Колбэк живёт в кадре задачи обхода, а этот кадр держит приложение,
-        // так что голый `this` в нём жив.
-        result = co_await ws_.addFolder(folder, [this](const BookEntry& entry) {
-            if (shown_.get() == Screen::Library) shelf_.appendBook(entry);
-        });
+        // Карточка — на каждую новую книгу сразу, пока обход идёт: реестр
+        // ставит её в конец своих карточек, и полка, привязанная к ним,
+        // встаёт одной карточкой больше, а не пересобирается — прогресс,
+        // который уже проступил на соседях, остаётся.
+        result = co_await ws_.addFolder(folder);
     } catch (const system_exception& failure) {
         notices_.post(noticeOf(L"Не удалось добавить каталог", folder.wstring(), failure));
         co_return;
@@ -187,38 +184,37 @@ detached_task App::open(std::filesystem::path path) {
     }
 
     // Место чтения предыдущей книги — на диск сразу: сейчас настройки укажут
-    // на другую, и записывать станет некуда. Место — у полосы, закладки — в
-    // состоянии книги.
+    // на другую, и записывать станет некуда. Место — у полосы, закладки — у
+    // мест книги.
     if (!ws_.settings.lastBookGuid.empty() && view_.isOpen()) {
-        BookState leaving = state_.get();
-        leaving.charOffset = view_.position().get();
-
-        co_await ws_.saveState(ws_.settings.lastBookGuid, std::move(leaving));
+        co_await ws_.saveState(ws_.settings.lastBookGuid, places_.stateAt(view_.position().get()));
     }
 
     // Реестр, обложка, настройки, состояние — у рабочего места; здесь только
-    // то, что видно: книга на полосе и её закладки в панели (панель идёт за
-    // state_ сама). Находки прежнего поиска указывают в прежнюю книгу.
+    // то, что видно: книга на полосе, её оглавление и закладки в панели
+    // (панель идёт за списками сама).
     Opened opened = co_await ws_.openBook(*book, fileSize);
 
-    state_.set(std::move(opened.state));
+    // Оглавление и закладки — новой книги, пока прежняя ещё на полосе: строки
+    // прежнего оглавления смотрят в её блоки, и панель должна отпустить их
+    // раньше, чем книга уйдёт. Находки прежнего поиска указывают в прежнюю
+    // книгу.
+    places_.open(book->blocks(), std::move(opened.state.bookmarks));
     search_.clear();
 
-    view_.open(std::move(book), state_.get().charOffset);
+    view_.open(std::move(book), opened.state.charOffset);
 
     show(Screen::Book);
 }
 
-/// Поставить или снять и где ей лежать — решает состояние книги
-/// (`BookState::toggleBookmark`); панель идёт за state_ сама, а на диск
-/// закладка уходит сразу — вместе с местом чтения, паузы не ждёт.
+/// Поставить или снять и где ей лежать — решают места книги
+/// (`BookPlaces::toggleBookmark`); панель идёт за списком закладок сама, а на
+/// диск закладка уходит сразу — вместе с местом чтения, паузы не ждёт.
 detached_task App::toggleBookmark() {
     if (!view_.isOpen()) co_return;
 
     const uint32_t here = view_.position().get();
-    BookState next = state_.get();
-    next.toggleBookmark(here, hintAt(view_.blocks(), here));
-    state_.set(std::move(next));
+    places_.toggleBookmark(here, hintAt(view_.blocks(), here));
 
     autosave_.saveState();
 }
@@ -229,16 +225,17 @@ detached_task App::toggleBookmark() {
 /// Это и есть «библиотека наполняется по мере чтения»: карточки встают сразу,
 /// а «прочитано 42%» проступает на каждой, как только её файл прочитан. Полка
 /// с сотней книг не ждёт сотни обращений к диску, чтобы показать первую.
-detached_task App::fillProgress(std::vector<BookEntry> books) {
-    for (const BookEntry& book : books) {
-        if (book.characterCount == 0) continue;   // не открывалась — и читать нечего
+/// Строка — поле карточки (`ShelfCard::showState`): полка не пересобирается.
+detached_task App::fillProgress() {
+    // Карточки — копией указателей: пока файлы читаются, обход каталога может
+    // дополнить полку, а карточку, которую читают, держит сама копия.
+    std::vector<intrusive_ptr<ShelfCard>> const cards(ws_.library.cards().begin(), ws_.library.cards().end());
 
-        const BookState state = co_await ws_.readState(book.guid);
+    for (const intrusive_ptr<ShelfCard>& card : cards) {
+        if (card->entry.characterCount == 0) continue;   // не открывалась — и читать нечего
 
-        // Открывалась, а записать место не успела — показывать нечего.
-        if (state.charOffset == 0 && state.bookmarks.empty()) continue;
-
-        shelf_.setProgress(book.guid, state.charOffset, state.bookmarks.size());
+        const BookState state = co_await ws_.readState(card->entry.guid);
+        card->showState(state);
     }
 }
 

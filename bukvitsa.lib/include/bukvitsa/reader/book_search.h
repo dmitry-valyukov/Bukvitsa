@@ -34,8 +34,11 @@ public:
     observable<u16_text const>& status() { return status_; }
 
     /// Находки последнего поиска в порядке чтения; пусто до поиска, при
-    /// пустом запросе и после `clear()`. Только на чтение: ставит их `run`.
-    observable<sta_vector<SearchHit> const>& hits() { return hits_; }
+    /// пустом запросе и после `clear()`. Список, к которому привязан список
+    /// панели: новый поиск — один сброс, и вид строит только те строки, что на
+    /// экране; тот же поиск ещё раз — без перемен. Только на чтение: ставит
+    /// их `run`.
+    observable_list<SearchHit const>& hits() { return hits_; }
 
     /// Ищет `query` в блоках книги. Пустой запрос и запрос из одних пробелов
     /// и табуляций не ищется: подпись зовёт набрать слово, находок нет.
@@ -47,7 +50,7 @@ public:
 
 private:
     observable<u16_text> status_;
-    observable<sta_vector<SearchHit>> hits_;
+    observable_list<SearchHit> hits_;
 };
 
 }  // namespace bukvitsa::reader

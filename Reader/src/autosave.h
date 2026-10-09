@@ -24,14 +24,14 @@
 // Последними: они ведут к модели книги и настройкам, а те импортируют
 // wxl.core, после чего стандартный заголовок MSVC уже не принимает.
 #include "book_view.h"
-#include "bukvitsa/reader/library.h"
+#include "bukvitsa/reader/book_places.h"
 #include "bukvitsa/reader/theme_list.h"
 #include "bukvitsa/reader/workspace.h"
 
 namespace bukvitsa::reader {
 
 /// Отложенные записи. Владеет своими таймерами и подписками (снимает их за
-/// собой); окно, рабочее место, список тем, полоса и состояние книги —
+/// собой); окно, рабочее место, список тем, полоса и места книги —
 /// владельца `owner`, живут дольше Autosave.
 class Autosave : private noncopyable {
 public:
@@ -39,10 +39,10 @@ public:
     /// слушатель пишет, только если имена в настройках изменились.
     /// @param owner якорь жизни: его держит корутина каждой записи, пока ждёт
     ///        диска. Тип владельца Autosave не знает.
-    /// @param state закладки открытой книги: в файл состояния они уходят
+    /// @param places закладки открытой книги: в файл состояния они уходят
     ///        вместе с местом чтения.
     Autosave(refcounted& owner, const wxl::CompositionWindow& window, Workspace& workspace,
-             const ThemeList& themes, BookView& view, observable<BookState const>& state);
+             const ThemeList& themes, BookView& view, const BookPlaces& places);
     ~Autosave();
 
     /// Настройки прочитаны — с этих пор их перемены пишутся. Раньше незачем:
@@ -86,7 +86,7 @@ private:
     Workspace& ws_;
     const ThemeList& themes_;
     BookView& view_;
-    observable<BookState const>& state_;
+    const BookPlaces& places_;
 
     wxl::DispatcherQueueTimer windowTimer_;     ///< место окна
     wxl::DispatcherQueueTimer positionTimer_;   ///< место чтения

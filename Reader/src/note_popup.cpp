@@ -5,6 +5,8 @@
 // он единственный тянет за собой стандартные заголовки, которых нет здесь.
 #include "note_popup.h"
 
+#include "Bind.h"
+
 #include "bukvitsa/typography/glyph_painter.h"
 
 namespace bukvitsa::reader {
@@ -46,13 +48,6 @@ NotePopup::NotePopup(const Compositor& compositor)
     ElementCompositionPreview::setElementChildVisual(paper_, sprite_);
 
     Apply {
-        scroll_,
-        horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
-        verticalScrollBarVisibility = ScrollBarVisibility::Auto,
-        content = paper_,
-    };
-
-    Apply {
         root_,
         hAlign.left,
         vAlign.top,
@@ -60,7 +55,12 @@ NotePopup::NotePopup(const Compositor& compositor)
         CornerRadius{kCorner},
         BorderThickness{1},
         Padding{kPadding},
-        scroll_,
+        ScrollViewer {
+            horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
+            verticalScrollBarVisibility = ScrollBarVisibility::Auto,
+            verticalOffset = Bind{scrollTop_},
+            content = paper_,
+        },
     };
 }
 
@@ -134,7 +134,9 @@ void NotePopup::show(Book& book, const fb3::Node* note, Point anchor, Size area,
     root_.borderBrush(SolidColorBrush{toXaml(theme.dim)});
 
     paper_.height(noteHeight);
-    scroll_.changeView(std::nullopt, 0.0, std::nullopt);
+    // Новая сноска — с начала, а не с того места, до которого прокрутили
+    // прежнюю.
+    scrollTop_.set(0.0);
 
     draw(theme, inner, noteHeight, scale);
 

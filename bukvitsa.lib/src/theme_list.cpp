@@ -1,5 +1,6 @@
 #include <iterator>
 #include <span>
+#include <utility>
 
 // Свой заголовок после стандартных: он несёт импорт wxl.core.
 #include "bukvitsa/reader/theme_list.h"
@@ -7,6 +8,28 @@
 import wxl.core;
 
 namespace bukvitsa::reader {
+namespace {
+
+/// Строки списка тем: встроенные, за ними обложки — тем же счётом, что номер.
+/// Корзина — только у обложки читателя: системной в реестре нет, удалять
+/// нечего.
+sta_vector<ThemeChoice> choicesOf(const std::vector<Skin>& skins) {
+    sta_vector<ThemeChoice> choices;
+    choices.reserve(static_cast<size_t>(kThemeCount) + skins.size());
+
+    for (const Theme& theme : kThemes) choices.push_back(ThemeChoice{u16_text{theme.name}, false, false});
+    for (const Skin& skin : skins) choices.push_back(ThemeChoice{skin.name, true, !skin.system});
+
+    return choices;
+}
+
+}  // namespace
+
+ThemeList::ThemeList() : choices_{choicesOf(skins_)} {}
+
+ThemeList::ThemeList(std::vector<Skin> fromRegistry) {
+    setSkins(std::move(fromRegistry));
+}
 
 void ThemeList::setSkins(std::vector<Skin> fromRegistry) {
     const std::span<const Skin> system = systemSkins();
@@ -14,6 +37,8 @@ void ThemeList::setSkins(std::vector<Skin> fromRegistry) {
     skins_.assign(system.begin(), system.end());
     skins_.insert(skins_.end(), std::make_move_iterator(fromRegistry.begin()),
                   std::make_move_iterator(fromRegistry.end()));
+
+    choices_.assign(choicesOf(skins_));
 }
 
 int ThemeList::count() const {

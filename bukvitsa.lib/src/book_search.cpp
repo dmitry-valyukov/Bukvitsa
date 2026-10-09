@@ -27,7 +27,7 @@ void BookSearch::run(std::span<const typography::Block> blocks) {
     // есть ли в нём слово, — правило пустого запроса одно на всю читалку.
     const std::optional<u16_view> needle = searchQuery(query.get().plain());
     if (!needle) {
-        hits_.set({});
+        hits_.clear();
         status_.set(prompt());
         return;
     }
@@ -40,13 +40,13 @@ void BookSearch::run(std::span<const typography::Block> blocks) {
                                   : format(u"Нашлось: {}", found.size());
 
     // Находки — раньше подписи: кто слышит «Нашлось: N», видит их уже на месте.
-    hits_.set(std::move(found));
+    hits_.assign(std::move(found));
     status_.set(std::move(said));
 }
 
 void BookSearch::clear() {
     query.set({});
-    hits_.set({});
+    hits_.clear();
     status_.set(prompt());
 }
 

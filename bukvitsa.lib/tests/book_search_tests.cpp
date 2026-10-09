@@ -37,7 +37,7 @@ typography::Block paragraphAt(u16_view text, uint32_t start) {
 
 /// Подпись сейчас — приглашение набрать слово, и находок нет.
 bool waitsForWord(BookSearch& search) {
-    return search.status().get().plain() == kPrompt && search.hits().get().empty();
+    return search.status().get().plain() == kPrompt && search.hits().empty();
 }
 
 /// До поиска и при запросе без слова — приглашение, а не поиск.
@@ -77,7 +77,7 @@ void testFound() {
     search.query.set(u16_text{u"рам"});
     search.run(book);
 
-    const sta_vector<SearchHit>& found = search.hits().get();
+    observable_list<SearchHit const>& found = search.hits();
     check(search.status().get().plain() == u"Нашлось: 2", "нашлось — «Нашлось: N»");
     check(found.size() == 2 && found[0].charOffset == 10 && found[1].charOffset == 100,
           "находки на своих местах в книге, в порядке чтения");
@@ -90,7 +90,7 @@ void testFound() {
     search.run(book);
     check(search.status().get().plain() == u"«кот» в книге не нашлось.",
           "не нашлось — запрос в подписи");
-    check(search.hits().get().empty(), "прежние находки не остаются под новой подписью");
+    check(search.hits().empty(), "прежние находки не остаются под новой подписью");
 
     search.query.set(u16_text{u"рам"});
     search.run(book);
@@ -108,16 +108,17 @@ void testClear() {
     BookSearch search;
     search.query.set(u16_text{u"мыла"});
     search.run(book);
-    check(search.hits().get().size() == 1, "перед новой книгой — одна находка");
+    check(search.hits().size() == 1, "перед новой книгой — одна находка");
 
     search.clear();
     check(search.query.get().empty(), "запрос пуст");
     check(waitsForWord(search), "подпись — приглашение, находок нет");
 }
 
-/// Подпись и находки — наблюдаемые поля: к ним привязаны подпись и список
-/// панели, и перемены должны до них доходить. Находки приходят раньше
-/// подписи, а тот же поиск ещё раз списка не трогает.
+/// Подпись — наблюдаемое поле, находки — список: к ним привязаны подпись и
+/// список панели, и перемены должны до них доходить. Новый поиск — один
+/// сброс списка, а не находка за находкой; находки приходят раньше подписи, а
+/// тот же поиск ещё раз списка не трогает.
 void testWatchers() {
     std::printf("\n=== поиск: перемены слышны привязанным ===\n");
 
@@ -133,22 +134,25 @@ void testWatchers() {
     size_t heardHits = 0;
     size_t hitsWhenStatus = 0;
     u16_text heardStatus;
+    list_change lastChange{};
 
     BookSearch search;
     static_cast<void>(search.status().on_change([&](const u16_text& said) noexcept {
         ++statusChanges;
         heardStatus = said;
-        hitsWhenStatus = search.hits().get().size();
+        hitsWhenStatus = search.hits().size();
     }));
-    static_cast<void>(search.hits().on_change([&](const sta_vector<SearchHit>& found) noexcept {
+    static_cast<void>(search.hits().on_change([&](const list_change& change) noexcept {
         ++hitsChanges;
-        heardHits = found.size();
+        lastChange = change;
+        heardHits = search.hits().size();
     }));
 
     search.query.set(u16_text{u"рам"});
     search.run(book);
     check(statusChanges == 1 && heardStatus.plain() == u"Нашлось: 2", "подпись слышна");
     check(hitsChanges == 1 && heardHits == 2, "находки слышны");
+    check(lastChange == list_change{list_change::reset, 0, 2}, "новый поиск — один сброс на все находки");
     check(hitsWhenStatus == 2, "к «Нашлось: N» находки уже на месте");
 
     search.run(book);
@@ -157,7 +161,11 @@ void testWatchers() {
 
     search.clear();
     check(statusChanges == 2 && heardStatus.plain() == kPrompt, "новая книга — приглашение слышно");
-    check(hitsChanges == 2 && heardHits == 0, "новая книга — пустой список слышен");
+    check(hitsChanges == 2 && heardHits == 0 && lastChange == list_change{list_change::reset, 0, 0},
+          "новая книга — пустой список слышен одним сбросом");
+
+    search.clear();
+    check(hitsChanges == 2, "пустой список ещё раз не очищается — без перемен");
 }
 
 }  // namespace

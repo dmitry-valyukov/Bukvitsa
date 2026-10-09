@@ -52,10 +52,15 @@ private:
 
     wxl::Compositor compositor_;
 
+    /// Место прокрутки сноски — к нему привязана прокрутка в обе стороны:
+    /// показ ставит ноль, и новая сноска открывается с начала, а куда
+    /// прокрутил читатель, поле узнаёт от прокрутки само. Выше контролов:
+    /// привязка к нему — в их скобках.
+    observable<double> scrollTop_{0.0};
+
     // Контролы — поля, построенные вместе со всплывашкой: дети выше корня.
     wxl::Grid paper_;   ///< подложка ростом с текст сноски
     wxl::SpriteVisual sprite_;
-    wxl::ScrollViewer scroll_;
     wxl::Border root_;
     std::optional<wxl::DrawingSurface> surface_;
 

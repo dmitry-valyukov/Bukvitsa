@@ -180,10 +180,10 @@ detached_task App::deleteSkin(u16_text name) {
 
 void App::setSkins() {
     // Список тем — раньше полосы: слушатель темы, которого может позвать
-    // setSkins полосы, переводит номер в имена по нему.
+    // setSkins полосы, переводит номер в имена по нему. Строки тем в панели
+    // идут за списком сами.
     themes_.setSkins(ws_.skins.list());
     view_.setSkins(ws_.skins.list());
-    panel_.refreshThemes();
 
     // Пересохранённая обложка могла сменить снимок под тем же путём.
     backdrop_.clear();
