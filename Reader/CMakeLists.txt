@@ -14,6 +14,10 @@
 
 wxl_add_executable(Reader
     src/main.cpp
+    src/app.cpp
+    src/app_books.cpp
+    src/app_skins.cpp
+    src/autosave.cpp
     src/start_screen.cpp
     src/book_view.cpp
     src/library_screen.cpp
@@ -23,6 +27,8 @@ wxl_add_executable(Reader
     src/skin_wizard.cpp
     src/file_dialog.cpp
     src/keys.cpp
+    src/app.h
+    src/autosave.h
     src/book_view.h
     src/file_dialog.h
     src/keys.h

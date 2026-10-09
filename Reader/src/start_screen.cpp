@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "Bind.h"
 #include "look.h"
 
 namespace bukvitsa::reader {
@@ -21,79 +22,149 @@ constexpr auto kStagger = 40ms;
 
 // Большая кнопка, когда ей есть что продолжать: высота под обложку, обложка
 // в пропорции витрины, автор — тем же приглушённым тоном, что и там.
-constexpr float kContinueTall = 100.0f;
+constexpr double kContinueTall = 100.0;
 constexpr double kCoverTall = 76.0;
 
 // Откуда кнопка приезжает. Одной прозрачности мало — появление «из ничего»
 // читается плоско, а десяток пикселей вверх делает его живым.
 constexpr Vector3 kRiseFrom{0.0f, 14.0f, 0.0f};
 
+// Разметка большой кнопки одна, с книгой и без: что в ней видно и какой она
+// высоты, выводится из полей книги (`BindOutput`). Выводы — здесь, а не
+// лямбдами в разметке: там открыты теги, и имя параметра вроде `title`
+// спрятало бы одноимённый тег (C4459).
+
+/// Есть книга — есть и строки названия и автора под надписью.
+Visibility shownWithBook(u16_text const& bookTitle) {
+    return bookTitle.empty() ? Visibility::Collapsed : Visibility::Visible;
+}
+
+/// Высота кнопки с книгой — под обложку. Без книги — та, что у пресета:
+/// MinHeight берёт верх над Height, только когда больше его.
+double heightWithBook(u16_text const& bookTitle) {
+    return bookTitle.empty() ? 0.0 : kContinueTall;
+}
+
+/// Надпись без книги стоит посередине, как на всякой кнопке карточки; с
+/// книгой — растянута: при выравнивании по краю содержимому отдали бы его
+/// желанную ширину, и длинное название не обрезалось бы.
+HorizontalAlignment alignedWithBook(u16_text const& bookTitle) {
+    return bookTitle.empty() ? HorizontalAlignment::Center : HorizontalAlignment::Stretch;
+}
+
+/// Имя для чтеца экрана. Пока лицом кнопки была надпись, она же была и именем;
+/// сетка с обложкой имени не даёт — имя ставится отдельно, из тех же слов, что
+/// на кнопке.
+u16_text saidWithBook(u16_text const& bookTitle) {
+    u16_text said{u"Продолжить чтение"};
+    if (bookTitle.empty()) return said;
+    said += u": ";
+    said += bookTitle;
+    return said;
+}
+
+/// Обложка книги как источник картинки. Путь абсолютный, поэтому со схемой:
+/// без неё wxl искал бы картинку рядом с исполняемым файлом — так же устроена
+/// обложка на витрине.
+ImageSource coverSource(std::filesystem::path const& cover) {
+    if (cover.empty()) return {};
+    std::u16string full = cover.u16string();
+    std::replace(full.begin(), full.end(), u'\\', u'/');
+    return ImageSource{u"file:///" + full};
+}
+
+Visibility shownWithCover(std::filesystem::path const& cover) {
+    return cover.empty() ? Visibility::Collapsed : Visibility::Visible;
+}
+
 }  // namespace
 
 // Визуал обёртки карточки берётся сразу, у ещё пустой обёртки: элемент
 // отдаёт свой визуал и без содержимого, а прозрачность нужна раньше первого
 // кадра.
-StartScreen::StartScreen(const Compositor& compositor)
-    : compositor_(compositor),
+StartScreen::StartScreen(const Compositor& compositor, Actions& actions)
+    : actions_(actions),
+      compositor_(compositor),
       cardVisual_(ElementCompositionPreview::getElementVisual(cardShell_)) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
     // бы обычные слова (title, key, delay) и под /W4 каждое стало бы C4459.
     using namespace wxl::dsl;
 
+    // Колонка текста большой кнопки: своя надпись, под ней название, под ним
+    // автор. Grid со звёздной колонкой, а не горизонтальный StackPanel: тот
+    // мерил бы текст бесконечной шириной, и длинному названию не с чего было
+    // бы обрезаться. Без книги видна одна надпись — тем же кеглем и
+    // начертанием, что у пресета кнопки.
+    auto const lines = StackPanel {
+        column = 1,
+        vAlign.center,
+        TextBlock{u"Продолжить чтение", fontSize = 19, FontWeight{600}},
+        TextBlock {
+            text = BindOutput{bookTitle_},
+            visibility = BindOutput{bookTitle_, shownWithBook},
+            fontSize = 13,
+            Margin{0, 5, 0, 0},
+            textTrimming.characterEllipsis,
+        },
+        TextBlock {
+            text = BindOutput{bookAuthor_},
+            visibility = BindOutput{bookTitle_, shownWithBook},
+            fontSize = 12,
+            Margin{0, 2, 0, 0},
+            foreground = kDimInk,
+            textTrimming.characterEllipsis,
+        },
+    };
+
     // Кнопки — на карточке поверх картинки, вид у них общий с мастером
     // обложек (look.h); своё у заставки — выравнивание и проявление. Каждая
     // отдаёт свой визуал в revealing_ (revealLater) до того, как дерево уедет
     // в конструктор Grid, и проступают они в том порядке, в каком встали.
-    // Большая кнопка — поле: setContinueBook() наполнит её книгой.
-    Apply {
-        continueButton_,
-        overlayMainLook,
-        hAlign.stretch,
-        u"Продолжить чтение",
-        onClick =
-            [this](Object const&, RoutedEventArgs&) {
-                if (onContinueReading) onContinueReading();
-            },
-    };
-
+    // Кнопка зовёт намерение прямо: method() отдаёт член интерфейса как
+    // обработчик, корутина запускается и идёт сама.
     auto const panel = StackPanel {
-        revealLater(continueButton_),
+        revealLater(Button {
+            overlayMainLook,
+            hAlign.stretch,
+            minHeight = BindOutput{bookTitle_, heightWithBook},
+            horizontalContentAlignment = BindOutput{bookTitle_, alignedWithBook},
+            automationName = BindOutput{bookTitle_, saidWithBook},
+            onClick = method(&actions_, &Actions::continueReading),
+            content = Grid {
+                columnDefinitions = u"auto,*",
+                Image {
+                    source = BindOutput{bookCover_, coverSource},
+                    visibility = BindOutput{bookCover_, shownWithCover},
+                    height = kCoverTall,
+                    Margin{0, 0, 12, 0},
+                },
+                lines,
+            },
+        }),
         revealLater(Button {
             overlayButtonLook,
             hAlign.stretch,
             u"Моя библиотека",
-            onClick =
-                [this](Object const&, RoutedEventArgs&) {
-                    if (onLibrary) onLibrary();
-                },
+            onClick = method(&actions_, &Actions::showLibrary),
         }),
         revealLater(Button {
             overlayButtonLook,
             hAlign.stretch,
             u"Добавить книгу",
-            onClick =
-                [this](Object const&, RoutedEventArgs&) {
-                    if (onAddBook) onAddBook();
-                },
+            onClick = method(&actions_, &Actions::chooseBook),
         }),
         revealLater(Button {
             overlayButtonLook,
             hAlign.stretch,
             u"Добавить каталог",
-            onClick =
-                [this](Object const&, RoutedEventArgs&) {
-                    if (onAddFolder) onAddFolder();
-                },
+            onClick = method(&actions_, &Actions::chooseFolder),
         }),
         revealLater(Button {
             overlayButtonLook,
             cancelFaceLook(),
             hAlign.stretch,
             u"Выйти из читалки",
-            onClick =
-                [this](Object const&, RoutedEventArgs&) {
-                    if (onExit) onExit();
-                },
+            onClick = method(&actions_, &Actions::quit),
         }),
     };
 
@@ -119,7 +190,7 @@ StartScreen::StartScreen(const Compositor& compositor)
     cardVisual_.opacity(0.0f);
 
     // Заставки в этом дереве нет. Задняя картинка окна ровно одна — задник
-    // сцены, который ставит main.cpp (window->backgroundAsync); остров
+    // сцены, который ставит приложение (window.backgroundAsync); остров
     // прозрачен, и сквозь него видна она. Второй вывод той же картинки
     // XAML-элементом Image был бы дублем, а дублей быть не должно: остров
     // несёт только карточку с кнопками.
@@ -137,28 +208,33 @@ StartScreen::StartScreen(const Compositor& compositor)
 
         cardShell_,
 
-        // Просить фокус раньше, чем дерево живо, бесполезно: элемент вне
-        // визуального дерева тихо отказывает.
-        onLoaded =
-            [this](Object const&, RoutedEventArgs&) { root_.focus(FocusState::Programmatic); },
+        onLoaded = method(this, &StartScreen::loaded),
 
-        // Enter — действие по умолчанию, то же, что большая кнопка; Escape —
-        // отмена, то же, что «Выйти из читалки». На пути вниз, чтобы клавиша
-        // работала независимо от того, на какой кнопке стоит фокус.
-        onPreviewKeyDown =
-            [this](Object const&, KeyRoutedEventArgs& args) {
-                switch (args.key()) {
-                    case VirtualKey::Enter:
-                        if (onContinueReading) onContinueReading();
-                        break;
-                    case VirtualKey::Escape:
-                        if (onExit) onExit();
-                        break;
-                    default: return;
-                }
-                args.handled(true);
-            },
+        // На пути вниз, чтобы клавиша работала независимо от того, на какой
+        // кнопке стоит фокус.
+        onPreviewKeyDown = method(this, &StartScreen::keyDown),
     };
+}
+
+void StartScreen::loaded(Grid const& self) {
+    // Просить фокус раньше, чем дерево живо, бесполезно: элемент вне
+    // визуального дерева тихо отказывает.
+    self.focus(FocusState::Programmatic);
+}
+
+void StartScreen::keyDown(Object const&, KeyRoutedEventArgs& args) {
+    // Enter — действие по умолчанию, то же, что большая кнопка; Escape —
+    // отмена, то же, что «Выйти из читалки».
+    switch (args.key()) {
+        case VirtualKey::Enter:
+            actions_.continueReading();
+            break;
+        case VirtualKey::Escape:
+            actions_.quit();
+            break;
+        default: return;
+    }
+    args.handled(true);
 }
 
 Button StartScreen::revealLater(Button button) {
@@ -188,67 +264,15 @@ Button StartScreen::revealLater(Button button) {
 
 void StartScreen::setContinueBook(u16_view bookTitle, u16_view bookAuthor,
                                   const std::filesystem::path& cover) {
-    using namespace wxl::dsl;
+    if (bookTitle.empty()) return;   // продолжать нечего — кнопка остаётся какой была
 
-    if (bookTitle.empty()) return;   // продолжать нечего — кнопка остаётся простой надписью
-
-    // Сюда попадают на каждом показе экрана, а книга меняется редко:
-    // перестраивать то же самое незачем.
-    std::u16string fingerprint{bookTitle.plain()};
-    fingerprint += u'\n';
-    fingerprint += bookAuthor.plain();
-    fingerprint += u'\n';
-    fingerprint += cover.u16string();
-    if (fingerprint == continueKey_) return;
-    continueKey_ = std::move(fingerprint);
-
-    // Колонка текста: своя надпись кнопки, под ней название, под ним автор.
-    // Grid со звёздной колонкой, а не горизонтальный StackPanel: тот мерил бы
-    // текст бесконечной шириной, и длинному названию не с чего было бы
-    // обрезаться.
-    auto const lines = StackPanel {
-        column = 1,
-        vAlign.center,
-        TextBlock{u"Продолжить чтение", fontSize = 19, FontWeight{600}},
-        TextBlock{hstring{bookTitle}, fontSize = 13, Margin{0, 5, 0, 0},
-                   textTrimming.characterEllipsis},
-        TextBlock{hstring{bookAuthor}, fontSize = 12, Margin{0, 2, 0, 0},
-                   foreground = kDimInk, textTrimming.characterEllipsis},
-    };
-
-    Button const& button = continueButton_;
-
-    if (cover.empty()) {
-        button.content(Grid{lines});
-    } else {
-        // Путь абсолютный, поэтому со схемой: без неё wxl искал бы картинку
-        // рядом с исполняемым файлом — так же устроена обложка на витрине.
-        std::u16string full = cover.u16string();
-        std::replace(full.begin(), full.end(), u'\\', u'/');
-
-        button.content(Grid {
-            columnDefinitions = u"auto,*",
-            Image {
-                source = ImageSource{u"file:///" + full},
-                height = kCoverTall,
-                Margin{0, 0, 12, 0},
-            },
-            lines,
-        });
-    }
-
-    // Растянуть, а не влево: при выравнивании по левому краю содержимому
-    // отдали бы его желанную ширину, и обрезание длинного названия не
-    // сработало бы.
-    button.height(kContinueTall);
-    button.horizontalContentAlignment(HorizontalAlignment::Stretch);
-
-    // Пока лицом кнопки была надпись, она же была и её именем для чтеца
-    // экрана; сетка с обложкой имени не даёт — имя ставится отдельно, из тех
-    // же слов, что на кнопке.
-    u16_text said{u"Продолжить чтение: "};
-    said += bookTitle;
-    button.automationName(said);
+    // Разметку перестраивают привязки; одинаковое значение поле не объявляет,
+    // так что тот же показ той же книги ничего не трогает. Название — последним:
+    // от него зависят высота и видимость строк, и к его объявлению автор и
+    // обложка уже на месте.
+    bookAuthor_.set(u16_text{bookAuthor});
+    bookCover_.set(cover);
+    bookTitle_.set(u16_text{bookTitle});
 }
 
 void StartScreen::reveal() {

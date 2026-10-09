@@ -21,7 +21,8 @@
 
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core.
-#include <functional>
+#include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "Object.h"
@@ -30,14 +31,52 @@
 // Последними: они ведут к модели книги и реестру, а те импортируют wxl.core,
 // после чего стандартный заголовок MSVC уже не принимает.
 #include "book_view.h"
+#include "bukvitsa/reader/book_search.h"
 #include "bukvitsa/reader/library.h"
+#include "bukvitsa/reader/theme_list.h"
+
+// Импорт — последним: намерения панели — корутины `detached_task`.
+import wxl.async;
 
 namespace bukvitsa::reader {
 
-class ReaderPanel {
+/// Два ящика поверх полосы. Владеет своим деревом и анимацией выезда; полоса,
+/// настройки, состояние книги, список тем, поиск и исполнитель намерений —
+/// владельца, живут дольше панели.
+class ReaderPanel : private noncopyable {
 public:
     /// Вкладки левого ящика. Вид — не вкладка, а правый ящик целиком.
     enum class Tab { Contents, Search, Bookmarks };
+
+    /// Что панель умеет попросить. Реализует владелец; намерение — корутина:
+    /// ждёт ли дело диска или вопроса читателю, панели знать незачем.
+    class Actions {
+    public:
+        /// «← Моя библиотека»: выбрать другую книгу. Смена книги — дело
+        /// приложения, не панели.
+        virtual wxl::async::detached_task showLibrary() = 0;
+
+        /// «Заложить эту страницу»: поставить закладку на место чтения или
+        /// снять ту, что там стоит. Состояние книги — владельца; панель
+        /// показывает его, а не меняет.
+        virtual wxl::async::detached_task toggleBookmark() = 0;
+
+        /// «Добавить обложку…». Мастер — оверлей приложения, а не панели: он
+        /// ложится поверх всей полосы.
+        virtual wxl::async::detached_task addSkin() = 0;
+
+        /// Шестерёнка у обложки: открыть в мастере правку её кривизны.
+        virtual wxl::async::detached_task editSkin(u16_text name) = 0;
+
+        /// Корзина у обложки: убрать её из реестра. Спросить, точно ли, —
+        /// дело приложения: у панели нет ни окна, ни права решать за
+        /// читателя, а удаление необратимо. Имя — по значению: корутина
+        /// держит его, пока спрашивает.
+        virtual wxl::async::detached_task deleteSkin(u16_text name) = 0;
+
+    protected:
+        ~Actions() = default;
+    };
 
     /// @param view полоса набора: у неё панель и спрашивает книгу, и ей же
     ///        отдаёт переходы. Панель без книги бессмысленна, поэтому связь
@@ -45,7 +84,13 @@ public:
     /// @param settings настройки вида: ползунки привязаны к их полям (`Bind`),
     ///        и то же поле двигают колесо и клавиши полосы — панель узнаёт о
     ///        них привязкой, а не флагом «это мы сами».
-    ReaderPanel(const wxl::Compositor& compositor, BookView& view, Settings& settings);
+    /// @param state место чтения и закладки открытой книги: список закладок
+    ///        и подпись над ним идут за ним сами.
+    /// @param themes темы и обложки одним списком — кнопки правого ящика.
+    /// @param search модель поиска: поле, подпись и находки привязаны к ней.
+    ReaderPanel(const wxl::Compositor& compositor, BookView& view, Settings& settings,
+                observable<BookState const>& state, const ThemeList& themes, BookSearch& search,
+                Actions& actions);
     ~ReaderPanel();
 
     /// Элемент, который кладут поверх полосы набора.
@@ -62,30 +107,7 @@ public:
     void close();
     bool isOpen() const { return open_; }
 
-    /// Закладки текущей книги. Панель их показывает и меняет, а хранит и
-    /// пишет приложение: файл книги — не её забота.
-    void setState(BookState* state);
-
-    /// Закладки изменились — пора записать состояние книги.
-    std::function<void()> onStateChanged;
-
-    /// Читатель попросился на полку — выбрать другую книгу. Панель этого не
-    /// умеет и не должна: смена книги — дело приложения.
-    std::function<void()> onLibrary;
-
-    /// Читатель попросил новую обложку. Мастер — оверлей приложения, а не
-    /// панели: он ложится поверх всей полосы.
-    std::function<void()> onAddSkin;
-
-    /// Шестерёнка у обложки: открыть в мастере правку её кривизны.
-    std::function<void(u16_text)> onEditSkin;
-
-    /// Корзина у обложки: убрать её из реестра вместе со снимком. Спросить,
-    /// точно ли, — дело приложения: у панели нет ни окна, ни права решать за
-    /// читателя, а удаление необратимо.
-    std::function<void(u16_text)> onDeleteSkin;
-
-    /// Пересобирает список тем: встроенные плюс обложки из полосы набора.
+    /// Пересобирает список тем: встроенные плюс обложки из списка тем.
     /// Зовётся приложением, когда реестр обложек изменился.
     void refreshThemes();
 
@@ -109,8 +131,9 @@ private:
     /// Строка списка — то, из чего собраны все три списка панели. Функция, а
     /// не пресет: одни слова идут и в надпись, и в имя для чтеца экрана, а
     /// вторая строка ставится, только если есть.
+    /// @param jump куда ведёт строка; пусто — никуда («нет заголовков»).
     wxl::Button listItem(zstring_view said, zstring_view under, float indent,
-                         std::function<void()> action);
+                         std::optional<uint32_t> jump);
 
     void showTab(Tab tab);
 
@@ -120,26 +143,36 @@ private:
 
     void fillContents();
     void fillBookmarks();
-    void runSearch();
-    void toggleBookmark();
+    void fillSearch();
 
+    /// Поиск по Enter, а не по каждой букве: искать по одной букве в романе —
+    /// это тысячи находок, из которых читателю не нужна ни одна.
+    void searchKeyDown(wxl::TextBox const& sender, wxl::KeyRoutedEventArgs& args);
+
+    /// Щелчок по холсту мимо ящиков закрывает оба.
+    void canvasPressed(wxl::Object const& sender, wxl::PointerRoutedEventArgs& args);
+
+    Actions& actions_;
     wxl::Compositor compositor_;
     BookView& view_;
     Settings& prefs_;   ///< настройки вида; settings_ ниже — правый ящик
+    observable<BookState const>& state_;
+    const ThemeList& themes_;
+    BookSearch& search_;
 
-    /// Наш слушатель в поле темы полосы — снять за собой: полоса может пережить
-    /// панель.
+    /// Наши слушатели в чужих полях — снять за собой: полоса, состояние книги
+    /// и поиск живут дольше панели.
     cookie_t themeWatch_;
-    BookState* state_ = nullptr;
+    cookie_t stateWatch_;
+    cookie_t hitsWatch_;
 
     // Контролы — поля, построенные вместе с панелью: дети выше ящиков, ящики
-    // выше холста, визуалы — у построенных ящиков.
+    // выше холста, визуалы — у построенных ящиков. Списки перестраиваются
+    // руками, поле поиска держится ради фокуса при открытии вкладки.
     wxl::StackPanel contentsList_;
     wxl::StackPanel searchList_;
     wxl::StackPanel bookmarkList_;
     wxl::TextBox searchBox_;
-    wxl::TextBlock searchNote_;
-    wxl::TextBlock bookmarkNote_;
     wxl::StackPanel themesPanel_;   ///< пересобирается
     std::vector<wxl::UIElement> tabPages_;
     std::vector<wxl::Button> tabButtons_;

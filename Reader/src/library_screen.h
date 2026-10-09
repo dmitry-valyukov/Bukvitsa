@@ -13,33 +13,54 @@
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core.
 #include <cstdint>
-#include <functional>
+#include <filesystem>
 #include <map>
 #include <string>
 
 #include "Object.h"
 #include "pch.h"
 
-// Последними: реестр и настройки импортируют wxl.core.
+// Последним: реестр импортирует wxl.core.
 #include "bukvitsa/reader/library.h"
-#include "bukvitsa/reader/settings.h"
-#include "bukvitsa/reader/workspace.h"
+
+// Импорт — последним: намерения экрана — корутины `detached_task`.
+import wxl.async;
 
 namespace bukvitsa::reader {
 
-class LibraryScreen {
+/// Витрина. Владеет своим деревом и карточками; реестр, галочка настроек и
+/// исполнитель намерений — владельца, живут дольше витрины.
+class LibraryScreen : private noncopyable {
 public:
-    /// @param workspace рабочее место: галочка «продолжать чтение при старте»
-    ///        привязана к полю его настроек прямо в разметке, а обложки
-    ///        карточек лежат в его кэше.
-    explicit LibraryScreen(Workspace& workspace);
+    /// Что витрина умеет попросить. Реализует владелец; намерение — корутина:
+    /// ждёт ли дело диска, экрану знать незачем.
+    class Actions {
+    public:
+        /// Щелчок по карточке: открыть книгу с этим guid. По значению —
+        /// корутина держит его и после первого ожидания.
+        virtual wxl::async::detached_task openBook(u16_text guid) = 0;
+        /// «Добавить книгу».
+        virtual wxl::async::detached_task chooseBook() = 0;
+        /// «Назад».
+        virtual wxl::async::detached_task back() = 0;
+
+    protected:
+        ~Actions() = default;
+    };
+
+    /// @param library реестр книг: по нему строится полка при каждом показе.
+    /// @param continueReading галочка «продолжать чтение при старте»
+    ///        привязана к этому полю настроек прямо в разметке.
+    /// @param covers каталог, где лежат обложки книг из реестра.
+    LibraryScreen(const Library& library, observable<bool>& continueReading,
+                  std::filesystem::path covers, Actions& actions);
 
     /// Корень, который отдаётся окну как содержимое.
     const wxl::UIElement& root() const { return root_; }
 
     /// Перестраивает полку под содержимое реестра. Зовётся каждый раз, когда
     /// витрину показывают: книга могла добавиться, а место чтения — уехать.
-    void show(const Library& library);
+    void show();
 
     /// Ставит на полку ещё одну книгу -- ту, которую только что разобрал обход
     /// каталога. Полка при этом не пересобирается: карточки, которые уже стоят,
@@ -53,26 +74,27 @@ public:
     /// уже нет, а есть новая, и её прогресс придёт своим чередом.
     void setProgress(u16_view guid, uint32_t charOffset, size_t bookmarks);
 
-    std::function<void(u16_text)> onOpen;   ///< guid выбранной книги
-    std::function<void()> onAddBook;
-    std::function<void()> onBack;
-
 private:
     wxl::Button shelfItem(const BookEntry& book);
 
+    /// Корень берёт фокус, как только он в дереве.
+    void loaded(wxl::Grid const& self);
+
+    Actions& actions_;
+    const Library& library_;               ///< по нему строится полка
+    const std::filesystem::path covers_;   ///< где лежат обложки книг
+
+    /// Пуста ли полка — к нему привязана надпись «Пока пусто» (`BindOutput`).
+    /// Ставят показ полки и каждая добавленная карточка.
+    observable<bool> empty_{true};
+
     // Контролы — поля, построенные вместе с витриной: дети выше корня.
     wxl::StackPanel shelf_;
-    wxl::TextBlock emptyNote_;
     wxl::Grid root_;
 
     /// Строка прогресса каждой карточки, по guid книги. Живёт ровно от одного
     /// показа полки до другого -- как и сами карточки.
     std::map<std::u16string, wxl::TextBlock> progress_;
-
-    /// Реестр, по которому построена нынешняя полка. Не владеет: реестр живёт
-    /// в приложении и переживает витрину.
-    const Library* shown_ = nullptr;
-    const Workspace& workspace_;   ///< где лежат обложки книг
 };
 
 }  // namespace bukvitsa::reader

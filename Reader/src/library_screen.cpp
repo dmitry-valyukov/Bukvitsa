@@ -36,22 +36,21 @@ ImageSource coverOf(const std::filesystem::path& coverDirectory, const BookEntry
     return ImageSource{u"file:///" + full};
 }
 
+/// Надпись «Пока пусто» видна, пока на полке нет ни одной карточки.
+Visibility shownWhenEmpty(bool empty) {
+    return empty ? Visibility::Visible : Visibility::Collapsed;
+}
+
 }  // namespace
 
-LibraryScreen::LibraryScreen(Workspace& workspace) : workspace_(workspace) {
+LibraryScreen::LibraryScreen(const Library& library, observable<bool>& continueReading,
+                             std::filesystem::path covers, Actions& actions)
+    : actions_(actions), library_(library), covers_(std::move(covers)) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
     // бы обычные слова (entry, text) и под /W4 каждое стало бы C4459.
     using namespace wxl::dsl;
 
     Apply{shelf_, Margin{40, 8, 40, 32}};
-
-    Apply {
-        emptyNote_,
-        u"Пока пусто. Добавьте книгу — она останется там, где лежит.",
-        fontSize = 16,
-        foreground = kDimInk,
-        Margin{40, 24, 40, 0},
-    };
 
     Apply {
         root_,
@@ -86,38 +85,45 @@ LibraryScreen::LibraryScreen(Workspace& workspace) : workspace_(workspace) {
                 column = 1,
                 foreground = kInk,
                 vAlign.center,
-                isChecked = Bind{workspace.settings.continueReading},
+                isChecked = Bind{continueReading},
             },
             Button {
                 u"Добавить книгу",
                 column = 2,
-                onClick = [this](Object const&,
-                                 RoutedEventArgs&) { if (onAddBook) onAddBook(); },
+                onClick = method(&actions_, &Actions::chooseBook),
             },
             Button {
                 u"Назад",
                 column = 3,
-                onClick = [this](Object const&, RoutedEventArgs&) { if (onBack) onBack(); },
+                onClick = method(&actions_, &Actions::back),
             },
         },
 
         ScrollViewer {
             row = 1,
             content = StackPanel {
-                emptyNote_,
+                TextBlock {
+                    u"Пока пусто. Добавьте книгу — она останется там, где лежит.",
+                    fontSize = 16,
+                    foreground = kDimInk,
+                    Margin{40, 24, 40, 0},
+                    visibility = BindOutput{empty_, shownWhenEmpty},
+                },
                 shelf_,
             },
         },
 
-        onLoaded =
-            [this](Object const&, RoutedEventArgs&) { root_.focus(FocusState::Programmatic); },
+        onLoaded = method(this, &LibraryScreen::loaded),
     };
+}
+
+void LibraryScreen::loaded(Grid const& self) {
+    self.focus(FocusState::Programmatic);
 }
 
 void LibraryScreen::appendBook(const BookEntry& entry) {
     shelf_.children().append(shelfItem(entry));
-
-    emptyNote_.visibility(Visibility::Collapsed);
+    empty_.set(false);
 }
 
 void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookmarks) {
@@ -125,7 +131,7 @@ void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookm
 
     if (found == progress_.end()) return;   // полку успели пересобрать
 
-    const BookEntry* entry = shown_ ? shown_->find(guid) : nullptr;
+    const BookEntry* entry = library_.find(guid);
 
     if (!entry) return;
 
@@ -136,20 +142,18 @@ void LibraryScreen::setProgress(u16_view guid, uint32_t charOffset, size_t bookm
     found->second.text(shelfLine(charOffset, entry->characterCount, bookmarks));
 }
 
-void LibraryScreen::show(const Library& library) {
-    shown_ = &library;
+void LibraryScreen::show() {
     progress_.clear();
 
     // Полка пересобирается целиком. Сравнивать её с реестром и править
     // разницу было бы дороже во всех смыслах: книг десятки, а не тысячи, и
     // добавление одной — не повод заводить вторую модель того же списка.
     shelf_.children().clear();
-    for (const BookEntry& entry : library.books()) {
+    for (const BookEntry& entry : library_.books()) {
         shelf_.children().append(shelfItem(entry));
     }
 
-    emptyNote_.visibility(library.books().empty() ? Visibility::Visible
-                                                         : Visibility::Collapsed);
+    empty_.set(library_.books().empty());
 }
 
 Button LibraryScreen::shelfItem(const BookEntry& book) {
@@ -189,8 +193,9 @@ Button LibraryScreen::shelfItem(const BookEntry& book) {
         borderBrush = kEdge,
         BorderThickness{1},
         CornerRadius{6},
-        onClick = [this, guid](Object const&,
-                               RoutedEventArgs&) { if (onOpen) onOpen(guid); },
+        // Своя книга у каждой карточки — её guid держит замыкание; намерение
+        // берёт его копией.
+        onClick = [this, guid] { actions_.openBook(guid); },
 
         content = Grid {
             columnDefinitions = u"auto,*",
@@ -199,7 +204,7 @@ Button LibraryScreen::shelfItem(const BookEntry& book) {
 
             Image {
                 column = 0,
-                source = coverOf(workspace_.coverDirectory(), book),
+                source = coverOf(covers_, book),
                 width = kCoverWidth,
                 height = kCoverHeight,
                 stretch = Stretch::UniformToFill,

@@ -19,7 +19,6 @@
 // сохранять, — решает модель правки (`SkinEditor`); мастер её показывает.
 
 #include <filesystem>
-#include <functional>
 #include <optional>
 #include <vector>
 
@@ -31,11 +30,33 @@
 // заголовок MSVC уже не принимает.
 #include "bukvitsa/reader/skin_editor.h"
 
+// Импорт — последним: намерения мастера — корутины `detached_task`.
+import wxl.async;
+
 namespace bukvitsa::reader {
 
-class SkinWizard {
+/// Мастер обложек. Владеет своим деревом, сеткой и моделью правки; исполнитель
+/// намерений — владельца, живёт дольше мастера.
+class SkinWizard : private noncopyable {
 public:
-    explicit SkinWizard(const wxl::Compositor& compositor);
+    /// Что мастер умеет попросить. Реализует владелец; намерение — корутина:
+    /// ждёт ли дело диска, мастеру знать незачем.
+    class Actions {
+    public:
+        /// «Сохранить», имя уже есть и годится. У правки старой обложки
+        /// `skin.image` заполнен — копия уже лежит в реестре; у новой пуст, и
+        /// копию снимает владелец с `photo`.
+        virtual wxl::async::detached_task saveSkin(Skin skin, std::filesystem::path photo) = 0;
+        /// «Выбрать другое изображение».
+        virtual wxl::async::detached_task chooseAnotherImage() = 0;
+        /// «Выйти из мастера обложек» — и Escape.
+        virtual wxl::async::detached_task leaveWizard() = 0;
+
+    protected:
+        ~Actions() = default;
+    };
+
+    SkinWizard(const wxl::Compositor& compositor, Actions& actions);
 
     /// Оверлей, который кладётся поверх полосы набора.
     const wxl::UIElement& root() const { return root_; }
@@ -44,7 +65,8 @@ public:
     /// пустое. Снимок к этому моменту проверен владельцем: сценарий
     /// приложения прочитал и раскодировал его рабочим местом
     /// (`Workspace::isImage`), а мастеру достался путь уже проверенного
-    /// снимка. Диска мастер не касается, байты для показа полоса закажет сама.
+    /// снимка. Диска мастер не касается, байты для показа полосе приносит
+    /// владелец.
     void openNew(std::filesystem::path image);
 
     /// Открывает существующую обложку на правку: её кривые, её снимок, её
@@ -56,21 +78,13 @@ public:
     void hide();
     bool isOpen() const { return open_; }
 
-    /// Редактируемые кривые и снимок — то, что приложение отдаёт полосе как
-    /// предпросмотр.
-    const Skin& skin() const { return editor_.skin(); }
+    /// Правимая обложка — то, что полоса рисует как предпросмотр. Меняется
+    /// открытием и отпущенной точкой — не на каждом движении: пересборка карты
+    /// изгиба стоит прохода по всем пикселям слоя. Только на чтение.
+    observable<Skin const>& skin() { return skin_; }
+
+    /// Снимок правимой обложки — его байты полосе приносит владелец.
     const std::filesystem::path& imagePath() const { return editor_.imagePath(); }
-
-    /// Точку отпустили — кривые устоялись, пора пересчитать карту изгиба.
-    std::function<void()> onCurvesChanged;
-
-    /// «Сохранить», имя уже введено и не пустое. У правки старой обложки
-    /// `image` заполнен — копия уже лежит в реестре; у новой пуст, и копию
-    /// снимает приложение со второго аргумента.
-    std::function<void(Skin, std::filesystem::path)> onSave;
-
-    std::function<void()> onChooseAnother;   ///< «Выбрать другое изображение»
-    std::function<void()> onExit;            ///< «Выйти из мастера обложек»
 
 private:
     void buildTree();
@@ -83,8 +97,8 @@ private:
     /// Сетка в DIP — то, во что модель правки переводит доли снимка.
     SkinEditor::Size area() const { return {width_, height_}; }
 
-    void chooseAnother();
-    void exitWizard();
+    /// Правка устоялась — открыта или отпущена точка: показ её получает.
+    void publish();
 
     /// «Сохранить» — и оно же действие по умолчанию на Enter. У правки
     /// старой обложки имя уже есть, и диалог не показывается — сохранение
@@ -92,25 +106,43 @@ private:
     void saveRequested();
 
     void beginNaming();
-    void finishNaming(bool save);
+    /// «ОК» диалога имени — и Enter в нём.
+    void confirmName();
+    /// «Отмена» диалога имени — и Escape в нём.
+    void cancelName();
 
+    // Обработчики корня: клавиши на пути вниз, размер, указатель.
+    void keyDown(wxl::Object const& sender, wxl::KeyRoutedEventArgs& args);
+    void sizeChanged();
+    void pointerPressed(wxl::Grid const& self, wxl::PointerRoutedEventArgs& args);
+    void pointerMoved(wxl::Grid const& self, wxl::PointerRoutedEventArgs& args);
+    void pointerReleased(wxl::Object const& sender, wxl::PointerRoutedEventArgs& args);
+
+    Actions& actions_;
     wxl::Compositor compositor_;
+
+    /// Редактируемые кривые, имя и снимок: модель одна на всю жизнь мастера.
+    /// Выше контролов: поле имени привязано к её `name`.
+    SkinEditor editor_;
+
+    /// Копия правимой обложки для показа — см. skin(). Своя, а не ссылка в
+    /// модель правки: та не объявляет, когда обложка устоялась.
+    observable<Skin> skin_;
+
+    /// Открыт ли диалог имени — к нему привязана его видимость. Свой оверлей,
+    /// а не системное окно: он живёт поверх той же страницы, и «Отмена»
+    /// возвращает ровно туда, где читатель был.
+    observable<bool> naming_{false};
 
     // Контролы — поля, построенные вместе с мастером: дети выше корня.
     wxl::Grid surfaceHost_;   ///< несёт визуал сетки
     wxl::SpriteVisual visual_;   ///< в дереве с первой поверхностью
     std::vector<wxl::DrawingSurface> surface_;   ///< ноль или одна — как листы полосы
 
-    /// Диалог имени. Свой оверлей, а не системное окно: он живёт поверх той
-    /// же страницы, и «Отмена» возвращает ровно туда, где читатель был.
+    /// Поле имени — ради фокуса при начале имени: текст его привязан к модели.
     wxl::TextBox nameBox_;
-    wxl::Border namePanel_;
 
     wxl::Grid root_;
-
-    /// Редактируемые кривые, имя и снимок: полоса держит ссылку на его
-    /// `skin()` как на предпросмотр, поэтому модель одна на всю жизнь мастера.
-    SkinEditor editor_;
 
     bool open_ = false;
 
