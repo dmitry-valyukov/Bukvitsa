@@ -15,7 +15,6 @@ namespace bukvitsa::reader {
 
 using namespace wxl;
 
-using wxl::async::cancellable;
 using wxl::async::detached_task;
 using wxl::async::system_exception;
 
@@ -144,9 +143,9 @@ detached_task App::deleteSkin(u16_text name) {
     // не пустит — оно заслоняет остров; а сообщение, пришедшее, пока вопрос
     // открыт, ждёт в Notices и выходит, когда вопрос закрыт.
     //
-    // Ответ ждётся под токеном: попросили кончиться, пока вопрос открыт, —
-    // удаление после него не начнётся, каким бы ни был ответ. Сам вопрос
-    // отмена не закрывает: ожидание операции WinRT ей нечем прервать.
+    // Отмену сценарий проверяет сам, получив ответ: попросили кончиться, пока
+    // вопрос открыт, — удаление после него не начнётся, каким бы ни был ответ.
+    // Сам вопрос отмена не закрывает.
     {
         using namespace wxl::dsl;
 
@@ -162,8 +161,10 @@ detached_task App::deleteSkin(u16_text name) {
             defaultButton = ContentDialogButton::Close,
             onClosed = method(&notices_, &Notices::flush),
         };
-        if (co_await cancellable(dialog.showAsync(), stop_.token()) != ContentDialogResult::Primary) co_return;
+        if (co_await dialog.showAsync() != ContentDialogResult::Primary) co_return;
     }
+
+    if (stop_.is_canceled()) co_return;
 
     if (!ws_.skins.find(name)) co_return;   // реестр мог перемениться, пока спрашивали
 
