@@ -143,10 +143,11 @@ void Autosave::saveSettings() {
 }
 
 void Autosave::saveState() {
-    if (ws_.settings.lastBookGuid.empty() || !view_.isOpen()) return;
+    if (!view_.isOpen()) return;
 
-    // Место чтения — полосы, закладки — мест книги: в файле они одно.
-    writeState(owner_, ws_, ws_.settings.lastBookGuid, places_.stateAt(view_.position().get()));
+    // Место чтения — полосы, закладки и guid — мест книги: в файле они одно, и
+    // книга у них одна — полоса и места меняют её одним шагом.
+    writeState(owner_, ws_, places_.guid(), places_.stateAt(view_.position().get()));
 }
 
 void Autosave::flush() {

@@ -16,6 +16,7 @@ namespace bukvitsa::reader {
 using namespace wxl;
 
 using wxl::async::detached_task;
+using wxl::async::operation_canceled_exception;
 using wxl::async::system_exception;
 
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого
@@ -33,7 +34,7 @@ detached_task App::continueReading() {
         co_return;
     }
 
-    path = co_await ws_.lastBookPath();
+    path = co_await ws_.lastBookPath(stop_.token());
 
     if (path.empty()) {
         chooseBook();
@@ -83,7 +84,7 @@ detached_task App::chooseFolder() {
         // ставит её в конец своих карточек, и полка, привязанная к ним,
         // встаёт одной карточкой больше, а не пересобирается — прогресс,
         // который уже проступил на соседях, остаётся.
-        result = co_await ws_.addFolder(folder);
+        result = co_await ws_.addFolder(folder, stop_.token());
     } catch (const system_exception& failure) {
         notices_.post(noticeOf(L"Не удалось добавить каталог", folder.wstring(), failure));
         co_return;
@@ -117,11 +118,12 @@ detached_task App::warmBook(std::filesystem::path path) {
     Warmed warmed;
 
     try {
-        warmed = co_await ws_.readBook(path);
+        warmed = co_await ws_.readBook(path, stop_.token());
     } catch (std::exception const&) {
         // Молча: читатель ни о чём не просил, и жаловаться ему пока не на что.
         // Файл не прочитался или книга испорчена — он узнает об этом, когда
         // нажмёт, из открытия, которое прочитает её само и скажет поимённо.
+        // Отмена кончает прогрев так же: он никому не обещан.
         warm_.cancel();
         co_return;
     }
@@ -131,11 +133,17 @@ detached_task App::warmBook(std::filesystem::path path) {
     warm_.fill(path, std::move(warmed.book), warmed.fileSize);
 }
 
-/// Порядок здесь — это порядок обязательств. Сначала книга разбирается (и
-/// только если разобралась, старая уступает ей место), потом на диск уходит
-/// место чтения предыдущей, и лишь затем реестр, обложка, настройки и
-/// состояние новой. Каждый `co_await` — это выход в цикл сообщений: окно всё
-/// это время живо, отвечает и перерисовывается.
+/// Порядок здесь — это порядок обязательств. Сначала книга читается и
+/// разбирается (и только если разобралась, старая уступает ей место), потом
+/// рабочее место пишет реестр, обложку и настройки новой и читает её
+/// состояние, и лишь затем книга сменяется на полосе — одним шагом, без
+/// ожиданий: место чтения прежней уходит на диск, места книги и полоса берут
+/// новую. Каждый `co_await` — это выход в цикл сообщений: окно всё это время
+/// живо, отвечает и перерисовывается — и прежняя книга на полосе читается
+/// дальше.
+///
+/// Отмена кончает сценарий на чтении или на открытии в рабочем месте, то есть
+/// всегда до смены книги на полосе: экран остаётся при прежней.
 ///
 /// Две короткие дороги в начале: книга уже открыта (читатель вернулся к ней) —
 /// показать; книга прогрета (warmBook) — взять её из памяти и не трогать диск.
@@ -166,7 +174,9 @@ detached_task App::open(std::filesystem::path path) {
         Warmed read;
 
         try {
-            read = co_await ws_.readBook(path);
+            read = co_await ws_.readBook(path, stop_.token());
+        } catch (const operation_canceled_exception&) {
+            co_return;   // отмена — не сбой: сказать читателю нечего
         } catch (const system_exception& failure) {
             notices_.post(noticeOf(L"Не удалось прочитать файл книги", path.wstring(), failure));
             co_return;
@@ -183,23 +193,23 @@ detached_task App::open(std::filesystem::path path) {
         fileSize = read.fileSize;
     }
 
-    // Место чтения предыдущей книги — на диск сразу: сейчас настройки укажут
-    // на другую, и записывать станет некуда. Место — у полосы, закладки — у
-    // мест книги.
-    if (!ws_.settings.lastBookGuid.empty() && view_.isOpen()) {
-        co_await ws_.saveState(ws_.settings.lastBookGuid, places_.stateAt(view_.position().get()));
-    }
-
     // Реестр, обложка, настройки, состояние — у рабочего места; здесь только
     // то, что видно: книга на полосе, её оглавление и закладки в панели
-    // (панель идёт за списками сама).
-    Opened opened = co_await ws_.openBook(*book, fileSize);
+    // (панель идёт за списками сама). Настройки уже укажут на новую книгу, а
+    // на полосе пока прежняя, и её место пишется под guid её мест — их
+    // открытие не трогает.
+    Opened opened = co_await ws_.openBook(*book, fileSize, stop_.token());
+
+    // Отсюда и до конца — ни одного ожидания: книга сменяется одним шагом.
+    // Место чтения прежней — на диск сейчас, пока её место у полосы, а
+    // закладки и guid у мест книги: дальше их возьмёт новая.
+    autosave_.saveState();
 
     // Оглавление и закладки — новой книги, пока прежняя ещё на полосе: строки
     // прежнего оглавления смотрят в её блоки, и панель должна отпустить их
     // раньше, чем книга уйдёт. Находки прежнего поиска указывают в прежнюю
     // книгу.
-    places_.open(book->blocks(), std::move(opened.state.bookmarks));
+    places_.open(std::move(opened.entry.guid), book->blocks(), std::move(opened.state.bookmarks));
     search_.clear();
 
     view_.open(std::move(book), opened.state.charOffset);
@@ -234,7 +244,7 @@ detached_task App::fillProgress() {
     for (const intrusive_ptr<ShelfCard>& card : cards) {
         if (card->entry.characterCount == 0) continue;   // не открывалась — и читать нечего
 
-        const BookState state = co_await ws_.readState(card->entry.guid);
+        const BookState state = co_await ws_.readState(card->entry.guid, stop_.token());
         card->showState(state);
     }
 }
