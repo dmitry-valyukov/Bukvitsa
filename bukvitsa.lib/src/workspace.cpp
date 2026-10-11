@@ -178,7 +178,12 @@ task<Started> Workspace::start(cancellation_token stop) {
 task<Warmed> Workspace::readBook(std::filesystem::path path, cancellation_token stop) {
     // Не const: байты уходят в книгу перемещением. Разбор — здесь, на потоке
     // вызова: память разбора берётся из STA-пула, а он чужого потока не терпит.
-    std::string bytes = co_await async_file::read_all(poolPath(path), std::move(stop));
+    std::string bytes = co_await async_file::read_all(poolPath(path), stop);
+
+    // Чтение, успевшее кончиться, отвечает байтами, даже если просьба пришла,
+    // пока они ехали обратно: отмену после ответа сценарий спрашивает сам. Разбор
+    // дорогой, а книгу уже не ждут.
+    stop.throw_if_canceled();
 
     Warmed warmed;
     warmed.fileSize = bytes.size();
@@ -345,13 +350,17 @@ task<> Workspace::saveLibrary() {
 
 task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_token stop) {
     // Под отменённым токеном сохранение не начинается — и у правки, где читать
-    // нечего. Токен слушает только чтение снимка, а оно до записей: копия
-    // снимка без строки реестра — файл, на который никто не ссылается, и с
-    // первой записи сохранение доходит до конца.
+    // нечего. Токен слушает только чтение снимка и спрашивается сразу за ним, до
+    // записей: копия снимка без строки реестра — файл, на который никто не
+    // ссылается, и с первой записи сохранение доходит до конца.
     stop.throw_if_canceled();
 
     if (skin.image.empty()) {
-        std::string bytes = co_await async_file::read_all(poolPath(photo), std::move(stop));
+        std::string bytes = co_await async_file::read_all(poolPath(photo), stop);
+
+        // Чтение, успевшее кончиться, отвечает снимком и под отменой, пришедшей
+        // на обратном пути; её сценарий спрашивает сам.
+        stop.throw_if_canceled();
 
         // Расширение — от файла снимка, то есть от файловой системы: имя файла
         // Windows не обязано быть правильным UTF-16, потому чинится.
