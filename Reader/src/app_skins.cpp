@@ -16,7 +16,7 @@ namespace bukvitsa::reader {
 using namespace wxl;
 
 using wxl::async::detached_task;
-using wxl::async::system_exception;
+using wxl::async::last_error;
 
 /* ---------------- три дороги в мастер ---------------- */
 //
@@ -74,7 +74,7 @@ wxl::async::task<bool> App::checkImage(std::filesystem::path image) {
     try {
         if (co_await ws_.isImage(image, stop_.token())) co_return true;
         notices_.post({L"Это не изображение", image.wstring()});
-    } catch (const system_exception& failure) {
+    } catch (const last_error& failure) {
         notices_.post(noticeOf(L"Не удалось открыть изображение", image.wstring(), failure));
     }
     co_return false;
@@ -99,7 +99,7 @@ detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
 
     try {
         co_await ws_.saveSkin(std::move(skin), photo, stop_.token());
-    } catch (const system_exception& failure) {
+    } catch (const last_error& failure) {
         notices_.post(noticeOf(L"Не удалось сохранить обложку", photo.wstring(), failure));
         co_return;
     }
@@ -232,7 +232,7 @@ detached_task App::loadBackdrop(std::filesystem::path file) {
     try {
         std::string bytes = co_await ws_.readBytes(file, stop_.token());
         if (file == backdrop_) view_.setBackdrop(std::move(bytes));
-    } catch (const system_exception&) {
+    } catch (const last_error&) {
     }
 }
 

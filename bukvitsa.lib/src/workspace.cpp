@@ -14,7 +14,7 @@ using wxl::async::async_directory;
 using wxl::async::async_file;
 using wxl::async::cancellation_token;
 using wxl::async::operation_canceled_exception;
-using wxl::async::system_exception;
+using wxl::async::last_error;
 using wxl::async::task;
 
 namespace bukvitsa::reader {
@@ -30,12 +30,12 @@ path poolPath(const std::filesystem::path& system) {
 /// Файла нет — обычное дело для настроек при первом запуске и для состояния
 /// книги, которую ещё не открывали; всё остальное -- настоящая ошибка, у
 /// которой есть имя.
-bool absent(const system_exception& failure) {
-    return failure.err_code() == ERROR_FILE_NOT_FOUND || failure.err_code() == ERROR_PATH_NOT_FOUND;
+bool absent(const last_error& failure) {
+    return failure.code().value() == ERROR_FILE_NOT_FOUND || failure.code().value() == ERROR_PATH_NOT_FOUND;
 }
 
 /// Имя и причина для списка «не прочитались» обхода каталога.
-std::wstring unreadLine(const std::wstring& name, const system_exception& failure) {
+std::wstring unreadLine(const std::wstring& name, const last_error& failure) {
     return name + L" — " + reasonOf(failure);
 }
 
@@ -114,7 +114,7 @@ task<Started> Workspace::start(cancellation_token stop) {
     const auto read = [&](const std::filesystem::path& file, std::wstring whatFailed) -> task<std::string> {
         try {
             co_return co_await async_file::read_all(poolPath(file));
-        } catch (const system_exception& failure) {
+        } catch (const last_error& failure) {
             if (!absent(failure))
                 started.notices.push_back({std::move(whatFailed), file.wstring() + L"\n\n" + reasonOf(failure)});
             co_return std::string{};
@@ -264,7 +264,7 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellatio
         } catch (const operation_canceled_exception&) {
             canceled = std::current_exception();
             break;
-        } catch (const system_exception& failure) {
+        } catch (const last_error& failure) {
             // Файлы, которые не прочитались, называются вызывающему разом в
             // конце: каталог с сотней книг не должен спотыкаться об один файл,
             // но и молчать о нём нельзя.
@@ -322,7 +322,7 @@ task<BookState> Workspace::readState(u16_view guid, cancellation_token stop) {
     // чтения ещё не записывалось. Это не ошибка, а чистый лист.
     try {
         co_return parseBookState(co_await async_file::read_all(poolPath(statePath(guid)), std::move(stop)));
-    } catch (const system_exception& failure) {
+    } catch (const last_error& failure) {
         if (!absent(failure)) throw;
         co_return BookState{};
     }

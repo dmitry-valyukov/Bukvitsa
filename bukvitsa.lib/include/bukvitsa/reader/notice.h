@@ -6,7 +6,7 @@
 #include <exception>
 #include <string>
 
-// Последним: `system_exception` живёт в wxl.async.
+// Последним: `last_error` живёт в wxl.async.
 import wxl.async;
 
 namespace bukvitsa::reader {
@@ -20,7 +20,7 @@ struct Notice {
 /// Причина сбоя операции словами системы, для сообщения читателю. Текст
 /// приходит в кодировке потока (`FormatMessageA`), потому переводится через
 /// CP_ACP.
-std::wstring reasonOf(const wxl::async::system_exception& failure);
+std::wstring reasonOf(const wxl::async::last_error& failure);
 
 /// Сбой сценария словами для читателя: то, что дошло до обработчика сбоев,
 /// потому что сам сценарий ответа на это не знал. Операция с файлом —
@@ -31,6 +31,6 @@ Notice noticeOf(std::exception_ptr error);
 /// Сбой операции с файлом, на который у сценария есть ответ читателю: что
 /// не удалось, с чем (путь; может быть пусто) и почему — причина словами
 /// системы через пустую строку после подробностей.
-Notice noticeOf(std::wstring headline, std::wstring details, const wxl::async::system_exception& failure);
+Notice noticeOf(std::wstring headline, std::wstring details, const wxl::async::last_error& failure);
 
 }  // namespace bukvitsa::reader

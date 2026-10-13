@@ -29,7 +29,7 @@ import wxl.core;
 
 using namespace bukvitsa::reader;
 using bukvitsa::reader::tests::check;
-using wxl::async::system_exception;
+using wxl::async::last_error;
 
 namespace {
 
@@ -45,7 +45,7 @@ std::string bytesOf(const std::filesystem::path& file) {
 void testNoticeOfFailure() {
     std::printf("\n=== слова о сбое сценария ===\n");
 
-    const system_exception failure("ReadFile", static_cast<int>(ERROR_FILE_NOT_FOUND));
+    const last_error failure("ReadFile", static_cast<int>(ERROR_FILE_NOT_FOUND));
     const Notice onFile = noticeOf(std::make_exception_ptr(failure));
     check(onFile.headline == L"Не удалось выполнить операцию с файлом",
           "операция с файлом — заголовок о файле, а не «Ошибка»");

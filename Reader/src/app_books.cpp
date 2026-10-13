@@ -17,7 +17,7 @@ using namespace wxl;
 
 using wxl::async::detached_task;
 using wxl::async::operation_canceled_exception;
-using wxl::async::system_exception;
+using wxl::async::last_error;
 
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого
 /// пути. Протух — спрашиваем реестр по guid; нет и там — читателю нечего
@@ -85,7 +85,7 @@ detached_task App::chooseFolder() {
         // встаёт одной карточкой больше, а не пересобирается — прогресс,
         // который уже проступил на соседях, остаётся.
         result = co_await ws_.addFolder(folder, stop_.token());
-    } catch (const system_exception& failure) {
+    } catch (const last_error& failure) {
         notices_.post(noticeOf(L"Не удалось добавить каталог", folder.wstring(), failure));
         co_return;
     }
@@ -177,7 +177,7 @@ detached_task App::open(std::filesystem::path path) {
             read = co_await ws_.readBook(path, stop_.token());
         } catch (const operation_canceled_exception&) {
             co_return;   // отмена — не сбой: сказать читателю нечего
-        } catch (const system_exception& failure) {
+        } catch (const last_error& failure) {
             notices_.post(noticeOf(L"Не удалось прочитать файл книги", path.wstring(), failure));
             co_return;
         } catch (std::exception const& failure) {

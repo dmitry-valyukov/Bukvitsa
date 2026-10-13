@@ -5,11 +5,11 @@
 import wxl.async;
 import wxl.core;
 
-using wxl::async::system_exception;
+using wxl::async::last_error;
 
 namespace bukvitsa::reader {
 
-std::wstring reasonOf(const system_exception& failure) {
+std::wstring reasonOf(const last_error& failure) {
     const std::string_view narrow = failure.what();
     const int size = static_cast<int>(narrow.size());
 
@@ -23,7 +23,7 @@ std::wstring reasonOf(const system_exception& failure) {
 Notice noticeOf(std::exception_ptr error) {
     try {
         std::rethrow_exception(std::move(error));
-    } catch (const system_exception& failure) {
+    } catch (const last_error& failure) {
         return {L"Не удалось выполнить операцию с файлом", reasonOf(failure)};
     } catch (const std::exception& failure) {
         // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
@@ -35,7 +35,7 @@ Notice noticeOf(std::exception_ptr error) {
     }
 }
 
-Notice noticeOf(std::wstring headline, std::wstring details, const system_exception& failure) {
+Notice noticeOf(std::wstring headline, std::wstring details, const last_error& failure) {
     if (!details.empty()) details += L"\n\n";
     details += reasonOf(failure);
     return {std::move(headline), std::move(details)};
