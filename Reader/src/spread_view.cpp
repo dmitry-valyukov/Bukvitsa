@@ -18,9 +18,10 @@ CompositionSurfaceBrush pageBrush(DrawingSurface const& surface) {
 
 }  // namespace
 
-SpreadView::SpreadView(const Compositor& compositor, const ContainerVisual& scene, Painter painter)
+SpreadView::SpreadView(const Compositor& compositor, const ContainerVisual& scene,
+                       Painter spreadPainter)
     : compositor_(compositor),
-      painter_(std::move(painter)),
+      spreadPainter_(std::move(spreadPainter)),
       leftPageVisual_(compositor.createSpriteVisual()),
       rightPageVisual_(compositor.createSpriteVisual()) {
     // Две страницы разворота — на сцене под листами, каждая в своей половине
@@ -46,10 +47,10 @@ SpreadView::SpreadView(const Compositor& compositor, const ContainerVisual& scen
     ExpressionAnimation const rightPageInset =
         compositor_.createExpressionAnimation(L"Floor(scene.Size.X * 0.5)");
     rightPageInset.setReferenceParameter(L"scene", scene);
-    for (size_t side = 0; side < 2; ++side) {
-        SpriteVisual const& sideVisual = pageVisual(side);
+    for (size_t pageSide = 0; pageSide < 2; ++pageSide) {
+        SpriteVisual const& sideVisual = pageVisual(pageSide);
         InsetClip sideCrop = compositor_.createInsetClip();
-        if (side == kLeftPage) {
+        if (pageSide == kLeftPage) {
             sideCrop.startAnimation(L"RightInset", leftPageInset);
         } else {
             sideCrop.startAnimation(L"LeftInset", rightPageInset);
@@ -62,13 +63,13 @@ SpreadView::SpreadView(const Compositor& compositor, const ContainerVisual& scen
 }
 
 void SpreadView::resize(SizeInt32 pixels) {
-    pixels_ = pixels;
-    if (rasters_.empty()) {
+    rasterPixels_ = pixels;
+    if (rasterPool_.empty()) {
         settledRaster_ = addRaster();
         return;
     }
-    for (std::optional<DrawingSurface>& raster : rasters_)
-        if (raster) raster->resize(pixels);
+    for (std::optional<DrawingSurface>& poolRaster : rasterPool_)
+        if (poolRaster) poolRaster->resize(pixels);
 }
 
 void SpreadView::show(bool shown) {
@@ -77,55 +78,55 @@ void SpreadView::show(bool shown) {
     rightPageVisual_.isVisible(shown);
 }
 
-void SpreadView::redraw(RasterId target) {
-    raster(target).draw(painter_);
+void SpreadView::redraw(RasterId targetRaster) {
+    raster(targetRaster).draw(spreadPainter_);
 
     // Обе страницы — на осевший разворот. В чтении: до входа страницы скрыты,
     // а задником окна владеет заставка стартового экрана. Одна кисть на обе
     // страницы: растр один, крой у каждой свой. Кисть DrawingSurface на каждый
     // вызов новая, поверхность за ней та же.
-    if (target != settledRaster_ || !shown_) return;
+    if (targetRaster != settledRaster_ || !shown_) return;
     CompositionSurfaceBrush const settledBrush = pageBrush(raster(settledRaster_));
     leftPageVisual_.brush(settledBrush);
     rightPageVisual_.brush(settledBrush);
     pageRasters_ = {settledRaster_, settledRaster_};
 }
 
-const DrawingSurface& SpreadView::raster(RasterId raster) const {
+const DrawingSurface& SpreadView::raster(RasterId poolRaster) const {
     // Номер без растра — ошибка проводки: рисовать или одевать было бы не во
     // что, а молча взять другой растр значило бы показать не тот разворот.
-    if (raster >= rasters_.size() || !rasters_[raster])
+    if (poolRaster >= rasterPool_.size() || !rasterPool_[poolRaster])
         core::abort("SpreadView: растра с этим номером нет");
-    return *rasters_[raster];
+    return *rasterPool_[poolRaster];
 }
 
-const SpriteVisual& SpreadView::pageVisual(size_t side) const {
-    return side == kLeftPage ? leftPageVisual_ : rightPageVisual_;
+const SpriteVisual& SpreadView::pageVisual(size_t pageSide) const {
+    return pageSide == kLeftPage ? leftPageVisual_ : rightPageVisual_;
 }
 
-void SpreadView::dressPage(size_t side, RasterId raster) {
-    pageVisual(side).brush(pageBrush(this->raster(raster)));
-    pageRasters_[side] = raster;
+void SpreadView::dressPage(size_t pageSide, RasterId wornRaster) {
+    pageVisual(pageSide).brush(pageBrush(raster(wornRaster)));
+    pageRasters_[pageSide] = wornRaster;
 }
 
 void SpreadView::dropSpareRasters() {
-    auto const none = [](RasterId) { return false; };
-    while (spareRasters(none) > 0) dropSpareRaster(none);
+    auto const noneInFlight = [](RasterId) { return false; };
+    while (spareRasters(noneInFlight) > 0) dropSpareRaster(noneInFlight);
 }
 
-bool SpreadView::worn(RasterId raster) const {
-    return raster == settledRaster_ || raster == pageRasters_[kLeftPage] ||
-           raster == pageRasters_[kRightPage];
+bool SpreadView::worn(RasterId poolRaster) const {
+    return poolRaster == settledRaster_ || poolRaster == pageRasters_[kLeftPage] ||
+           poolRaster == pageRasters_[kRightPage];
 }
 
 SpreadView::RasterId SpreadView::addRaster() {
-    for (RasterId raster = 0; raster < rasters_.size(); ++raster)
-        if (!rasters_[raster]) {
-            rasters_[raster].emplace(compositor_, pixels_);
-            return raster;
+    for (RasterId poolRaster = 0; poolRaster < rasterPool_.size(); ++poolRaster)
+        if (!rasterPool_[poolRaster]) {
+            rasterPool_[poolRaster].emplace(compositor_, rasterPixels_);
+            return poolRaster;
         }
-    rasters_.emplace_back(std::in_place, compositor_, pixels_);
-    return static_cast<RasterId>(rasters_.size() - 1);
+    rasterPool_.emplace_back(std::in_place, compositor_, rasterPixels_);
+    return static_cast<RasterId>(rasterPool_.size() - 1);
 }
 
 }  // namespace bukvitsa::reader

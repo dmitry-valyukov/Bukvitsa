@@ -47,7 +47,7 @@ public:
     virtual SpreadView::RasterId drawTarget() const = 0;
 
     /// Тени переворота — тоном этой темы.
-    virtual void tintShadows(const D2D1_COLOR_F& hue) = 0;
+    virtual void tintShadows(const D2D1_COLOR_F& shadowHue) = 0;
 };
 
 /// Переворот без анимации: разворот сменяется разом. Полоса и так делает всё,
@@ -56,16 +56,16 @@ public:
 /// ничего нет, конечное состояние наступает сразу, растр нужен один.
 class InstantTurnAnimation final : public TurnAnimation {
 public:
-    explicit InstantTurnAnimation(const SpreadView& spread) : spread_(spread) {}
+    explicit InstantTurnAnimation(const SpreadView& spreadView) : spreadView_(spreadView) {}
 
     void turnStarting(bool) override {}
     void turnStarted(bool) override {}
     void finishAll() override {}
-    SpreadView::RasterId drawTarget() const override { return spread_.settledRaster(); }
+    SpreadView::RasterId drawTarget() const override { return spreadView_.settledRaster(); }
     void tintShadows(const D2D1_COLOR_F&) override {}
 
 private:
-    const SpreadView& spread_;
+    const SpreadView& spreadView_;
 };
 
 }  // namespace bukvitsa::reader

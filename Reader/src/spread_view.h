@@ -84,7 +84,7 @@ public:
     /// Ставит обе страницы на сцену под всем, что на ней будет, скрытыми: их
     /// покажет show(true).
     SpreadView(const wxl::Compositor& compositor, const wxl::ContainerVisual& scene,
-               Painter painter);
+               Painter spreadPainter);
 
     /// Мера полосы в пикселях. Первая заводит осевший растр; дальше растры
     /// меняют размер, а не пересоздаются: кисти, которые их уже показывают
@@ -92,7 +92,7 @@ public:
     void resize(wxl::SizeInt32 pixels);
 
     /// Есть ли куда рисовать: мера уже пришла.
-    bool measured() const { return !rasters_.empty(); }
+    bool measured() const { return !rasterPool_.empty(); }
 
     /// Страницы на экране — или нет: вне чтения их быть видно не должно.
     /// Пока они скрыты, их не одевают — ни redraw, ни посадка листа: одевает
@@ -104,7 +104,7 @@ public:
     /// показаны — обе одеваются в него; любой другой (растр самого нового
     /// листа в полёте книжного переворота) страниц не трогает: неперелистываемой
     /// до посадки листа положено старое.
-    void redraw(RasterId target);
+    void redraw(RasterId targetRaster);
 
     /// Осевший разворот — растр, который носят обе страницы в покое; в полёте
     /// книжного переворота его носит неперелистываемая страница.
@@ -112,35 +112,35 @@ public:
 
     /// Осевшим становится этот растр — без отрисовки и без одевания: страницы
     /// одевает тот, кто знает, какую пора (посадка листа, redraw).
-    void settleOn(RasterId raster) { settledRaster_ = raster; }
+    void settleOn(RasterId landingRaster) { settledRaster_ = landingRaster; }
 
-    const wxl::DrawingSurface& raster(RasterId raster) const;
+    const wxl::DrawingSurface& raster(RasterId poolRaster) const;
 
     /// Страница-визуал стороны разворота и растр, который она носит.
-    const wxl::SpriteVisual& pageVisual(size_t side) const;
-    RasterId pageRaster(size_t side) const { return pageRasters_[side]; }
+    const wxl::SpriteVisual& pageVisual(size_t pageSide) const;
+    RasterId pageRaster(size_t pageSide) const { return pageRasters_[pageSide]; }
 
     /// Одевает страницу в растр: кисть растянута на весь визуал, крой у
     /// страницы свой.
-    void dressPage(size_t side, RasterId raster);
+    void dressPage(size_t pageSide, RasterId wornRaster);
 
     /// Свободный растр под переворот: его не носит ни страница, ни осевший
-    /// разворот, ни летящие листы — о них знает `held(raster)`. Свободного нет
-    /// — заводится новый, в нынешней мере.
+    /// разворот, ни летящие листы — о них знает `heldInFlight(poolRaster)`.
+    /// Свободного нет — заводится новый, в нынешней мере.
     template <class Held>
-    RasterId acquireRaster(const Held& held) {
-        for (RasterId raster = 0; raster < rasters_.size(); ++raster)
-            if (spare(raster, held)) return raster;
+    RasterId acquireRaster(const Held& heldInFlight) {
+        for (RasterId poolRaster = 0; poolRaster < rasterPool_.size(); ++poolRaster)
+            if (spare(poolRaster, heldInFlight)) return poolRaster;
         return addRaster();
     }
 
     /// Сколько свободных растров держит пул.
     template <class Held>
-    size_t spareRasters(const Held& held) const {
-        size_t count = 0;
-        for (RasterId raster = 0; raster < rasters_.size(); ++raster)
-            if (spare(raster, held)) ++count;
-        return count;
+    size_t spareRasters(const Held& heldInFlight) const {
+        size_t spareCount = 0;
+        for (RasterId poolRaster = 0; poolRaster < rasterPool_.size(); ++poolRaster)
+            if (spare(poolRaster, heldInFlight)) ++spareCount;
+        return spareCount;
     }
 
     /// Отпускает один свободный растр — последний: с ним уходит поверхность в
@@ -148,10 +148,10 @@ public:
     /// и летящие листы; у свободного их нет, и поверхность не переживает его
     /// ничьей кистью. Номера остальных не двигаются.
     template <class Held>
-    void dropSpareRaster(const Held& held) {
-        for (RasterId raster = static_cast<RasterId>(rasters_.size()); raster-- > 0;)
-            if (spare(raster, held)) {
-                rasters_[raster].reset();
+    void dropSpareRaster(const Held& heldInFlight) {
+        for (RasterId poolRaster = static_cast<RasterId>(rasterPool_.size()); poolRaster-- > 0;)
+            if (spare(poolRaster, heldInFlight)) {
+                rasterPool_[poolRaster].reset();
                 return;
             }
     }
@@ -162,18 +162,19 @@ public:
 
 private:
     /// Носят ли растр страницы или осевший разворот.
-    bool worn(RasterId raster) const;
+    bool worn(RasterId poolRaster) const;
 
     template <class Held>
-    bool spare(RasterId raster, const Held& held) const {
-        return rasters_[raster].has_value() && !worn(raster) && !held(raster);
+    bool spare(RasterId poolRaster, const Held& heldInFlight) const {
+        return rasterPool_[poolRaster].has_value() && !worn(poolRaster) &&
+               !heldInFlight(poolRaster);
     }
 
     /// Новый растр в нынешней мере — на место отпущенного, если такое есть.
     RasterId addRaster();
 
     wxl::Compositor compositor_;
-    Painter painter_;
+    Painter spreadPainter_;
 
     /// Две страницы разворота — два визуала на сцене окна, левая и правая
     /// половины окна. Каждая носит кисть растра того разворота, что
@@ -193,10 +194,10 @@ private:
     /// Пул растров разворота (DrawingSurface без пустого конструктора — в
     /// optional). Пустое место — отпущенный растр: номера живых не двигаются,
     /// а новый встанет на его место.
-    std::vector<std::optional<wxl::DrawingSurface>> rasters_;
+    std::vector<std::optional<wxl::DrawingSurface>> rasterPool_;
 
     RasterId settledRaster_ = kNoRaster;
-    wxl::SizeInt32 pixels_{};
+    wxl::SizeInt32 rasterPixels_{};
     bool shown_ = false;
 };
 

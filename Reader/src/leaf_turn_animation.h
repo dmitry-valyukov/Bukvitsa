@@ -57,8 +57,8 @@ class LeafTurnAnimation final : public TurnAnimation {
 public:
     /// @param leafLayer контейнер листов над страницами: листы вешаются в него
     ///        и прячутся вместе с ним.
-    /// @param queue очередь потока окна: на ней таймеры отпускания пула.
-    /// @param spread разворот: его страницы перелистываются, его растры
+    /// @param windowQueue очередь потока окна: на ней таймеры отпускания пула.
+    /// @param spreadView разворот: его страницы перелистываются, его растры
     ///        листы носят.
     /// @param flow поток страниц: мера полосы, число колонок и корешок.
     /// @param readingScope источник чтения полосы: серия переворотов
@@ -67,8 +67,8 @@ public:
     /// @param stripStop токен полосы: от него — свой источник отпускания пула;
     ///        отменяет его сама стратегия, умирая, а полоса — вместе со всем.
     LeafTurnAnimation(const wxl::Compositor& compositor, const wxl::ContainerVisual& leafLayer,
-                      const wxl::DispatcherQueue& queue, SpreadView& spread, const PageFlow& flow,
-                      const wxl::async::cancellation_source& readingScope,
+                      const wxl::DispatcherQueue& windowQueue, SpreadView& spreadView,
+                      const PageFlow& flow, const wxl::async::cancellation_source& readingScope,
                       wxl::async::cancellation_token stripStop);
     ~LeafTurnAnimation() override;
 
@@ -76,7 +76,7 @@ public:
     void turnStarted(bool forward) override;
     void finishAll() override;
     SpreadView::RasterId drawTarget() const override;
-    void tintShadows(const D2D1_COLOR_F& hue) override;
+    void tintShadows(const D2D1_COLOR_F& shadowHue) override;
 
 private:
     /// Лист переворота и всё, что ему нужно, чтобы перевернуться. Плоское
@@ -108,17 +108,17 @@ private:
         void fit(float width, float height) const;
 
         /// Тени — тоном темы; прозрачность у каждой своя.
-        void tint(const D2D1_COLOR_F& hue) const;
+        void tint(const D2D1_COLOR_F& shadowHue) const;
 
         /// Подъём к глазу (книжное листание): трапеции на обе страницы листа
-        /// — от общего корешка `hinge` к их свободным краям. Выражения
+        /// — от общего корешка `spineHinge` к их свободным краям. Выражения
         /// записываются в запущенное, как и всякая анимация (start).
-        void lift(float hinge, float outgoingFreeEdge, float incomingFreeEdge, float height);
+        void lift(float spineHinge, float outgoingFreeEdge, float incomingFreeEdge, float height);
 
         /// Пускает анимацию свойства и записывает, что пустил: конец
         /// переворота (stop) снимет её сам.
-        void start(const wxl::CompositionObject& target, const wchar_t* property,
-                   const wxl::CompositionAnimation& animation);
+        void start(const wxl::CompositionObject& animatedObject, const wchar_t* propertyName,
+                   const wxl::CompositionAnimation& propertyAnimation);
 
         /// Конец переворота: снимает всё, что запустил переворот, и приводит
         /// лист в покой.
@@ -162,11 +162,11 @@ private:
         /// Анимация или выражение, которые запустил идущий переворот: на чём
         /// и какое свойство.
         struct StartedAnimation {
-            wxl::CompositionObject target;
-            const wchar_t* property;
+            wxl::CompositionObject animatedObject;
+            const wchar_t* propertyName;
         };
 
-        std::vector<StartedAnimation> started_;
+        std::vector<StartedAnimation> startedAnimations_;
         wxl::CompositionBrush restBrush_;
     };
 
@@ -175,12 +175,12 @@ private:
     /// конца.
     struct Turn {
         size_t leafIndex = 0;   ///< лист в leafPool_ — номер, а не указатель: пул растёт
-        bool forward = false;
+        bool turnsForward = false;
         bool bookMode = false;   ///< книга (две колонки) или газета
 
         /// Дочерний от источника серии: его отменяют вместе с серией или одного
         /// (добивание старейшего), и ожидание конца пакета кончается отменой.
-        wxl::async::cancellation_source stop;
+        wxl::async::cancellation_source turnStop;
 
         /// Растры, которые лист носит в полёте; пока он летит, они не
         /// свободны. В газете уходящий — бывший осевший: старый разворот уже
@@ -206,7 +206,7 @@ private:
     SpreadView::RasterId acquireRaster();
 
     /// Носит ли этот растр какой-нибудь идущий переворот.
-    bool rasterInFlight(SpreadView::RasterId raster) const;
+    bool rasterInFlight(SpreadView::RasterId poolRaster) const;
 
     /// Номер в liveTurns_ переворота, которому служит лист. Его нет — нарушен
     /// инвариант (корутина неотменённого переворота всегда находит свой), и
@@ -261,7 +261,7 @@ private:
     /// котором он стоит, обязан жить, пока жив кадр.
     class ReleasePauses final : public sta_refcounted {
     public:
-        ReleasePauses(const wxl::DispatcherQueue& queue,
+        ReleasePauses(const wxl::DispatcherQueue& windowQueue,
                       wxl::async::cancellation_token releaseToken);
 
         wxl::WaitableTimer firstPause;
@@ -293,7 +293,7 @@ private:
 
     wxl::Compositor compositor_;
     wxl::ContainerVisual leafLayer_;   ///< слой листов полосы — над страницами
-    SpreadView& spread_;
+    SpreadView& spreadView_;
     const PageFlow& flow_;
     const wxl::async::cancellation_source& readingScope_;
 
