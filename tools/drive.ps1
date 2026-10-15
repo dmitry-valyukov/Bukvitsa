@@ -30,6 +30,35 @@
 #                     за ним ловит просвет растяжки — то, что нарисовано до
 #                     того, как остров XAML успел переверстаться
 #   title             заголовок окна
+#
+# Команды быстрых событий — для того, что длится десятки миллисекунд (досчёт
+# главы, летящий лист): после них драйвер не ждёт, а штатный снимок с его
+# подъёмом окна идёт ~200 мс и такое пропускает.
+#   stamp [метка]     напечатать время с миллисекундами — отметка в выводе
+#   clicknow <x> <y>  щелчок без паузы после: указатель подводится заранее
+#                     (WinUI нужно движение), нажатие — и сразу следующая команда
+#   cwheelat <x> <y> <деления>
+#                     Ctrl+колесо в точке: указатель, Ctrl через keybd_event,
+#                     деления (отрицательные — к себе), Ctrl отпускается; без
+#                     пауз после. SendKeys тут не годится: Ctrl у колеса
+#                     читается из состояния клавиатуры, а не из нажатия
+#   closenow <x> <y>  щелчок по точке заголовка (крестик) одним махом и
+#                     ожидание выхода: время от щелчка, код возврата
+#   exitwait          ожидание выхода, когда приложение закрывается само
+#   burst <файл> <кадров> <мс> [x y ш в]
+#                     серия снимков полосы окна подряд, через <мс> (0 — так
+#                     часто, как отдаёт экран, ~16 мс); по умолчанию — строка
+#                     колонцифры внизу по центру. Повторяющиеся подряд кадры
+#                     выбрасываются, оставшиеся ложатся в один PNG столбиком с
+#                     метками +мс от начала серии
+#   hold <клавиша> <мс>
+#                     зажать клавишу: нажатие, через 500 мс автоповтор каждые
+#                     33 мс, отпускание по истечении <мс>; клавиша — pgdn,
+#                     pgup, left, right, up, down, space, home, end или код
+#                     VK (0x22)
+#   mem <мс> <период> <файл>
+#                     память процесса каждые <период> мс в течение <мс>:
+#                     CSV (мс, Private, WorkingSet в байтах) и итог min/max
 
 [CmdletBinding()]
 param(
@@ -39,7 +68,12 @@ param(
     [string]$Do = 'wait 1500; shot shot.png',
     [string]$ShotDir = '.',
     [switch]$Keep,
-    [int]$LaunchTimeoutSec = 30
+    [int]$LaunchTimeoutSec = 30,
+
+    # stderr приложения — в этот файл. Туда же идут отчёты CRT в Debug, в том
+    # числе сторож кадров на выходе: пустой файл — выход без жалоб. В конце
+    # прогона печатаются код возврата и размер файла.
+    [string]$ErrFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,6 +92,7 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr GetLastActivePopup(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint f, UIntPtr e);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 }
 '@
@@ -84,7 +119,16 @@ if ($DataDir) {
     New-Item -ItemType Directory -Force $DataDir | Out-Null
     $env:BUKVITSA_DATA = $DataDir
 }
-try { $process = Start-Process @startArgs }
+if ($ErrFile) {
+    if (-not [System.IO.Path]::IsPathRooted($ErrFile)) { $ErrFile = Join-Path $ShotDir $ErrFile }
+    $startArgs.RedirectStandardError = $ErrFile
+}
+try {
+    $process = Start-Process @startArgs
+    # Без раннего обращения к Handle процесс, запущенный Start-Process, после
+    # выхода отдаёт пустой ExitCode: .NET не успевает взять его дескриптор.
+    $null = $process.Handle
+}
 finally { if ($DataDir) { $env:BUKVITSA_DATA = $dataWas } }
 
 # MainWindowHandle появляется не сразу и, что важнее, появляется раньше, чем
@@ -174,6 +218,77 @@ function Save-Shot([string]$file) {
     Write-Output "shot: $path ($($rect.W)x$($rect.H))"
 }
 
+function Get-Stamp { [DateTime]::Now.ToString('HH:mm:ss.fff') }
+
+# Выход ждётся по самому процессу: время — от вызова, код — его собственный.
+function Wait-Exit([System.Diagnostics.Stopwatch]$watch, [string]$what) {
+    $exited = $process.WaitForExit(20000)
+    $watch.Stop()
+    $code = if ($exited) { '{0} (0x{0:X8})' -f $process.ExitCode } else { 'нет: процесс жив через 20 с' }
+    Write-Output "exit: $($watch.ElapsedMilliseconds) мс $what, код $code"
+}
+
+function Save-Burst([string]$file, [int]$count, [int]$gap, [string[]]$area) {
+    # Подъёма окна внутри серии нет: он стоит 150 мс, а серия ловит то, что
+    # длится десятки. Окно уже поднято предыдущими командами.
+    $r = Get-WindowRect
+    if ($area.Count -ge 4) {
+        $x = $r.X + [int]$area[0]; $y = $r.Y + [int]$area[1]; $w = [int]$area[2]; $h = [int]$area[3]
+    } else {
+        $w = [Math]::Min(560, $r.W); $h = 30
+        $x = $r.X + [int](($r.W - $w) / 2); $y = $r.Y + $r.H - 46
+    }
+
+    $frames = New-Object System.Collections.Generic.List[object]
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $started = Get-Stamp
+    for ($k = 0; $k -lt $count; $k++) {
+        $bitmap = New-Object System.Drawing.Bitmap $w, $h
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size $w, $h))
+        $graphics.Dispose()
+        $frames.Add(@($watch.ElapsedMilliseconds, $bitmap))
+        if ($gap -gt 0) { Start-Sleep -Milliseconds $gap }
+    }
+    $span = $watch.ElapsedMilliseconds
+
+    # Кадр, повторяющий предыдущий, ничего не сообщает: остаются смены.
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $kept = New-Object System.Collections.Generic.List[object]
+    $previous = ''
+    foreach ($frame in $frames) {
+        $stream = New-Object System.IO.MemoryStream
+        $frame[1].Save($stream, [System.Drawing.Imaging.ImageFormat]::Bmp)
+        $key = [Convert]::ToBase64String($md5.ComputeHash($stream.ToArray()))
+        $stream.Dispose()
+        if ($key -ne $previous) { $kept.Add($frame) } else { $frame[1].Dispose() }
+        $previous = $key
+    }
+
+    $label = 60
+    $sheet = New-Object System.Drawing.Bitmap ($w + $label), ($h * $kept.Count)
+    $graphics = [System.Drawing.Graphics]::FromImage($sheet)
+    $graphics.Clear([System.Drawing.Color]::White)
+    $font = New-Object System.Drawing.Font 'Consolas', 9
+    for ($k = 0; $k -lt $kept.Count; $k++) {
+        $graphics.DrawImage($kept[$k][1], $label, $k * $h)
+        $graphics.DrawString("+$($kept[$k][0])", $font, [System.Drawing.Brushes]::Red, 1, ($k * $h + [Math]::Max(0, ($h - 14) / 2)))
+        $kept[$k][1].Dispose()
+    }
+    $graphics.Dispose()
+    $path = Join-Path $ShotDir $file
+    $sheet.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $sheet.Dispose()
+    Write-Output "burst: $path с $started, $span мс, кадров $count, смен $($kept.Count)"
+}
+
+function Get-VirtualKey([string]$name) {
+    $keys = @{ pgdn = 0x22; pgup = 0x21; left = 0x25; up = 0x26; right = 0x27; down = 0x28
+               space = 0x20; home = 0x24; end = 0x23 }
+    if ($keys.ContainsKey($name.ToLower())) { return [byte]$keys[$name.ToLower()] }
+    return [byte][Convert]::ToInt32($name, 16)
+}
+
 try {
     foreach ($command in ($Do -split ';')) {
         $parts = $command.Trim() -split '\s+', 2
@@ -253,6 +368,95 @@ try {
                 [Win]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)   # RIGHTUP
                 Start-Sleep -Milliseconds 150
             }
+            'stamp' { Write-Output "stamp $rest $(Get-Stamp)" }
+            'clicknow' {
+                Raise-Window
+                $xy = $rest -split '\s+'
+                $r = Get-WindowRect
+                Move-Pointer ($r.X + [int]$xy[0]) ($r.Y + [int]$xy[1])
+                Start-Sleep -Milliseconds 120
+                Write-Output "clicknow $(Get-Stamp)"
+                [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
+                [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
+            }
+            'cwheelat' {
+                $xy = $rest -split '\s+'
+                $r = Get-WindowRect
+                Move-Pointer ($r.X + [int]$xy[0]) ($r.Y + [int]$xy[1])
+                Write-Output "cwheelat $(Get-Stamp)"
+                # Ctrl держится 15 мс до и после колеса: без запаса деление
+                # иногда приходит раньше Ctrl и листает вместо кегля.
+                [Win]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)          # VK_CONTROL вниз
+                Start-Sleep -Milliseconds 15
+                $notches = [int]$xy[2]
+                $delta = if ($notches -lt 0) { [uint32]::MaxValue - 119 } else { [uint32]120 }   # WHEEL_DELTA со знаком
+                for ($k = 0; $k -lt [Math]::Abs($notches); $k++) {
+                    [Win]::mouse_event(0x0800, 0, 0, $delta, [UIntPtr]::Zero)   # WHEEL
+                }
+                Start-Sleep -Milliseconds 15
+                [Win]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)          # VK_CONTROL вверх
+            }
+            'closenow' {
+                # Без подъёма окна и без паузы между движением и нажатием:
+                # кнопки заголовка рисует Windows, наведения им не нужно.
+                $xy = $rest -split '\s+'
+                $r = Get-WindowRect
+                Move-Pointer ($r.X + [int]$xy[0]) ($r.Y + [int]$xy[1])
+                Start-Sleep -Milliseconds 15
+                $watch = [System.Diagnostics.Stopwatch]::StartNew()
+                Write-Output "closenow $(Get-Stamp)"
+                [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
+                [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
+                Wait-Exit $watch 'после щелчка'
+            }
+            'exitwait' { Wait-Exit ([System.Diagnostics.Stopwatch]::StartNew()) 'ожидания' }
+            'burst' {
+                $b = $rest -split '\s+'
+                Save-Burst $b[0] ([int]$b[1]) ([int]$b[2]) ($b | Select-Object -Skip 3)
+            }
+            'hold' {
+                # Своего автоповтора у впрыснутого нажатия нет — его делает
+                # клавиатура. Повтор — то же нажатие без отпускания, как шлёт
+                # драйвер: задержка 500 мс, затем ~30 в секунду.
+                $h = $rest -split '\s+'
+                $vk = Get-VirtualKey $h[0]
+                $total = [int]$h[1]
+                $flags = if ($vk -in 0x21..0x28) { 1 } else { 0 }   # KEYEVENTF_EXTENDEDKEY у стрелок и листания
+                $watch = [System.Diagnostics.Stopwatch]::StartNew()
+                $repeats = 0
+                Write-Output "hold $($h[0]) $(Get-Stamp)"
+                [Win]::keybd_event($vk, 0, $flags, [UIntPtr]::Zero)
+                Start-Sleep -Milliseconds ([Math]::Min(500, $total))
+                while ($watch.ElapsedMilliseconds -lt $total) {
+                    [Win]::keybd_event($vk, 0, $flags, [UIntPtr]::Zero)
+                    $repeats++
+                    Start-Sleep -Milliseconds 33
+                }
+                [Win]::keybd_event($vk, 0, $flags -bor 2, [UIntPtr]::Zero)   # KEYEVENTF_KEYUP
+                Write-Output "hold: $($watch.ElapsedMilliseconds) мс, повторов $repeats"
+            }
+            'mem' {
+                $m = $rest -split '\s+'
+                $total = [int]$m[0]; $period = [int]$m[1]
+                $path = Join-Path $ShotDir $m[2]
+                $lines = New-Object System.Collections.Generic.List[string]
+                $lines.Add('ms,private,workingset')
+                $samples = New-Object System.Collections.Generic.List[object]
+                $watch = [System.Diagnostics.Stopwatch]::StartNew()
+                while ($watch.ElapsedMilliseconds -le $total) {
+                    Assert-Alive
+                    $at = $watch.ElapsedMilliseconds
+                    $lines.Add("$at,$($process.PrivateMemorySize64),$($process.WorkingSet64)")
+                    $samples.Add(@($process.PrivateMemorySize64, $process.WorkingSet64))
+                    Start-Sleep -Milliseconds $period
+                }
+                Set-Content -Path $path -Value $lines -Encoding utf8
+                $mb = { param($v) '{0:N1}' -f ($v / 1MB) }
+                $private = $samples | ForEach-Object { $_[0] } | Measure-Object -Minimum -Maximum
+                $working = $samples | ForEach-Object { $_[1] } | Measure-Object -Minimum -Maximum
+                Write-Output ("mem: $path, замеров $($samples.Count); Private {0}–{1} МБ, WS {2}–{3} МБ" -f `
+                    (& $mb $private.Minimum), (& $mb $private.Maximum), (& $mb $working.Minimum), (& $mb $working.Maximum))
+            }
             default { throw "Неизвестная команда: $name" }
         }
     }
@@ -270,4 +474,10 @@ finally {
             if (-not $process.WaitForExit(3000)) { $process.Kill() }
         }
     } catch {}
+
+    # Итог для прогонов со stderr: жалобы CRT и сторожа видны размером файла.
+    if ($ErrFile -and $process.HasExited) {
+        $bytes = if (Test-Path $ErrFile) { (Get-Item $ErrFile).Length } else { 0 }
+        Write-Output ('end: код {0} (0x{0:X8}), stderr {1} байт' -f $process.ExitCode, $bytes)
+    }
 }
