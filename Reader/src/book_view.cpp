@@ -82,11 +82,16 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
       // на сцене: ей нужен композитор острова, а не окна.
       note_(window.chromeCompositor()),
       stop_(std::move(parent)),
+      readingScope_(stop_.token()),
       // Анимация листания — настройка читателя, и меняется на ходу: флажок
       // панели привязан к тому же полю. Поле живёт дольше полосы — слушателя
       // полоса снимает за собой.
       animateTurnsWatch_(
           settings_.animateTurns.on_change(method(this, &BookView::animateTurnsChanged))) {
+    // Полоса ещё не экран: под источником чтения ждать нечему, пока
+    // setActive(true) не заведёт новый.
+    readingScope_.cancel();
+
     buildTree();
 
     // Стратегия переворота — до первой меры: мера доводит до конца всё, что
@@ -342,7 +347,7 @@ void BookView::open(not_null<Book> book, uint32_t charOffset) {
 
 void BookView::setActive(bool active) {
     // Показаны страницы или нет, решается первым: при уходе посадка листа их
-    // уже не одевает, при входе их одевает redraw.
+    // уже не одевает, при входе их одевает посадка и redraw.
     spread_.show(active);
 
     // Страница в чтении — две страницы-визуала на сцене окна (spread_), а
@@ -350,14 +355,33 @@ void BookView::setActive(bool active) {
     // нечего. Входя, снимаем кисть и показываем страницы тем же кадром, что
     // redraw рисует разворот и одевает их. Уходя — наоборот: страницы
     // прячутся, а задник на промежуток до фона следующего экрана (заставка
-    // приходит асинхронно) берёт осевший разворот сам — иначе окно сквозило бы
-    // на стол.
+    // приходит асинхронно) берёт нынешний разворот сам — иначе окно сквозило
+    // бы на стол.
     if (active) {
+        // Новое чтение — новый источник: прежний отменён уходом, а если полоса
+        // уже была экраном (книгу открыли поверх), отменяется здесь; отменённый
+        // источник не переиспользуется.
+        readingScope_.cancel();
+        readingScope_ = async::cancellation_source{stop_.token()};
+
+        // Перевороты, брошенные уходом, садятся теперь — первым делом: осевшим
+        // становится разворот самого нового, неперелистываемая страница
+        // одевается в него, листы — в покой, и заводится отпускание пула.
+        turnAnimation_->finishAll();
+
         window_.clearBackground();
         redraw();
-    } else if (spread_.measured()) {
-        turnAnimation_->finishAll();   // летящие садятся: заднику положен нынешний разворот, а не прошлый
-        window_.background(spread_.raster(turnAnimation_->drawTarget()));
+    } else {
+        // Уход из чтения — отмена его источника, и только: ожидания концов
+        // переворотов кончатся ходом очереди, а корутины ничего не тронут.
+        // Листы досядут при следующем входе — до него их никто не видит.
+        readingScope_.cancel();
+
+        // Задник берёт растр нынешнего разворота — там, где он живёт сейчас
+        // (в полёте книжного листа — растр самого нового листа): кисть
+        // смотрит на растр, а не на указатель осевшего, и поздняя посадка её
+        // не меняет — после неё осевшим станет тот же растр.
+        if (spread_.measured()) window_.background(spread_.raster(turnAnimation_->drawTarget()));
     }
 
     // Листы в покое не нужны: разворот видно страницами. Они выходят на сцену
@@ -409,7 +433,7 @@ std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     std::unique_ptr<TurnAnimation> chosenAnimation;
     if (settings_.animateTurns.get()) {
         chosenAnimation = std::make_unique<LeafTurnAnimation>(
-            compositor_, leafLayer_, window_.dispatcherQueue(), spread_, flow_, stop_.token());
+            compositor_, leafLayer_, window_.dispatcherQueue(), spread_, flow_, readingScope_);
     } else {
         chosenAnimation = std::make_unique<InstantTurnAnimation>(spread_);
     }
