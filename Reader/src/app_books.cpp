@@ -21,7 +21,7 @@ using wxl::async::cancellation_source;
 using wxl::async::cancellation_token;
 using wxl::async::detached_task;
 using wxl::async::operation_canceled_exception;
-using wxl::async::system_exception;
+using wxl::async::last_error;
 using wxl::async::task;
 
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого
@@ -117,7 +117,7 @@ detached_task App::chooseFolder() {
         // встаёт одной карточкой больше, а не пересобирается — прогресс,
         // который уже проступил на соседях, остаётся.
         result = co_await ws_.addFolder(folder, stop.token());
-    } catch (const system_exception& failure) {
+    } catch (const last_error& failure) {
         // Книги до сбоя полка уже показала, и реестр в памяти их знает: на
         // диск его — и при сбое.
         libraryWrite_.signal();
@@ -211,7 +211,7 @@ detached_task App::open(std::filesystem::path path) {
         loaded.emplace(co_await ws_.readBook(path, stop.token()));
     } catch (const operation_canceled_exception&) {
         co_return;   // отмена — не сбой: сказать читателю нечего
-    } catch (const system_exception& failure) {
+    } catch (const last_error& failure) {
         notices_.post(noticeOf(L"Не удалось прочитать файл книги", path.wstring(), failure));
         co_return;
     } catch (std::exception const& failure) {
