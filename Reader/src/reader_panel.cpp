@@ -485,6 +485,18 @@ UIElement ReaderPanel::buildSettings() {
             setting(u"Интерлиньяж", kLineHeightMin, kLineHeightMax, kLineHeightStep,
                     prefs_.lineHeight),
             setting(u"Поля", kMarginMin, kMarginMax, kMarginStep, prefs_.margin),
+
+            // Анимация листания — рядом с ползунками: это тоже то, как читается
+            // книга, и снимают её там же, где подбирают кегль. Флажок привязан
+            // к полю настроек в обе стороны, как ползунки; запись файла слушает
+            // само поле. Слово на лице флажка — оно же его имя для чтеца экрана.
+            CheckBox {
+                u"Анимация листания",
+                fontSize = 13,
+                foreground = kChromeInk,
+                isChecked = Bind{prefs_.animateTurns},
+                Margin{0, 12, 0, 0},
+            },
             TextBlock {
                 u"Кегль меняется ещё и Ctrl с колесом, а тема — клавишей T.",
                 fontSize = 12,

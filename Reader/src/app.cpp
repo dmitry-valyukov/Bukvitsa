@@ -454,16 +454,17 @@ task<> App::writeLibrary(WaitableTimer& timer, cancellation_token stop) {
 
 /// Настройки вида — наблюдаемые поля: ползунки панели привязаны к ним (Bind),
 /// полоса пишет в них с колеса и клавиш и сама их слушает, галочка полки
-/// привязана к continueReading. Здесь остаётся одна запись на диск — с
-/// паузой: ползунок шлёт перемену на каждый сдвиг, а файл переписывается
-/// целиком.
+/// привязана к continueReading, флажок панели — к animateTurns. Здесь
+/// остаётся одна запись на диск — с паузой: ползунок шлёт перемену на каждый
+/// сдвиг, а файл переписывается целиком.
 void App::watchSettings() {
     Settings& settings = ws_.settings;
     for (observable<double>* field : {&settings.fontSize, &settings.lineHeight, &settings.margin}) {
         styleWatches_.emplace_back(field, field->on_change(method(this, &App::styleChanged)));
     }
-    flagWatches_.emplace_back(&settings.continueReading,
-                              settings.continueReading.on_change(method(this, &App::continueReadingChanged)));
+    for (observable<bool>* field : {&settings.continueReading, &settings.animateTurns}) {
+        flagWatches_.emplace_back(field, field->on_change(method(this, &App::flagChanged)));
+    }
 }
 
 /// Место отдаётся строкой WinRT; к нам она приходит чужим текстом и
@@ -483,7 +484,7 @@ void App::styleChanged(double) noexcept {
     settingsWrite_.restart();
 }
 
-void App::continueReadingChanged(bool) noexcept {
+void App::flagChanged(bool) noexcept {
     settingsWrite_.restart();
 }
 
