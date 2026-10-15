@@ -128,4 +128,30 @@ Command resolve(const KeyPress& press, const KeyContext& context) {
     return application(press, context);
 }
 
+Command resolveWheel(int delta, bool control, const KeyContext& context) {
+    if (context.shown != Screen::Book || delta == 0) return Command::None;
+
+    // Колесо от себя прокручивает ленту к началу — значит, назад; кегль от
+    // себя растёт, как масштаб по Ctrl с колесом у обозревателя.
+    if (control) return delta > 0 ? Command::FontLarger : Command::FontSmaller;
+    return delta > 0 ? Command::TurnBackward : Command::TurnForward;
+}
+
+Command resolveTap(float x, float width, PointerButton button, const KeyContext& context) {
+    if (context.shown != Screen::Book) return Command::None;
+
+    // Под мастером из щелчка полосе остаётся листание левой кнопкой: сюда
+    // доходят щелчки мимо точек сетки, а ящики поверх мастера не открываются.
+    if (context.wizardOpen) {
+        if (button != PointerButton::Left) return Command::None;
+    } else if (button == PointerButton::Right) {
+        return Command::TogglePanel;
+    }
+
+    const float third = width / 3.0f;
+    if (x < third) return Command::TurnBackward;
+    if (x > width - third) return Command::TurnForward;
+    return Command::None;   // середина — текст: промах по ссылке не листает
+}
+
 }  // namespace bukvitsa::reader
