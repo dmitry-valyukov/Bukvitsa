@@ -321,9 +321,10 @@ void BookView::perform(Command command) {
 }
 
 BookView::~BookView() {
-    // Ожидания полосы — концы пакетов переворотов — ей больше не нужны:
-    // отменяет их владелец, то есть она сама. Корутины кончатся отменой на
-    // своём ожидании и ни полосы, ни стратегии уже не тронут.
+    // Ожидания полосы — концы пакетов переворотов и паузы отпускания пула —
+    // ей больше не нужны: отменяет их владелец, то есть она сама. Корутины
+    // кончатся отменой на своём ожидании и ни полосы, ни стратегии уже не
+    // тронут.
     stop_.cancel();
 
     // Настройки и окно переживают полосу: слушатели с нашим this снимаются,
@@ -377,9 +378,11 @@ void BookView::setActive(bool active) {
         // незачем лежать на скрытом слое с последними кадрами и выражениями
         // подъёма, которые композитор считал бы до возврата. Осевшим
         // становится разворот самого нового; страницы уже скрыты, и посадка их
-        // не одевает — их оденет redraw при входе. Потом отменяется источник
-        // чтения: ожидания концов переворотов кончатся ходом очереди, а
-        // корутины ничего не тронут.
+        // не одевает — их оденет redraw при входе. Посадка же начинает заново
+        // долгую паузу отпускания пула: оно живёт не под источником чтения и
+        // отпустит листы и растры, пока читатель на полке. Потом отменяется
+        // источник чтения: ожидания концов переворотов кончатся ходом очереди,
+        // а корутины ничего не тронут.
         turnAnimation_->finishAll();
         readingScope_.cancel();
 
@@ -436,8 +439,9 @@ void BookView::animateTurnsChanged(bool) noexcept {
 std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     std::unique_ptr<TurnAnimation> chosenAnimation;
     if (settings_.animateTurns.get()) {
-        chosenAnimation = std::make_unique<LeafTurnAnimation>(
-            compositor_, leafLayer_, window_.dispatcherQueue(), spread_, flow_, readingScope_);
+        chosenAnimation =
+            std::make_unique<LeafTurnAnimation>(compositor_, leafLayer_, window_.dispatcherQueue(),
+                                                spread_, flow_, readingScope_, stop_.token());
     } else {
         chosenAnimation = std::make_unique<InstantTurnAnimation>(spread_);
     }

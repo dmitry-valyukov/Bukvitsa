@@ -383,23 +383,30 @@ void LeafTurnAnimation::Leaf::detach(const ContainerVisual& leafLayer) const {
 LeafTurnAnimation::LeafTurnAnimation(const Compositor& compositor, const ContainerVisual& leafLayer,
                                      const DispatcherQueue& queue, SpreadView& spread,
                                      const PageFlow& flow,
-                                     const async::cancellation_source& readingScope)
+                                     const async::cancellation_source& readingScope,
+                                     async::cancellation_token stripStop)
     : compositor_(compositor),
-      queue_(queue),
       leafLayer_(leafLayer),
       spread_(spread),
       flow_(flow),
       readingScope_(readingScope),
       restBrush_(compositor.createColorBrush(rgba(0, 0, 0, 0))),
-      turnSeries_(readingScope.token()) {}
+      turnSeries_(readingScope.token()),
+      releaseStop_(std::move(stripStop)),
+      releasePauses_(make_refcounted<ReleasePauses>(queue, releaseStop_.token())) {
+    // Отпускание пула — на всю жизнь стратегии: цикл тут же встаёт на долгую
+    // паузу и до первой посадки ничего не трогает.
+    releaseIdleLeaves(releasePauses_, releaseStop_.token());
+}
 
 LeafTurnAnimation::~LeafTurnAnimation() {
-    // Ожидания концов переворотов этой стратегии больше никому не нужны: её
-    // сменили или полоса умирает. Отменяет их владелец — она сама; корутины
-    // кончатся отменой ходом очереди и стратегии уже не тронут. Цикл
-    // отпускания пула — её задача, и умирает он вместе с ней, раньше своих
-    // таймеров (IdleRelease).
+    // Ожидания этой стратегии — концы переворотов и паузы отпускания пула —
+    // больше никому не нужны: её сменили или полоса умирает. Отменяет их
+    // владелец — она сама; корутины кончатся отменой ходом очереди и стратегии
+    // уже не тронут, а таймеры, на которых стоит цикл, доживут до конца его
+    // кадра (ReleasePauses).
     turnSeries_.cancel();
+    releaseStop_.cancel();
 }
 
 void LeafTurnAnimation::turnStarting(bool forward) {
@@ -914,53 +921,47 @@ void LeafTurnAnimation::settle() {
     // Все сели. В книге осевший разворот — самого нового, и обе страницы уже
     // на нём: неперелистываемую одел finishTurn, а перелистываемая носит его
     // растр. Одевать заново нечего; листам в покое на сцене не место, а пулу —
-    // в памяти: долгая пауза отпускания начинается заново.
+    // в памяти: долгая пауза отпускания начинается заново, а если цикл уже
+    // отпускал по секундам — он вернётся к ней.
     leafLayer_.isVisible(false);
-    restartIdleRelease();
+    settledDuringRelease_ = true;
+    releasePauses_->firstPause.restart();
 }
 
 /* ---------------- отпускание пула ---------------- */
 
-LeafTurnAnimation::IdleRelease::IdleRelease(LeafTurnAnimation& owner, const DispatcherQueue& queue,
-                                            async::cancellation_token readingToken)
-    : readingToken_(readingToken),
-      firstPause_{queue, kLeafReleaseFirst, readingToken},
-      stepPause_{queue, kLeafReleaseStep, readingToken},
-      loop_{owner.releaseIdleLeaves(firstPause_, stepPause_, readingToken)} {}
+LeafTurnAnimation::ReleasePauses::ReleasePauses(const DispatcherQueue& queue,
+                                                async::cancellation_token releaseToken)
+    : firstPause{queue, kLeafReleaseFirst, releaseToken},
+      stepPause{queue, kLeafReleaseStep, releaseToken} {}
 
-void LeafTurnAnimation::restartIdleRelease() {
-    // Вне чтения пул не отпускается: цикл живёт под источником чтения, и вход
-    // в чтение заведёт его заново (полоса начинает вход с finishAll).
-    async::cancellation_token const readingToken = readingScope_.token();
-    if (readingToken.is_canceled()) return;
-
-    // Цикла нет — или он от прежнего чтения и кончился либо кончается: новый.
-    // Прежний держатель уходит целиком; его цикл, если ещё не размотан, стоит
-    // в отменённом ожидании, и разрушить его снаружи можно.
-    if (!idleRelease_ || idleRelease_->ended())
-        idleRelease_.emplace(*this, queue_, readingToken);
-    idleRelease_->restart();
-}
-
-async::task<> LeafTurnAnimation::releaseIdleLeaves(WaitableTimer& firstPause,
-                                                   WaitableTimer& stepPause,
-                                                   async::cancellation_token readingToken) {
+// Кадр держит паузы сам (параметр releasePauses): стратегию могут сменить, пока
+// он стоит в отменённом ожидании, и таймер, на котором он стоит, должен дожить
+// до хода очереди, который его разбудит. Токен — тоже свой, параметром: после
+// отмены цикл спрашивает его, не трогая `this`.
+async::detached_task LeafTurnAnimation::releaseIdleLeaves(
+    intrusive_ptr<ReleasePauses> releasePauses, async::cancellation_token releaseToken) {
     for (;;) {
-        // Долгая пауза: её начинает заново каждая посадка всех (restart). Тик,
+        // Долгая пауза: её начинает заново каждая посадка всех (settle). Тик,
         // пришедший, пока цикл отпускал, не теряется — следующее ожидание его
-        // возьмёт и не встанет. Отмена чтения кончает ожидание без исключения,
-        // и токен цикл спрашивает сам.
-        co_await firstPause;
-        if (readingToken.is_canceled()) co_return;
+        // возьмёт и не встанет. Отмена кончает ожидание без исключения, и
+        // токен цикл спрашивает сам.
+        co_await releasePauses->firstPause;
+        if (releaseToken.is_canceled()) co_return;
+
+        // Пауза отсчитана от последней посадки — посадки до неё уже учтены.
+        settledDuringRelease_ = false;
 
         // Дальше — по листу в секунду, пока есть лишние и никто не летит.
         // Листают снова — цикл увидит это сам, проснувшись, и вернётся ждать
-        // долгую паузу: её начнёт посадка.
+        // долгую паузу: её начнёт посадка. Листнули и уже сели — то же самое:
+        // посадка перезапустила долгую паузу и оставила признак.
         while (liveTurns_.empty() && hasSpareLeaves()) {
             releaseSpareLeaf();
-            stepPause.restart();
-            co_await stepPause;
-            if (readingToken.is_canceled()) co_return;
+            releasePauses->stepPause.restart();
+            co_await releasePauses->stepPause;
+            if (releaseToken.is_canceled()) co_return;
+            if (std::exchange(settledDuringRelease_, false)) break;
         }
     }
 }
