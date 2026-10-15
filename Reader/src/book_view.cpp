@@ -77,7 +77,7 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
               [this](ID2D1DeviceContext* context) { paintSpread(context); }),
       // Контейнер листов — сразу, от композитора окна; buildTree() его одевает
       // и ставит на сцену над страницами.
-      sheets_(compositor_.createContainerVisual()),
+      leafLayer_(compositor_.createContainerVisual()),
       // Всплывашка сноски — XAML-остров, её рисунок висит в дереве острова, а не
       // на сцене: ей нужен композитор острова, а не окна.
       note_(window.chromeCompositor()),
@@ -160,14 +160,14 @@ void BookView::buildTree() {
     // листы заводит по требованию стратегия переворота — при быстром листании
     // их в воздухе несколько разом. Страницы под ним уже на сцене — их
     // поставил разворот (spread_).
-    sheets_.clip(compositor_.createInsetClip());
+    leafLayer_.clip(compositor_.createInsetClip());
 
     // Листы переворотов — на сцене окна над страницами, привешены к
     // contentVisual() (над задником, под островом), а не всунуты в дерево XAML
     // через setElementChildVisual. Пока полоса не стала текущим экраном, её
     // сцена скрыта — setActive(true) покажет при входе.
-    window_.contentVisual().children().insertAtTop(sheets_);
-    sheets_.isVisible(false);
+    window_.contentVisual().children().insertAtTop(leafLayer_);
+    leafLayer_.isVisible(false);
 
     Apply {
         root_,
@@ -363,7 +363,7 @@ void BookView::setActive(bool active) {
     // Листы в покое не нужны: разворот видно страницами. Они выходят на сцену
     // только на время переворота — показывает их стратегия, когда пускает
     // лист, и она же прячет обратно, когда сели все.
-    sheets_.isVisible(false);
+    leafLayer_.isVisible(false);
 }
 
 void BookView::setTheme(int index) {
@@ -400,7 +400,7 @@ void BookView::animateTurnsChanged(bool) noexcept {
     // уходят со сцены, а её свободные растры — из пула: без анимации растр
     // нужен один, а листы заведут свои, когда понадобятся.
     turnAnimation_->finishAll();
-    sheets_.children().removeAll();
+    leafLayer_.children().removeAll();
     turnAnimation_ = makeTurnAnimation();
     spread_.dropSpareRasters();
 }
@@ -408,8 +408,8 @@ void BookView::animateTurnsChanged(bool) noexcept {
 std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     std::unique_ptr<TurnAnimation> chosenAnimation;
     if (settings_.animateTurns.get()) {
-        chosenAnimation = std::make_unique<LeafTurnAnimation>(compositor_, sheets_, window_.dispatcherQueue(),
-                                                        spread_, flow_, stop_.token());
+        chosenAnimation = std::make_unique<LeafTurnAnimation>(
+            compositor_, leafLayer_, window_.dispatcherQueue(), spread_, flow_, stop_.token());
     } else {
         chosenAnimation = std::make_unique<InstantTurnAnimation>(spread_);
     }
@@ -484,7 +484,7 @@ bool BookView::applySize(SizeInt32 pixels, float scale) {
     // уже показывают (фон окна, страницы, листы), продолжают показывать их же.
     // Листы мерит сама стратегия — на каждый переворот.
     spread_.resize(pixels);
-    sheets_.size({width, height});
+    leafLayer_.size({width, height});
 
     // Окна кроя листов заданы в прежних числах и после смены размера
     // бессмысленны — все идущие перевороты в покой: доигрывать их по новым
