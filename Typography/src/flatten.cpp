@@ -1,13 +1,21 @@
-// Дерево книги -> список блоков.
+// Дерево книги -> хранилище блоков.
 //
 // Два дела делаются здесь и больше нигде: свёртка пробелов (потому что это
 // первое место, где известно, что значат элементы) и перевод текста в UTF-16
-// (потому что дальше всё делает DirectWrite). Заодно строится таблица
-// соответствия «символ строки -> позиция в книге»: свёртка рвёт прямое
-// соответствие, а закладка обязана указывать на книгу, а не на результат
-// вёрстки.
+// (потому что дальше всё делает DirectWrite). Заодно строятся прогоны позиций
+// «символ строки -> позиция в книге»: свёртка рвёт прямое соответствие, а
+// закладка обязана указывать на книгу, а не на результат вёрстки.
+//
+// Абзац собирается прямо в хвосте массивов хранилища, без своего буфера: всё,
+// что сборке приходится откатывать, — хвостовые пробелы, знак нулевой длины,
+// пустой блок целиком — лежит в хвосте собираемого абзаца, и откат — это
+// укоротить массивы. Оттого же открытая сборка всегда одна, и тела сносок
+// разворачиваются не по месту знака, а отдельной фазой после потока чтения.
 
 #include <algorithm>
+#include <optional>
+#include <string>
+#include <vector>
 
 // Свой заголовок после всех стандартных: он ведёт к импорту модуля книги, а
 // стандартный заголовок после импорта MSVC уже не принимает.
@@ -79,12 +87,47 @@ bool hasBlockChild(const fb3::Node& node) {
     return false;
 }
 
+/// Размер массива хранилища как индекс в нём: диапазоны и позиции — uint32_t.
+template <typename Array>
+uint32_t sizeOf(const Array& array) {
+    return static_cast<uint32_t>(array.size());
+}
+
 class Flattener {
 public:
-    std::vector<Block> run(const fb3::Node& body) {
-        walk(body, Context{});
+    BookText run(const fb3::Document& document) {
+        reserve(document);
+        noteBodyCount_ = document.noteBodies().size();
+
+        walk(document.body(), Context{});
         finishBlock();
-        return std::move(blocks_);
+        book_.flowCount = sizeOf(book_.blocks);
+
+        // Тела сносок — каждое своими блоками, в порядке документа, следом за
+        // потоком. Глав они не открывают: метка секции, оставшаяся от конца
+        // потока, им не достаётся, а секции внутри тела меток не ставят.
+        pendingSection_ = 0;
+        inFlow_ = false;
+
+        for (const fb3::Node* body : document.noteBodies()) {
+            assert(body != nullptr && "тело сноски — узел документа");
+
+            const uint32_t first = sizeOf(book_.blocks);
+            walkChildren(*body, Context{});
+            finishBlock();
+            book_.noteBodies.push_back(Range{first, sizeOf(book_.blocks) - first});
+        }
+
+        // Резерв взят по оценке: где она вышла с запасом, массив отдаёт
+        // излишек, и дальше хранилище не растёт.
+        book_.text.shrink_to_fit();
+        book_.spans.shrink_to_fit();
+        book_.notes.shrink_to_fit();
+        book_.offsets.shrink_to_fit();
+        book_.blocks.shrink_to_fit();
+        book_.noteBodies.shrink_to_fit();
+
+        return std::move(book_);
     }
 
 private:
@@ -94,11 +137,15 @@ private:
         BlockKind paragraphKind = BlockKind::Paragraph;
         uint8_t level = 0;
         uint8_t listDepth = 0;
-        bool ordered = false;
     };
 
-    std::vector<Block> blocks_;
+    BookText book_;
+
+    /// Блок, который собирается: его свойства и начала диапазонов. Текст и
+    /// прогоны лежат уже в хвосте массивов книги, а число элементов каждого
+    /// диапазона ставит finishBlock.
     Block block_;
+
     bool open_ = false;
     bool preformatted_ = false;
     bool pendingSpace_ = false;      ///< свёрнутый пробел, ещё не записанный
@@ -120,6 +167,13 @@ private:
     /// секции, каким бы путём тот ни попал в список.
     uint8_t pendingSection_ = 0;
 
+    /// Идёт ли поток чтения. За ним — тела сносок, а их секции глав не
+    /// открывают: метка там значила бы новую страницу посреди сноски.
+    bool inFlow_ = true;
+
+    /// Сколько тел сносок у документа: номер тела в ссылке — индекс в их списке.
+    size_t noteBodyCount_ = 0;
+
     /// Где в тексте блока начинаются буквы. Прогон стиля и знак сноски,
     /// поставленный вёрсткой, начинаются только с буквы: разметка внутри
     /// буквы (`и<em>◌̆</em>`) иначе отдала бы знак шейперу отдельным прогоном,
@@ -130,25 +184,70 @@ private:
     /// `<note>` мог встать между буквой и её знаком, и знак сноски там
     /// разорвал бы букву.
     struct PendingMarker {
-        size_t anchor = 0;           ///< индекс в Paragraph::notes
+        /// Индекс якоря в BookText::notes. Пусто у битой ссылки: знак она
+        /// получает, а якоря у неё нет.
+        std::optional<size_t> anchor;
         std::wstring text;
         FontStyle style;
         uint32_t charOffset = 0;
     };
     std::vector<PendingMarker> pendingMarkers_;
 
+    /* ---------------- хранилище ---------------- */
+
+    /// Резерв по мерам разбора. Это оценка, а не граница: символ вне BMP —
+    /// две единицы, знак сноски, поставленный вёрсткой, добавляет свои цифры,
+    /// а абзацем узел становится не всегда. Где её не хватит, массив растёт.
+    void reserve(const fb3::Document& document) {
+        const fb3::Measures measures = document.measures();
+
+        // Картинка дважды: блоком сама и разрезом абзаца, в котором стоит, —
+        // его продолжение за ней ещё один блок.
+        const size_t blocks = size_t{measures.paragraphs} + measures.separators +
+                              2 * size_t{measures.images};
+
+        book_.text.reserve(measures.codePoints);
+        book_.blocks.reserve(blocks);
+
+        // Прогон стиля на абзац, и стилевой элемент добавляет два: свой и
+        // продолжение прежнего начертания за ним.
+        book_.spans.reserve(size_t{measures.paragraphs} + 2 * size_t{measures.inlineStyles});
+        book_.notes.reserve(measures.noteRefs);
+
+        // Прогон позиций на блок, и знак сноски добавляет до трёх: цифры знака
+        // стоят на одной позиции, а текст за ним возвращается к своей.
+        book_.offsets.reserve(blocks + 3 * size_t{measures.noteRefs});
+        book_.noteBodies.reserve(document.noteBodies().size());
+    }
+
+    /// Длина текста собираемого абзаца: его текст — хвост общего.
+    uint32_t length() const { return sizeOf(book_.text) - block_.paragraph.text.first; }
+
+    /// Пустой абзац на конце массивов — то, с чего начинается всякий блок.
+    /// У картинки и разделителя он таким и остаётся: начала их диапазонов
+    /// стоят там же, где у соседей, и блоки подряд смотрят в массивы подряд.
+    Paragraph tail() const {
+        return Paragraph{Range{sizeOf(book_.text), 0}, Range{sizeOf(book_.spans), 0},
+                         Range{sizeOf(book_.notes), 0}, Range{sizeOf(book_.offsets), 0}};
+    }
+
     /* ---------------- блоки ---------------- */
 
     void beginBlock(BlockKind kind, const fb3::Node& source, const Context& context) {
         finishBlock();
+        openBlock(kind, source.charOffset(), context.level, context.listDepth);
+    }
 
+    /// Открывает сборку блока в хвосте массивов. Отдельно от beginBlock, потому
+    /// что продолжение абзаца за картинкой открывается тем же путём, но
+    /// закрывать перед ним уже нечего.
+    void openBlock(BlockKind kind, uint32_t charOffset, uint8_t level, uint8_t listDepth) {
         block_ = Block{};
         block_.kind = kind;
-        block_.source = &source;
-        block_.charOffset = source.charOffset();
-        block_.level = context.level;
-        block_.listDepth = context.listDepth;
-        block_.ordered = context.ordered;
+        block_.level = level;
+        block_.listDepth = listDepth;
+        block_.charOffset = charOffset;
+        block_.paragraph = tail();
 
         open_ = true;
         preformatted_ = kind == BlockKind::Preformatted;
@@ -167,42 +266,76 @@ private:
         pendingSpace_ = false;
 
         // Хвостовой пробел абзаца не значит ничего: он появился от того, как
-        // файл разложен по строкам.
+        // файл разложен по строкам. В преформате значимо всё.
+        Paragraph& paragraph = block_.paragraph;
+        uint32_t kept = length();
         if (!preformatted_) {
-            const size_t kept = block_.paragraph.text.plain().find_last_not_of(u' ') + 1;
-            block_.paragraph.text.erase(kept);
-            block_.paragraph.charOffsets.resize(kept);
+            const std::u16string_view text =
+                u16_view(book_.text).substr(paragraph.text.first).plain();
+            kept = static_cast<uint32_t>(text.find_last_not_of(u' ') + 1);
         }
 
-        trimSpans();
-
-        if (!block_.paragraph.text.empty()) {
-            markSectionStart(block_);
-            blocks_.push_back(std::move(block_));
+        // Блок без текста не кладётся: всё, что он успел записать, снимается,
+        // и его метку секции понесёт следующий.
+        if (kept == 0) {
+            rewind();
+            return;
         }
 
-        block_ = Block{};
+        cutTail(kept);
+
+        paragraph.text.count = kept;
+        paragraph.spans.count = sizeOf(book_.spans) - paragraph.spans.first;
+        paragraph.notes.count = sizeOf(book_.notes) - paragraph.notes.first;
+        paragraph.offsets.count = sizeOf(book_.offsets) - paragraph.offsets.first;
+
+        markSectionStart(block_);
+        book_.blocks.push_back(block_);
     }
 
-    /// Обрезка хвостовых пробелов укоротила текст — прогоны надо подтянуть.
-    void trimSpans() {
-        const auto length = static_cast<uint32_t>(block_.paragraph.text.size());
+    /// Возвращает все массивы туда, где начался собираемый блок.
+    void rewind() {
+        const Paragraph& paragraph = block_.paragraph;
+        book_.text.erase(paragraph.text.first);
+        book_.spans.resize(paragraph.spans.first);
+        book_.notes.resize(paragraph.notes.first);
+        book_.offsets.resize(paragraph.offsets.first);
+    }
 
-        std::erase_if(block_.paragraph.spans, [&](const StyleSpan& span) { return span.start >= length; });
-        for (StyleSpan& span : block_.paragraph.spans)
-            span.length = std::min(span.length, length - span.start);
+    /// Укорачивает собираемый абзац до kept единиц: то, что начиналось за
+    /// ними, уходит, то, что через них переходит, укорачивается. Всё это —
+    /// хвост массивов: прогоны и якоря идут по возрастанию начала.
+    void cutTail(uint32_t kept) {
+        const Paragraph& paragraph = block_.paragraph;
+        book_.text.erase(paragraph.text.first + kept);
 
-        std::erase_if(block_.paragraph.spans, [](const StyleSpan& span) { return span.length == 0; });
+        while (sizeOf(book_.spans) > paragraph.spans.first && book_.spans.back().start >= kept)
+            book_.spans.pop_back();
 
-        std::erase_if(block_.paragraph.notes,
-                      [&](const NoteAnchor& note) { return note.position >= length; });
-        for (NoteAnchor& note : block_.paragraph.notes)
-            note.length = std::min(note.length, length - note.position);
+        // Прогоны стиля — разбиение текста, поэтому через обрезку переходит
+        // разве что последний.
+        if (sizeOf(book_.spans) > paragraph.spans.first) {
+            StyleSpan& last = book_.spans.back();
+            last.length = std::min(last.length, kept - last.start);
+        }
+
+        while (sizeOf(book_.offsets) > paragraph.offsets.first &&
+               book_.offsets.back().start >= kept)
+            book_.offsets.pop_back();
 
         // Знак нулевой длины ничего не занимает на строке, значит по нему
-        // нельзя щёлкнуть, значит его нет.
-        std::erase_if(block_.paragraph.notes,
-                      [](const NoteAnchor& note) { return note.length == 0; });
+        // нельзя щёлкнуть, значит его нет. Такой остаётся от знака, чей блок
+        // сменился, пока знак набирался, и стоит он не обязательно последним.
+        const auto first = book_.notes.begin() + paragraph.notes.first;
+        for (auto note = first; note != book_.notes.end(); ++note)
+            if (note->position < kept)
+                note->length = std::min(note->length, kept - note->position);
+
+        book_.notes.erase(std::remove_if(first, book_.notes.end(),
+                                         [&](const NoteAnchor& note) {
+                                             return note.position >= kept || note.length == 0;
+                                         }),
+                          book_.notes.end());
     }
 
     /// Помечает блок началом секции, если с прошлого положенного блока в
@@ -217,8 +350,9 @@ private:
     /// Блок без текста — картинка или разделитель — пишется сразу.
     void emitStandalone(Block block) {
         finishBlock();
+        block.paragraph = tail();
         markSectionStart(block);
-        blocks_.push_back(std::move(block));
+        book_.blocks.push_back(block);
     }
 
     /* ---------------- текст ---------------- */
@@ -243,17 +377,33 @@ private:
         }
 
         const bool startsLetter = letters_.breaks_before(code);
-        Paragraph& paragraph = block_.paragraph;
-        const size_t at = paragraph.text.size();
+        const uint32_t at = length();
 
-        if (paragraph.spans.empty() ||
-            (startsLetter && !(paragraph.spans.back().style == styles_.back())))
-            paragraph.spans.push_back(StyleSpan{static_cast<uint32_t>(at), 0, styles_.back()});
+        if (sizeOf(book_.spans) == block_.paragraph.spans.first ||
+            (startsLetter && !(book_.spans.back().style == styles_.back())))
+            book_.spans.push_back(StyleSpan{at, 0, styles_.back()});
 
-        // Символ вне BMP — пара единиц, и позицию в книге несут обе.
-        paragraph.text.push_back(code);
-        paragraph.charOffsets.resize(paragraph.text.size(), charOffset);
-        paragraph.spans.back().length += static_cast<uint32_t>(paragraph.text.size() - at);
+        book_.text.push_back(code);
+        const uint32_t units = length() - at;
+        book_.spans.back().length += units;
+
+        // Символ вне BMP — пара единиц, и позицию в книге несут обе: вторая
+        // половина заводит свой прогон, потому что арифметика от первой дала
+        // бы ей следующую позицию.
+        for (uint32_t unit = 0; unit < units; ++unit)
+            placeOffset(at + unit, charOffset);
+    }
+
+    /// Позиция единицы at в книге. Новый прогон — только там, где арифметика
+    /// от последнего прогона абзаца её не даёт: после свёрнутых пробелов, на
+    /// цифрах знака сноски, на второй половине пары.
+    void placeOffset(uint32_t at, uint32_t charOffset) {
+        if (sizeOf(book_.offsets) > block_.paragraph.offsets.first) {
+            const OffsetSpan& last = book_.offsets.back();
+            if (last.charOffset + (at - last.start) == charOffset)
+                return;
+        }
+        book_.offsets.push_back(OffsetSpan{at, charOffset});
     }
 
     void flushMarkers() {
@@ -261,16 +411,18 @@ private:
         pendingMarkers_.clear();
 
         for (const PendingMarker& marker : markers) {
-            const auto position = static_cast<uint32_t>(block_.paragraph.text.size());
+            const uint32_t position = length();
 
             styles_.push_back(marker.style);
             for (const wchar_t sign : marker.text)
                 appendCodePoint(sign, marker.charOffset);
             styles_.pop_back();
 
-            NoteAnchor& note = block_.paragraph.notes[marker.anchor];
-            note.position = position;
-            note.length = static_cast<uint32_t>(block_.paragraph.text.size()) - position;
+            if (marker.anchor) {
+                NoteAnchor& note = book_.notes[*marker.anchor];
+                note.position = position;
+                note.length = length() - position;
+            }
         }
     }
 
@@ -295,7 +447,7 @@ private:
         if (!pendingSpace_) return;
         pendingSpace_ = false;
 
-        if (block_.paragraph.text.empty()) {
+        if (length() == 0) {
             // В начале абзаца свёрнутый пробел исчезает вовсе — если он не
             // основа буквы.
             if (!isLetterBase)
@@ -306,7 +458,7 @@ private:
             // ссылка, знак сноски без текста), — и тогда пробелы по обе
             // стороны от него схлопываются здесь, а не остаются двумя. После
             // перевода строки пробел, который служит основой буквы, остаётся.
-            const char16_t last = block_.paragraph.text.plain().back();
+            const char16_t last = book_.text.plain().back();
             if (last == u' ' || (last == u'\n' && !isLetterBase))
                 return;
         }
@@ -379,27 +531,32 @@ private:
 
         case NodeKind::NoteRef: {
             // Знак сноски набирается надстрочным, а место запоминается: по нему
-            // читалка потом ловит щелчок и показывает тело сноски.
+            // читалка потом ловит щелчок и показывает тело сноски. Якорь — только
+            // у ссылки, за которой есть тело: по битой показать нечего. Знак она
+            // всё равно получает — где автор сослался, видно и так.
             flushPendingSpace();
 
-            const auto anchor = block_.paragraph.notes.size();
+            const fb3::NoteRefData* data = node.noteRef();
             const uint64_t serial = blockSerial_;
 
-            block_.paragraph.notes.push_back(
-                NoteAnchor{static_cast<uint32_t>(block_.paragraph.text.size()), 0,
-                           node.noteRef() ? node.noteRef()->target : nullptr});
+            std::optional<size_t> anchor;
+            if (data && data->body) {
+                assert(*data->body < noteBodyCount_ &&
+                       "номер тела сноски — индекс в списке тел документа");
+                anchor = book_.notes.size();
+                book_.notes.push_back(NoteAnchor{length(), 0, *data->body});
+            }
 
             pushStyle([](FontStyle& s) { s.script = 1; });
 
-            const auto before = block_.paragraph.text.size();
+            const uint32_t before = length();
             for (const fb3::Node& child : node.children())
                 walkInline(child, context);
 
             // Автор знака не поставил — ставим сами и нумеруем по порядку. Но
             // не сразу, а перед следующей буквой: `<note>` мог встать между
             // буквой и её знаком. Место и длину знака запишет flushMarkers.
-            if (serial == blockSerial_ && block_.paragraph.text.size() == before) {
-                const fb3::NoteRefData* data = node.noteRef();
+            if (serial == blockSerial_ && length() == before) {
                 pendingMarkers_.push_back(PendingMarker{
                     anchor,
                     noteMarker(data ? data->numbering : fb3::NoteNumbering::Arabic, ++noteNumber_),
@@ -411,10 +568,11 @@ private:
             // Длина знака известна только теперь: её набрали дети. Но пока они
             // набирались, блок мог смениться — картинка внутри знака сноски
             // закрывает абзац и начинает новый, — и тогда записывать длину
-            // некуда: тот список сносок уже уехал вместе со старым блоком.
-            if (serial == blockSerial_ && anchor < block_.paragraph.notes.size()) {
-                NoteAnchor& note = block_.paragraph.notes[anchor];
-                const auto end = static_cast<uint32_t>(block_.paragraph.text.size());
+            // некуда: тот абзац уже лёг в хранилище, а якорь без длины
+            // finishBlock выбросил вместе с ним.
+            if (anchor && serial == blockSerial_) {
+                NoteAnchor& note = book_.notes[*anchor];
+                const uint32_t end = length();
                 note.length = end > note.position ? end - note.position : 0;
             }
             return;
@@ -447,40 +605,23 @@ private:
     void emitImage(const fb3::Node& node) {
         Block image;
         image.kind = BlockKind::Image;
-        image.source = &node;
         image.charOffset = node.charOffset();
         if (const fb3::ImageData* data = node.image())
             image.imageIndex = data->partIndex;
 
         // finishBlock() выбрасывает пустой абзац, поэтому картинка между двумя
-        // кусками текста не оставляет за собой пустой строки. Запоминаются
-        // только свойства блока: текст уезжает вместе с ним.
+        // кусками текста не оставляет за собой пустой строки. Продолжению
+        // достаются только свойства блока: текст до картинки уже лёг в
+        // хранилище своим блоком.
         const BlockKind kind = block_.kind;
-        const fb3::Node* const source = block_.source;
         const uint8_t level = block_.level;
         const uint8_t listDepth = block_.listDepth;
-        const bool ordered = block_.ordered;
         const bool wasOpen = open_;
 
-        finishBlock();
-        markSectionStart(image);
-        blocks_.push_back(std::move(image));
+        emitStandalone(image);
 
-        if (wasOpen) {
-            block_ = Block{};
-            block_.kind = kind;
-            block_.source = source;
-            block_.charOffset = node.charOffset();
-            block_.level = level;
-            block_.listDepth = listDepth;
-            block_.ordered = ordered;
-
-            open_ = true;
-            preformatted_ = kind == BlockKind::Preformatted;
-            pendingSpace_ = false;
-            letters_ = {};
-            ++blockSerial_;
-        }
+        if (wasOpen)
+            openBlock(kind, node.charOffset(), level, listDepth);
     }
 
     /// Узел, у которого нет блочных детей, целиком становится одним блоком.
@@ -505,7 +646,9 @@ private:
             // Первый блок секции понесёт метку её начала. Открылись секции
             // подряд (вложенная сразу за родителем, без блока между) — метку
             // несёт самая мелкая: глава верхнего уровня важнее своей подсекции.
-            pendingSection_ = pendingSection_ ? std::min(pendingSection_, depth) : depth;
+            // Секция внутри тела сноски главы не открывает.
+            if (inFlow_)
+                pendingSection_ = pendingSection_ ? std::min(pendingSection_, depth) : depth;
             walkChildren(node, context);
             return;
         }
@@ -543,7 +686,6 @@ private:
 
         case NodeKind::List:
             context.listDepth = static_cast<uint8_t>(std::min(context.listDepth + 1, 6));
-            context.ordered = node.list() && node.list()->ordered;
             context.paragraphKind = BlockKind::ListItem;
             walkChildren(node, context);
             return;
@@ -567,7 +709,8 @@ private:
             // Блок сносок в поток чтения не идёт. Каждая сноска и так достижима
             // — по своему знаку, который стоит там, где на неё сослались, — а
             // вываленная в текст она читается как случайный кусок из другого
-            // места. Тело сноски достаётся из книги по указателю в NoteAnchor.
+            // места. Тела сносок разворачиваются после потока (run), и якорь
+            // знака несёт номер тела.
             return;
 
         case NodeKind::NoteBody:
@@ -595,9 +738,8 @@ private:
         case NodeKind::PaperPageBreak: {
             Block separator;
             separator.kind = BlockKind::Separator;
-            separator.source = &node;
             separator.charOffset = node.charOffset();
-            emitStandalone(std::move(separator));
+            emitStandalone(separator);
             return;
         }
 
@@ -629,8 +771,8 @@ private:
 
 }  // namespace
 
-std::vector<Block> flatten(const fb3::Node& body) {
-    return Flattener{}.run(body);
+BookText flatten(const fb3::Document& document) {
+    return Flattener{}.run(document);
 }
 
 }  // namespace bukvitsa::typography

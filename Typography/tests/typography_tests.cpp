@@ -1,8 +1,9 @@
 // Проверка вёрстки на настоящих книгах. Как и у FB3, без фреймворка: ценность
 // теста в том, что через него проходят реальные файлы.
 //
-// Пока проверяется первый слой — разворачивание дерева книги в блоки: порядок
-// блоков, свёртка пробелов, прогоны стиля и таблица позиций.
+// Пока проверяется первый слой — разворачивание дерева книги в хранилище
+// блоков: порядок блоков, свёртка пробелов, прогоны стиля, прогоны позиций и
+// тела сносок за потоком чтения.
 
 #include <algorithm>
 #include <chrono>
@@ -96,17 +97,51 @@ std::string toUtf8(std::wstring_view text) {
     return out;
 }
 
-void testLayout(typography::Engine& engine, const std::vector<typography::Block>& blocks, float width);
-void showFirstLines(typography::Engine& engine, const std::vector<typography::Block>& blocks, float width);
-void testScaledShaping(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                       float width);
-void testPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                    uint32_t characterCount);void testChunkedPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+/// Хранилище из одного абзаца — то, что дала бы книга из одного `<p>`: текст,
+/// один прогон стиля на весь текст и один прогон позиций с нуля, то есть
+/// позиция идёт вровень с индексом. Прогон стиля есть и у абзаца без
+/// разметки: прогоны — разбиение текста, а не только отличия от умолчания.
+typography::BookText paragraphOf(u16_view text, typography::FontStyle style = {}) {
+    typography::BookText book;
+    book.text.append(text);
+
+    const auto length = static_cast<uint32_t>(text.size());
+    typography::Block block;
+    block.paragraph.text = {0, length};
+    if (length > 0) {
+        book.spans.push_back(typography::StyleSpan{0, length, style});
+        book.offsets.push_back(typography::OffsetSpan{0, 0});
+        block.paragraph.spans = {0, 1};
+        block.paragraph.offsets = {0, 1};
+    }
+
+    book.blocks.push_back(block);
+    book.flowCount = 1;
+    return book;
+}
+
+/// Единственный абзац хранилища, построенного paragraphOf.
+const typography::Paragraph& onlyParagraph(const typography::BookText& book) {
+    return book.blocks.front().paragraph;
+}
+
+/// Вёрстка хранилища из одного абзаца. Строки в хранилище не смотрят, так
+/// что оно может быть и временным.
+sta_vector<typography::Line> layoutOf(typography::Engine& engine, const typography::BookText& book,
+                                      float width, const typography::ParagraphStyle& style) {
+    return engine.layout(book, onlyParagraph(book), width, style);
+}
+
+void testLayout(typography::Engine& engine, const typography::BookText& book, float width);
+void showFirstLines(typography::Engine& engine, const typography::BookText& book, float width);
+void testScaledShaping(typography::Engine& engine, const typography::BookText& book, float width);
+void testPagination(typography::Engine& engine, const typography::BookText& book,
+                    uint32_t characterCount);
+void testChunkedPagination(typography::Engine& engine, const typography::BookText& book,
                            uint32_t characterCount);
-void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                     uint32_t characterCount);
-void testChapterFirstPage(typography::Engine& engine,
-                          const std::vector<typography::Block>& blocks,
+void testEagerPagination(typography::Engine& engine, const typography::BookText& book,
+                         uint32_t characterCount);
+void testChapterFirstPage(typography::Engine& engine, const typography::BookText& book,
                           uint32_t characterCount);
 void testSeparatorAtPageBottom(typography::Engine& engine);
 void testClustersStayWhole(typography::Engine& engine);
@@ -250,10 +285,11 @@ void testFormulas(IDWriteFactory* dwrite) {
 void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     std::printf("\n=== %s ===\n", path.filename().string().c_str());
 
-    fb3::Document book(path);
-    const std::vector<typography::Block> blocks = typography::flatten(book.body());
+    const fb3::Document document(path);
+    const typography::BookText book = typography::flatten(document);
+    const std::span<const typography::Block> blocks = book.flow();
 
-    std::printf("  блоков: %zu\n", blocks.size());
+    std::printf("  блоков: %zu, из них в потоке чтения %zu\n", book.blocks.size(), blocks.size());
     check(!blocks.empty(), "книга развёрнута в блоки");
 
     // Блоки идут в порядке чтения: позиция каждого следующего не меньше.
@@ -263,28 +299,40 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     check(ordered, "блоки в порядке чтения");
 
     // Прогоны стиля покрывают текст целиком и не пересекаются: на этом стоит
-    // весь шейпинг, который дальше режет абзац по ним.
+    // весь шейпинг, который дальше режет абзац по ним. Тела сносок верстаются
+    // тем же движком, поэтому проверяются все блоки, а не только поток.
+    //
+    // Прогоны позиций — по возрастанию начала, первый с нуля, последний внутри
+    // текста: на этом стоит позиция каждого символа (charOffsetAt).
     bool spansCoverText = true;
-    bool offsetsMatchText = true;
-    for (const typography::Block& block : blocks) {
-        if (block.paragraph.charOffsets.size() != block.paragraph.text.size()) offsetsMatchText = false;
+    bool offsetsInOrder = true;
+    for (const typography::Block& block : book.blocks) {
+        const typography::Paragraph& paragraph = block.paragraph;
 
         uint32_t at = 0;
-        for (const typography::StyleSpan& span : block.paragraph.spans) {
+        for (const typography::StyleSpan& span : book.spansOf(paragraph)) {
             if (span.start != at) spansCoverText = false;
             at = span.start + span.length;
         }
-        if (at != block.paragraph.text.size()) spansCoverText = false;
+        if (at != paragraph.text.count) spansCoverText = false;
+
+        if (paragraph.text.count == 0) continue;
+
+        const std::span<const typography::OffsetSpan> runs = book.offsetsOf(paragraph);
+        if (runs.empty() || runs.front().start != 0 || runs.back().start >= paragraph.text.count)
+            offsetsInOrder = false;
+        for (size_t i = 1; i < runs.size(); ++i)
+            if (runs[i].start <= runs[i - 1].start) offsetsInOrder = false;
     }
     check(spansCoverText, "прогоны стиля покрывают текст без дыр и перекрытий");
-    check(offsetsMatchText, "у каждого символа есть позиция в книге");
+    check(offsetsInOrder, "прогоны позиций идут по порядку с начала абзаца и не выходят за текст");
 
     // Свёртка пробелов: ни двух подряд, ни пробела по краям — кроме
     // преформата, где значимо всё.
     bool collapsed = true;
-    for (const typography::Block& block : blocks) {
+    for (const typography::Block& block : book.blocks) {
         if (block.kind == typography::BlockKind::Preformatted) continue;
-        const std::wstring_view text = block.paragraph.text.wchars();
+        const std::wstring_view text = book.textOf(block.paragraph).wchars();
         if (!text.empty() && (text.front() == L' ' || text.back() == L' ')) collapsed = false;
         if (text.find(L"  ") != std::wstring::npos) collapsed = false;
     }
@@ -295,7 +343,7 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
         const typography::Block& block = blocks[i];
         // Обрезка по букве, а не по байтам UTF-8: `%.100s` резал букву пополам
         // прямо в выводе теста.
-        const std::wstring_view whole = block.paragraph.text.wchars();
+        const std::wstring_view whole = book.textOf(block.paragraph).wchars();
         const size_t cut = unicode::floor_grapheme_boundary(whole, 50);
         const std::string text = toUtf8(whole.substr(0, cut));
 
@@ -309,14 +357,14 @@ void testBook(typography::Engine& engine, const std::filesystem::path& path) {
     // Ширина полосы книжного разворота при кегле 20: около 60 знаков в строке,
     // как в бумажной книге. Вторая ширина — узкое окно, где абзац разбивается
     // куда чаще и вылезают все ошибки нарезки.
-    testLayout(engine, blocks, 620.0f);
-    testLayout(engine, blocks, 260.0f);
-    showFirstLines(engine, blocks, 620.0f);
-    testPagination(engine, blocks, book.characterCount());
-    testChunkedPagination(engine, blocks, book.characterCount());
-    testEagerPagination(engine, blocks, book.characterCount());
-    testChapterFirstPage(engine, blocks, book.characterCount());
-    testScaledShaping(engine, blocks, 620.0f);
+    testLayout(engine, book, 620.0f);
+    testLayout(engine, book, 260.0f);
+    showFirstLines(engine, book, 620.0f);
+    testPagination(engine, book, document.characterCount());
+    testChunkedPagination(engine, book, document.characterCount());
+    testEagerPagination(engine, book, document.characterCount());
+    testChapterFirstPage(engine, book, document.characterCount());
+    testScaledShaping(engine, book, 620.0f);
 }
 
 /// Стиль блока — та же таблица, по которой потом верстает читалка. Здесь она
@@ -363,8 +411,8 @@ typography::ParagraphStyle styleFor(const typography::Block& block, float base) 
 /// Вёрстка всей книги на заданной ширине полосы. Проверяются те свойства, без
 /// которых страница не построится: строки не шире полосы, идут по порядку и
 /// покрывают текст, у каждой есть высота.
-void testLayout(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                float width) {
+void testLayout(typography::Engine& engine, const typography::BookText& book, float width) {
+    const std::span<const typography::Block> blocks = book.flow();
     const auto started = std::chrono::steady_clock::now();
 
     size_t lineCount = 0;
@@ -380,11 +428,12 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
     std::wstring worstNeighbours;
 
     for (const typography::Block& block : blocks) {
-        if (block.paragraph.text.empty())
+        if (block.paragraph.text.count == 0)
             continue;
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
-        const auto lines = engine.layout(block.paragraph, width, style);
+        const auto lines = engine.layout(book, block.paragraph, width, style);
+        const std::wstring_view text = book.textOf(block.paragraph).wchars();
 
         uint32_t reached = 0;
         for (const typography::Line& line : lines) {
@@ -397,15 +446,14 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
             // разряд.
             if (line.width > width + 0.15f && line.width - width > worstOverflow) {
                 worstOverflow = line.width - width;
-                worstLine = block.paragraph.text.wchars().substr(line.textStart, line.textLength);
+                worstLine = text.substr(line.textStart, line.textLength);
                 worstStart = line.textStart;
-                worstNeighbours = block.paragraph.text.wchars().substr(
-                    line.textStart >= 6 ? line.textStart - 6 : 0,
-                    line.textLength + 12);
+                worstNeighbours = text.substr(line.textStart >= 6 ? line.textStart - 6 : 0,
+                                              line.textLength + 12);
                 worstKind = nameOf(block.kind);
                 worstRuns = line.runs.size();
-                worstBlockLength = block.paragraph.text.size();
-                worstSpans = block.paragraph.spans.size();
+                worstBlockLength = block.paragraph.text.count;
+                worstSpans = block.paragraph.spans.count;
             }
             if (line.textStart < reached) inOrder = false;
             if (line.height <= 0.0f) haveHeight = false;
@@ -413,7 +461,7 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
             reached = line.textStart + line.textLength;
         }
 
-        if (reached > block.paragraph.text.size()) inOrder = false;
+        if (reached > block.paragraph.text.count) inOrder = false;
     }
 
     const auto elapsed = std::chrono::duration<double, std::milli>(
@@ -431,18 +479,20 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
     std::wstring firstMarker;
 
     for (const typography::Block& block : blocks) {
-        anchors += block.paragraph.notes.size();
+        const std::span<const typography::NoteAnchor> notes = book.notesOf(block.paragraph);
+        anchors += notes.size();
 
-        if (firstMarker.empty() && !block.paragraph.notes.empty()) {
-            const typography::NoteAnchor& note = block.paragraph.notes.front();
-            firstMarker = block.paragraph.text.wchars().substr(note.position, note.length);
-        }
+        if (firstMarker.empty() && !notes.empty())
+            firstMarker = book.textOf(block.paragraph)
+                              .wchars()
+                              .substr(notes.front().position, notes.front().length);
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
-        for (const typography::Line& line : engine.layout(block.paragraph, width, style)) {
+        for (const typography::Line& line : engine.layout(book, block.paragraph, width, style)) {
             placed += line.notes.size();
             for (const typography::PlacedNote& note : line.notes)
-                if (note.target) ++resolved;
+                if (note.body < book.noteBodies.size() && book.noteBodies[note.body].count > 0)
+                    ++resolved;
         }
     }
 
@@ -474,21 +524,21 @@ void testLayout(typography::Engine& engine, const std::vector<typography::Block>
 
 /// Первые строки книги как текст — самый прямой способ увидеть, что вёрстка
 /// разбила абзац там, где надо.
-void showFirstLines(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                    float width) {
+void showFirstLines(typography::Engine& engine, const typography::BookText& book, float width) {
     int shown = 0;
 
-    for (const typography::Block& block : blocks) {
-        if (block.paragraph.text.size() < 200 || shown > 0)
+    for (const typography::Block& block : book.flow()) {
+        if (block.paragraph.text.count < 200 || shown > 0)
             continue;
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
-        const auto lines = engine.layout(block.paragraph, width, style);
+        const auto lines = engine.layout(book, block.paragraph, width, style);
 
         std::printf("  абзац на полосе %.0f (отступ %.0f):\n", width, style.firstLineIndent);
         for (size_t i = 0; i < lines.size() && i < 8; ++i) {
             const typography::Line& line = lines[i];
-            const std::wstring text(block.paragraph.text.wchars().substr(line.textStart, line.textLength));
+            const std::wstring text(
+                book.textOf(block.paragraph).wchars().substr(line.textStart, line.textLength));
             std::printf("    %6.1f |%s\n", line.width, toUtf8(text).c_str());
         }
         ++shown;
@@ -501,15 +551,17 @@ void showFirstLines(typography::Engine& engine, const std::vector<typography::Bl
 /// происходит на каждое нажатие Ctrl+«+», и вопрос «почему смена кегля
 /// подтормаживает» решается тем, какая доля этого времени приходится на
 /// шейпинг, а какая на саму раскладку.
-void testPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+void testPagination(typography::Engine& engine, const typography::BookText& book,
                     uint32_t characterCount) {
+    const std::span<const typography::Block> blocks = book.flow();
+
     typography::PageStyle style;
     style.width = 620.0f;
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
     const auto started = std::chrono::steady_clock::now();
-    typography::Chapter paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, book, blocks, characterCount);
     paginator.setStyle(style);
     const auto firstElapsed = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - started).count();
@@ -572,13 +624,14 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
         // начинает. В самой читалке размер есть — там такая глава страницу
         // начинает; здесь ограничиваемся текстовыми началами, а их
         // большинство.
-        if (block.paragraph.charOffsets.empty()) continue;
+        if (block.paragraph.text.count == 0) continue;
         ++chaptersChecked;
 
-        // Начало страницы — это первый поставленный на неё символ, а он у
-        // текстового блока лежит в charOffsets (после свёрнутых пробелов), а не
-        // в charOffset узла: у заголовка с отбивкой перед текстом они разные.
-        const uint32_t firstChar = block.paragraph.charOffsets.front();
+        // Начало страницы — это первый поставленный на неё символ, а его
+        // позиция у текстового блока — из прогонов позиций (после свёрнутых
+        // пробелов), а не charOffset узла: у заголовка с отбивкой перед текстом
+        // они разные.
+        const uint32_t firstChar = book.charOffsetAt(block.paragraph, 0);
         const size_t at = paginator.pageForCharOffset(firstChar);
         if (paginator.page(at).firstCharOffset != firstChar) chaptersStartPages = false;
     }
@@ -603,14 +656,14 @@ void testPagination(typography::Engine& engine, const std::vector<typography::Bl
 /// набранные не переписываются задним числом. На втором стоит то, ради чего
 /// порции и заведены, — читалка показывает страницу, не дожидаясь конца
 /// счёта, и показанное потом не должно оказаться неправдой.
-void testChunkedPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+void testChunkedPagination(typography::Engine& engine, const typography::BookText& book,
                            uint32_t characterCount) {
     typography::PageStyle style;
     style.width = 620.0f;
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
-    typography::Chapter paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, book, book.flow(), characterCount);
     paginator.setStyle(style);
 
     // Снимок целой вёрстки. Именно снимок, а не ссылки: следующая вёрстка
@@ -660,7 +713,7 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
     // цена самого дорогого блока книги; разорвать его нечем.
     double worstBlock = 0.0;
     paginator.beginLayout(style);
-    check(!paginator.isComplete() || blocks.empty(), "начатая вёрстка ещё не досчитана");
+    check(!paginator.isComplete() || book.flow().empty(), "начатая вёрстка ещё не досчитана");
 
     while (true) {
         const auto started = std::chrono::steady_clock::now();
@@ -716,14 +769,14 @@ void testChunkedPagination(typography::Engine& engine, const std::vector<typogra
 /// дошли, набор доводится ровно до нужного места и не дальше. На этом стоит
 /// листание назад и прыжок по закладке — ждать порций там нечего, но и считать
 /// главу целиком незачем.
-void testEagerPagination(typography::Engine& engine, const std::vector<typography::Block>& blocks,
+void testEagerPagination(typography::Engine& engine, const typography::BookText& book,
                          uint32_t characterCount) {
     typography::PageStyle style;
     style.width = 620.0f;
     style.height = 800.0f;
     style.fontSize = 20.0f;
 
-    typography::Chapter paginator(engine, blocks, characterCount);
+    typography::Chapter paginator(engine, book, book.flow(), characterCount);
     paginator.setStyle(style);
     if (paginator.pageCount() < 8) {
         check(true, "книга слишком коротка для проверки досчёта — пропущено");
@@ -734,7 +787,7 @@ void testEagerPagination(typography::Engine& engine, const std::vector<typograph
     // символом страницы, на которой читатель стоял.
     const uint32_t at = paginator.page(paginator.pageCount() / 2).firstCharOffset;
 
-    typography::Chapter second(engine, blocks, characterCount);
+    typography::Chapter second(engine, book, book.flow(), characterCount);
     second.beginLayout(style);
     const bool more = second.advanceTo(at);
     const size_t reached = second.pageForCharOffset(at);
@@ -755,9 +808,10 @@ void testEagerPagination(typography::Engine& engine, const std::vector<typograph
 /// пагинатор отдаёт её пустой, читатель видит пустую страницу. Тест
 /// воспроизводит стык на настоящей книге: берёт главу из середины и проверяет,
 /// что её страница 0 непуста и начинается ровно с её первого блока.
-void testChapterFirstPage(typography::Engine& engine,
-                          const std::vector<typography::Block>& blocks,
+void testChapterFirstPage(typography::Engine& engine, const typography::BookText& book,
                           uint32_t characterCount) {
+    const std::span<const typography::Block> blocks = book.flow();
+
     std::vector<size_t> starts;
     for (size_t i = 0; i < blocks.size(); ++i)
         if (i == 0 || blocks[i].startsSection == 1) starts.push_back(i);
@@ -780,8 +834,8 @@ void testChapterFirstPage(typography::Engine& engine,
         const size_t first = starts[c];
         const size_t last = c + 1 < starts.size() ? starts[c + 1] : blocks.size();
 
-        const std::span<const typography::Block> span(blocks.data() + first, last - first);
-        typography::Chapter chapter(engine, span, characterCount);
+        typography::Chapter chapter(engine, book, blocks.subspan(first, last - first),
+                                    characterCount);
         chapter.beginLayout(style);
         chapter.advanceToPage(static_cast<size_t>(-1));
 
@@ -807,7 +861,7 @@ void testChapterFirstPage(typography::Engine& engine,
             const typography::Block& b = blocks[i];
             std::printf("    [%s @%u sect%u lvl%u] %.70s\n", nameOf(b.kind), b.charOffset,
                         static_cast<unsigned>(b.startsSection), static_cast<unsigned>(b.level),
-                        toUtf8(b.paragraph.text.wchars()).c_str());
+                        toUtf8(book.textOf(b.paragraph).wchars()).c_str());
         }
     }
 
@@ -823,19 +877,15 @@ void testChapterFirstPage(typography::Engine& engine,
 /// влезла, требует новой страницы — а закрывать нечего, и набор до
 /// исправления ходил по кругу вечно.
 void testSeparatorAtPageBottom(typography::Engine& engine) {
-    std::vector<typography::Block> blocks;
+    // Разделитель, за ним абзац: разделитель ничем в массивах не владеет, и
+    // встать перед абзацем ему ничто не мешает.
+    const u16_view line = u"Строка, которой уже не хватает места на полосе.";
+    typography::BookText book = paragraphOf(line);
 
     typography::Block separator;
     separator.kind = typography::BlockKind::Separator;
-    blocks.push_back(separator);
-
-    typography::Block paragraph;
-    paragraph.kind = typography::BlockKind::Paragraph;
-    paragraph.paragraph.text = u16_text{u"Строка, которой уже не хватает места на полосе."};
-    paragraph.paragraph.charOffsets.resize(paragraph.paragraph.text.size());
-    for (uint32_t i = 0; i < paragraph.paragraph.charOffsets.size(); ++i)
-        paragraph.paragraph.charOffsets[i] = i;
-    blocks.push_back(paragraph);
+    book.blocks.insert(book.blocks.begin(), separator);
+    book.flowCount = 2;
 
     typography::PageStyle style;
     style.width = 400.0f;
@@ -844,8 +894,7 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
     // строка на неё вместе уже не помещаются.
     style.height = 30.0f;
 
-    typography::Chapter paginator(
-        engine, blocks, static_cast<uint32_t>(paragraph.paragraph.text.size()));
+    typography::Chapter paginator(engine, book, book.flow(), static_cast<uint32_t>(line.size()));
     paginator.setStyle(style);
 
     std::printf("\n=== узкая полоса ===\n");
@@ -959,26 +1008,17 @@ bool isLetterStart(u16_view text, uint32_t at) {
     return at >= text.size() || unicode::floor_grapheme_boundary(text, at) == at;
 }
 
-typography::Paragraph paragraphOf(u16_view text) {
-    typography::Paragraph paragraph;
-    paragraph.text = u16_text(text);
-    paragraph.charOffsets.resize(paragraph.text.size());
-    for (uint32_t i = 0; i < paragraph.charOffsets.size(); ++i)
-        paragraph.charOffsets[i] = i;
-    return paragraph;
-}
-
 /// Ни строка, ни прогон глифов не начинаются внутри буквы.
-bool linesStartAtLetters(const typography::Paragraph& paragraph,
-                         std::span<const typography::Line> lines, const char* what) {
+bool linesStartAtLetters(u16_view text, std::span<const typography::Line> lines,
+                         const char* what) {
     bool whole = !lines.empty();
     for (const typography::Line& line : lines) {
-        if (!isLetterStart(paragraph.text, line.textStart)) {
+        if (!isLetterStart(text, line.textStart)) {
             std::printf("       %s: строка начинается внутри буквы на %u\n", what, line.textStart);
             whole = false;
         }
         for (const typography::GlyphRun& run : line.runs) {
-            if (!isLetterStart(paragraph.text, run.textStart)) {
+            if (!isLetterStart(text, run.textStart)) {
                 std::printf("       %s: прогон начинается внутри буквы на %u\n", what, run.textStart);
                 whole = false;
             }
@@ -1000,8 +1040,8 @@ float markOffset(const typography::GlyphRun& run) {
 /// распадается, пара становится двумя прямоугольниками.
 ///
 /// Места, где вёрстка сама выбирает позицию в тексте: деление прогона
-/// длиннее ёмкости кластерной карты, рубка слова шире полосы, строка с места
-/// чтения, разрядка и равномерное сжатие строки, которые двигают глифы.
+/// длиннее ёмкости кластерной карты, рубка слова шире полосы, разрядка и
+/// равномерное сжатие строки, которые двигают глифы.
 void testClustersStayWhole(typography::Engine& engine) {
     std::printf("\n=== буква не режется ===\n");
 
@@ -1017,24 +1057,25 @@ void testClustersStayWhole(typography::Engine& engine) {
 </section>
 <notes show="0"><notebody id="n1"><p>сноска</p></notebody></notes>
 </fb3-body>)"));
-        const std::vector<typography::Block> blocks = typography::flatten(document.body());
+        const typography::BookText book = typography::flatten(document);
+        const std::span<const typography::Block> blocks = book.flow();
         check(blocks.size() == 3, "книга из трёх абзацев развёрнута в три блока");
 
         if (blocks.size() == 3) {
             for (const typography::Block& block : blocks) {
-                for (const typography::StyleSpan& span : block.paragraph.spans)
-                    check(isLetterStart(block.paragraph.text, span.start),
+                const u16_view text = book.textOf(block.paragraph);
+                for (const typography::StyleSpan& span : book.spansOf(block.paragraph))
+                    check(isLetterStart(text, span.start),
                           "прогон стиля начинается с буквы, а не с её знака");
-                for (const typography::NoteAnchor& note : block.paragraph.notes)
-                    check(isLetterStart(block.paragraph.text, note.position),
-                          "знак сноски стоит между буквами");
+                for (const typography::NoteAnchor& note : book.notesOf(block.paragraph))
+                    check(isLetterStart(text, note.position), "знак сноски стоит между буквами");
             }
 
-            check(blocks[0].paragraph.text == L"\x0436\x0438\x0306\x0436",
+            check(book.textOf(blocks[0].paragraph) == L"\x0436\x0438\x0306\x0436",
                   "знак, размеченный отдельно, остаётся при своей букве");
-            check(blocks[1].paragraph.text.wchars().starts_with(L" \x0301"),
+            check(book.textOf(blocks[1].paragraph).wchars().starts_with(L" \x0301"),
                   "пробел — основа знака в начале абзаца — не выбрасывается");
-            check(blocks[2].paragraph.text == L"\x0436\x0438\x0306" L"1" L"\x0436",
+            check(book.textOf(blocks[2].paragraph) == L"\x0436\x0438\x0306" L"1" L"\x0436",
                   "знак сноски, поставленный вёрсткой, встаёт после буквы, а не внутри неё");
         }
     }
@@ -1054,8 +1095,8 @@ void testClustersStayWhole(typography::Engine& engine) {
         text += letter.text;
         for (int i = 0; i < 1000; ++i) text.push_back(letter.filler);
 
-        const typography::Paragraph paragraph = paragraphOf(text);
-        check(linesStartAtLetters(paragraph, engine.layout(paragraph, 400.0f, style), letter.name),
+        check(linesStartAtLetters(text, layoutOf(engine, paragraphOf(text), 400.0f, style),
+                                  letter.name),
               std::string("длинный прогон делится между буквами: ") + letter.name);
     }
 
@@ -1065,17 +1106,8 @@ void testClustersStayWhole(typography::Engine& engine) {
         for (const CorpusLetter& letter : kLetters)
             word += letter.text;
 
-    const typography::Paragraph chopped = paragraphOf(word);
-    check(linesStartAtLetters(chopped, engine.layout(chopped, 40.0f, style), "рубка"),
+    check(linesStartAtLetters(word, layoutOf(engine, paragraphOf(word), 40.0f, style), "рубка"),
           "слово шире полосы рубится между буквами");
-
-    // Строка с места чтения: место указывает на знак краткой, строка
-    // начинается с его буквы.
-    const typography::Paragraph reading = paragraphOf(u"\x0436\x0436\x0438\x0306\x0436\x0436");
-    const typography::ShapedParagraphPtr shaped = engine.shape(reading, style);
-    const auto fromMark = engine.layoutFrom(*shaped, 3, 400.0f, style);
-    check(!fromMark.empty() && fromMark.front().textStart == 2,
-          "строка с места чтения начинается с буквы, а не с её знака");
 
     // Знаки сажает на букву не всякий шрифт: Georgia, шрифт читалки по
     // умолчанию, рисует знак ударения отдельным глифом со своей шириной.
@@ -1090,14 +1122,13 @@ void testClustersStayWhole(typography::Engine& engine) {
     typography::ParagraphStyle ragged = style;
     ragged.alignment = typography::Alignment::Left;
 
-    typography::Paragraph plain = paragraphOf(u"\x0436\x0301\x0436\x0301");
-    typography::Paragraph spaced = plain;
     typography::FontStyle spacing;
     spacing.spaced = true;
-    spaced.spans.push_back(typography::StyleSpan{0, 4, spacing});
 
-    const auto plainLines = engine.layout(plain, 1000.0f, ragged);
-    const auto spacedLines = engine.layout(spaced, 1000.0f, ragged);
+    const auto plainLines =
+        layoutOf(engine, paragraphOf(u"\x0436\x0301\x0436\x0301"), 1000.0f, ragged);
+    const auto spacedLines =
+        layoutOf(engine, paragraphOf(u"\x0436\x0301\x0436\x0301", spacing), 1000.0f, ragged);
     const bool twoGlyphs = !plainLines.empty() && !spacedLines.empty() &&
                            plainLines[0].runs.size() == 1 && spacedLines[0].runs.size() == 1 &&
                            plainLines[0].runs[0].advances.size() == 4 &&
@@ -1114,15 +1145,15 @@ void testClustersStayWhole(typography::Engine& engine) {
     // процентов — больше, чем DirectWrite сжимает сам, так что остаток
     // снимает равномерное сжатие. Ширины сжимаются, глиф буквы — нет, и знак
     // обязан остаться там, где его посадил шрифт.
-    const typography::Paragraph single = paragraphOf(u"\x0436\x0301");
-    const auto natural = engine.layout(single, 1000.0f, ragged);
+    const typography::BookText single = paragraphOf(u"\x0436\x0301");
+    const auto natural = layoutOf(engine, single, 1000.0f, ragged);
     const bool attached = !natural.empty() && natural[0].runs.size() == 1 &&
                           natural[0].runs[0].advances.size() == 2 &&
                           natural[0].runs[0].advances[1] == 0.0f;
     check(attached, "в Segoe UI знак ударения посажен на «ж»: глиф без ширины");
     if (attached) {
         const typography::GlyphRun& wide = natural[0].runs[0];
-        const auto squeezed = engine.layout(single, wide.advances[0] * 0.9f, style);
+        const auto squeezed = layoutOf(engine, single, wide.advances[0] * 0.9f, style);
         const bool oneRun = squeezed.size() == 1 && squeezed[0].runs.size() == 1 &&
                             squeezed[0].runs[0].advances.size() == 2;
         check(oneRun, "переполненная строка из одной буквы — одна строка из двух глифов");
@@ -1145,22 +1176,21 @@ void testClustersStayWhole(typography::Engine& engine) {
 /// естественном режиме измерения линейны по кеглю, поэтому строку при кегле 26
 /// можно получить из шейпинга при кегле 20 умножением. Если допущение неверно,
 /// разойдутся переломы — и разойдутся заметно, а не в последнем разряде.
-void testScaledShaping(typography::Engine& engine, const std::vector<typography::Block>& blocks,
-                       float width) {
+void testScaledShaping(typography::Engine& engine, const typography::BookText& book, float width) {
     size_t compared = 0;
     size_t sameBreaks = 0;
     float worstWidth = 0.0f;
 
-    for (const typography::Block& block : blocks) {
-        if (block.paragraph.text.empty())
+    for (const typography::Block& block : book.flow()) {
+        if (block.paragraph.text.count == 0)
             continue;
 
         const typography::ParagraphStyle atTwenty = styleFor(block, 20.0f);
         const typography::ParagraphStyle atTwentySix = styleFor(block, 26.0f);
 
-        const typography::ShapedParagraphPtr shaped = engine.shape(block.paragraph, atTwenty);
+        const typography::ShapedParagraphPtr shaped = engine.shape(book, block.paragraph, atTwenty);
         const auto scaled = engine.layout(*shaped, width, atTwentySix);
-        const auto fresh = engine.layout(block.paragraph, width, atTwentySix);
+        const auto fresh = engine.layout(book, block.paragraph, width, atTwentySix);
 
         ++compared;
         if (scaled.size() != fresh.size())
@@ -1331,9 +1361,8 @@ void testHyphenationInLayout(typography::Engine& engine) {
     // и дырой в пол-полосы.
     u16_text text;
     for (int at = 0; at < 12; ++at) text += u"достопримечательность ";
-    const typography::Paragraph long_ = paragraphOf(text);
 
-    const auto lines = engine.layout(long_, 200.0f, style);
+    const auto lines = layoutOf(engine, paragraphOf(text), 200.0f, style);
     size_t hyphenated = 0;
     for (const typography::Line& line : lines)
         if (endsWithHyphen(line)) ++hyphenated;
@@ -1342,11 +1371,8 @@ void testHyphenationInLayout(typography::Engine& engine) {
     check(hyphenated > 0, "слово переносится, и дефис нарисован");
 
     // Мягкий перенос из книги невидим, пока строка на нём не кончилась.
-    const typography::Paragraph whole = paragraphOf(u"несколько");
-    const typography::Paragraph marked = paragraphOf(u"не­сколько");
-
-    const auto plain = engine.layout(whole, 1000.0f, style);
-    const auto soft = engine.layout(marked, 1000.0f, style);
+    const auto plain = layoutOf(engine, paragraphOf(u"несколько"), 1000.0f, style);
+    const auto soft = layoutOf(engine, paragraphOf(u"не­сколько"), 1000.0f, style);
     const bool measured = plain.size() == 1 && soft.size() == 1;
     check(measured && std::abs(plain[0].width - soft[0].width) < 0.01f,
           "мягкий перенос не занимает места посреди строки");
@@ -1364,10 +1390,9 @@ void testHyphenationInLayout(typography::Engine& engine) {
     typography::ParagraphStyle ragged = style;
     ragged.alignment = typography::Alignment::Left;
 
-    const typography::Paragraph consonants = paragraphOf(u"ффффф­ффффф");
-    const float half = engine.layout(paragraphOf(u"ффффф"), 1000.0f, ragged).front().width;
+    const float half = layoutOf(engine, paragraphOf(u"ффффф"), 1000.0f, ragged).front().width;
 
-    const auto broken = engine.layout(consonants, half * 1.5f, ragged);
+    const auto broken = layoutOf(engine, paragraphOf(u"ффффф­ффффф"), half * 1.5f, ragged);
     const bool atSoftHyphen = broken.size() == 2 && endsWithHyphen(broken[0]) &&
                               broken[0].textLength == 6 && broken[1].textStart == 6;
     if (!atSoftHyphen) printLines(broken);
@@ -1376,7 +1401,7 @@ void testHyphenationInLayout(typography::Engine& engine) {
     // Слово шире полосы, но с переносами, которые делят его на помещающиеся
     // куски, переносится, а не рубится: каждая строка, кроме последней,
     // кончается дефисом.
-    const auto split = engine.layout(paragraphOf(u"достопримечательность"), 90.0f, ragged);
+    const auto split = layoutOf(engine, paragraphOf(u"достопримечательность"), 90.0f, ragged);
     bool hyphenatedNotChopped = split.size() > 1;
     for (size_t at = 0; at + 1 < split.size(); ++at)
         if (!endsWithHyphen(split[at])) hyphenatedNotChopped = false;
@@ -1387,11 +1412,11 @@ void testHyphenationInLayout(typography::Engine& engine) {
     // ширины ни была полоса.
     u16_text tied;
     for (int at = 0; at < 20; ++at) tied += u"аа бб вв ";
-    const typography::Paragraph paragraph = paragraphOf(tied);
+    const typography::BookText paragraph = paragraphOf(tied);
 
     bool kept = true;
     for (float width = 40.0f; width <= 400.0f; width += 7.0f)
-        for (const typography::Line& line : engine.layout(paragraph, width, style))
+        for (const typography::Line& line : layoutOf(engine, paragraph, width, style))
             if (line.textStart > 0 && tied.plain()[line.textStart - 1] == u' ') {
                 std::printf("       полоса %.0f: строка начата после неразрывного пробела\n", width);
                 kept = false;
@@ -1405,23 +1430,25 @@ void testHyphenationInLayout(typography::Engine& engine) {
 /// длиннее двух строк. Штраф за двойной перенос такого не обеспечивал: серии в
 /// пять строк оставались при любом его весе.
 void testHyphenSeries(typography::Engine& engine, const std::filesystem::path& testdata) {
-    const std::filesystem::path book = testdata / "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
-    if (!std::filesystem::exists(book)) {
+    const std::filesystem::path bookPath = testdata / "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
+    if (!std::filesystem::exists(bookPath)) {
         std::printf("\n=== серии переносов: нет «Отцов и детей», пропущено ===\n");
         return;
     }
 
     std::printf("\n=== серии переносов ===\n");
-    const fb3::Document document(book);
-    const std::vector<typography::Block> blocks = typography::flatten(document.body());
+    const fb3::Document document(bookPath);
+    const typography::BookText book = typography::flatten(document);
 
     for (const float width : {460.0f, 300.0f}) {
         size_t lines = 0, hyphens = 0, longest = 0;
-        for (const typography::Block& block : blocks) {
-            if (block.kind != typography::BlockKind::Paragraph || block.paragraph.text.empty()) continue;
+        for (const typography::Block& block : book.flow()) {
+            if (block.kind != typography::BlockKind::Paragraph || block.paragraph.text.count == 0)
+                continue;
 
             size_t row = 0;
-            for (const typography::Line& line : engine.layout(block.paragraph, width, styleFor(block, 20.0f))) {
+            for (const typography::Line& line :
+                 engine.layout(book, block.paragraph, width, styleFor(block, 20.0f))) {
                 ++lines;
                 row = endsWithHyphen(line) ? row + 1 : 0;
                 hyphens += row != 0;
@@ -1441,20 +1468,20 @@ void testHyphenSeries(typography::Engine& engine, const std::filesystem::path& t
 void shootHyphenation(typography::Engine& engine, const std::filesystem::path& testdata) {
     wchar_t shot[MAX_PATH]{};
     const DWORD shotLength = GetEnvironmentVariableW(L"BUKVITSA_HYPHEN_SHOT", shot, MAX_PATH);
-    const std::filesystem::path book = testdata / "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
-    if (shotLength == 0 || shotLength >= MAX_PATH || !std::filesystem::exists(book)) return;
+    const std::filesystem::path bookPath = testdata / "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
+    if (shotLength == 0 || shotLength >= MAX_PATH || !std::filesystem::exists(bookPath)) return;
 
     std::printf("\n=== снимок переносов ===\n");
 
-    const fb3::Document document(book);
-    const std::vector<typography::Block> blocks = typography::flatten(document.body());
+    const fb3::Document document(bookPath);
+    const typography::BookText book = typography::flatten(document);
 
     // Обычные абзацы подряд с первого длинного: заголовки выключены по центру
     // и о переносах ничего не скажут.
     std::vector<const typography::Block*> chosen;
-    for (const typography::Block& block : blocks) {
+    for (const typography::Block& block : book.flow()) {
         if (block.kind != typography::BlockKind::Paragraph) continue;
-        if (chosen.empty() && block.paragraph.text.size() < 400) continue;
+        if (chosen.empty() && block.paragraph.text.count < 400) continue;
         chosen.push_back(&block);
         if (chosen.size() == 9) break;
     }
@@ -1465,7 +1492,8 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
     typography::ParagraphStyle measure;
     measure.alignment = typography::Alignment::Left;
     const u16_view pangram = u"съешь же ещё этих мягких французских булок, да выпей чаю";
-    const float pangramWidth = engine.layout(paragraphOf(pangram), 10000.0f, measure).front().width;
+    const float pangramWidth =
+        layoutOf(engine, paragraphOf(pangram), 10000.0f, measure).front().width;
 
     const float kColumn = std::round(45.0f * pangramWidth / static_cast<float>(pangram.size()));
     constexpr float kGap = 40.0f, kMargin = 24.0f;
@@ -1488,7 +1516,8 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
         Column& column = columns[side];
         size_t row = 0;
         for (const typography::Block* block : chosen) {
-            column.paragraphs.push_back(engine.layout(block->paragraph, kColumn, styleFor(*block, 20.0f)));
+            column.paragraphs.push_back(
+                engine.layout(book, block->paragraph, kColumn, styleFor(*block, 20.0f)));
             for (const typography::Line& line : column.paragraphs.back()) {
                 column.height += line.height;
                 ++column.lines;
@@ -1602,18 +1631,26 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
               document.noteBody("hundred") && document.noteBody("two"),
           "тела сносок находятся по id");
 
+    // Тела развёрнуты в хранилище по номеру в списке тел документа — тому же,
+    // что несёт якорь знака.
+    const typography::BookText book = typography::flatten(document);
+    check(book.noteBodies.size() == document.noteBodies().size(), "у каждого тела — свои блоки");
+
     constexpr float kFontSize = 20.0f;
     constexpr float kWidth = 300.0f;
-    const auto layoutOf = [&](std::string_view id, float width) {
-        const fb3::Node* note = document.noteBody(id);
-        return note ? typography::layoutNote(engine, *note, width, kFontSize)
-                    : typography::NoteLayout{};
+    const auto noteOf = [&](std::string_view id, float width) {
+        const std::span<const fb3::Node* const> bodies = document.noteBodies();
+        const auto found = std::find(bodies.begin(), bodies.end(), document.noteBody(id));
+        if (found == bodies.end() || book.noteBodies.size() != bodies.size())
+            return typography::NoteLayout{};
+        const auto index = static_cast<size_t>(found - bodies.begin());
+        return typography::layoutNote(engine, book, book.noteBodies[index], width, kFontSize);
     };
 
     // Пустая сноска не занимает места: всплывашка по ней не открывается.
-    const typography::NoteLayout emptyNote = layoutOf("empty", kWidth);
-    const typography::NoteLayout blankNote = layoutOf("blank", kWidth);
-    const typography::NoteLayout noWidth = layoutOf("word", 0.0f);
+    const typography::NoteLayout emptyNote = noteOf("empty", kWidth);
+    const typography::NoteLayout blankNote = noteOf("blank", kWidth);
+    const typography::NoteLayout noWidth = noteOf("word", 0.0f);
     check(emptyNote.lines.empty() && emptyNote.height == 0.0f,
           "пустая сноска — ни строки, высота ноль");
     check(blankNote.lines.empty() && blankNote.height == 0.0f,
@@ -1622,8 +1659,8 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
           "колонка без ширины — ни строки, высота ноль");
 
     // Высота растёт с текстом.
-    const typography::NoteLayout word = layoutOf("word", kWidth);
-    const typography::NoteLayout hundredWords = layoutOf("hundred", kWidth);
+    const typography::NoteLayout word = noteOf("word", kWidth);
+    const typography::NoteLayout hundredWords = noteOf("hundred", kWidth);
     std::printf("  слово: строк %zu, высота %.1f; сто слов: строк %zu, высота %.1f\n",
                 word.lines.size(), word.height, hundredWords.lines.size(), hundredWords.height);
     check(word.lines.size() == 1 && notePlacedDownwards(word),
@@ -1634,7 +1671,7 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
 
     // Отбивка между абзацами больше шага строк внутри абзаца. Первая строка
     // второго абзаца — та, что начинается с начала его текста.
-    const typography::NoteLayout two = layoutOf("two", kWidth);
+    const typography::NoteLayout two = noteOf("two", kWidth);
     size_t second = 0;
     for (size_t i = 1; i < two.lines.size() && second == 0; ++i)
         if (two.lines[i].line.textStart == 0) second = i;
@@ -1650,7 +1687,7 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
           "отбивка между абзацами больше, чем между строками одного абзаца");
 
     // Уже колонка — больше строк.
-    const typography::NoteLayout narrow = layoutOf("hundred", kWidth / 2.0f);
+    const typography::NoteLayout narrow = noteOf("hundred", kWidth / 2.0f);
     check(narrow.lines.size() > hundredWords.lines.size() && narrow.height > hundredWords.height,
           "колонка вдвое уже — строк больше, сноска выше");
 
@@ -1661,23 +1698,180 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
         return;
     }
 
-    const fb3::Document book{bookPath};
-    std::vector<const fb3::Node*> targets;
-    for (const typography::Block& block : typography::flatten(book.body()))
-        for (const typography::NoteAnchor& anchor : block.paragraph.notes)
-            if (anchor.target &&
-                std::find(targets.begin(), targets.end(), anchor.target) == targets.end())
-                targets.push_back(anchor.target);
+    const fb3::Document nightmare{bookPath};
+    const typography::BookText stored = typography::flatten(nightmare);
+    std::vector<uint32_t> targets;
+    for (const typography::Block& block : stored.flow())
+        for (const typography::NoteAnchor& anchor : stored.notesOf(block.paragraph))
+            if (std::find(targets.begin(), targets.end(), anchor.body) == targets.end())
+                targets.push_back(anchor.body);
 
     bool allPlaced = true;
-    for (const fb3::Node* target : targets) {
-        const typography::NoteLayout note =
-            typography::layoutNote(engine, *target, kWidth, kFontSize);
+    for (const uint32_t target : targets) {
+        const typography::NoteLayout note = typography::layoutNote(
+            engine, stored, stored.noteBodies[target], kWidth, kFontSize);
         if (note.lines.empty() || !notePlacedDownwards(note)) allPlaced = false;
     }
 
     std::printf("  nightmare_example: сносок %zu\n", targets.size());
     check(!targets.empty() && allPlaced, "каждая сноска книги раскладывается в строки сверху вниз");
+}
+
+/// Позиция символа в книге по прогонам позиций там, где она не идёт вровень с
+/// индексом в тексте: свёрнутые пробелы, пара вне BMP, знак сноски, который
+/// поставила вёрстка. Книга маленькая, но развёрнута настоящим flatten.
+void testCharOffsets() {
+    std::printf("\n=== позиции символов ===\n");
+
+    // Девять сносок в третьем абзаце — затем, чтобы знак в четвёртом вышел из
+    // двух цифр.
+    std::string nine;
+    for (int i = 0; i < 9; ++i) nine += R"(ж<note href="n1" xlink:role="footnote"/>)";
+
+    const std::string body = std::string(R"(<?xml version="1.0" encoding="UTF-8"?>
+<fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" xmlns:xlink="http://www.w3.org/1999/xlink" id="00000000-0000-0000-0000-000000000004">
+<section id="s1">
+<p>a  b</p>
+<p>x&#x1F600;y</p>
+<p>)") + nine + R"(</p>
+<p>x<note href="n1" xlink:role="footnote"/>y</p>
+</section>
+<notes show="0"><notebody id="n1"><p>сноска</p></notebody></notes>
+</fb3-body>)";
+    const fb3::Document document{fb3Of(body)};
+    const typography::BookText book = typography::flatten(document);
+    const std::span<const typography::Block> blocks = book.flow();
+
+    check(blocks.size() == 4, "четыре абзаца — четыре блока потока");
+    if (blocks.size() != 4) return;
+
+    const auto at = [&](size_t block, uint32_t index) {
+        return book.charOffsetAt(blocks[block].paragraph, index);
+    };
+
+    // «a␠␠b»: свёрнутый пробел стоит на месте первого из двух, «b» — на своём.
+    const uint32_t a = at(0, 0);
+    check(book.textOf(blocks[0].paragraph) == L"a b", "два пробела свёрнуты в один");
+    check(a == blocks[0].charOffset, "первый символ абзаца стоит там же, где его узел");
+    check(at(0, 1) == a + 1 && at(0, 2) == a + 3, "позиции после свёртки: 0, 1, 3");
+    check(book.offsetsOf(blocks[0].paragraph).size() == 2,
+          "свёртка — одна точка разрыва, прогонов позиций два");
+
+    // Пара: обе половины несут одну позицию, следующий символ — на одну дальше.
+    const uint32_t x = at(1, 0);
+    check(blocks[1].paragraph.text.count == 4, "символ вне BMP — две единицы текста");
+    check(at(1, 1) == x + 1 && at(1, 2) == x + 1 && at(1, 3) == x + 2,
+          "обе половины пары — одна позиция, следующий символ — на одну дальше");
+
+    // Знак десятой сноски: цифры поставила вёрстка, в книге их нет, и обе
+    // стоят там, где стоит ссылка, — на позиции текста за ней.
+    const typography::Paragraph& marked = blocks[3].paragraph;
+    const uint32_t m = at(3, 0);
+    check(book.textOf(marked) == L"x10y", "знак десятой сноски — из двух цифр");
+    check(at(3, 1) == m + 1 && at(3, 2) == m + 1 && at(3, 3) == m + 1,
+          "цифры знака стоят на одной позиции, текст за ним — на своей");
+
+    const std::span<const typography::NoteAnchor> anchors = book.notesOf(marked);
+    check(anchors.size() == 1 && anchors[0].position == 1 && anchors[0].length == 2 &&
+              anchors[0].body == 0,
+          "якорь — обе цифры знака, тело — первое");
+
+    // Тело сноски — за потоком, своим блоком.
+    check(book.flowCount == 4 && book.noteBodies.size() == 1 && book.noteBodies[0].first == 4 &&
+              book.noteBodies[0].count == 1 && book.blocks.size() == 5,
+          "тело сноски — один блок сразу за потоком");
+}
+
+/// Пробел в конце абзаца, который свёртка не тронула (так бывает в
+/// преформате), — место разрыва, и разбивка берёт его, когда строка с ним
+/// вылезает за поле, а без него помещается. Разрыв пробел съедает, но строки
+/// за концом текста при этом не бывает: последней остаётся та, что кончилась
+/// на пробеле.
+void testTrailingSpace(typography::Engine& engine) {
+    std::printf("\n=== пробел в конце абзаца ===\n");
+
+    typography::ParagraphStyle ragged;
+    ragged.alignment = typography::Alignment::Left;
+
+    // Цифры: ни переноса, ни разрыва между ними нет, и слово — один бокс.
+    const float word = layoutOf(engine, paragraphOf(u"12345"), 1000.0f, ragged).front().width;
+    const typography::BookText spaced = paragraphOf(u"12345    ");
+    const auto lines = layoutOf(engine, spaced, word + 1.0f, ragged);
+
+    std::printf("  слово %.1f, полоса %.1f, строк %zu\n", word, word + 1.0f, lines.size());
+    check(lines.size() == 1 && lines[0].textStart == 0 && lines[0].textLength == 5 &&
+              lines[0].charOffset == 0,
+          "одна строка — слово, хвостовой пробел съеден разрывом");
+
+    bool inside = true;
+    for (const typography::Line& line : lines)
+        if (line.textStart >= onlyParagraph(spaced).text.count) inside = false;
+    check(inside, "строки за концом текста нет");
+}
+
+/// Тела сносок настоящих книг в хранилище: лежат за потоком чтения по
+/// порядку документа, глав не открывают, у каждого якоря непустое тело, и
+/// тело верстается тем же хранилищем, без разбора заново.
+void testNoteBodies(typography::Engine& engine, const std::filesystem::path& testdata) {
+    std::printf("\n=== тела сносок в хранилище ===\n");
+
+    // Возвращает число якорей во всей книге — и в потоке, и в самих телах.
+    const auto checkBook = [&](const char* name, size_t expectedBodies) -> size_t {
+        const std::filesystem::path path = testdata / name;
+        if (!std::filesystem::exists(path)) {
+            std::printf("  нет %s: пропущено\n", name);
+            return 0;
+        }
+
+        const fb3::Document document(path);
+        const typography::BookText book = typography::flatten(document);
+
+        size_t anchors = 0;
+        bool anchorsResolve = true;
+        for (const typography::Block& block : book.blocks)
+            for (const typography::NoteAnchor& anchor : book.notesOf(block.paragraph)) {
+                ++anchors;
+                if (anchor.body >= book.noteBodies.size() ||
+                    book.noteBodies[anchor.body].count == 0)
+                    anchorsResolve = false;
+            }
+
+        bool outsideChapters = true;
+        for (size_t i = book.flowCount; i < book.blocks.size(); ++i)
+            if (book.blocks[i].startsSection != 0) outsideChapters = false;
+
+        // Тела идут подряд, одно за другим, сразу за потоком и до конца блоков.
+        bool bodiesInOrder = true;
+        uint32_t next = book.flowCount;
+        for (const typography::Range& body : book.noteBodies) {
+            if (body.first != next) bodiesInOrder = false;
+            next = body.first + body.count;
+        }
+        if (next != book.blocks.size()) bodiesInOrder = false;
+
+        std::printf("  %s: блоков %zu, в потоке %u, тел %zu, якорей %zu\n", name,
+                    book.blocks.size(), book.flowCount, book.noteBodies.size(), anchors);
+        check(book.noteBodies.size() == expectedBodies, "тел сносок столько, сколько в книге");
+        check(book.flowCount < book.blocks.size(), "тела сносок лежат за потоком чтения");
+        check(bodiesInOrder, "тела идут подряд за потоком, по порядку документа");
+        check(anchors > 0 && anchorsResolve, "каждый якорь ведёт к непустому телу");
+        check(outsideChapters, "блоки тел глав не открывают");
+
+        if (!book.noteBodies.empty()) {
+            const typography::NoteLayout first =
+                typography::layoutNote(engine, book, book.noteBodies[0], 300.0f, 20.0f);
+            check(!first.lines.empty() && notePlacedDownwards(first),
+                  "первое тело верстается в строки прямо из хранилища");
+        }
+        return anchors;
+    };
+
+    // У «Отцов и детей» все 155 знаков — текст с телом, без картинок внутри,
+    // так что якорь есть у каждого.
+    const size_t turgenev = checkBook("Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3", 155);
+    if (turgenev > 0) check(turgenev == 155, "у каждой из 155 ссылок «Отцов и детей» свой якорь");
+
+    checkBook("nightmare_example.fb3", 6);
 }
 
 }  // namespace
@@ -1699,13 +1893,16 @@ int main() {
     testFormulas(dwrite.Get());
     testSeparatorAtPageBottom(engine);
     testClustersStayWhole(engine);
+    testCharOffsets();
     testHyphenation();
     testHyphenationInLayout(engine);
+    testTrailingSpace(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
     testHyphenSeries(engine, testdata);
     shootHyphenation(engine, testdata);
     testNoteLayout(engine, testdata);
+    testNoteBodies(engine, testdata);
 
     for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3",
                              "hardcore_file_structure.fb3",

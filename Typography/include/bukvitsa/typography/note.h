@@ -35,11 +35,14 @@ struct NoteLayout {
 /// Верстает тело сноски в колонку шириной `width`.
 ///
 /// @param engine   движок книги: его шрифты и его стиль текста.
-/// @param note     тело сноски — узел, на который указывает `NoteAnchor::target`.
+/// @param book     хранилище книги: тела сносок развёрнуты в нём вместе с
+///                 потоком чтения, заново ничего не разворачивается.
+/// @param body     блоки тела — `book.noteBodies[anchor.body]`.
 /// @param width    ширина колонки, DIP.
 /// @param fontSize кегль книги; сноска набирается от него мельче.
 /// @return ни одной строки и нулевая высота, если текста в сноске нет или
 ///         колонке нет ширины.
-NoteLayout layoutNote(Engine& engine, const fb3::Node& note, float width, float fontSize);
+NoteLayout layoutNote(Engine& engine, const BookText& book, Range body, float width,
+                      float fontSize);
 
 }  // namespace bukvitsa::typography

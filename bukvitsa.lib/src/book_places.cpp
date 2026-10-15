@@ -11,12 +11,12 @@ import wxl.core;
 
 namespace bukvitsa::reader {
 
-void BookPlaces::open(u16_text guid, std::span<const typography::Block> blocks, std::vector<Bookmark> marks) {
+void BookPlaces::open(u16_text guid, const typography::BookText& book, std::vector<Bookmark> marks) {
     guid_ = std::move(guid);
 
     // Оглавление — всегда сброс: строки не сравниваются (`ContentsEntry`), и
     // одинаковые заголовки двух книг не оставят в списке видов в прежнюю.
-    contents_.assign(contentsOf(blocks));
+    contents_.assign(contentsOf(book));
 
     // По порядку книги, как бы их ни записали: место закладки ищется двоичным
     // поиском. Файл пишем мы и по порядку, но его могли поправить руками.

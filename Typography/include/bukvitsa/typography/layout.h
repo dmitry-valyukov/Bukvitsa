@@ -76,7 +76,7 @@ struct GlyphRun {
 /// Знак сноски, попавший на эту строку, — уже в координатах строки, чтобы
 /// поймать по нему щелчок, ничего больше не пересчитывая.
 struct PlacedNote {
-    const fb3::Node* target = nullptr;
+    uint32_t body = 0;                     ///< номер тела сноски (NoteAnchor::body)
     float x = 0.0f;                        ///< от левого края полосы
     float width = 0.0f;
 };
@@ -109,8 +109,9 @@ struct Line {
 /// размера окна стоят одной разбивки на строки — на романе это разница между
 /// четвертью секунды и сорока миллисекундами.
 ///
-/// Владение: внутри лежат виды в текст абзаца и указатели на шрифты движка,
-/// поэтому объект нельзя пережить ни абзацу, ни `Engine`.
+/// Владение: внутри лежат виды в хранилище книги (текст и прогоны абзаца) и
+/// указатели на шрифты движка, поэтому объект нельзя пережить ни книге, ни
+/// `Engine`. Владелец у него один — тот, кто его завёл.
 class ShapedParagraph {
 public:
     ~ShapedParagraph();
@@ -130,7 +131,7 @@ private:
     std::unique_ptr<Data> data_;
 };
 
-using ShapedParagraphPtr = std::shared_ptr<ShapedParagraph>;
+using ShapedParagraphPtr = std::unique_ptr<ShapedParagraph>;
 
 /// Движок вёрстки: держит DirectWrite и кэш шрифтов, верстает абзацы.
 ///
@@ -150,8 +151,10 @@ public:
     const TextStyle& textStyle() const;
 
     /// Анализирует и шейпит абзац — самая дорогая часть вёрстки, та, которую
-    /// стоит сохранить. Кегль из `style` запоминается как опорный.
-    ShapedParagraphPtr shape(const Paragraph& paragraph, const ParagraphStyle& style);
+    /// стоит сохранить. Кегль из `style` запоминается как опорный. Текст и
+    /// прогоны абзаца берутся из хранилища книги, и результат смотрит в него.
+    ShapedParagraphPtr shape(const BookText& book, const Paragraph& paragraph,
+                             const ParagraphStyle& style);
 
     /// Разбивает отшейпленный абзац на строки шириной width. Дёшево: обращений
     /// к DirectWrite здесь только выключка готовых строк по формату.
@@ -162,23 +165,11 @@ public:
     sta_vector<Line> layout(const ShapedParagraph& shaped, float width,
                             const ParagraphStyle& style);
 
-    /// То же, но с середины абзаца: первая строка начинается ровно с символа
-    /// firstChar, а не с начала абзаца.
-    ///
-    /// Отдельный вызов, а не нулевой аргумент у `layout`, потому что это
-    /// другой случай: абзац, набранный с начала, получает красную строку и
-    /// целиком укладывается в строки; абзац, набранный с середины, — хвост
-    /// страницы, начатой с места чтения. Этим живёт мгновенная вёрстка
-    /// текущей страницы: полоса сменилась, а первая буква на ней осталась той
-    /// же, и читатель видит новый кегль не дожидаясь, пока пересчитается вся
-    /// книга.
-    sta_vector<Line> layoutFrom(const ShapedParagraph& shaped, uint32_t firstChar,
-                                float width, const ParagraphStyle& style);
-
     /// Верстает абзац в строки шириной width — шейпинг и разбивка разом.
     ///
     /// Пустой абзац даёт пустой список: блок без текста не занимает полосы.
-    sta_vector<Line> layout(const Paragraph& paragraph, float width, const ParagraphStyle& style);
+    sta_vector<Line> layout(const BookText& book, const Paragraph& paragraph, float width,
+                            const ParagraphStyle& style);
 
     /// Высота строки при таком кегле — нужна пагинатору до вёрстки, чтобы
     /// прикинуть, влезет ли блок.
@@ -191,11 +182,6 @@ public:
     float averageCharWidth(float fontSize) const;
 
 private:
-    /// Общее тело обоих `layout`: разбивка от символа `firstChar` до конца
-    /// абзаца.
-    sta_vector<Line> layoutRange(const ShapedParagraph& shaped, uint32_t firstChar,
-                                 float width, const ParagraphStyle& style);
-
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
