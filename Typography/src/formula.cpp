@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -118,8 +119,11 @@ FontPtr createFileFont(const std::string& file, float size) {
 
     // Путь собирает MicroTeX: каталог res, ASCII по контракту FormulaEngine,
     // и имена файлов из своих XML. Не UTF-8 здесь — нарушенный контракт, а не
-    // чужие данные: value() бросает, и беда программы идёт наверх.
-    const u16_text path = unicode::checked(file).value().to_utf16();
+    // чужие данные: программа останавливается, а не чинит путь и не бросает
+    // исключение, которое кто-то выше принял бы за «формула не удалась».
+    const std::optional<u8_view> fileUtf8 = unicode::checked(file);
+    if (!fileUtf8) wxl::core::abort("Formula: путь файла шрифта от MicroTeX не UTF-8");
+    const u16_text path = fileUtf8->to_utf16();
     ComPtr<IDWriteFontFile> fontFile;
     if (FAILED(backend().factory->CreateFontFileReference(path.c_str(), nullptr, &fontFile))) {
         return font;
@@ -217,11 +221,15 @@ sptr<Font> Font::_create(const std::string& name, int style, float size) {
     // Кроме своих Serif и SansSerif, MicroTeX передаёт сюда только аргумент
     // \externalFont, перекодированный им из UTF-16 формулы, — а его
     // перекодировка даёт правильный UTF-8 на любом входе. Не UTF-8 здесь —
-    // ошибка программы, как и с путём шрифта.
+    // ошибка программы, как и с путём шрифта: остановка.
     std::wstring family;
     if (name.empty() || name == "Serif") family = state.serif;
     else if (name == "SansSerif") family = state.sans;
-    else family = unicode::checked(name).value().to_utf16().wchars();
+    else {
+        const std::optional<u8_view> nameUtf8 = unicode::checked(name);
+        if (!nameUtf8) wxl::core::abort("Formula: имя семейства шрифта от MicroTeX не UTF-8");
+        family = nameUtf8->to_utf16().wchars();
+    }
     return createNamedFont(std::move(family), style, size);
 }
 
