@@ -22,12 +22,13 @@ constexpr auto kSlice = std::chrono::milliseconds{50};
 }  // namespace
 
 ChapterTail::ChapterTail(PageFlow& flow, IdleScheduler& scheduler,
-                         wxl::async::cancellation_token parent, function<void()> completed)
+                         wxl::async::cancellation_token ownerToken,
+                         function<void()> completionReceiver)
     : flow_(flow),
       scheduler_(scheduler),
-      completed_(std::move(completed)),
-      parent_(std::move(parent)),
-      stop_(parent_) {}
+      completionReceiver_(std::move(completionReceiver)),
+      ownerToken_(std::move(ownerToken)),
+      stop_(ownerToken_) {}
 
 ChapterTail::~ChapterTail() {
     stop_.cancel();
@@ -35,10 +36,12 @@ ChapterTail::~ChapterTail() {
 
 void ChapterTail::start() {
     if (running_ || stop_.is_canceled()) return;   // идёт — возьмёт и эту главу; или владелец ушёл
-    if (!flow_.needsTail()) return;                // досчитывать нечего
+    if (!flow_.needsTail()) return;
 
-    // Корутина доходит до первого ожидания ещё внутри вызова: кадр, который
-    // уже ждёт простоя.
+    // Знак — до вызова: кадр может кончиться ещё внутри него и сам опустить
+    // знак (простой, который отвечает сразу, не вставая, — порции идут подряд
+    // до конца главы; или сбой на первом же ожидании); поднятый после вызова,
+    // знак затёр бы это и остался бы поднятым навсегда.
     running_ = true;
     loop();
 }
@@ -46,7 +49,7 @@ void ChapterTail::start() {
 void ChapterTail::restart() {
     stop_.cancel();
     running_ = false;
-    stop_ = wxl::async::cancellation_source{parent_};
+    stop_ = wxl::async::cancellation_source{ownerToken_};
 }
 
 wxl::async::detached_task ChapterTail::loop() {
@@ -67,13 +70,28 @@ wxl::async::detached_task ChapterTail::loop() {
     // Ожидание простоя — это и есть «в свободное время»: поток сперва разберёт
     // ввод и покажет нарисованное, а уже потом возьмётся за книгу. Поток без
     // книги отвечает на порцию «досчитывать нечего», и досчёт кончается.
-    for (;;) {
-        co_await scheduler_.idle(stop_.token());
-        if (!flow_.advanceTail(kSlice)) break;
+    try {
+        for (;;) {
+            co_await scheduler_.idle(stop_.token());
+            if (!flow_.advanceTail(kSlice)) break;
+        }
+    } catch (const wxl::async::operation_canceled_exception&) {
+        throw;   // отменённый кадр уходит, ничего не тронув
+    } catch (...) {
+        // Сбой — не отмена: знак опускается, иначе всякий следующий start()
+        // молча выходил бы и «из …» висело бы до перевёрстки; сам сбой уходит
+        // дальше, в обработчик сбоев. Трогать `this` здесь можно: не-отмену
+        // бросает только неотменённый кадр (ожидание под отменённым токеном
+        // всегда кончается отменой), а неотменённый кадр — кадр живого
+        // держателя: умирая, держатель отменяет свой источник, а бросок идёт
+        // в том же ходу потока, что и тело кадра, — между ними держатель
+        // умереть не может.
+        running_ = false;
+        throw;
     }
 
     running_ = false;
-    completed_();
+    completionReceiver_();
 }
 
 }  // namespace bukvitsa::reader
