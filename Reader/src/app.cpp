@@ -13,12 +13,21 @@
 // читателю; остальное всплывает в `on_detached_task_failure` (его ставит
 // `Notices`): читатель видит окно с причиной, сценарий на этом кончается.
 //
-// Отмена — не сбой. Чтения и ожидания сценариев идут под токеном `stop_`, и
-// после просьбы (`stopScenarios`) кончаются `operation_canceled_exception`;
+// Отмена — не сбой. Сценарий заводит свой источник отмены, дочерний от общего
+// `stop_`, и ждёт под его токеном; закрытие окна отменяет общий, а с ним и все
+// дочерние. Отменённое ожидание кончается `operation_canceled_exception`;
 // непойманная, она кончает сценарий молча — `detached_task` её глотает, до
 // обработчика сбоев она не доходит. Ловить её раньше надо только там, где
 // сценарий ловит всё (`std::exception`) и говорит об этом читателю, — иначе
 // отмена дошла бы до него как ошибка.
+//
+// Состояние книги, настройки и реестр книг пишут три цикла-корутины,
+// `task<>`-члены writeState, writeSettings и writeLibrary, — по одному
+// писателю на файл; рабочее место эти модели только меняет в памяти. Держит
+// циклы приложение (`DeferredWrite`), а не промис: цикл живёт, пока живо
+// приложение, и на выходе держатель докручивает его синхронно. Записи токена
+// не берут и доходят до конца; сбой записи цикл говорит читателю и ждёт
+// дальше — следующая перемена запишет снова.
 
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
@@ -36,7 +45,11 @@ namespace bukvitsa::reader {
 using namespace wxl;
 using namespace std::chrono_literals;
 
+using wxl::async::cancellation_source;
+using wxl::async::cancellation_token;
 using wxl::async::detached_task;
+using wxl::async::system_exception;
+using wxl::async::task;
 
 namespace {
 
@@ -48,6 +61,14 @@ constexpr int32_t kInitialHeight = 860;
 // загрузки, а пауза ради самой заставки: приложению без книги нечего грузить,
 // и без неё кнопки появились бы в тот же кадр, что и картинка.
 constexpr auto kSplashHold = 1000ms;
+
+// Пауза, после которой настройки вида и место окна попадают на диск. Окно
+// таскают и ползунок двигают непрерывно, а писать на каждый пиксель незачем.
+// У реестра книг она та же, но паузы он не ждёт: его будят только «сейчас».
+constexpr auto kSaveQuiet = 800ms;
+
+// То же для места чтения: страницы листают подряд, а файл на книгу один.
+constexpr auto kPositionQuiet = 1500ms;
 
 /// Задник окна под заставкой и полкой.
 std::filesystem::path splashImage() {
@@ -66,12 +87,17 @@ std::filesystem::path splashImage() {
 //
 // Экранам их намерения отдаёт `*this`: базы `Actions` построены раньше полей,
 // ссылка на них годна, а зовут их экраны не раньше, чем конструктор кончится.
+//
+// Циклы записи стартуют здесь же и сразу встают на ожидание таймера: лямбда
+// только отдаёт держателю корутину-член, а до пробуждения цикл полей не
+// трогает.
 App::App()
     : window_{CompositionWindow {
           dsl::title = u"Буквица",
           dsl::minSize = SizeInt32{720, 520},
-          // Закрытие пишет отложенное, пока окно ещё есть: Teardown приходит
-          // уже без него, и места окна было бы не у кого спросить.
+          // Закрытие отменяет сценарии и пишет отложенное, пока окно ещё есть:
+          // Teardown приходит уже без него, и места окна было бы не у кого
+          // спросить.
           dsl::onClosed = method(this, &App::close),
       }},
       ws_{standardDataDirectory()},
@@ -81,8 +107,27 @@ App::App()
       shelf_{ws_.library.cards(), ws_.settings.continueReading, ws_.coverDirectory(), *this},
       wizard_{window_.chromeCompositor(), *this},
       panel_{window_.chromeCompositor(), view_, ws_.settings, places_, themes_, search_, *this},
-      autosave_{*this, window_, ws_, themes_, view_, places_},
-      splash_{window_.dispatcherQueue().createTimer()} {
+      stateWrite_{window_.dispatcherQueue(), kPositionQuiet, stop_.token(),
+                  [this](WaitableTimer& timer, cancellation_token stop) {
+                      return writeState(timer, std::move(stop));
+                  }},
+      settingsWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
+                     [this](WaitableTimer& timer, cancellation_token stop) {
+                         return writeSettings(timer, std::move(stop));
+                     }},
+      libraryWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
+                    [this](WaitableTimer& timer, cancellation_token stop) {
+                        return writeLibrary(timer, std::move(stop));
+                    }},
+      splash_{window_.dispatcherQueue().createTimer()},
+      // Место чтения — отложенно, как и место окна: перелистывание — самое
+      // частое действие в читалке, а файл состояния книги переписывается
+      // целиком.
+      positionWatch_{view_.position().on_change(method(this, &App::positionChanged))},
+      // Тема — с самого начала: за ней идёт подложка полосы, а имена в
+      // настройках слушатель пишет, только если они изменились, — до чтения
+      // настроек тему никто не меняет.
+      themeWatch_{view_.theme.on_change(method(this, &App::themeChanged))} {
     // Рамка окна тёмная, как и остров: системный светлый заголовок над тёмными
     // ящиками, мастером и полкой смотрелся бы чужим. Тега для неё в wxl пока
     // нет.
@@ -109,9 +154,8 @@ App::App()
     view_.addOverlay(panel_.root());
     view_.addOverlay(wizard_.root());
 
-    // Подложка полосы идёт за темой, предпросмотр — за правимой обложкой.
-    // Поля — свои, слушатели уходят вместе с ними.
-    static_cast<void>(view_.theme.on_change(method(this, &App::themeChanged)));
+    // Предпросмотр идёт за правимой обложкой. Поле — своё, слушатель уходит
+    // вместе с ним.
     static_cast<void>(wizard_.skin().on_change(method(this, &App::preview)));
 
     // Клавиши, общие для всех экранов, — на корнях трёх экранов, после их
@@ -130,33 +174,47 @@ App::App()
     splash_.add_onTick(method(this, &App::revealStart));
 }
 
+// Подписки снимаются в теле деструктора — оно идёт раньше, чем умирают поля.
+// Слушатели будят циклы записи, а держатели циклов умирают раньше окна,
+// полосы и настроек: перемена, пришедшая после них, будила бы мёртвое.
+App::~App() {
+    for (auto& [field, cookie] : flagWatches_) field->remove_change(cookie);
+    for (auto& [field, cookie] : styleWatches_) field->remove_change(cookie);
+    view_.theme.remove_change(themeWatch_);
+    view_.position().remove_change(positionWatch_);
+    if (geometryWatch_) window_.remove_onGeometryChanged(geometryWatch_);
+}
+
 /// Окно строится пустым и невидимым, а показывается в конце: место, куда его
 /// поставить, лежит в настройках, и открыть его сначала посреди экрана, а
 /// потом переставить — значит показать читателю прыжок. Ждать при этом нечего:
 /// файл настроек читает рабочий поток, а этот тем временем уже крутит цикл
 /// сообщений.
 detached_task App::start() {
+    auto const stop = cancellation_source{stop_.token()};
+
     // Настройки, обложки, реестр — у рабочего места, одной корутиной; что
     // при этом не удалось, читатель узнаёт словами, а запуск идёт дальше с
     // умолчаниями.
-    const Started started = co_await ws_.start(stop_.token());
+    const Started started = co_await ws_.start(stop.token());
 
     for (const Notice& notice : started.notices) notices_.post(notice);
 
     // Запись на диск начинает слушать поля настроек только теперь:
     // прочитанное из файла — не перемена, которую надо записать обратно.
-    autosave_.watchSettings();
+    watchSettings();
 
-    // Прогрев книги — сразу, как только стало известно, какая она: разбор
-    // длится дольше всего остального запуска вместе взятого. Заказ уходит и
-    // возвращается тут же, так что строки ниже его не ждут.
+    // Предзагрузка книги — сразу, как только стало известно, какая она: разбор
+    // длится дольше всего остального запуска вместе взятого, и пусть он идёт,
+    // пока читатель смотрит на заставку. Задача уходит в поле, а вызов
+    // возвращается тут же, так что строки ниже её не ждут.
     //
     // Только когда книга не открывается сама: при continueReading её откроет
-    // запуск ниже, и греть значило бы разобрать её дважды. Протухший путь
-    // безвреден — прогрев не прочитает файла и тихо кончится, а «Продолжить
-    // чтение» найдёт книгу по guid в реестре и откроет обычной дорогой.
+    // запуск ниже, и предзагрузка разобрала бы её дважды. Протухший путь
+    // безвреден — задача кончится ошибкой чтения, и «Продолжить чтение» найдёт
+    // книгу по guid в реестре и откроет обычной дорогой.
     if (!ws_.settings.continueReading.get() && !ws_.settings.lastBookPath.empty())
-        warmBook(ws_.settings.lastBookPath);
+        preloadBook(ws_.settings.lastBookPath);
 
     // Обложки — раньше темы: выбранной темой может оказаться обложка, а её
     // индекс продолжает список за встроенными и без реестра не существует.
@@ -175,6 +233,17 @@ detached_task App::start() {
     // должно быть уже на месте.
     if (!ws_.settings.windowPlacement.empty()) window_.placement(ws_.settings.windowPlacement);
 
+    // Место окна запоминается с этих пор, когда окно стоит там, где его
+    // оставили. Размер по умолчанию выше — перемена наша, а не читателя:
+    // место, снятое с неё, затёрло бы в настройках запомненное прежде, чем
+    // его поставят.
+    geometryWatch_ = window_.add_onGeometryChanged(method(this, &App::windowMoved));
+
+    // Место, где окно встало, — в настройки сразу, как всякая перемена: окно
+    // могло подогнаться под сегодняшние мониторы, а испорченный файл
+    // настроек этой записью и заменяется, о чём запуск уже сказал читателю.
+    windowMoved();
+
     if (ws_.settings.continueReading.get() && !started.lastBook.empty()) {
         open(started.lastBook);
     } else {
@@ -186,11 +255,23 @@ detached_task App::start() {
 }
 
 void App::close() {
-    autosave_.flush();
-}
+    // Место окна — у него самого, пока оно есть: после Closed спросить будет
+    // не у кого.
+    windowMoved();
 
-void App::stopScenarios() noexcept {
+    // Сначала отмена: сценарий, который ждёт под токеном, кончится на этом
+    // ожидании и до записей за ним не дойдёт; запись, которая уже идёт,
+    // токена не берёт и доходит до конца. С общим источником отменены и
+    // источники циклов записи, так что «сейчас» следом будит каждый цикл на
+    // последнюю запись: он просыпается внутри вызова, снимает состояние этого
+    // мига и уходит писать. Отмена после «сейчас» стоила бы лишней записи:
+    // проснувшийся до неё цикл записал бы и пошёл на круг ещё раз. Цикл,
+    // который в этот миг пишет прежнее, допишет и запишет снова — уже
+    // последний раз. Дожидаются циклов их держатели, умирая с приложением.
     stop_.cancel();
+    stateWrite_.signal();
+    settingsWrite_.signal();
+    libraryWrite_.signal();
 }
 
 /* ---------------- навигация ---------------- */
@@ -215,9 +296,10 @@ void App::show(Screen next) {
 
     // Уходя из книги, место чтения пишем сразу: отложенная запись ждёт паузы,
     // а читатель уже ушёл — и, может быть, закроет приложение раньше, чем
-    // таймер сработает. Полка тут же покажет свежий процент.
+    // таймер сработает. Полка тут же покажет свежий процент. Записать сейчас —
+    // то же ожидание цикла, разбуженное владельцем.
     panel_.close();
-    autosave_.saveState();
+    stateWrite_.signal();
 
     // Полоса перестаёт быть текущим экраном: её страница уходит со сцены, а
     // задником окна снова заставка.
@@ -276,13 +358,132 @@ detached_task App::togglePanel() {
     co_return;
 }
 
-void App::themeChanged(int) noexcept {
+// Прежний ключ при обложке остаётся как то, куда вернуться, если реестр
+// обложек пропадёт. Запуск ставит ту же тему, что в файле, — её писать
+// незачем.
+void App::themeChanged(int index) noexcept {
+    ThemeList::Persisted names = themes_.persist(index, ws_.settings.theme);
+    if (names.skin != ws_.settings.skin || names.theme != ws_.settings.theme) {
+        ws_.settings.skin = std::move(names.skin);
+        ws_.settings.theme = std::move(names.theme);
+        settingsWrite_.restart();
+    }
+
     showBackdrop();
 }
 
 void App::revealStart() {
     splash_.stop();
     start_.reveal();
+}
+
+/* ---------------- отложенные записи ---------------- */
+
+/// Место чтения и закладки книги на полосе. Аргументы записи вычисляются в
+/// момент вызова, до ожидания: «сейчас» будит ждущий цикл внутри своего
+/// вызова, и место снимается тем же ходом. Книга закрыта — писать нечего:
+/// место чтения принадлежит ей, а не окну, и ноль незанятой полосы стёр бы
+/// то, что уже записано. Пишется под guid книги на полосе — его знают её
+/// места (`BookPlaces::guid`), — а не последней книги из настроек: те при
+/// открытии меняются раньше полосы.
+task<> App::writeState(WaitableTimer& timer, cancellation_token stop) {
+    for (;;) {
+        co_await timer;
+
+        // Отмена, пришедшая до записи, делает её последней. Пришедшая посреди
+        // записи — ещё один круг: перемена или «сейчас», заставшие запись,
+        // иначе не записались бы вовсе, а под отменённым токеном ожидание не
+        // приостанавливается.
+        bool const last = stop.is_canceled();
+
+        if (view_.isOpen()) {
+            // Путь — для слов читателю, и снят до записи: пока она идёт, на
+            // полосу может встать другая книга.
+            std::filesystem::path const book = view_.book()->path();
+
+            try {
+                co_await ws_.saveState(places_.guid(), places_.stateAt(view_.position().get()));
+            } catch (const system_exception& failure) {
+                notices_.post(noticeOf(L"Не удалось сохранить место чтения", book.wstring(), failure));
+            }
+        }
+
+        if (last) co_return;
+    }
+}
+
+/// Настройки целиком: вид, тема, место окна. Текст рабочее место собирает в
+/// момент вызова, до ожидания, — на диск уходит то, что в полях к этому часу.
+task<> App::writeSettings(WaitableTimer& timer, cancellation_token stop) {
+    for (;;) {
+        co_await timer;
+
+        // Отмена посреди записи — ещё один круг, как у места чтения.
+        bool const last = stop.is_canceled();
+
+        try {
+            co_await ws_.saveSettings();
+        } catch (const system_exception& failure) {
+            notices_.post(noticeOf(L"Не удалось сохранить настройки", ws_.settingsPath().wstring(), failure));
+        }
+
+        if (last) co_return;
+    }
+}
+
+/// Реестр книг целиком. Текст рабочее место собирает в момент вызова, до
+/// ожидания: «сейчас» будит ждущий цикл внутри своего вызова, и на диск уходит
+/// реестр этого мига.
+task<> App::writeLibrary(WaitableTimer& timer, cancellation_token stop) {
+    for (;;) {
+        co_await timer;
+
+        // Отмена посреди записи — ещё один круг, как у места чтения.
+        bool const last = stop.is_canceled();
+
+        try {
+            co_await ws_.saveLibrary();
+        } catch (const system_exception& failure) {
+            notices_.post(noticeOf(L"Не удалось сохранить реестр книг", ws_.libraryPath().wstring(), failure));
+        }
+
+        if (last) co_return;
+    }
+}
+
+/// Настройки вида — наблюдаемые поля: ползунки панели привязаны к ним (Bind),
+/// полоса пишет в них с колеса и клавиш и сама их слушает, галочка полки
+/// привязана к continueReading. Здесь остаётся одна запись на диск — с
+/// паузой: ползунок шлёт перемену на каждый сдвиг, а файл переписывается
+/// целиком.
+void App::watchSettings() {
+    Settings& settings = ws_.settings;
+    for (observable<double>* field : {&settings.fontSize, &settings.lineHeight, &settings.margin}) {
+        styleWatches_.emplace_back(field, field->on_change(method(this, &App::styleChanged)));
+    }
+    flagWatches_.emplace_back(&settings.continueReading,
+                              settings.continueReading.on_change(method(this, &App::continueReadingChanged)));
+}
+
+/// Место отдаётся строкой WinRT; к нам она приходит чужим текстом и
+/// проверенным становится так же, как любой другой чужой. Снимается оно в миг
+/// перемены, а не в цикле записи: тот может проснуться и после Closed, когда
+/// окна уже нет.
+void App::windowMoved() {
+    ws_.settings.windowPlacement = unicode::repaired(window_.placement());
+    settingsWrite_.restart();
+}
+
+void App::positionChanged(uint32_t) noexcept {
+    stateWrite_.restart();
+}
+
+void App::styleChanged(double) noexcept {
+    settingsWrite_.restart();
+}
+
+void App::continueReadingChanged(bool) noexcept {
+    settingsWrite_.restart();
 }
 
 /* ---------------- клавиши ---------------- */

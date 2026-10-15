@@ -13,7 +13,6 @@ import wxl.core;
 using wxl::async::async_directory;
 using wxl::async::async_file;
 using wxl::async::cancellation_token;
-using wxl::async::operation_canceled_exception;
 using wxl::async::system_exception;
 using wxl::async::task;
 
@@ -175,7 +174,7 @@ task<Started> Workspace::start(cancellation_token stop) {
 
 // ---- книги ----------------------------------------------------------------
 
-task<Warmed> Workspace::readBook(std::filesystem::path path, cancellation_token stop) {
+task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_token stop) {
     // Не const: байты уходят в книгу перемещением. Разбор — здесь, на потоке
     // вызова: память разбора берётся из STA-пула, а он чужого потока не терпит.
     std::string bytes = co_await async_file::read_all(poolPath(path), stop);
@@ -185,11 +184,11 @@ task<Warmed> Workspace::readBook(std::filesystem::path path, cancellation_token 
     // дорогой, а книгу уже не ждут.
     stop.throw_if_canceled();
 
-    Warmed warmed;
-    warmed.fileSize = bytes.size();
-    warmed.book = std::make_shared<Book>(path, std::move(bytes), dwriteFactory());
+    LoadedBook loaded;
+    loaded.fileSize = bytes.size();
+    loaded.book = std::make_shared<Book>(path, std::move(bytes), dwriteFactory());
 
-    co_return warmed;
+    co_return loaded;
 }
 
 task<Registered> Workspace::registerBook(const fb3::Document& document, std::filesystem::path path,
@@ -213,22 +212,21 @@ task<Registered> Workspace::registerBook(const fb3::Document& document, std::fil
 }
 
 task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize, cancellation_token stop) {
-    // Под отменённым токеном открытие не начинается — ни одной записи. Дальше
-    // токен слушает только чтение состояния, а оно стоит после всех записей:
-    // отмена, пришедшая посреди них, их не разделяет — реестр с обложкой и
-    // настройки уходят на диск все, — и кончает открытие на чтении.
+    // Под отменённым токеном открытие не начинается — модель не тронута. Дальше
+    // токен слушает только чтение состояния, а оно стоит последним: отмена,
+    // пришедшая на записи обложки, реестра и настроек в памяти не разделяет —
+    // меняются оба, — и кончает открытие на чтении.
     stop.throw_if_canceled();
 
-    // Порядок — это порядок обязательств: реестр с обложкой, затем настройки,
-    // которые на книгу указывают, и лишь потом её состояние.
+    // Порядок — это порядок обязательств: регистрация (реестр — в памяти,
+    // обложка — в кэш), затем настройки, которые на книгу указывают, — тоже в
+    // памяти, и лишь потом её состояние. Файлы реестра и настроек пишут циклы
+    // приложения, по одному на файл: запись отсюда шла бы разом с их записью
+    // того же файла.
     const Registered registered = co_await registerBook(book.document(), book.path(), fileSize);
-
-    co_await saveLibrary();
 
     settings.lastBookGuid = registered.entry.guid;
     settings.lastBookPath = registered.entry.path;
-
-    co_await saveSettings();
 
     // Состояние — отдельной строкой, а не внутри фигурной инициализации:
     // `co_await` в списке инициализаторов агрегата роняет бэкенд MSVC 14.51
@@ -246,12 +244,9 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellatio
     const std::vector<async_directory::listed_entry> found =
         co_await async_directory::list(poolPath(folder / L"*.fb3"), stop);
 
-    // Отмена кончает обход на чтении следующей книги, но не раньше записи
-    // реестра: книги, зарегистрированные до неё, полка уже показала, и
-    // реестр на диске должен знать их так же. Исключение ждёт этой записи
-    // здесь — `co_await` в обработчике C++ не разрешает.
-    std::exception_ptr canceled;
-
+    // Отмена кончает обход на чтении следующей книги. Книги, зарегистрированные
+    // до неё, полка уже показала, и реестр в памяти их знает; файл реестра
+    // отсюда не пишется — его пишет вызывающий, и после отмены тоже.
     for (const async_directory::listed_entry& entry : found) {
         if (entry.is_directory) continue;
 
@@ -261,9 +256,6 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellatio
 
         try {
             bytes = co_await async_file::read_all(poolPath(path), stop);
-        } catch (const operation_canceled_exception&) {
-            canceled = std::current_exception();
-            break;
         } catch (const system_exception& failure) {
             // Файлы, которые не прочитались, называются вызывающему разом в
             // конце: каталог с сотней книг не должен спотыкаться об один файл,
@@ -271,6 +263,12 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellatio
             result.unread.push_back(unreadLine(entry.name, failure));
             continue;
         }
+
+        // Чтение, успевшее кончиться, отвечает байтами и под отменой, пришедшей
+        // на обратном пути; её обход спрашивает сам. Книга, зарегистрированная
+        // после отмены, легла бы в реестр в памяти мимо его последней записи —
+        // ту вызывающий делает, когда отменяет.
+        stop.throw_if_canceled();
 
         const uint64_t fileSize = bytes.size();
 
@@ -291,10 +289,6 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellatio
 
         result.added = true;
     }
-
-    if (result.added) co_await saveLibrary();
-
-    if (canceled) std::rethrow_exception(canceled);
 
     co_return result;
 }
@@ -379,7 +373,12 @@ task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_
     co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
 }
 
-task<> Workspace::deleteSkin(u16_view name) {
+task<> Workspace::deleteSkin(u16_view name, cancellation_token stop) {
+    // Под отменённым токеном удаление не начинается: реестр в памяти не тронут.
+    // Дальше токен не спрашивается — чтений нет, а строка, убранная из реестра
+    // в памяти, должна уйти и с диска: иначе следующий запуск вернул бы её.
+    stop.throw_if_canceled();
+
     if (!skins.remove(name)) co_return;   // реестр успел перемениться под руками
 
     std::string xml = skins.toXml();

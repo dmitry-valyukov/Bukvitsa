@@ -15,7 +15,7 @@ namespace bukvitsa::reader {
 
 using namespace wxl;
 
-Notices::Notices(wxl::CompositionWindow window, observable<ElementTheme const>& screenTheme)
+Notices::Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme)
     : window_(std::move(window)), screenTheme_(screenTheme) {
     instance_ = this;
     previous_ = wxl::async::on_detached_task_failure();

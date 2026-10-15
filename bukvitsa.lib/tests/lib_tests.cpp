@@ -611,38 +611,47 @@ void testWorkspaceKeepsLastBookGuid() {
     check(ws.library.cards().size() == 2, "две разные книги");
 }
 
-/// Открытие: реестр и настройки на диске указывают на книгу, состояние
-/// читается и пишется, последняя книга находится.
+/// Открытие: реестр и настройки в памяти указывают на книгу, а файлов их
+/// открытие не пишет — пишет вызывающий; записанные, они ведут к книге;
+/// состояние читается и пишется, последняя книга находится.
 void testWorkspaceOpensBook() {
     std::printf("\n=== рабочее место: открытие книги ===\n");
 
     Sandbox box("open");
     Workspace ws(box.root);
 
-    const Warmed warmed = run(ws.readBook(kBook, never));
+    const LoadedBook loaded = run(ws.readBook(kBook, never));
 
-    check(warmed.book != nullptr, "книга прочитана и разобрана");
-    check(warmed.fileSize == std::filesystem::file_size(kBook), "размер файла — настоящий");
+    check(loaded.book != nullptr, "книга прочитана и разобрана");
+    check(loaded.fileSize == std::filesystem::file_size(kBook), "размер файла — настоящий");
 
-    const Opened opened = run(ws.openBook(*warmed.book, warmed.fileSize, never));
+    const Opened opened = run(ws.openBook(*loaded.book, loaded.fileSize, never));
 
     check(opened.state.charOffset == 0 && opened.state.bookmarks.empty(), "новая книга — с чистого листа");
     check(ws.settings.lastBookGuid == opened.entry.guid && ws.settings.lastBookPath == kBook,
           "настройки указывают на книгу");
+    check(ws.library.cards().size() == 1 && ws.library.cards()[0]->entry.guid == opened.entry.guid,
+          "книга в реестре");
+    check(!std::filesystem::exists(ws.libraryPath()) && !std::filesystem::exists(ws.settingsPath()),
+          "реестр и настройки открытие меняет в памяти — файлов не пишет");
+
+    run(ws.saveLibrary());
+    run(ws.saveSettings());
 
     Library onDiskLibrary;
-    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 1,
-          "реестр записан");
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 1 &&
+              onDiskLibrary.cards()[0]->entry.guid == opened.entry.guid,
+          "записанный реестр — с книгой");
     Settings onDiskSettings;
     check(readSettings(onDisk(ws.settingsPath()), onDiskSettings) &&
               onDiskSettings.lastBookGuid == opened.entry.guid,
-          "настройки записаны");
+          "записанные настройки указывают на книгу");
 
     BookState state;
     state.charOffset = 12345;
     run(ws.saveState(opened.entry.guid, state));
 
-    const Opened reopened = run(ws.openBook(*warmed.book, warmed.fileSize, never));
+    const Opened reopened = run(ws.openBook(*loaded.book, loaded.fileSize, never));
 
     check(reopened.entry.guid == opened.entry.guid, "повторное открытие — та же запись");
     check(reopened.state.charOffset == 12345, "повторное открытие — то же место");
@@ -654,8 +663,8 @@ void testWorkspaceOpensBook() {
 }
 
 /// Обход каталога: книги регистрируются по одной, о каждой новой говорят
-/// сразу, мусор пропускается, реестр пишется один раз; повтор ничего не
-/// добавляет.
+/// сразу, мусор пропускается; реестр меняется в памяти, а файл его пишет
+/// вызывающий; повтор ничего не добавляет.
 void testWorkspaceAddsFolder() {
     std::printf("\n=== рабочее место: обход каталога ===\n");
 
@@ -676,16 +685,20 @@ void testWorkspaceAddsFolder() {
 
     const FolderAdded first = run(ws.addFolder(folder, never));
 
-    check(first.added, "каталог с книгами — реестр записан");
+    check(first.added, "каталог с книгами — реестр изменён");
     check(first.unread.empty(), "все файлы прочитались");
     check(ws.library.cards().size() == 2, "две книги, мусор пропущен");
     check(heard.size() == 2 && heard[0] == list_change{list_change::inserted, 0, 1} &&
               heard[1] == list_change{list_change::inserted, 1, 1},
           "полка растёт по одной карточке в конец");
 
+    check(!std::filesystem::exists(ws.libraryPath()), "файла реестра обход не пишет");
+
+    run(ws.saveLibrary());
+
     Library onDiskLibrary;
     check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 2,
-          "реестр на диске — две книги");
+          "записанный реестр — две книги");
 
     const FolderAdded second = run(ws.addFolder(folder, never));
 
@@ -738,14 +751,14 @@ void testStateGoesUnderPlacesGuid() {
     Sandbox box("places");
     Workspace ws(box.root);
 
-    const Warmed first = run(ws.readBook(kBook, never));
+    const LoadedBook first = run(ws.readBook(kBook, never));
     Opened firstOpened = run(ws.openBook(*first.book, first.fileSize, never));
 
     BookPlaces places;
     places.open(firstOpened.entry.guid, first.book->blocks(), std::move(firstOpened.state.bookmarks));
     places.toggleBookmark(500, u16_text{u"пятьсот"});
 
-    const Warmed second = run(ws.readBook(kOtherBook, never));
+    const LoadedBook second = run(ws.readBook(kOtherBook, never));
     const Opened secondOpened = run(ws.openBook(*second.book, second.fileSize, never));
 
     check(ws.settings.lastBookGuid == secondOpened.entry.guid, "настройки уже указывают на новую книгу");
@@ -788,7 +801,7 @@ void testWorkspaceReadsStopOnRequest() {
     check(canceled(ws.lastBookPath(stop)), "последняя книга: не начинается — отмена, а не «продолжать нечего»");
 
     cancellation_source later;
-    task<Warmed> reading = ws.readBook(kBook, later.token());
+    task<LoadedBook> reading = ws.readBook(kBook, later.token());
     check(!reading.done(), "чтение книги ушло к диску");
     later.cancel();
     check(canceled(std::move(reading)), "попросили посреди чтения — отмена, а не книга");
@@ -819,41 +832,39 @@ void testWorkspaceStartReadsModelsWhole() {
           "настройки прочитаны целиком: запись при закрытии окна не ляжет умолчаниями");
 }
 
-/// Открытие под отменённым токеном не пишет ничего; отменённое посреди
-/// записей дописывает их все — реестр и настройки — и кончается отменой на
-/// чтении состояния.
-void testWorkspaceOpenStopsOutsideWrites() {
+/// Открытие под отменённым токеном не трогает ничего — ни модели, ни диска;
+/// отменённое на записи обложки меняет в памяти и реестр, и настройки и
+/// кончается отменой на чтении состояния. Файлов реестра и настроек открытие
+/// не пишет ни так, ни так.
+void testWorkspaceOpenStopsOnStateRead() {
     std::printf("\n=== отмена: открытие книги ===\n");
 
     Sandbox box("stop-open");
     Workspace ws(box.root);
 
-    const Warmed warmed = run(ws.readBook(kBook, never));
+    const LoadedBook loaded = run(ws.readBook(kBook, never));
 
     cancellation_source before;
     before.cancel();
 
-    check(canceled(ws.openBook(*warmed.book, warmed.fileSize, before.token())), "под отменённым токеном — отмена");
-    check(ws.library.cards().empty() && ws.settings.lastBookGuid.empty(), "до записей: модель не тронута");
-    check(!std::filesystem::exists(ws.libraryPath()) && !std::filesystem::exists(ws.settingsPath()),
-          "до записей: на диске ничего");
+    check(canceled(ws.openBook(*loaded.book, loaded.fileSize, before.token())), "под отменённым токеном — отмена");
+    check(ws.library.cards().empty() && ws.settings.lastBookGuid.empty(),
+          "под отменённым токеном модель не тронута");
+    check(!std::filesystem::exists(ws.libraryPath()) && !std::filesystem::exists(ws.settingsPath()) &&
+              !std::filesystem::exists(ws.coverDirectory()),
+          "под отменённым токеном на диске ничего");
 
     cancellation_source during;
-    task<Opened> opening = ws.openBook(*warmed.book, warmed.fileSize, during.token());
-    check(!opening.done(), "открытие стоит на первой записи");
+    task<Opened> opening = ws.openBook(*loaded.book, loaded.fileSize, during.token());
+    check(!opening.done(), "открытие стоит на записи обложки");
     during.cancel();
 
-    check(canceled(std::move(opening)), "попросили посреди записей — открытие кончается отменой");
+    check(canceled(std::move(opening)),
+          "попросили на записи обложки — открытие кончается отменой на чтении состояния");
     check(ws.library.cards().size() == 1 && ws.settings.lastBookGuid == ws.library.cards()[0]->entry.guid,
           "модель: книга в реестре, настройки на неё указывают");
-
-    Library onDiskLibrary;
-    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 1,
-          "реестр дописан");
-    Settings onDiskSettings;
-    check(readSettings(onDisk(ws.settingsPath()), onDiskSettings) &&
-              onDiskSettings.lastBookGuid == ws.settings.lastBookGuid,
-          "настройки дописаны и указывают на ту же книгу");
+    check(!std::filesystem::exists(ws.libraryPath()) && !std::filesystem::exists(ws.settingsPath()),
+          "файлов реестра и настроек открытие не пишет — их пишет вызывающий");
 }
 
 /// Сохранение обложки: под отменённым токеном не начинается, отмена на
@@ -905,9 +916,65 @@ void testWorkspaceSaveSkinStopsBeforeWrites() {
           "на диске и строка реестра, и копия, на которую она ссылается");
 }
 
+/// Удаление обложки под отменённым токеном не начинается: реестр не тронут
+/// ни в памяти, ни на диске; без отмены — обложка убрана и там, и там.
+void testWorkspaceDeleteSkinStopsBeforeChange() {
+    std::printf("\n=== отмена: удаление обложки ===\n");
+
+    Sandbox box("stop-delete-skin");
+    Workspace ws(box.root);
+
+    Skin skin = defaultSkin();
+    skin.name = u16_text{u"Бумага"};
+    ws.skins.put(std::move(skin));
+
+    // Реестр на диске — с этой обложкой: начатое удаление переписало бы его.
+    const std::string written = ws.skins.toXml();
+    putOnDisk(ws.skinsPath(), written);
+
+    cancellation_source before;
+    before.cancel();
+    check(canceled(ws.deleteSkin(u"Бумага", before.token())), "под отменённым токеном — отмена");
+    check(ws.skins.find(u"Бумага") != nullptr && onDisk(ws.skinsPath()) == written,
+          "под отменённым токеном реестр обложек не тронут — ни в памяти, ни на диске");
+
+    run(ws.deleteSkin(u"Бумага", never));
+
+    Skins onDiskSkins;
+    check(ws.skins.find(u"Бумага") == nullptr && onDiskSkins.loadFrom(onDisk(ws.skinsPath())) &&
+              onDiskSkins.list().empty(),
+          "без отмены — обложка убрана и в памяти, и на диске");
+}
+
+/// Дерево источников: отмена родителя доходит до чтения, которое ждёт под
+/// токеном дочернего, — так закрытие окна кончает сценарии; отмена дочернего
+/// родителя не трогает — так владелец отменяет одну задачу.
+void testWorkspaceReadsStopWithParent() {
+    std::printf("\n=== отмена: дерево источников ===\n");
+
+    Sandbox box("stop-tree");
+    Workspace ws(box.root);
+
+    cancellation_source parent;
+    auto const child = cancellation_source{parent.token()};
+
+    task<LoadedBook> reading = ws.readBook(kBook, child.token());
+    check(!reading.done(), "чтение книги под дочерним токеном ушло к диску");
+    parent.cancel();
+    check(child.is_canceled(), "отмена родителя отменяет дочерний источник");
+    check(canceled(std::move(reading)), "отмена родителя кончает чтение под дочерним токеном");
+
+    check(cancellation_source{parent.token()}.is_canceled(), "под отменённым родителем источник отменён с рождения");
+
+    cancellation_source owner;
+    auto piece = cancellation_source{owner.token()};
+    piece.cancel();
+    check(piece.is_canceled() && !owner.is_canceled(), "отмена дочернего не отменяет родителя");
+}
+
 /// Обход каталога, которому сказали кончиться на первой книге: дальше он не
-/// читает, а реестр с ней пишет — полка её уже показала — и лишь потом
-/// кончается отменой.
+/// читает и кончается отменой, а реестр в памяти с ней остаётся — полка её
+/// уже показала, — и записанный вызывающим, он её знает.
 void testWorkspaceFolderKeepsWhatShelfShowed() {
     std::printf("\n=== отмена: обход каталога ===\n");
 
@@ -930,19 +997,21 @@ void testWorkspaceFolderKeepsWhatShelfShowed() {
     ws.library.cards().remove_change(watch);
 
     check(ws.library.cards().size() == 1, "следующую книгу не читали");
+    check(!std::filesystem::exists(ws.libraryPath()), "файла реестра обход не пишет и под отменой");
+
+    run(ws.saveLibrary());
 
     Library onDiskLibrary;
     check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 1 &&
               onDiskLibrary.cards()[0]->entry.guid == ws.library.cards()[0]->entry.guid,
-          "реестр на диске — с той книгой, что полка показала");
+          "записанный реестр — с той книгой, что полка показала");
 }
 
 }  // namespace
 
 // Тесты других слоёв модели — каждый в своём файле.
 void runSkinEditorTests();
-// Мелкие куски модели, вынесенные из экранов (pieces_tests.cpp). Слот
-// прогретой книги открывает настоящую книгу — потому после COM.
+// Мелкие куски модели, вынесенные из экранов (pieces_tests.cpp).
 void runPiecesTests();
 // Слои модели своими файлами: карта клавиш, список тем, поиск по книге, места
 // открытой книги.
@@ -986,8 +1055,10 @@ int main() {
     testStateGoesUnderPlacesGuid();
     testWorkspaceReadsStopOnRequest();
     testWorkspaceStartReadsModelsWhole();
-    testWorkspaceOpenStopsOutsideWrites();
+    testWorkspaceOpenStopsOnStateRead();
     testWorkspaceSaveSkinStopsBeforeWrites();
+    testWorkspaceDeleteSkinStopsBeforeChange();
+    testWorkspaceReadsStopWithParent();
     testWorkspaceFolderKeepsWhatShelfShowed();
 
     runPiecesTests();
