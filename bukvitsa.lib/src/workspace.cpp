@@ -175,7 +175,7 @@ task<Started> Workspace::start(cancellation_token stop) {
 
 // ---- книги ----------------------------------------------------------------
 
-task<Warmed> Workspace::readBook(std::filesystem::path path, cancellation_token stop) {
+task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_token stop) {
     // Не const: байты уходят в книгу перемещением. Разбор — здесь, на потоке
     // вызова: память разбора берётся из STA-пула, а он чужого потока не терпит.
     std::string bytes = co_await async_file::read_all(poolPath(path), stop);
@@ -185,11 +185,11 @@ task<Warmed> Workspace::readBook(std::filesystem::path path, cancellation_token 
     // дорогой, а книгу уже не ждут.
     stop.throw_if_canceled();
 
-    Warmed warmed;
-    warmed.fileSize = bytes.size();
-    warmed.book = std::make_shared<Book>(path, std::move(bytes), dwriteFactory());
+    LoadedBook loaded;
+    loaded.fileSize = bytes.size();
+    loaded.book = std::make_shared<Book>(path, std::move(bytes), dwriteFactory());
 
-    co_return warmed;
+    co_return loaded;
 }
 
 task<Registered> Workspace::registerBook(const fb3::Document& document, std::filesystem::path path,
