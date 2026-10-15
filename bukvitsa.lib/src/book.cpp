@@ -12,6 +12,48 @@ namespace bukvitsa::reader {
 
 using Microsoft::WRL::ComPtr;
 
+namespace {
+
+/// Раскодирует картинку до конвертера в 32bppPBGRA и снимает её размеры: они
+/// нужны пагинатору до всякой отрисовки. На видеокарту она не идёт — битмап
+/// создаётся позже, на том устройстве, которое будет рисовать. Поток WIC —
+/// поверх байтов самой картинки, без копии.
+/// @return false — байтов нет или это не картинка, которую WIC знает.
+bool decodeInto(IWICImagingFactory* wic, ImageAsset& asset) {
+    if (asset.bytes.empty()) return false;
+
+    ComPtr<IWICStream> stream;
+    if (FAILED(wic->CreateStream(&stream))) return false;
+    if (FAILED(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(asset.bytes.data()),
+                                            static_cast<DWORD>(asset.bytes.size()))))
+        return false;
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad,
+                                            &decoder)))
+        return false;
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(0, &frame))) return false;
+
+    ComPtr<IWICFormatConverter> converter;
+    if (FAILED(wic->CreateFormatConverter(&converter))) return false;
+    if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
+                                     WICBitmapDitherTypeNone, nullptr, 0.0,
+                                     WICBitmapPaletteTypeMedianCut)))
+        return false;
+
+    UINT width = 0, height = 0;
+    if (FAILED(frame->GetSize(&width, &height))) return false;
+
+    asset.width = static_cast<float>(width);
+    asset.height = static_cast<float>(height);
+    asset.source = std::move(converter);
+    return true;
+}
+
+}  // namespace
+
 IDWriteFactory* dwriteFactory() {
     // Живёт до конца процесса и намеренно не освобождается: разделяемую
     // фабрику DirectWrite всё равно держит система, а порядок разрушения
@@ -24,8 +66,9 @@ IDWriteFactory* dwriteFactory() {
     return factory;
 }
 
-Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFactory* dwrite)
-    : path_(path), document_(std::move(fileBytes)), engine_(dwrite),
+Book::Book(const std::filesystem::path& path, fb3::Document&& document, IDWriteFactory* dwrite)
+    : path_(path), engine_(dwrite), text_(typography::flatten(document)),
+      characterCount_(document.characterCount()),
       // Пагинатор спрашивает размеры картинок у нас: вёрстка их не декодирует и
       // про WIC не знает. Главы заводятся по требованию (chapterAt), то есть
       // после тела конструктора, которое картинки и раскодирует.
@@ -34,16 +77,16 @@ Book::Book(const std::filesystem::path& path, std::string fileBytes, IDWriteFact
               return typography::ImageSize{};
           return typography::ImageSize{images_[index].width, images_[index].height};
       }) {
-    decodeImages();
+    decodeImages(document);
 
-    blocks_ = typography::flatten(document_.body());
-
-    // Границы глав верхнего уровня: начало книги и каждый блок, открывающий
-    // секцию верхнего уровня. По ним книга режется на главы.
-    if (!blocks_.empty()) {
+    // Границы глав верхнего уровня: начало книги и каждый блок потока,
+    // открывающий секцию верхнего уровня. По ним поток режется на главы; тела
+    // сносок лежат за ним и в главы не входят.
+    const std::span<const typography::Block> flow = text_.flow();
+    if (!flow.empty()) {
         chapterStarts_.push_back(0);
-        for (size_t i = 1; i < blocks_.size(); ++i)
-            if (blocks_[i].startsSection == 1)
+        for (size_t i = 1; i < flow.size(); ++i)
+            if (flow[i].startsSection == 1)
                 chapterStarts_.push_back(i);
     }
 }
@@ -54,14 +97,16 @@ bool Book::setCurrentChapter(uint32_t charOffset) {
     if (chapterStarts_.empty())
         return false;
 
-    // Блок, внутри которого лежит символ, — последний, начинающийся не позже.
+    // Блок потока, внутри которого лежит символ, — последний, начинающийся не
+    // позже. Тела сносок за потоком сюда не попадают: в главах их нет.
+    const std::span<const typography::Block> flow = text_.flow();
     const auto blockIt = std::upper_bound(
-        blocks_.begin(), blocks_.end(), charOffset,
+        flow.begin(), flow.end(), charOffset,
         [](uint32_t off, const typography::Block& b) { return off < b.charOffset; });
     const size_t block =
-        blockIt == blocks_.begin()
+        blockIt == flow.begin()
             ? 0
-            : static_cast<size_t>(std::distance(blocks_.begin(), blockIt) - 1);
+            : static_cast<size_t>(std::distance(flow.begin(), blockIt) - 1);
 
     // Глава — последнее её начало не позже этого блока.
     const auto chapterIt =
@@ -80,10 +125,11 @@ bool Book::setCurrentChapter(uint32_t charOffset) {
 }
 
 std::span<const typography::Block> Book::chapterSpan(size_t index) const {
+    const std::span<const typography::Block> flow = text_.flow();
     const size_t first = chapterStarts_[index];
     const size_t last =
-        index + 1 < chapterStarts_.size() ? chapterStarts_[index + 1] : blocks_.size();
-    return std::span<const typography::Block>(blocks_).subspan(first, last - first);
+        index + 1 < chapterStarts_.size() ? chapterStarts_[index + 1] : flow.size();
+    return flow.subspan(first, last - first);
 }
 
 typography::Chapter& Book::chapterAt(size_t index) {
@@ -94,8 +140,8 @@ typography::Chapter& Book::chapterAt(size_t index) {
     // сразу нескольких глав, и уронить любую из них — висячий указатель.
     // Чистит кэш trimChapters, когда разворот уже собран.
     auto [pos, inserted] = chapters_.emplace(
-        index, std::make_unique<typography::Chapter>(engine_, chapterSpan(index),
-                                                     document_.characterCount(), imageSize_));
+        index, std::make_unique<typography::Chapter>(engine_, text_, chapterSpan(index),
+                                                     characterCount_, imageSize_));
     return *pos->second;
 }
 
@@ -115,66 +161,32 @@ void Book::trimChapters(size_t keepRadius) {
     }
 }
 
-void Book::decodeImages() {
-    const std::span<const fb3::ImagePart> parts = document_.images();
-    images_.resize(parts.size());
+void Book::decodeImages(fb3::Document& document) {
+    // Размер — один раз и до первых байтов: поток WIC смотрит в байты
+    // элемента, и после этого элементам переезжать нельзя.
+    const size_t count = document.images().size();
+    images_.resize(count);
 
-    if (parts.empty())
+    if (count == 0)
         return;
 
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(&wic_))))
         return;   // без WIC книга читается, просто без иллюстраций
 
-    for (uint32_t index = 0; index < parts.size(); ++index) {
-        // Именно image(), а не parts[index]: байты части читаются при первом
-        // обращении, и в списке они ещё пусты. Вёрстке нужны размеры всех
-        // картинок сразу — без них не построить страницу, — так что лениться
-        // тут не выходит.
-        const fb3::ImagePart* part = document_.image(index);
-        if (!part || part->bytes.empty())
-            continue;
+    for (uint32_t index = 0; index < count; ++index) {
+        ImageAsset& asset = images_[index];
 
-        // Размеры нужны пагинатору до всякой отрисовки, поэтому декодирование
-        // идёт до конвертера, но не до видеокарты: битмап создаётся позже, на
-        // том устройстве, которое будет рисовать.
-        ComPtr<IWICStream> stream;
-        if (FAILED(wic_->CreateStream(&stream))) continue;
-        if (FAILED(stream->InitializeFromMemory(
-                reinterpret_cast<BYTE*>(const_cast<char*>(part->bytes.data())),
-                static_cast<DWORD>(part->bytes.size()))))
-            continue;
+        // Байты переезжают в книгу до декодирования, и поток WIC встаёт уже на
+        // них: он читает свою память, пока жив конвертер, а конвертер книга
+        // держит до конца — битмап из него делается при отрисовке, — документ
+        // же столько не живёт. Вёрстке нужны размеры всех картинок сразу — без
+        // них не построить страницу, — так что лениться тут не выходит.
+        asset.bytes = document.takeImageBytes(index);
 
-        ComPtr<IWICBitmapDecoder> decoder;
-        if (FAILED(wic_->CreateDecoderFromStream(stream.Get(), nullptr,
-                                                 WICDecodeMetadataCacheOnLoad, &decoder)))
-            continue;
-
-        ComPtr<IWICBitmapFrameDecode> frame;
-        if (FAILED(decoder->GetFrame(0, &frame))) continue;
-
-        ComPtr<IWICFormatConverter> converter;
-        if (FAILED(wic_->CreateFormatConverter(&converter))) continue;
-        if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
-                                         WICBitmapDitherTypeNone, nullptr, 0.0,
-                                         WICBitmapPaletteTypeMedianCut)))
-            continue;
-
-        UINT width = 0, height = 0;
-        if (FAILED(frame->GetSize(&width, &height))) continue;
-
-        images_[index].width = static_cast<float>(width);
-        images_[index].height = static_cast<float>(height);
-        images_[index].source = std::move(converter);
+        if (!decodeInto(wic_.Get(), asset))
+            asset.bytes = std::string{};   // не картинка — рисовать нечего, и байты ни к чему
     }
-}
-
-const fb3::ImagePart* Book::image(uint32_t index) const {
-    return document_.image(index);
-}
-
-std::optional<uint32_t> Book::coverIndex() const {
-    return document_.description().coverImageIndex;
 }
 
 ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {

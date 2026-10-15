@@ -1,15 +1,16 @@
 // Тесты мест открытой книги: оглавление и закладки как списки, за которыми
 // следит панель, — что в них лежит и что слышит тот, кто к ним привязан.
-// Книга — блоки, собранные тестом: оглавлению нужны только заголовки и их
-// места, вёрстка ему не нужна.
+// Книга — хранилище из блоков, собранное тестом: оглавлению нужны только
+// заголовки и их места, вёрстка ему не нужна.
 
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <vector>
 
 #include "check.h"
 
-// Модель — последней: через блоки вёрстки она ведёт к импорту модулей.
+// Модель — последней: через хранилище вёрстки она ведёт к импорту модулей.
 #include "bukvitsa/reader/book_places.h"
 
 import wxl.core;
@@ -21,16 +22,43 @@ using bukvitsa::reader::tests::check;
 namespace {
 
 /// Блок книги с этим текстом с позиции `start`; заголовок — с уровнем.
-typography::Block blockAt(u16_view text, uint32_t start, typography::BlockKind kind, uint8_t level = 0) {
-    typography::Block block;
-    block.kind = kind;
-    block.level = level;
-    block.charOffset = start;
-    block.paragraph.text = u16_text{text};
-    block.paragraph.charOffsets.resize(text.size());
-    for (uint32_t i = 0; i < block.paragraph.charOffsets.size(); ++i)
-        block.paragraph.charOffsets[i] = start + i;
-    return block;
+struct Placed {
+    u16_view text;
+    uint32_t start = 0;
+    typography::BlockKind kind = typography::BlockKind::Paragraph;
+    uint8_t level = 0;
+};
+
+/// Книга из этих блоков — весь поток чтения: у каждого один прогон стиля на
+/// весь текст и один прогон позиций, символы стоят подряд.
+typography::BookText blocksAt(std::initializer_list<Placed> placed) {
+    typography::BookText book;
+
+    for (const Placed& at : placed) {
+        const auto size = static_cast<uint32_t>(at.text.size());
+
+        typography::Block block;
+        block.kind = at.kind;
+        block.level = at.level;
+        block.charOffset = at.start;
+        block.paragraph.text = {static_cast<uint32_t>(book.text.size()), size};
+        block.paragraph.spans = {static_cast<uint32_t>(book.spans.size()), 1};
+        block.paragraph.notes = {static_cast<uint32_t>(book.notes.size()), 0};
+        block.paragraph.offsets = {static_cast<uint32_t>(book.offsets.size()), 1};
+
+        book.text += at.text;
+        book.spans.push_back({0, size, {}});
+        book.offsets.push_back({0, at.start});
+        book.blocks.push_back(block);
+    }
+
+    book.flowCount = static_cast<uint32_t>(book.blocks.size());
+    return book;
+}
+
+/// Начало текста блока в хранилище — то, во что смотрит строка оглавления.
+const char16_t* textOf(const typography::BookText& book, size_t block) {
+    return book.textOf(book.blocks[block].paragraph).data();
 }
 
 std::vector<uint32_t> offsetsOf(observable_list<Bookmark const>& marks) {
@@ -43,21 +71,21 @@ bool isChange(const std::vector<list_change>& heard, list_change::kind_t kind, u
     return heard.size() == 1 && heard[0] == list_change{kind, at, count};
 }
 
-/// Новая книга — новое оглавление одним сбросом; строки смотрят в блоки той
+/// Новая книга — новое оглавление одним сбросом; строки смотрят в текст той
 /// книги, что открыта сейчас, даже когда заголовки у двух книг одинаковы.
 void testContentsFollowBook() {
     std::printf("\n=== места книги: оглавление ===\n");
 
-    const typography::Block first[] = {
-        blockAt(u"Часть первая", 0, typography::BlockKind::Title, 0),
-        blockAt(u"Глава первая", 20, typography::BlockKind::Title, 1),
-        blockAt(u"Текст главы.", 40, typography::BlockKind::Paragraph),
-    };
-    const typography::Block second[] = {
-        blockAt(u"Часть первая", 0, typography::BlockKind::Title, 0),
-        blockAt(u"Глава первая", 20, typography::BlockKind::Title, 1),
-    };
-    const typography::Block untitled[] = {blockAt(u"Только текст.", 0, typography::BlockKind::Paragraph)};
+    const typography::BookText first = blocksAt({
+        {u"Часть первая", 0, typography::BlockKind::Title, 0},
+        {u"Глава первая", 20, typography::BlockKind::Title, 1},
+        {u"Текст главы.", 40, typography::BlockKind::Paragraph},
+    });
+    const typography::BookText second = blocksAt({
+        {u"Часть первая", 0, typography::BlockKind::Title, 0},
+        {u"Глава первая", 20, typography::BlockKind::Title, 1},
+    });
+    const typography::BookText untitled = blocksAt({{u"Только текст.", 0, typography::BlockKind::Paragraph}});
 
     // Слышанное — раньше модели: слушатели уходят вместе с ней и не должны
     // пережить то, во что пишут.
@@ -76,14 +104,14 @@ void testContentsFollowBook() {
     check(countWhenHeard == 2, "число строк — уже новое, когда перемену слышат");
     check(contents.size() == 2 && contents[1].level == 1 && contents[1].charOffset == 20,
           "уровень и место заголовка — его блока");
-    check(contents.size() == 2 && contents[0].title.data() == first[0].paragraph.text.data(),
-          "заголовок — вид в блок книги, не копия");
+    check(contents.size() == 2 && contents[0].title.data() == textOf(first, 0),
+          "заголовок — вид в текст книги, не копия");
 
     heard.clear();
     places.open(u16_text{u"вторая"}, second, {});
     check(isChange(heard, list_change::reset, 0, 2), "та же картина заголовков у другой книги — всё равно сброс");
-    check(contents.size() == 2 && contents[0].title.data() == second[0].paragraph.text.data(),
-          "строки смотрят в блоки новой книги, а не прежней");
+    check(contents.size() == 2 && contents[0].title.data() == textOf(second, 0),
+          "строки смотрят в текст новой книги, а не прежней");
 
     heard.clear();
     places.open(u16_text{u"без заголовков"}, untitled, {});
@@ -140,7 +168,7 @@ void testBookmarkToggles() {
 void testOpenAndState() {
     std::printf("\n=== места книги: закладки новой книги и запись ===\n");
 
-    const typography::Block book[] = {blockAt(u"Глава", 0, typography::BlockKind::Title)};
+    const typography::BookText book = blocksAt({{u"Глава", 0, typography::BlockKind::Title}});
 
     std::vector<list_change> heard;
 

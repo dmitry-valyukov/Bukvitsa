@@ -1,5 +1,5 @@
-// Тесты модели читалки (bukvitsa.lib): чистые функции над блоками книги и над
-// кривыми обложек. Как у FB3 и вёрстки, без фреймворка.
+// Тесты модели читалки (bukvitsa.lib): чистые функции над хранилищем книги и
+// над кривыми обложек. Как у FB3 и вёрстки, без фреймворка.
 
 #include <objbase.h>
 
@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -44,15 +45,35 @@ bool aboutEqual(float a, float b) {
     return std::abs(a - b) < 1e-3f;
 }
 
-/// Текст собран тестом из кусков, поэтому проверяется, как всякий чужой.
-typography::Block blockOf(std::wstring_view text) {
+/// Блок с этим текстом — в конец хранилища, собранного тестом: один прогон
+/// стиля на весь текст и один прогон позиций, то есть символы стоят в книге
+/// подряд с `start`. Поток чтения отмеряет вызывающий (`flowCount`). Текст
+/// собран тестом из кусков, поэтому проверяется, как всякий чужой.
+void addBlock(typography::BookText& book, std::wstring_view text, uint32_t start = 0,
+              typography::BlockKind kind = typography::BlockKind::Paragraph) {
+    const u16_view checked = unicode::checked(text).value();
+    const auto size = static_cast<uint32_t>(checked.size());
+
     typography::Block block;
-    block.kind = typography::BlockKind::Paragraph;
-    block.paragraph.text = u16_text(unicode::checked(text).value());
-    block.paragraph.charOffsets.resize(block.paragraph.text.size());
-    for (uint32_t i = 0; i < block.paragraph.charOffsets.size(); ++i)
-        block.paragraph.charOffsets[i] = i;
-    return block;
+    block.kind = kind;
+    block.charOffset = start;
+    block.paragraph.text = {static_cast<uint32_t>(book.text.size()), size};
+    block.paragraph.spans = {static_cast<uint32_t>(book.spans.size()), 1};
+    block.paragraph.notes = {static_cast<uint32_t>(book.notes.size()), 0};
+    block.paragraph.offsets = {static_cast<uint32_t>(book.offsets.size()), 1};
+
+    book.text += checked;
+    book.spans.push_back({0, size, {}});
+    book.offsets.push_back({0, start});
+    book.blocks.push_back(block);
+}
+
+/// Книга из одного абзаца с этим текстом — весь поток чтения, позиции с нуля.
+typography::BookText bookOf(std::wstring_view text) {
+    typography::BookText book;
+    addBlock(book, text);
+    book.flowCount = 1;
+    return book;
 }
 
 /// Отрывок без многоточий по краям — кусок текста абзаца с того места, где он
@@ -83,8 +104,8 @@ void testHintKeepsLetters() {
         text += letter;
         text.append(20, L'\x0436');
 
-        const typography::Block blocks[] = {blockOf(text)};
-        const u16_text hint = reader::hintAt(blocks, 0);
+        const typography::BookText book = bookOf(text);
+        const u16_text hint = reader::hintAt(book, 0);
         const std::wstring_view cut = withoutEllipses(hint.wchars());
 
         check(text.starts_with(cut) && isLetterStart(text, cut.size()),
@@ -107,8 +128,8 @@ void testSearchContextKeepsLetters() {
         text += letter;
         text.append(20, L'\x0436');
 
-        const typography::Block blocks[] = {blockOf(text)};
-        const sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, u"q");
+        const typography::BookText book = bookOf(text);
+        const sta_vector<reader::SearchHit> hits = reader::searchBook(book, u"q");
 
         check(hits.size() == 1, "находка одна");
         if (hits.size() != 1) continue;
@@ -122,21 +143,73 @@ void testSearchContextKeepsLetters() {
 }
 
 /// Оглавление не копирует заголовки: его строки живут, пока заполняется
-/// вкладка, а текст блока — пока открыта книга.
+/// вкладка, а текст хранилища — пока открыта книга.
 void testContentsBorrowTitles() {
     std::printf("\n=== оглавление ===\n");
 
-    typography::Block title = blockOf(L"Глава первая");
-    title.kind = typography::BlockKind::Title;
-    const typography::Block blocks[] = {title, blockOf(L"Текст главы.")};
+    typography::BookText book;
+    addBlock(book, L"Глава первая", 0, typography::BlockKind::Title);
+    addBlock(book, L"Текст главы.", 12);
+    book.flowCount = 2;
 
-    const sta_vector<reader::ContentsEntry> contents = reader::contentsOf(blocks);
+    const sta_vector<reader::ContentsEntry> contents = reader::contentsOf(book);
     check(contents.size() == 1, "в оглавлении один заголовок");
     if (contents.size() != 1) return;
 
     check(contents[0].title == L"Глава первая", "строка оглавления — текст заголовка");
-    check(contents[0].title.data() == blocks[0].paragraph.text.data(),
-          "заголовок взят из блока, а не скопирован");
+    check(contents[0].title.data() == book.textOf(book.blocks[0].paragraph).data(),
+          "заголовок взят из хранилища, а не скопирован");
+}
+
+/// Оглавление, поиск и подсказка закладки идут по потоку чтения: тела сносок
+/// лежат в хранилище за ним, и ни заголовок тела, ни его слова в них не
+/// попадают.
+void testIndexKeepsToFlow() {
+    std::printf("\n=== оглавление и поиск — по потоку чтения ===\n");
+
+    typography::BookText book;
+    addBlock(book, L"Глава первая", 0, typography::BlockKind::Title);
+    addBlock(book, L"Текст главы со сноской.", 12);
+    book.flowCount = 2;
+
+    // Тело сноски — за потоком, как его кладёт вёрстка: заголовок-номер и абзац.
+    const auto body = static_cast<uint32_t>(book.blocks.size());
+    addBlock(book, L"1", 100, typography::BlockKind::Title);
+    addBlock(book, L"Пояснение к главе.", 101);
+    book.noteBodies.push_back({body, 2});
+
+    const sta_vector<reader::ContentsEntry> contents = reader::contentsOf(book);
+    check(contents.size() == 1 && contents[0].title == L"Глава первая",
+          "заголовок тела сноски в оглавление не входит");
+
+    check(reader::searchBook(book, u"пояснение").empty(), "слова тела сноски поиск не находит");
+    const sta_vector<reader::SearchHit> found = reader::searchBook(book, u"главы");
+    check(found.size() == 1 && found[0].charOffset == 18, "слова потока — находит, на их месте");
+
+    check(reader::hintAt(book, 150) == L"Текст главы со сноской.",
+          "подсказка за концом потока — его последний абзац, а не тело сноски");
+}
+
+/// Позиция находки — по прогонам позиций абзаца: после свёрнутого пробела
+/// позиция в книге убегает вперёд от индекса в тексте, и находка за ним
+/// стоит там, где она в книге, а не в абзаце.
+void testSearchPlacesHitsByOffsetRuns() {
+    std::printf("\n=== поиск: место находки по прогонам позиций ===\n");
+
+    // Свёртка оставила от четырёх пробелов между словами один: «два» в тексте
+    // абзаца на 4, а в книге на 7 — второй прогон.
+    typography::BookText book;
+    addBlock(book, L"раз два", 0);
+    book.offsets.push_back({4, 7});
+    ++book.blocks.back().paragraph.offsets.count;
+    book.flowCount = 1;
+
+    const sta_vector<reader::SearchHit> before = reader::searchBook(book, u"раз");
+    const sta_vector<reader::SearchHit> after = reader::searchBook(book, u"два");
+    const sta_vector<reader::SearchHit> inside = reader::searchBook(book, u"ва");
+    check(before.size() == 1 && before[0].charOffset == 0, "до скачка — по первому прогону");
+    check(after.size() == 1 && after[0].charOffset == 7, "на скачке — начало своего прогона");
+    check(inside.size() == 1 && inside[0].charOffset == 8, "внутри прогона — от его начала по индексу");
 }
 
 /// Что поиск считает совпадением: регистр не важен, «ё» равна «е»,
@@ -163,13 +236,13 @@ void testSearchMatchesWhatTheReaderMeans() {
     };
 
     for (const Case& test : found) {
-        const typography::Block blocks[] = {blockOf(test.text)};
-        const sta_vector<reader::SearchHit> hits = reader::searchBook(blocks, test.needle);
+        const typography::BookText book = bookOf(test.text);
+        const sta_vector<reader::SearchHit> hits = reader::searchBook(book, test.needle);
         check(hits.size() == 1 && hits[0].charOffset == test.at,
               std::string("находка на своём месте: ") + test.what);
     }
 
-    const typography::Block hyphen[] = {blockOf(L"Про-метей")};
+    const typography::BookText hyphen = bookOf(L"Про-метей");
     check(reader::searchBook(hyphen, u"прометей").empty(), "обычный дефис — не мягкий перенос");
 }
 
@@ -416,6 +489,23 @@ bool holds(const std::wstring& text, std::wstring_view piece) {
 const std::filesystem::path kBook = testdata / L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
 const std::filesystem::path kOtherBook = testdata / L"nightmare_example.fb3";
 
+/// Книга в реестр тем, что регистрация берёт из документа: описанием, числом
+/// знаков и копией обложки. Описание читается, а не забирается: документ
+/// теста живёт до конца пробы.
+const BookEntry& addTo(Library& library, const fb3::Document& document, const std::filesystem::path& path,
+                       uint64_t fileSize) {
+    return library.add(document.description(), document.characterCount(), copyCover(document), path, fileSize);
+}
+
+/// Регистрация книги в рабочем месте — тем же, что снимает с документа
+/// чтение книги. Обложка — в кадре этой функции: регистрация держит её
+/// ссылкой, пока ждёт записи.
+Registered registerFrom(Workspace& ws, const fb3::Document& document, const std::filesystem::path& path,
+                        uint64_t fileSize) {
+    const std::optional<BookCover> cover = copyCover(document);
+    return run(ws.registerBook(document.description(), document.characterCount(), cover, path, fileSize));
+}
+
 /// Реестр — карточками полки: новая книга — одна карточка в конце, та же книга
 /// снова — без перемен, переложенная — замена своей карточки на её месте,
 /// прочитанный файл — один сброс; строка прогресса — поле карточки, и полка о
@@ -435,16 +525,16 @@ void testLibraryCards() {
     static_cast<void>(library.cards().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); }));
 
-    const u16_text guid = library.add(document, kBook, bytes.size()).guid;
+    const u16_text guid = addTo(library, document, kBook, bytes.size()).guid;
     check(heard.size() == 1 && heard[0] == list_change{list_change::inserted, 0, 1},
           "новая книга — одна карточка в конце");
 
-    library.add(other, kOtherBook, otherBytes.size());
+    addTo(library, other, kOtherBook, otherBytes.size());
     check(heard.size() == 2 && heard[1] == list_change{list_change::inserted, 1, 1}, "вторая — за первой");
 
     heard.clear();
     ShelfCard* const card = library.cards()[0].get();
-    library.add(document, kBook, bytes.size());
+    addTo(library, document, kBook, bytes.size());
     check(heard.empty() && library.cards()[0].get() == card,
           "та же книга снова — та же карточка, полка не слышит");
 
@@ -463,7 +553,7 @@ void testLibraryCards() {
     // Тот же UUID книги под другим путём — её переложили: запись другая,
     // карточка новая, место на полке и guid прежние.
     const std::filesystem::path moved = kBook.parent_path() / L"moved" / kBook.filename();
-    library.add(document, moved, bytes.size());
+    addTo(library, document, moved, bytes.size());
     check(heard.size() == 1 && heard[0] == list_change{list_change::replaced, 0, 1},
           "переложенная книга — замена своей карточки");
     check(library.cards()[0]->entry.guid == guid && library.cards()[0]->entry.path == moved,
@@ -562,20 +652,21 @@ void testWorkspaceRegistersBook() {
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
 
-    const Registered first = run(ws.registerBook(document, kBook, bytes.size()));
+    const Registered first = registerFrom(ws, document, kBook, bytes.size());
 
     check(first.isNew, "первая регистрация — новая книга");
     check(ws.library.cards().size() == 1, "в реестре одна книга");
     check(!first.entry.guid.empty(), "у записи есть guid");
     check(first.entry.path == kBook, "путь записи — путь файла");
 
-    const CoverBytes cover = coverOf(document, first.entry.guid);
+    const std::optional<BookCover> bookCover = copyCover(document);
+    const CoverBytes cover = coverOf(bookCover, first.entry.guid);
     check(first.entry.cover == cover.name, "имя обложки в записи — имя файла в кэше");
     check(cover.name.empty() || std::filesystem::exists(ws.coverDirectory() / cover.name.wchars()),
           "обложка книги лежит в кэше");
     check(!std::filesystem::exists(ws.libraryPath()), "регистрация сама реестр не пишет");
 
-    const Registered again = run(ws.registerBook(document, kBook, bytes.size()));
+    const Registered again = registerFrom(ws, document, kBook, bytes.size());
 
     check(!again.isNew, "повторная регистрация — не новая");
     check(again.entry.guid == first.entry.guid, "повторная регистрация — тот же guid");
@@ -597,7 +688,7 @@ void testWorkspaceKeepsLastBookGuid() {
     ws.settings.lastBookPath = kBook;
     ws.settings.lastBookGuid = kept;
 
-    const Registered restored = run(ws.registerBook(document, kBook, bytes.size()));
+    const Registered restored = registerFrom(ws, document, kBook, bytes.size());
 
     check(restored.isNew && restored.entry.guid == kept, "потерянная последняя книга — под прежним guid");
 
@@ -605,7 +696,7 @@ void testWorkspaceKeepsLastBookGuid() {
     const fb3::Document other{std::string(otherBytes)};
 
     ws.settings.lastBookPath = kOtherBook;   // guid занят первой книгой
-    const Registered fresh = run(ws.registerBook(other, kOtherBook, otherBytes.size()));
+    const Registered fresh = registerFrom(ws, other, kOtherBook, otherBytes.size());
 
     check(fresh.isNew && fresh.entry.guid != kept, "занятый guid не берётся — новый");
     check(ws.library.cards().size() == 2, "две разные книги");
@@ -622,10 +713,22 @@ void testWorkspaceOpensBook() {
 
     const LoadedBook loaded = run(ws.readBook(kBook, never));
 
-    check(loaded.book != nullptr, "книга прочитана и разобрана");
+    check(loaded.description.title.chars() == "Отцы и дети", "описание книги — при прочитанной, с названием");
+    check(!loaded.description.coverImageIndex || (loaded.cover && !loaded.cover->bytes.empty()),
+          "обложка, которую описание называет, — при прочитанной, с байтами");
     check(loaded.fileSize == std::filesystem::file_size(kBook), "размер файла — настоящий");
 
-    const Opened opened = run(ws.openBook(*loaded.book, loaded.fileSize, never));
+    // Тела сносок Тургенева открываются заголовком-номером: в хранилище они
+    // лежат за потоком чтения, и в оглавление не попадают.
+    const typography::BookText& text = loaded.book->text();
+    check(text.flowCount > 0 && text.blocks.size() > text.flowCount && !text.noteBodies.empty(),
+          "книга развёрнута: поток чтения, за ним тела сносок");
+    size_t flowTitles = 0;
+    for (const typography::Block& block : text.flow())
+        if (block.kind == typography::BlockKind::Title && block.paragraph.text.count != 0) ++flowTitles;
+    check(reader::contentsOf(text).size() == flowTitles, "оглавление — заголовки потока чтения, и только они");
+
+    const Opened opened = run(ws.openBook(loaded, never));
 
     check(opened.state.charOffset == 0 && opened.state.bookmarks.empty(), "новая книга — с чистого листа");
     check(ws.settings.lastBookGuid == opened.entry.guid && ws.settings.lastBookPath == kBook,
@@ -651,7 +754,7 @@ void testWorkspaceOpensBook() {
     state.charOffset = 12345;
     run(ws.saveState(opened.entry.guid, state));
 
-    const Opened reopened = run(ws.openBook(*loaded.book, loaded.fileSize, never));
+    const Opened reopened = run(ws.openBook(loaded, never));
 
     check(reopened.entry.guid == opened.entry.guid, "повторное открытие — та же запись");
     check(reopened.state.charOffset == 12345, "повторное открытие — то же место");
@@ -718,7 +821,7 @@ void testWorkspaceFindsLastBook() {
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
-    const Registered registered = run(ws.registerBook(document, kBook, bytes.size()));
+    const Registered registered = registerFrom(ws, document, kBook, bytes.size());
 
     ws.settings.lastBookPath = box.root / L"moved-away.fb3";
     ws.settings.lastBookGuid = registered.entry.guid;
@@ -752,14 +855,14 @@ void testStateGoesUnderPlacesGuid() {
     Workspace ws(box.root);
 
     const LoadedBook first = run(ws.readBook(kBook, never));
-    Opened firstOpened = run(ws.openBook(*first.book, first.fileSize, never));
+    Opened firstOpened = run(ws.openBook(first, never));
 
     BookPlaces places;
-    places.open(firstOpened.entry.guid, first.book->blocks(), std::move(firstOpened.state.bookmarks));
+    places.open(firstOpened.entry.guid, first.book->text(), std::move(firstOpened.state.bookmarks));
     places.toggleBookmark(500, u16_text{u"пятьсот"});
 
     const LoadedBook second = run(ws.readBook(kOtherBook, never));
-    const Opened secondOpened = run(ws.openBook(*second.book, second.fileSize, never));
+    const Opened secondOpened = run(ws.openBook(second, never));
 
     check(ws.settings.lastBookGuid == secondOpened.entry.guid, "настройки уже указывают на новую книгу");
     check(places.guid() == firstOpened.entry.guid, "места — ещё прежней: открытие их не трогает");
@@ -847,7 +950,7 @@ void testWorkspaceOpenStopsOnStateRead() {
     cancellation_source before;
     before.cancel();
 
-    check(canceled(ws.openBook(*loaded.book, loaded.fileSize, before.token())), "под отменённым токеном — отмена");
+    check(canceled(ws.openBook(loaded, before.token())), "под отменённым токеном — отмена");
     check(ws.library.cards().empty() && ws.settings.lastBookGuid.empty(),
           "под отменённым токеном модель не тронута");
     check(!std::filesystem::exists(ws.libraryPath()) && !std::filesystem::exists(ws.settingsPath()) &&
@@ -855,7 +958,7 @@ void testWorkspaceOpenStopsOnStateRead() {
           "под отменённым токеном на диске ничего");
 
     cancellation_source during;
-    task<Opened> opening = ws.openBook(*loaded.book, loaded.fileSize, during.token());
+    task<Opened> opening = ws.openBook(loaded, during.token());
     check(!opening.done(), "открытие стоит на записи обложки");
     during.cancel();
 
@@ -1028,6 +1131,8 @@ int main() {
     testHintKeepsLetters();
     testSearchContextKeepsLetters();
     testContentsBorrowTitles();
+    testIndexKeepsToFlow();
+    testSearchPlacesHitsByOffsetRuns();
     testSearchMatchesWhatTheReaderMeans();
     testEdgeThroughPoints();
     testSkinsReadSeparateLeaves();

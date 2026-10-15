@@ -574,9 +574,9 @@ void BookView::buildTree() {
 
                 // Знак сноски важнее перелистывания: он мелкий, и промах по нему из-за
                 // того, что страница уже перевернулась, читателя злит.
-                const PageFlow::NoteHit mark = flow_.noteAt(PageFlow::Point{point.x, point.y});
-                if (mark.target) {
-                    note_.show(*flow_.book(), mark.target, Point{mark.anchor.x, mark.anchor.y},
+                const std::optional<PageFlow::NoteHit> mark = flow_.noteAt(PageFlow::Point{point.x, point.y});
+                if (mark) {
+                    note_.show(*flow_.book(), mark->body, Point{mark->anchor.x, mark->anchor.y},
                                {flow_.width(), flow_.height()}, paper(), flow_.fontSize(), scale_);
                     return;
                 }
@@ -616,9 +616,9 @@ void BookView::addOverlay(const UIElement& element) {
     root_.children().append(element);
 }
 
-void BookView::open(std::shared_ptr<Book> book, uint32_t charOffset) {
+void BookView::open(not_null<Book> book, uint32_t charOffset) {
     note_.hide();
-    flow_.open(std::move(book), charOffset);
+    flow_.open(book, charOffset);
     requestRelayout();
     position_.set(flow_.position());
 }
