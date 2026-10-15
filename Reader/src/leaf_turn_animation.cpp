@@ -1,5 +1,6 @@
 // Свой заголовок первым: он ведёт к импорту модуля книги, после которого
-// стандартный заголовок MSVC уже не принимает.
+// стандартный заголовок MSVC уже не принимает. Ожидание конца пакета под
+// токеном (dsl::onCompleted) — из event_awaitable.h.
 #include "leaf_turn_animation.h"
 #include "event_awaitable.h"
 
@@ -54,8 +55,8 @@ constexpr size_t kRightPage = SpreadView::kRightPage;
 
 /// Сколько листов переворота держим в воздухе разом. При быстром листании
 /// каждый нажим пускает свой лист, и они летят внахлёст; больше этого числа не
-/// копим — самый старый добивается рывком. Каждый лист в полёте держит растр
-/// разворота в размер окна, то есть память (десяток с лишним листов —
+/// копим — старейший переворот кончается рывком. Каждый лист в полёте держит
+/// растр разворота в размер окна, то есть память (десяток с лишним листов —
 /// сотня-другая мегабайт), поэтому число хоть и щедрое, но не бесконечное.
 constexpr size_t kMaxLeaves = 16;
 
@@ -64,7 +65,8 @@ constexpr size_t kMaxLeaves = 16;
 /// по одному в секунду, пока не останется один (его держим на следующее
 /// листание, чтобы не заводить поверхность заново). Так пик памяти держится
 /// лишь на время листания, а в покое от пула остаются один лист и один
-/// свободный растр.
+/// свободный растр. Паузы две, и таймера два: интервал у WaitableTimer свой на
+/// всю его жизнь.
 constexpr auto kLeafReleaseFirst = 10s;
 constexpr auto kLeafReleaseStep = 1s;
 
@@ -173,7 +175,7 @@ Color tinted(const D2D1_COLOR_F& color, float alpha) {
     return Color{channel(alpha), channel(color.r), channel(color.g), channel(color.b)};
 }
 
-/// Ставит трапецию на одну сторону листа: у `hinge` она остаётся в своих
+/// Ставит числа трапеции одной стороны листа: у `hinge` она остаётся в своих
 /// размерах, у `freeEdge` вырастает в kLiftPeak раз — во столько, сколько
 /// скажет Amount в `liftAmount`.
 ///
@@ -182,189 +184,373 @@ Color tinted(const D2D1_COLOR_F& color, float alpha) {
 /// сгибе в одной высоте: точка на расстоянии s от корешка поднята одинаково, с
 /// какой бы стороны бумаги она ни была, а сгиб — это одна точка, видимая с
 /// обеих. Ничего согласовывать для этого не нужно, так выходит само.
-void liftPage(ExpressionAnimation const& liftExpression, CompositionPropertySet const& liftAmount,
-              Visual const& page, float hinge, float freeEdge, float height) {
+void setLiftGeometry(ExpressionAnimation const& liftExpression,
+                     CompositionPropertySet const& liftAmount, float hinge, float freeEdge,
+                     float height) {
     const float slant = 1.0f / kLiftPeak - 1.0f;
     liftExpression.setReferenceParameter(L"lift", liftAmount);
     liftExpression.setScalarParameter(L"Slant", slant);
     liftExpression.setScalarParameter(L"Fall", slant / (freeEdge - hinge));
     liftExpression.setScalarParameter(L"Half", height * 0.5f);
     liftExpression.setScalarParameter(L"Hinge", hinge);
-    page.startAnimation(L"TransformMatrix", liftExpression);
 }
 
 }  // namespace
 
+/* ---------------- лист ---------------- */
+
+LeafTurnAnimation::Leaf::Leaf(const Compositor& compositor, const ContainerVisual& leafLayer,
+                              const CompositionBrush& restBrush)
+    : outgoingPage(compositor.createSpriteVisual()),
+      outgoingPageClip(compositor.createInsetClip()),
+      flatLeafShadow(compositor.createDropShadow()),
+      incomingPage(compositor.createSpriteVisual()),
+      incomingPageClip(compositor.createInsetClip()),
+      bendHalftone(compositor.createSpriteVisual()),
+      bendHalftoneBrush(compositor.createLinearGradientBrush()),
+      foldShadow(compositor.createSpriteVisual()),
+      foldShadowBrush(compositor.createLinearGradientBrush()),
+      foldShadowMidpoint(compositor.createColorGradientStop(kFoldMidStop, colors.transparent)),
+      outerEdgeShadow(compositor.createSpriteVisual()),
+      outerEdgeShadowBrush(compositor.createLinearGradientBrush()),
+      // Доля подъёма — скаляр в собственных свойствах уходящей страницы, а две
+      // трапеции читают её выражениями. Числа геометрии ставит начало каждого
+      // книжного переворота (lift): корешок и свободный край зависят от
+      // стороны листания, а размеры — от окна.
+      liftAmount(outgoingPage.properties()),
+      outgoingLiftExpression(compositor.createExpressionAnimation(kLiftFormula)),
+      incomingLiftExpression(compositor.createExpressionAnimation(kLiftFormula)),
+      restBrush_(restBrush) {
+    outgoingPage.clip(outgoingPageClip);
+
+    // Тень уезжающего плоского листа — маской ей кисть листа (её ставит
+    // переворот), поэтому тень повторяет лист, а не описанный прямоугольник.
+    // Гасится и зажигается прозрачностью.
+    flatLeafShadow.blurRadius(kShadowBlur);
+    flatLeafShadow.offset({kShadowShift, 0.0f, 0.0f});
+    outgoingPage.shadow(flatLeafShadow);
+
+    // Тень сгиба (книжное листание): горизонтальный градиент в долях своей
+    // ширины, поэтому полоске достаточно ездить — перекрашивать не приходится.
+    foldShadowBrush.startPoint({0.0f, 0.0f});
+    foldShadowBrush.endPoint({1.0f, 0.0f});
+    foldShadowBrush.colorStops().append(
+        compositor.createColorGradientStop(0.0f, colors.transparent));
+    foldShadowBrush.colorStops().append(foldShadowMidpoint);
+    foldShadowBrush.colorStops().append(
+        compositor.createColorGradientStop(1.0f, colors.transparent));
+    foldShadow.brush(foldShadowBrush);
+
+    // Тень наружного края приходящей страницы: узкая и неизменная, градиент
+    // развёрнут — густо у листа, прозрачно прочь.
+    outerEdgeShadowBrush.colorStops().append(
+        compositor.createColorGradientStop(0.0f, colors.transparent));
+    outerEdgeShadowBrush.colorStops().append(
+        compositor.createColorGradientStop(kEdgeMidStop, colors.transparent));
+    outerEdgeShadowBrush.colorStops().append(
+        compositor.createColorGradientStop(1.0f, colors.transparent));
+    outerEdgeShadow.brush(outerEdgeShadowBrush);
+
+    // Приходящая страница (кисть ставит переворот — растр нового разворота) и
+    // полутон изгиба у сгиба: её ребёнок, кроится вместе с ней.
+    incomingPage.clip(incomingPageClip);
+    bendHalftoneBrush.colorStops().append(
+        compositor.createColorGradientStop(0.0f, colors.transparent));
+    bendHalftoneBrush.colorStops().append(
+        compositor.createColorGradientStop(kBendMidStop, colors.transparent));
+    bendHalftoneBrush.colorStops().append(
+        compositor.createColorGradientStop(1.0f, colors.transparent));
+    bendHalftone.brush(bendHalftoneBrush);
+    incomingPage.children().insertAtTop(bendHalftone);
+
+    // Все визуалы листа — в слой; их Z на каждый переворот уточняет анимация
+    // (плоское — под старые, книжное — над старыми).
+    VisualCollection const layerChildren = leafLayer.children();
+    layerChildren.insertAtTop(outgoingPage);
+    layerChildren.insertAtTop(foldShadow);
+    layerChildren.insertAtTop(outerEdgeShadow);
+    layerChildren.insertAtTop(incomingPage);
+
+    rest();
+}
+
+void LeafTurnAnimation::Leaf::fit(float width, float height) const {
+    outgoingPage.size({width, height});
+    // Полоска тени сгиба меряется целым разворотом (её ужимает Scale по ходу),
+    // приходящая страница — тоже; тени края и полутон изгиба — постоянной
+    // ширины в долях окна.
+    foldShadow.size({width, height});
+    incomingPage.size({width, height});
+    outerEdgeShadow.size({width * kEdgeOfWindow, height});
+    bendHalftone.size({width * kBendOfWindow, height});
+}
+
+void LeafTurnAnimation::Leaf::tint(const D2D1_COLOR_F& hue) const {
+    // Все кисти теней устроены одинаково: гуще всего у того, кто тень
+    // отбрасывает, потом середина спада, потом ничего. Цвет во всех трёх
+    // остановках один, разная только прозрачность — в том числе и в последней,
+    // где она нулевая: см. tinted().
+    auto const paintRamp = [&hue](Collection<CompositionColorGradientStop> const& stops,
+                                  uint32_t dense, uint32_t middle) {
+        if (stops.size() < 3) return;
+        stops[0].color(tinted(hue, alphaOf(dense)));
+        stops[1].color(tinted(hue, alphaOf(middle)));
+        stops[2].color(tinted(hue, 0.0f));
+    };
+    paintRamp(foldShadowBrush.colorStops(), kFoldNear, kFoldMid);
+    paintRamp(outerEdgeShadowBrush.colorStops(), kEdgeNear, kEdgeMid);
+    paintRamp(bendHalftoneBrush.colorStops(), kBendNear, kBendMid);
+
+    // Тень уезжающего листа не градиент, а размытие: тон непрозрачный,
+    // прозрачностью правит сама тень.
+    flatLeafShadow.color(tinted(hue, 1.0f));
+}
+
+void LeafTurnAnimation::Leaf::lift(float hinge, float outgoingFreeEdge, float incomingFreeEdge,
+                                   float height) {
+    // Центр преобразования обнуляется: трапеция задана от начала координат
+    // листа, а центр нужен только плоскому листанию, где вокруг него идёт
+    // поворот.
+    outgoingPage.centerPoint({0.0f, 0.0f, 0.0f});
+
+    setLiftGeometry(outgoingLiftExpression, liftAmount, hinge, outgoingFreeEdge, height);
+    start(outgoingPage, L"TransformMatrix", outgoingLiftExpression);
+    setLiftGeometry(incomingLiftExpression, liftAmount, hinge, incomingFreeEdge, height);
+    start(incomingPage, L"TransformMatrix", incomingLiftExpression);
+}
+
+void LeafTurnAnimation::Leaf::start(const CompositionObject& target, const wchar_t* property,
+                                    const CompositionAnimation& animation) {
+    target.startAnimation(property, animation);
+    started_.push_back({target, property});
+}
+
+void LeafTurnAnimation::Leaf::stop() {
+    // Сначала снять анимации, потом писать: пока анимация на свойстве жива,
+    // прямая запись до него не доходит, и недоехавший лист доехал бы позже уже
+    // не к месту. Покой после этого — тот же, что у нового листа: композитор,
+    // сняв анимацию, оставляет свойству последнее значение, а не прежнее, и
+    // вернуть его некому, кроме объявленного покоя. Выражения подъёма снимаются
+    // здесь же: оставленное на свойстве, композитор считал бы его каждый кадр
+    // — за все свободные листы пула и без всякой нужды.
+    for (const StartedAnimation& startedAnimation : started_)
+        startedAnimation.target.stopAnimation(startedAnimation.property);
+    started_.clear();
+    rest();
+}
+
+void LeafTurnAnimation::Leaf::rest() const {
+    // Ничего не видно, и страницы ничего не носят: растр, который лист нёс,
+    // ему больше не нужен — кисть покоя его отпускает. Маску тени покой не
+    // трогает: её ставит газетный переворот кистью уходящей страницы, а
+    // погашенная тень невидимой страницы её не рисует. Держит она растр
+    // последнего газетного переворота листа — до следующего такого же или до
+    // отпускания листа.
+    outgoingPage.isVisible(false);
+    outgoingPage.brush(restBrush_);
+    foldShadow.isVisible(false);
+    outerEdgeShadow.isVisible(false);
+    incomingPage.isVisible(false);
+    incomingPage.brush(restBrush_);
+    flatLeafShadow.opacity(0.0f);
+
+    // Плоский лист — на месте и ровно.
+    outgoingPage.offset({0.0f, 0.0f, 0.0f});
+    outgoingPage.rotationAngleInDegrees(0.0f);
+
+    // Крой в покое отпущен на вылет тени: нулевые отступы — ровно лист, а тени
+    // положено лежать за его краем.
+    outgoingPageClip.leftInset(-kShadowReach);
+    outgoingPageClip.rightInset(-kShadowReach);
+    outgoingPageClip.topInset(-kShadowReach);
+    outgoingPageClip.bottomInset(-kShadowReach);
+
+    // Подъёма нет — трапеции тождественны, полутон изгиба на своей плотности.
+    liftAmount.insertScalar(L"Amount", 0.0f);
+    outgoingPage.transformMatrix(identity_matrix());
+    incomingPage.transformMatrix(identity_matrix());
+    bendHalftone.opacity(1.0f);
+}
+
+void LeafTurnAnimation::Leaf::detach(const ContainerVisual& leafLayer) const {
+    VisualCollection const layerChildren = leafLayer.children();
+    layerChildren.remove(outgoingPage);
+    layerChildren.remove(foldShadow);
+    layerChildren.remove(outerEdgeShadow);
+    // Полутон изгиба — ребёнок приходящей страницы, уходит с ней.
+    layerChildren.remove(incomingPage);
+}
+
+/* ---------------- перевороты ---------------- */
+
 LeafTurnAnimation::LeafTurnAnimation(const Compositor& compositor, const ContainerVisual& leafLayer,
                                      const DispatcherQueue& queue, SpreadView& spread,
-                                     const PageFlow& flow, async::cancellation_token parent)
+                                     const PageFlow& flow,
+                                     const async::cancellation_source& readingScope,
+                                     async::cancellation_token stripStop)
     : compositor_(compositor),
       leafLayer_(leafLayer),
       spread_(spread),
       flow_(flow),
+      readingScope_(readingScope),
       restBrush_(compositor.createColorBrush(rgba(0, 0, 0, 0))),
-      releaseTimer_(queue.createTimer()),
-      stop_(std::move(parent)) {
-    // Пул листов зарезервирован под предел: дальше push_back не переселяет
-    // вектор, и указатели на листы, что держат ожидания конца переворота
-    // (landWhenDone), остаются годными.
-    leafPool_.reserve(kMaxLeaves);
-
-    // Таймер отпускания пула листов не повторяется — перезаводится сам с новой
-    // паузой (armRelease/onReleaseTick).
-    releaseTimer_.isRepeating(false);
-    releaseTick_ = releaseTimer_.add_onTick(method(this, &LeafTurnAnimation::onReleaseTick));
+      turnSeries_(readingScope.token()),
+      releaseStop_(std::move(stripStop)),
+      releasePauses_(make_refcounted<ReleasePauses>(queue, releaseStop_.token())) {
+    // Отпускание пула — на всю жизнь стратегии: цикл тут же встаёт на долгую
+    // паузу и до первой посадки ничего не трогает.
+    releaseIdleLeaves(releasePauses_, releaseStop_.token());
 }
 
 LeafTurnAnimation::~LeafTurnAnimation() {
-    // Ожидания концов переворотов стратегии больше не нужны: отменяет их
-    // владелец, то есть она сама. Корутины кончатся отменой на своём ожидании
-    // и стратегии уже не тронут. Таймер пула — тоже её, и тик после неё звал
-    // бы мёртвое.
-    stop_.cancel();
-    releaseTimer_.stop();
-    releaseTimer_.remove_onTick(releaseTick_);
+    // Ожидания этой стратегии — концы переворотов и паузы отпускания пула —
+    // больше никому не нужны: её сменили или полоса умирает. Отменяет их
+    // владелец — она сама; корутины кончатся отменой ходом очереди и стратегии
+    // уже не тронут, а таймеры, на которых стоит цикл, доживут до конца его
+    // кадра (ReleasePauses).
+    turnSeries_.cancel();
+    releaseStop_.cancel();
 }
 
 void LeafTurnAnimation::turnStarting(bool forward) {
-    // Режим книги — разворот в две колонки: там есть корешок и переворот листа
-    // у него. Одна колонка и три с лишним — режим газеты: уезжает целая
-    // страница. Страницы ведут себя в них по-разному, поэтому режим решаем
-    // сразу.
-    const bool book = flow_.columns() == 2;
+    // Встречное листание сперва доводит до конца всё, что летит, — в обоих
+    // режимах: серия — перевороты в одну сторону. В книге бумага снимается с
+    // осевшего разворота, а у летящего листа перелистываемая страница ещё в
+    // воздухе: снимать с неё нечего, и лист, пущенный навстречу поверх
+    // летящих, показывал бы под собой то, чего в книге уже нет. В газете копия
+    // одного и того же листа летела бы в разные стороны разом. Осевшим
+    // становится разворот самого нового (finishAll); листы в ту же сторону
+    // остаются лететь внахлёст.
+    if (!liveTurns_.empty() && liveTurns_.back().forward != forward) finishAll();
 
-    // Встречное листание сперва сажает всё, что летит, — в обоих режимах. В
-    // книге бумага снимается с осевшего разворота, а у летящего листа
-    // перелистываемая страница ещё в воздухе: снимать с неё нечего, и лист,
-    // пущенный навстречу поверх летящих, показывал бы под собой то, чего в
-    // книге уже нет. В газете копия одного и того же листа летела бы в разные
-    // стороны разом. Садятся они рывком, в покой, осевший разворот — самого
-    // нового из них (cancelTurn); листы в ту же сторону остаются лететь
-    // внахлёст.
-    for (const Leaf& pooledLeaf : leafPool_)
-        if (pooledLeaf.active && pooledLeaf.forward != forward) {
-            cancelTurn();
-            break;
-        }
+    // Первый переворот серии заводит её источник — под нынешним источником
+    // чтения: тот полоса заводит заново при каждом входе.
+    if (liveTurns_.empty()) turnSeries_ = async::cancellation_source{readingScope_.token()};
 
-    // Лист возьмётся свободный, новый или посаженный рывком — см. acquireLeaf.
-    Leaf& flyingLeaf = acquireLeaf();
-    flyingLeaf.forward = forward;
-    flyingLeaf.book = book;
-    flyingLeaf.epoch = flyingLeaf.started = ++leafClock_;
-    flyingLeaf.outgoingRaster = flyingLeaf.incomingRaster = SpreadView::kNoRaster;
+    // Отпускание пула таймеров не трогает: цикл, проснувшись, сам увидит, что
+    // листают, и не отпустит ничего, пока все не сядут.
 
-    if (book) {
-        // Режим книги: неперелистываемая страница (при листании вперёд левая)
+    // Лист возьмётся свободный, новый или у старейшего переворота — см.
+    // acquireLeaf. Режим решаем сразу: в книге (две колонки) есть корешок и
+    // переворот листа у него, в газете (одна колонка, три с лишним) уезжает
+    // целая страница, и растры лист носит разные.
+    const size_t leafIndex = acquireLeaf();
+    const bool bookMode = flow_.columns() == 2;
+    const size_t flippingSide = forward ? kRightPage : kLeftPage;
+
+    // Уходящая страница — старая, и она уже растеризована: в книге её
+    // показывает перелистываемая страница, в газете — обе, осевшим растром.
+    // Лист её заимствует, а не рисует, — пока книга ещё стоит на ней.
+    liveTurns_.push_back(Turn{
+        .leafIndex = leafIndex,
+        .forward = forward,
+        .bookMode = bookMode,
+        .stop = async::cancellation_source{turnSeries_.token()},
+        .outgoingRaster = bookMode ? spread_.pageRaster(flippingSide) : spread_.settledRaster(),
+    });
+
+    if (bookMode) {
+        // Книга: неперелистываемая страница (при листании вперёд левая)
         // остаётся на старом развороте, пока приходящий лист её не накроет.
         // Новых страниц у переворота две — оборот снимаемой бумаги и та, что
-        // открывается под ней, — то есть ровно один новый разворот: он ляжет
-        // в свободный растр листа единственной отрисовкой на переворот (redraw
-        // полосы после шага: нынешний разворот с этой минуты несёт самый новый
-        // лист, drawTarget). Из него animateBookTurn оденет перелистываемую
-        // страницу и выведет приходящий лист; старое лист заимствует у
-        // страницы, на которой оно уже показано. Осевшим разворотом лист, сев,
-        // станет указателем, без отрисовки (landLeaf).
-        flyingLeaf.incomingRaster = acquireRaster();
+        // открывается под ней, — то есть ровно один новый разворот: он ляжет в
+        // свободный растр листа единственной отрисовкой на переворот. С этой
+        // минуты нынешний разворот несёт самый новый лист (drawTarget).
+        liveTurns_.back().incomingRaster = acquireRaster();
     } else {
-        // Режим газеты: уезжающий лист несёт уходящую страницу, а из-под него
-        // открываются страницы — новый разворот. Уходящее уже растеризовано —
-        // это осевший растр, который страницы носят сейчас: лист берёт его как
-        // есть, а осевшим становится свободный растр, и в него redraw полосы
-        // нарисует новый разворот после шага книги. Так в газете, как и в
-        // книге, на переворот приходится одна отрисовка.
-        flyingLeaf.outgoingRaster = spread_.settledRaster();
+        // Газета: уезжающий лист несёт бывший осевший растр, а осевшим
+        // становится свободный — в него полоса нарисует новый разворот после
+        // шага книги и оденет в него страницы.
         spread_.settleOn(acquireRaster());
     }
 }
 
 void LeafTurnAnimation::turnStarted(bool forward) {
-    Leaf& flyingLeaf = *newestInFlight();   // его только что завёл turnStarting
-    fitLeaf(flyingLeaf);
+    // Переворот, который только что завёл turnStarting.
+    Turn& startingTurn = liveTurns_.back();
+    Leaf& startingLeaf = leafPool_[startingTurn.leafIndex];
+    startingLeaf.fit(flow_.width(), flow_.height());
+
+    if (startingTurn.bookMode) {
+        // Уходящая страница листа несёт СТАРУЮ перелистываемую — ту, что
+        // показана прямо сейчас: её кисть и забираем у страницы-визуала, прежде
+        // чем одеть ту в новое. Своей отрисовки у уходящей нет, и какой из
+        // летящих листов или осевший разворот эту кисть дал — неважно: страница
+        // уже носит верную.
+        const size_t flippingSide = forward ? kRightPage : kLeftPage;
+        startingLeaf.outgoingPage.brush(spread_.pageVisual(flippingSide).brush());
+
+        // Обе НОВЫЕ страницы — из растра листа, куда полоса только что
+        // нарисовала новый разворот: перелистываемая страница-визуал одевается
+        // в него с первого кадра (из-под снимаемой бумаги открывается новое),
+        // приходящая страница листа несёт ту, что ляжет на неперелистываемую.
+        // Кисть DrawingSurface делает новую на каждый вызов, а поверхность за
+        // ней та же — второй отрисовки не возникает.
+        spread_.dressPage(flippingSide, startingTurn.incomingRaster);
+        startingLeaf.incomingPage.brush(spread_.raster(startingTurn.incomingRaster).brush());
+    } else {
+        // Уезжающий лист несёт уходящую страницу — бывший осевший растр — и им
+        // же маскирует тень: в газете лист открывает страницы под собой, а не
+        // повторяет их.
+        startingLeaf.outgoingPage.brush(spread_.raster(startingTurn.outgoingRaster).brush());
+        startingLeaf.flatLeafShadow.mask(startingLeaf.outgoingPage.brush());
+    }
 
     leafLayer_.isVisible(true);   // листы — на время переворота
-
-    if (flyingLeaf.book)
-        animateBookTurn(flyingLeaf, forward);
-    else
-        animateFlatTurn(flyingLeaf, forward);
+    flyTurn(startingTurn.leafIndex, forward, startingTurn.bookMode, startingTurn.stop.token());
 }
 
 void LeafTurnAnimation::finishAll() {
-    cancelTurn();
+    // Серия кончается вся: её источник отменён и больше не нужен — следующая
+    // заведёт свой. Отмена кончает ожидания корутин ходом очереди, а покой и
+    // посадка нужны сейчас, в этой строке: на них стоит следующая.
+    turnSeries_.cancel();
+    if (liveTurns_.empty()) {
+        settle();
+        return;
+    }
+    finishTurn(liveTurns_.size() - 1);
 }
 
 SpreadView::RasterId LeafTurnAnimation::drawTarget() const {
-    if (const Leaf* const newestLeaf = newestInFlight(); newestLeaf && newestLeaf->book)
-        return newestLeaf->incomingRaster;
+    // Посреди книжного переворота нынешний разворот несёт растр самого нового
+    // листа: перелистываемая страница и приходящая страница листа смотрят на
+    // него и обновятся сами, а неперелистываемой до посадки положено старое.
+    if (!liveTurns_.empty() && liveTurns_.back().bookMode) return liveTurns_.back().incomingRaster;
     return spread_.settledRaster();
 }
 
 void LeafTurnAnimation::tintShadows(const D2D1_COLOR_F& hue) {
+    // Тени у каждого листа пула свои — красим все, и летящие тоже.
     shadowHue_ = hue;
-    applyShadowTint();
+    for (const Leaf& pooledLeaf : leafPool_) pooledLeaf.tint(hue);
 }
 
-void LeafTurnAnimation::fitLeaf(Leaf& flyingLeaf) {
-    const float width = flow_.width();
-    const float height = flow_.height();
-    flyingLeaf.outgoingPage.size({width, height});
-    // Полоска тени сгиба меряется целым разворотом (её ужимает Scale по ходу),
-    // приходящий лист — тоже; тени края и полутон изгиба — постоянной ширины
-    // в долях окна.
-    flyingLeaf.foldShadow.size({width, height});
-    flyingLeaf.incomingPage.size({width, height});
-    flyingLeaf.outerEdgeShadow.size({width * kEdgeOfWindow, height});
-    flyingLeaf.bendHalftone.size({width * kBendOfWindow, height});
-}
-
-LeafTurnAnimation::Leaf& LeafTurnAnimation::acquireLeaf() {
-    releaseTimer_.stop();   // снова листают — отпускание пула отменяется
-
+size_t LeafTurnAnimation::acquireLeaf() {
     // Свободный лист в пуле?
-    for (Leaf& pooledLeaf : leafPool_)
-        if (!pooledLeaf.active) {
-            pooledLeaf.active = true;
-            return pooledLeaf;
-        }
+    for (size_t leafIndex = 0; leafIndex < leafPool_.size(); ++leafIndex)
+        if (!leafInFlight(leafIndex)) return leafIndex;
 
-    // Ещё не набрали лимит — заводим новый. Пул зарезервирован под kMaxLeaves
-    // (конструктор), так что push_back не переселяет вектор: указатели на листы,
-    // что держат ожидания конца, остаются годными. Растр новому листу не нужен:
-    // растры — у разворота, лист берёт их на переворот.
+    // Ещё не набрали предел — заводим новый, тенями под нынешнюю тему. Растра
+    // ему не нужно: растры — у разворота, лист берёт их на переворот.
     if (leafPool_.size() < kMaxLeaves) {
-        leafPool_.push_back(makeLeaf());
-        Leaf& freshLeaf = leafPool_.back();
-        freshLeaf.active = true;
-        applyShadowTint();   // покрасить его тени под нынешнюю тему
-        return freshLeaf;
+        leafPool_.emplace_back(compositor_, leafLayer_, restBrush_);
+        leafPool_.back().tint(shadowHue_);
+        return leafPool_.size() - 1;
     }
 
-    // Все в воздухе, а листать просят ещё — сажаем самый старый рывком. Сев,
-    // он отдаёт свой разворот неперелистываемой странице как доигравший
-    // (landLeaf): иначе из-под ещё летящих на миг выглянуло бы то, что было
-    // до него.
-    Leaf* oldestLeaf = &leafPool_.front();
-    for (Leaf& pooledLeaf : leafPool_)
-        if (pooledLeaf.started < oldestLeaf->started)
-            oldestLeaf = &pooledLeaf;
-    oldestLeaf->epoch = ++leafClock_;   // его ожидание конца, дождавшись, увидит чужой номер
-    finishLeaf(*oldestLeaf);
-    landLeaf(*oldestLeaf);
-    oldestLeaf->active = true;
-    return *oldestLeaf;
+    // Все в воздухе, а листать просят ещё — старейший переворот кончается
+    // рывком, как доигравший: его разворот становится осевшим, и
+    // неперелистываемая страница одевается в него, иначе из-под ещё летящих на
+    // миг выглянуло бы то, что было до него. Его лист — новому перевороту.
+    const size_t oldestLeaf = liveTurns_.front().leafIndex;
+    finishTurn(0);
+    return oldestLeaf;
 }
 
-const LeafTurnAnimation::Leaf* LeafTurnAnimation::newestInFlight() const {
-    const Leaf* newestLeaf = nullptr;
-    for (const Leaf& pooledLeaf : leafPool_)
-        if (pooledLeaf.active && (!newestLeaf || pooledLeaf.started > newestLeaf->started))
-            newestLeaf = &pooledLeaf;
-    return newestLeaf;
-}
-
-LeafTurnAnimation::Leaf* LeafTurnAnimation::newestInFlight() {
-    return const_cast<Leaf*>(std::as_const(*this).newestInFlight());
+bool LeafTurnAnimation::leafInFlight(size_t leafIndex) const {
+    return std::ranges::any_of(
+        liveTurns_, [leafIndex](const Turn& liveTurn) { return liveTurn.leafIndex == leafIndex; });
 }
 
 SpreadView::RasterId LeafTurnAnimation::acquireRaster() {
@@ -373,288 +559,64 @@ SpreadView::RasterId LeafTurnAnimation::acquireRaster() {
 }
 
 bool LeafTurnAnimation::rasterInFlight(SpreadView::RasterId raster) const {
-    for (const Leaf& pooledLeaf : leafPool_)
-        if (pooledLeaf.active &&
-            (pooledLeaf.outgoingRaster == raster || pooledLeaf.incomingRaster == raster))
-            return true;
-    return false;
+    return std::ranges::any_of(liveTurns_, [raster](const Turn& liveTurn) {
+        return liveTurn.outgoingRaster == raster || liveTurn.incomingRaster == raster;
+    });
 }
 
-LeafTurnAnimation::Leaf LeafTurnAnimation::makeLeaf() {
-    // Лист в покое ничего не носит (restBrush_): растры — у разворота, лист
-    // берёт их на время переворота. Размеры ставит каждый переворот (fitLeaf):
-    // мера могла смениться, пока лист лежал в пуле.
-    SpriteVisual outgoingPage = compositor_.createSpriteVisual();
-    outgoingPage.brush(restBrush_);
-    // Крой в покое отпущен на вылет тени: нулевые отступы — ровно лист, а тени
-    // положено лежать за его краем.
-    InsetClip outgoingPageClip =
-        compositor_.createInsetClip(-kShadowReach, -kShadowReach, -kShadowReach, -kShadowReach);
-    outgoingPage.clip(outgoingPageClip);
-    outgoingPage.isVisible(false);
-
-    // Тень уезжающего листа — маской ей кисть листа, поэтому тень повторяет
-    // лист, а не описанный прямоугольник. Гасится и зажигается прозрачностью.
-    DropShadow flatLeafShadow = compositor_.createDropShadow();
-    flatLeafShadow.blurRadius(kShadowBlur);
-    flatLeafShadow.offset({kShadowShift, 0.0f, 0.0f});
-    flatLeafShadow.mask(outgoingPage.brush());
-    flatLeafShadow.opacity(0.0f);
-    outgoingPage.shadow(flatLeafShadow);
-
-    // Тень сгиба (книжное листание): горизонтальный градиент в долях своей
-    // ширины, поэтому полоске достаточно ездить — перекрашивать не приходится.
-    CompositionLinearGradientBrush foldShadowBrush = compositor_.createLinearGradientBrush();
-    foldShadowBrush.startPoint({0.0f, 0.0f});
-    foldShadowBrush.endPoint({1.0f, 0.0f});
-    CompositionColorGradientStop foldShadowMidpoint =
-        compositor_.createColorGradientStop(kFoldMidStop, colors.transparent);
-    foldShadowBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    foldShadowBrush.colorStops().append(foldShadowMidpoint);
-    foldShadowBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-    SpriteVisual foldShadow = compositor_.createSpriteVisual();
-    foldShadow.brush(foldShadowBrush);
-    foldShadow.isVisible(false);
-
-    // Тень наружного края приходящего листа: узкая и неизменная, градиент
-    // развёрнут — густо у листа, прозрачно прочь.
-    CompositionLinearGradientBrush outerEdgeShadowBrush = compositor_.createLinearGradientBrush();
-    outerEdgeShadowBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    outerEdgeShadowBrush.colorStops().append(
-        compositor_.createColorGradientStop(kEdgeMidStop, colors.transparent));
-    outerEdgeShadowBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-    SpriteVisual outerEdgeShadow = compositor_.createSpriteVisual();
-    outerEdgeShadow.brush(outerEdgeShadowBrush);
-    outerEdgeShadow.isVisible(false);
-
-    // Приходящий лист (кисть выдаётся на каждый переворот — растр нового
-    // разворота) и полутон изгиба у сгиба: ребёнок листа, кроится вместе с
-    // ним.
-    SpriteVisual incomingPage = compositor_.createSpriteVisual();
-    incomingPage.brush(restBrush_);
-    InsetClip incomingPageClip = compositor_.createInsetClip();
-    incomingPage.clip(incomingPageClip);
-    incomingPage.isVisible(false);
-    CompositionLinearGradientBrush bendHalftoneBrush = compositor_.createLinearGradientBrush();
-    bendHalftoneBrush.colorStops().append(compositor_.createColorGradientStop(0.0f, colors.transparent));
-    bendHalftoneBrush.colorStops().append(
-        compositor_.createColorGradientStop(kBendMidStop, colors.transparent));
-    bendHalftoneBrush.colorStops().append(compositor_.createColorGradientStop(1.0f, colors.transparent));
-    SpriteVisual bendHalftone = compositor_.createSpriteVisual();
-    bendHalftone.brush(bendHalftoneBrush);
-    incomingPage.children().insertAtTop(bendHalftone);
-
-    // Подъём листа к глазу (книжное листание): доля подъёма — скаляр в
-    // собственных свойствах листа, а две трапеции читают её выражениями. Числа
-    // геометрии ставит начало каждого переворота: корешок и свободный край
-    // зависят от стороны листания, а размеры — от окна.
-    CompositionPropertySet liftAmount = outgoingPage.properties();
-    liftAmount.insertScalar(L"Amount", 0.0f);
-    ExpressionAnimation outgoingLiftExpression = compositor_.createExpressionAnimation(kLiftFormula);
-    ExpressionAnimation incomingLiftExpression = compositor_.createExpressionAnimation(kLiftFormula);
-
-    // Все листовые визуалы — в контейнер; их Z на каждый переворот уточняет
-    // анимация (плоское — под старые, книжное — над старыми).
-    VisualCollection const layerChildren = leafLayer_.children();
-    layerChildren.insertAtTop(outgoingPage);
-    layerChildren.insertAtTop(foldShadow);
-    layerChildren.insertAtTop(outerEdgeShadow);
-    layerChildren.insertAtTop(incomingPage);
-
-    return Leaf{SpreadView::kNoRaster,  SpreadView::kNoRaster, outgoingPage,
-                outgoingPageClip,       flatLeafShadow,        incomingPage,
-                incomingPageClip,       bendHalftone,          bendHalftoneBrush,
-                foldShadow,             foldShadowBrush,       foldShadowMidpoint,
-                outerEdgeShadow,        outerEdgeShadowBrush,  liftAmount,
-                outgoingLiftExpression, incomingLiftExpression};
+size_t LeafTurnAnimation::turnOfLeaf(size_t leafIndex) const {
+    for (size_t turnIndex = 0; turnIndex < liveTurns_.size(); ++turnIndex)
+        if (liveTurns_[turnIndex].leafIndex == leafIndex) return turnIndex;
+    core::abort("LeafTurnAnimation: переворот кончился, а его листа нет среди летящих");
 }
 
-void LeafTurnAnimation::finishLeaf(Leaf& flyingLeaf) {
-    // Сначала снять анимации, потом писать: пока анимация на свойстве жива,
-    // прямая запись до него не доходит, и недоехавший лист доехал бы позже уже
-    // не к месту.
-    flyingLeaf.outgoingPage.stopAnimation(L"Offset");
-    flyingLeaf.outgoingPage.stopAnimation(L"RotationAngleInDegrees");
-    flyingLeaf.outgoingPage.offset({0.0f, 0.0f, 0.0f});
-    flyingLeaf.outgoingPage.rotationAngleInDegrees(0.0f);
-    flyingLeaf.outgoingPage.isVisible(false);
-    flyingLeaf.outgoingPage.brush(restBrush_);   // растр, который лист нёс, ему больше не нужен
+// Корутина переворота. Пакет закрывает и остановленная анимация — переворот
+// отменили (встречное, перевёрстка, прыжок, добивание) или стратегию сменили,
+// и конец пакета приходит к листу, который, может быть, уже служит другому
+// перевороту. Своего ли переворота это конец, говорит токен: отменяющий
+// отменил источник раньше, чем остановил анимации, и ожидание кончается
+// operation_canceled_exception, кто бы его ни разбудил, — обычным концом
+// detached_task. Так же оно кончается, когда отменён источник чтения, полосы
+// или приложения: до `this` дело не доходит, кадр стратегию не держит (она не
+// самосчитающая), и знак жизни ему не нужен.
+//
+// Нормальный конец — внутри обработчика Completed: переворот доиграл, и его
+// конечное состояние наступает тем же ходом.
+async::detached_task LeafTurnAnimation::flyTurn(size_t leafIndex, bool forward, bool bookMode,
+                                                async::cancellation_token turnStop) {
+    CompositionScopedBatch const flightBatch = startFlight(leafIndex, forward, bookMode);
 
-    flyingLeaf.outgoingPageClip.stopAnimation(L"LeftInset");
-    flyingLeaf.outgoingPageClip.stopAnimation(L"RightInset");
-    flyingLeaf.outgoingPageClip.leftInset(-kShadowReach);
-    flyingLeaf.outgoingPageClip.rightInset(-kShadowReach);
-    flyingLeaf.outgoingPageClip.topInset(-kShadowReach);
-    flyingLeaf.outgoingPageClip.bottomInset(-kShadowReach);
+    // Подписка — до закрытия пакета: Completed без ждущего пропадает.
+    auto flightEnd = dsl::onCompleted(flightBatch, std::move(turnStop));
+    flightBatch.end();
+    co_await flightEnd;
 
-    flyingLeaf.flatLeafShadow.opacity(0.0f);
-    flyingLeaf.flatLeafShadow.mask(restBrush_);
-
-    flyingLeaf.foldShadow.stopAnimation(L"Offset");
-    flyingLeaf.foldShadow.stopAnimation(L"Scale");
-    flyingLeaf.foldShadow.stopAnimation(L"Opacity");
-    flyingLeaf.foldShadow.isVisible(false);
-    flyingLeaf.foldShadowMidpoint.stopAnimation(L"Offset");
-
-    flyingLeaf.outerEdgeShadow.stopAnimation(L"Offset");
-    flyingLeaf.outerEdgeShadow.isVisible(false);
-
-    flyingLeaf.incomingPage.stopAnimation(L"Offset");
-    flyingLeaf.incomingPage.isVisible(false);
-    flyingLeaf.incomingPage.brush(restBrush_);
-    flyingLeaf.bendHalftone.stopAnimation(L"Offset");
-    flyingLeaf.bendHalftone.stopAnimation(L"Opacity");
-    flyingLeaf.bendHalftone.opacity(1.0f);
-    flyingLeaf.incomingPageClip.stopAnimation(L"LeftInset");
-    flyingLeaf.incomingPageClip.stopAnimation(L"RightInset");
-
-    // Подъём снимается с обеих сторон листа, и трапеция сходит в тождественную.
-    // Не только ради вида застывшего листа: выражение, оставленное на свойстве,
-    // композитор считает каждый кадр — за все свободные листы пула и без
-    // всякой нужды.
-    flyingLeaf.liftAmount.stopAnimation(L"Amount");
-    flyingLeaf.liftAmount.insertScalar(L"Amount", 0.0f);
-    flyingLeaf.outgoingPage.stopAnimation(L"TransformMatrix");
-    flyingLeaf.outgoingPage.transformMatrix(identity_matrix());
-    flyingLeaf.incomingPage.stopAnimation(L"TransformMatrix");
-    flyingLeaf.incomingPage.transformMatrix(identity_matrix());
-
-    flyingLeaf.active = false;
+    finishTurn(turnOfLeaf(leafIndex));
 }
 
-void LeafTurnAnimation::landLeaf(Leaf& flyingLeaf) {
-    // Режим газеты: лист нёс уходящий разворот, и он больше никому не нужен —
-    // осевший сменился ещё в turnStarting.
-    if (!flyingLeaf.book) return;
+CompositionScopedBatch LeafTurnAnimation::startFlight(size_t leafIndex, bool forward,
+                                                      bool bookMode) {
+    Leaf& flyingLeaf = leafPool_[leafIndex];
 
-    // Режим книги: лист нёс новый разворот, и теперь тот — осевший. Не рисуя
-    // и ничем не меняясь: осевшим становится растр листа, а прежний осевший
-    // освобождается, как только его перестанут носить страницы и летящие
-    // листы. Так на пачку листов приходится ровно по одной отрисовке на лист и
-    // ни одной сверх.
-    //
-    // Неперелистываемая страница переезжает на него сейчас, а не когда сядут
-    // все: приходящий лист только что лёг на неё ровно этими точками (подмены
-    // не видно — тот же кадр, что и сокрытие листа), а следующий лист, ещё
-    // летящий, ложится уже на них. Ждать последнего значило бы показать из-под
-    // него то, что было до первого. Перелистываемая страница носит растр
-    // самого нового листа и здесь не трогается: когда сядет и он, осевшим
-    // станет тот же растр.
-    spread_.settleOn(flyingLeaf.incomingRaster);
-    if (spread_.shown())
-        spread_.dressPage(flyingLeaf.forward ? kLeftPage : kRightPage, flyingLeaf.incomingRaster);
-}
-
-void LeafTurnAnimation::settleLeaves() {
-    for (Leaf& pooledLeaf : leafPool_)
-        if (pooledLeaf.active) return;
-
-    // Все листы сели. В режиме книги осевший разворот — разворот последнего
-    // севшего, то есть самого нового (landLeaf), и обе страницы уже на нём:
-    // неперелистываемую одел landLeaf, а перелистываемая носит растр самого
-    // нового листа — тот самый, что стал осевшим. Одевать заново нечего:
-    // осевший разворот — нынешний.
-    leafLayer_.isVisible(false);
-    armRelease();   // все листы свободны — отпускать пул по таймеру
-}
-
-void LeafTurnAnimation::cancelTurn() {
-    // Все идущие перевороты — в покой рывком. Пакеты их концов ещё придут, но
-    // каждому листу здесь меняется epoch, и ожидание конца, дождавшись, увидит
-    // чужой номер и промолчит: остановленная анимация закрывает пакет так же,
-    // как доигравшая. Садится при этом один самый новый: его разворот — нынешний,
-    // а развороты остальных пропущены — в книге их уже нет.
-    Leaf* newestLeaf = nullptr;
-    for (Leaf& pooledLeaf : leafPool_)
-        if (pooledLeaf.active) {
-            pooledLeaf.epoch = ++leafClock_;
-            finishLeaf(pooledLeaf);
-            if (!newestLeaf || pooledLeaf.started > newestLeaf->started) newestLeaf = &pooledLeaf;
-        }
-    if (newestLeaf) landLeaf(*newestLeaf);
-    settleLeaves();   // все сели: листы скрыть, пул — на отпускание
-}
-
-bool LeafTurnAnimation::hasSpareLeaves() const {
-    auto const inFlight = [this](SpreadView::RasterId raster) { return rasterInFlight(raster); };
-    return leafPool_.size() > 1 || spread_.spareRasters(inFlight) > 1;
-}
-
-void LeafTurnAnimation::armRelease() {
-    // Один лист и один свободный растр держим всегда — на следующее листание,
-    // чтобы не заводить поверхность заново. Отпускать нечего, пока их не
-    // больше.
-    if (!hasSpareLeaves()) return;
-    releaseTimer_.stop();
-    releaseTimer_.interval(kLeafReleaseFirst);
-    releaseTimer_.start();
-}
-
-void LeafTurnAnimation::onReleaseTick() {
-    releaseTimer_.stop();
-
-    // Снова листают — пул нужен, ничего не трогаем. acquireLeaf таймер уже
-    // остановил, но тик мог уйти в очередь раньше остановки.
-    for (const Leaf& pooledLeaf : leafPool_)
-        if (pooledLeaf.active) return;
-
-    // Отпускаем один лишний лист: снимаем его визуалы со сцены и роняем. Берём
-    // последний: все свободны, порядок не важен, а pop_back остальных не
-    // двигает. Последний, один, лист оставляем — на следующее листание.
-    if (leafPool_.size() > 1) {
-        Leaf& pooledLeaf = leafPool_.back();
-        VisualCollection const layerChildren = leafLayer_.children();
-        layerChildren.remove(pooledLeaf.outgoingPage);
-        layerChildren.remove(pooledLeaf.foldShadow);
-        layerChildren.remove(pooledLeaf.outerEdgeShadow);
-        layerChildren.remove(pooledLeaf.incomingPage);   // полутон изгиба — ребёнок листа, уходит с ним
-        leafPool_.pop_back();
+    // Подъём книжного листа — выражения, а у выражения нет конца: его снимают.
+    // Пакет же кончается, когда кончились все его анимации, — в пакете
+    // выражение не дало бы ему кончиться никогда. Поэтому — до пакета.
+    if (bookMode) {
+        const float hinge = flow_.spine();
+        flyingLeaf.lift(hinge, forward ? flow_.width() : 0.0f, forward ? 0.0f : flow_.width(),
+                        flow_.height());
     }
 
-    // И один лишний растр разворота — с ним уходит поверхность в размер окна.
-    // Один свободный держим, как и лист.
-    auto const inFlight = [this](SpreadView::RasterId raster) { return rasterInFlight(raster); };
-    if (spread_.spareRasters(inFlight) > 1) spread_.dropSpareRaster(inFlight);
-
-    // Ещё есть лишние — следующий через секунду.
-    if (hasSpareLeaves()) {
-        releaseTimer_.interval(kLeafReleaseStep);
-        releaseTimer_.start();
-    }
-}
-
-void LeafTurnAnimation::applyShadowTint() {
-    const D2D1_COLOR_F& hue = shadowHue_;
-
-    // Все кисти теней устроены одинаково: гуще всего у того, кто тень
-    // отбрасывает, потом середина спада, потом ничего. Цвет во всех трёх
-    // остановках один, разная только прозрачность — в том числе и в последней,
-    // где она нулевая: см. tinted().
-    auto paintRamp = [&hue](Collection<CompositionColorGradientStop> const& stops,
-                            uint32_t dense, uint32_t middle) {
-        if (stops.size() < 3) return;
-        stops[0].color(tinted(hue, alphaOf(dense)));
-        stops[1].color(tinted(hue, alphaOf(middle)));
-        stops[2].color(tinted(hue, 0.0f));
-    };
-
-    // Тени у каждого листа пула свои — красим все. Тень уезжающего листа не
-    // градиент, а размытие: тон непрозрачный, прозрачностью правит сама тень.
-    for (Leaf& pooledLeaf : leafPool_) {
-        paintRamp(pooledLeaf.foldShadowBrush.colorStops(), kFoldNear, kFoldMid);
-        paintRamp(pooledLeaf.outerEdgeShadowBrush.colorStops(), kEdgeNear, kEdgeMid);
-        paintRamp(pooledLeaf.bendHalftoneBrush.colorStops(), kBendNear, kBendMid);
-        pooledLeaf.flatLeafShadow.color(tinted(hue, 1.0f));
-    }
+    CompositionScopedBatch flightBatch =
+        compositor_.createScopedBatch(CompositionBatchTypes::Animation);
+    if (bookMode)
+        animateBookTurn(flyingLeaf, forward);
+    else
+        animateFlatTurn(flyingLeaf, forward);
+    return flightBatch;
 }
 
 void LeafTurnAnimation::animateFlatTurn(Leaf& flyingLeaf, bool forward) {
-    // Уезжающий лист несёт уходящую страницу — бывший осевший растр, который
-    // turnStarting отдал ему, — и им же маскирует тень: в газете лист открывает
-    // страницы под собой, а не повторяет их.
-    flyingLeaf.outgoingPage.brush(spread_.raster(flyingLeaf.outgoingRaster).brush());
-    flyingLeaf.flatLeafShadow.mask(flyingLeaf.outgoingPage.brush());
-
     // Поворот идёт вокруг левого края: там корешок, оттуда лист и поднимается.
     // Ставится здесь, а не раз на лист: центр преобразования принадлежит
     // плоскому листанию, а книжное его обнуляет — там лист не поворачивается, а
@@ -670,11 +632,10 @@ void LeafTurnAnimation::animateFlatTurn(Leaf& flyingLeaf, bool forward) {
 
     // Уезжает копия уходящего разворота (уходящая страница листа), открывая
     // задник — новый разворот. Уехать надо дальше собственной ширины: лист
-    // поворачивается
-    // вокруг левого края, и его дальний нижний угол отходит не на ширину, а на
-    // гипотенузу (ширина·cos + полвысоты·sin); плюс тень, сдвинутую вправо и
-    // размытую, иначе она осталась бы у края серой полоской. Вперёд лист уходит
-    // влево, назад — вправо.
+    // поворачивается вокруг левого края, и его дальний нижний угол отходит не
+    // на ширину, а на гипотенузу (ширина·cos + полвысоты·sin); плюс тень,
+    // сдвинутую вправо и размытую, иначе она осталась бы у края серой
+    // полоской. Вперёд лист уходит влево, назад — вправо.
     const float reach =
         flow_.width() * kTurnCos + flow_.height() * 0.5f * kTurnSin + kShadowShift + kShadowBlur;
     const float to = forward ? -reach : reach;
@@ -698,14 +659,8 @@ void LeafTurnAnimation::animateFlatTurn(Leaf& flyingLeaf, bool forward) {
     flyingLeaf.flatLeafShadow.opacity(kShadowOpacity);
     flyingLeaf.outgoingPage.isVisible(true);
 
-    // Конец переворота отслеживается пакетом: по нему лист освобождается в пул
-    // (landWhenDone). Ждать начинаем до закрытия пакета: корутина начинается в
-    // вызове, и к end() её подписка на конец уже стоит.
-    auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
-    flyingLeaf.outgoingPage.startAnimation(L"Offset", outgoingSlide);
-    flyingLeaf.outgoingPage.startAnimation(L"RotationAngleInDegrees", outgoingTurn);
-    landWhenDone(batch, &flyingLeaf, flyingLeaf.epoch);
-    batch.end();
+    flyingLeaf.start(flyingLeaf.outgoingPage, L"Offset", outgoingSlide);
+    flyingLeaf.start(flyingLeaf.outgoingPage, L"RotationAngleInDegrees", outgoingTurn);
 }
 
 void LeafTurnAnimation::animateBookTurn(Leaf& flyingLeaf, bool forward) {
@@ -714,32 +669,14 @@ void LeafTurnAnimation::animateBookTurn(Leaf& flyingLeaf, bool forward) {
     // страницу за край. У переворота две стороны разной давности: под снимаемой
     // бумагой с первого же кадра открывается НОВАЯ страница, а неперелистываемая
     // остаётся СТАРОЙ, пока приходящий лист её не накроет. Для того страницы и
-    // два визуала: перелистываемую переставляем на новый разворот сейчас,
-    // другую — когда лист сядет (landLeaf).
+    // два визуала: перелистываемую turnStarted переставил на новый разворот,
+    // другую переставит конец переворота (finishTurn).
     SpriteVisual const& outgoingPage = flyingLeaf.outgoingPage;
     InsetClip const& outgoingPageClip = flyingLeaf.outgoingPageClip;
     SpriteVisual const& incomingPage = flyingLeaf.incomingPage;
     InsetClip const& incomingPageClip = flyingLeaf.incomingPageClip;
     SpriteVisual const& foldShadow = flyingLeaf.foldShadow;
     SpriteVisual const& outerEdgeShadow = flyingLeaf.outerEdgeShadow;
-    const size_t flippingSide = forward ? kRightPage : kLeftPage;
-    SpriteVisual const& flippingPage = spread_.pageVisual(flippingSide);
-
-    // Уходящий лист несёт СТАРУЮ перелистываемую страницу — ту, что показана
-    // прямо сейчас: её кисть и забираем у страницы-визуала, прежде чем одеть ту
-    // в новое. Своей отрисовки у уходящего нет, и какой из летящих листов или
-    // осевший разворот эту кисть дал — неважно: страница уже носит верную. Её
-    // растр лист помнит: пока он летит, растр не свободен.
-    outgoingPage.brush(flippingPage.brush());
-    flyingLeaf.outgoingRaster = spread_.pageRaster(flippingSide);
-
-    // Обе НОВЫЕ страницы — из растра листа, куда redraw нарисовал новый
-    // разворот: перелистываемая страница-визуал одевается в него с первого
-    // кадра (из-под снимаемой бумаги открывается новое), приходящий лист несёт
-    // ту, что ляжет на неперелистываемую. Кисть DrawingSurface делает новую на
-    // каждый вызов, а поверхность за ней та же — второй отрисовки не возникает.
-    spread_.dressPage(flippingSide, flyingLeaf.incomingRaster);
-    incomingPage.brush(spread_.raster(flyingLeaf.incomingRaster).brush());
 
     // Стопка листов: снимаемая бумага нового листа — ПОД всеми летящими, а
     // приходящий лист — НАД ними. Летящие подняты раньше и висят выше, так что
@@ -778,19 +715,6 @@ void LeafTurnAnimation::animateBookTurn(Leaf& flyingLeaf, bool forward) {
         outgoingPageClip.leftInset(leftPage);
     else
         outgoingPageClip.rightInset(rightPage);
-
-    // Лист поднимается к глазу: у корешка он в своих размерах, к свободному
-    // краю растёт трапецией. Корешок у обеих сторон общий, а свободные края
-    // противоположны — это один и тот же край бумаги, только у снимаемой
-    // стороны он ещё снаружи перелистываемой страницы, а у приходящей уже
-    // перевёрнут на другую сторону разворота. Центр преобразования при этом
-    // обнуляется: трапеция задана от начала координат листа, а центр нужен
-    // только плоскому листанию, где вокруг него идёт поворот.
-    outgoingPage.centerPoint({0.0f, 0.0f, 0.0f});
-    liftPage(flyingLeaf.outgoingLiftExpression, flyingLeaf.liftAmount, outgoingPage, leftPage,
-             forward ? flow_.width() : 0.0f, flow_.height());
-    liftPage(flyingLeaf.incomingLiftExpression, flyingLeaf.liftAmount, incomingPage, leftPage,
-             forward ? 0.0f : flow_.width(), flow_.height());
 
     // Пологая S-кривая: рука, тянущая бумагу, слегка разгоняется в начале и
     // тормозит к корешку — не роняет тяжесть, но и не тянет мёртво-равномерно
@@ -948,52 +872,120 @@ void LeafTurnAnimation::animateBookTurn(Leaf& flyingLeaf, bool forward) {
     outerEdgeShadow.isVisible(true);
     incomingPage.isVisible(true);
 
-    // Конец отслеживается пакетом: по нему лист освобождается в пул
-    // (landWhenDone). Пакет закрывает и остановленную анимацию (лист добили при
-    // быстром листании или сбросили при перевёрстке), поэтому ожидание конца
-    // проверяет, свой ли это лист, — по epoch: у добитого он уже сменился, и
-    // ожидание узнаёт свой номер чужим и молчит.
-    auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
-
-    outgoingPageClip.startAnimation(crawlingInset, outgoingClipCrawl);
-    foldShadow.startAnimation(L"Offset", foldFollow);
-    foldShadow.startAnimation(L"Scale", foldWiden);
-    foldShadow.startAnimation(L"Opacity", foldLighten);
-    flyingLeaf.foldShadowMidpoint.startAnimation(L"Offset", foldMidFlatten);
-    outerEdgeShadow.startAnimation(L"Offset", edgeTrail);
-    incomingPage.startAnimation(L"Offset", incomingSlide);
-    incomingPageClip.startAnimation(openingInset, incomingClipOpen);
-    flyingLeaf.bendHalftone.startAnimation(L"Offset", bendCurve);
-    flyingLeaf.bendHalftone.startAnimation(L"Opacity", bendSettle);
-    flyingLeaf.liftAmount.startAnimation(L"Amount", liftRise);
-
-    // Ждать конца — до закрытия пакета, как и в плоском листании.
-    landWhenDone(batch, &flyingLeaf, flyingLeaf.epoch);
-    batch.end();
+    flyingLeaf.start(outgoingPageClip, crawlingInset, outgoingClipCrawl);
+    flyingLeaf.start(foldShadow, L"Offset", foldFollow);
+    flyingLeaf.start(foldShadow, L"Scale", foldWiden);
+    flyingLeaf.start(foldShadow, L"Opacity", foldLighten);
+    flyingLeaf.start(flyingLeaf.foldShadowMidpoint, L"Offset", foldMidFlatten);
+    flyingLeaf.start(outerEdgeShadow, L"Offset", edgeTrail);
+    flyingLeaf.start(incomingPage, L"Offset", incomingSlide);
+    flyingLeaf.start(incomingPageClip, openingInset, incomingClipOpen);
+    flyingLeaf.start(flyingLeaf.bendHalftone, L"Offset", bendCurve);
+    flyingLeaf.start(flyingLeaf.bendHalftone, L"Opacity", bendSettle);
+    flyingLeaf.start(flyingLeaf.liftAmount, L"Amount", liftRise);
 }
 
-// Пакет закрывается не только доигравшей анимацией, но и остановленной: лист
-// добили при быстром листании или сбросили перевёрсткой, и конец пакета
-// приходит к листу, который уже служит другому перевороту. Свой ли это конец,
-// говорит epoch — у добитого листа он сменился.
-//
-// Стратегии к концу пакета может уже не быть: её сменили или окно закрыли
-// посреди переворота. Корутина её жизни не проверяет — ожидание стоит под
-// токеном стратегии, а его отменяет владелец: деструктор стратегии, а при
-// закрытии окна ещё раньше — общий источник приложения. Отменённое ожидание
-// кончается operation_canceled_exception, обычным концом detached_task, даже
-// если конец пакета пришёл уже после отмены, — и до `this` и `landingLeaf` дело не
-// доходит. Кадр стратегию не держит (она не самосчитающая), и знак жизни ему
-// не нужен.
-async::detached_task LeafTurnAnimation::landWhenDone(CompositionScopedBatch batch, Leaf* landingLeaf,
-                                                     uint64_t epoch) {
-    co_await dsl::onCompleted(batch, stop_.token());
+void LeafTurnAnimation::finishTurn(size_t newestFinished) {
+    // Кончается переворот — кончаются и все, пущенные раньше него: их
+    // конечные состояния он покрывает. Источник — первым: пакет закрывает и
+    // остановленная анимация, и конец, пришедший к остановленному листу, должен
+    // застать ожидание уже отменённым. Потом анимации снимаются, и лист ложится
+    // в покой — тем же ходом, что сокрытие листа, без промежуточного кадра.
+    for (size_t turnIndex = 0; turnIndex <= newestFinished; ++turnIndex) {
+        Turn& finishedTurn = liveTurns_[turnIndex];
+        finishedTurn.stop.cancel();
+        leafPool_[finishedTurn.leafIndex].stop();
+    }
 
-    if (landingLeaf->epoch != epoch) co_return;
+    // Садится один — самый новый из кончившихся: его разворот нынешний, а
+    // развороты прежних пропущены — в книге их уже нет. В газете осевший
+    // разворот сменился ещё в turnStarting, и садиться нечему. В книге осевшим
+    // становится растр листа — без отрисовки и ничем не меняясь, — и
+    // неперелистываемая страница переезжает на него сейчас, а не когда сядут
+    // все: приходящая страница только что легла на неё ровно этими точками
+    // (подмены не видно — тот же кадр, что и сокрытие листа), а следующий лист,
+    // ещё летящий, ложится уже на них. Перелистываемая страница носит растр
+    // самого нового листа и здесь не трогается: когда сядет и он, осевшим
+    // станет тот же растр.
+    const Turn& landingTurn = liveTurns_[newestFinished];
+    if (landingTurn.bookMode) {
+        spread_.settleOn(landingTurn.incomingRaster);
+        if (spread_.shown())
+            spread_.dressPage(landingTurn.forward ? kLeftPage : kRightPage,
+                              landingTurn.incomingRaster);
+    }
 
-    finishLeaf(*landingLeaf);
-    landLeaf(*landingLeaf);
-    settleLeaves();
+    liveTurns_.erase(liveTurns_.begin(),
+                     liveTurns_.begin() + static_cast<std::ptrdiff_t>(newestFinished) + 1);
+    if (liveTurns_.empty()) settle();
+}
+
+void LeafTurnAnimation::settle() {
+    // Все сели. В книге осевший разворот — самого нового, и обе страницы уже
+    // на нём: неперелистываемую одел finishTurn, а перелистываемая носит его
+    // растр. Одевать заново нечего; листам в покое на сцене не место, а пулу —
+    // в памяти: долгая пауза отпускания начинается заново, а если цикл уже
+    // отпускал по секундам — он вернётся к ней.
+    leafLayer_.isVisible(false);
+    settledDuringRelease_ = true;
+    releasePauses_->firstPause.restart();
+}
+
+/* ---------------- отпускание пула ---------------- */
+
+LeafTurnAnimation::ReleasePauses::ReleasePauses(const DispatcherQueue& queue,
+                                                async::cancellation_token releaseToken)
+    : firstPause{queue, kLeafReleaseFirst, releaseToken},
+      stepPause{queue, kLeafReleaseStep, releaseToken} {}
+
+// Кадр держит паузы сам (параметр releasePauses): стратегию могут сменить, пока
+// он стоит в отменённом ожидании, и таймер, на котором он стоит, должен дожить
+// до хода очереди, который его разбудит. Токен — тоже свой, параметром: после
+// отмены цикл спрашивает его, не трогая `this`.
+async::detached_task LeafTurnAnimation::releaseIdleLeaves(
+    intrusive_ptr<ReleasePauses> releasePauses, async::cancellation_token releaseToken) {
+    for (;;) {
+        // Долгая пауза: её начинает заново каждая посадка всех (settle). Тик,
+        // пришедший, пока цикл отпускал, не теряется — следующее ожидание его
+        // возьмёт и не встанет. Отмена кончает ожидание без исключения, и
+        // токен цикл спрашивает сам.
+        co_await releasePauses->firstPause;
+        if (releaseToken.is_canceled()) co_return;
+
+        // Пауза отсчитана от последней посадки — посадки до неё уже учтены.
+        settledDuringRelease_ = false;
+
+        // Дальше — по листу в секунду, пока есть лишние и никто не летит.
+        // Листают снова — цикл увидит это сам, проснувшись, и вернётся ждать
+        // долгую паузу: её начнёт посадка. Листнули и уже сели — то же самое:
+        // посадка перезапустила долгую паузу и оставила признак.
+        while (liveTurns_.empty() && hasSpareLeaves()) {
+            releaseSpareLeaf();
+            releasePauses->stepPause.restart();
+            co_await releasePauses->stepPause;
+            if (releaseToken.is_canceled()) co_return;
+            if (std::exchange(settledDuringRelease_, false)) break;
+        }
+    }
+}
+
+bool LeafTurnAnimation::hasSpareLeaves() const {
+    auto const inFlight = [this](SpreadView::RasterId raster) { return rasterInFlight(raster); };
+    return leafPool_.size() > 1 || spread_.spareRasters(inFlight) > 1;
+}
+
+void LeafTurnAnimation::releaseSpareLeaf() {
+    // Последний лист: все свободны, порядок не важен, а pop_back остальных не
+    // двигает. Последний, один, лист оставляем — на следующее листание.
+    if (leafPool_.size() > 1) {
+        leafPool_.back().detach(leafLayer_);
+        leafPool_.pop_back();
+    }
+
+    // И один лишний растр разворота — с ним уходит поверхность в размер окна.
+    // Один свободный держим, как и лист.
+    auto const inFlight = [this](SpreadView::RasterId raster) { return rasterInFlight(raster); };
+    if (spread_.spareRasters(inFlight) > 1) spread_.dropSpareRaster(inFlight);
 }
 
 }  // namespace bukvitsa::reader
