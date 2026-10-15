@@ -26,6 +26,7 @@ wxl_add_executable(Reader
     src/skin_wizard.cpp
     src/file_dialog.cpp
     src/keys.cpp
+    src/ui_idle_scheduler.cpp
     src/app.h
     src/book_view.h
     src/deferred_write.h
@@ -38,6 +39,7 @@ wxl_add_executable(Reader
     src/notices.h
     src/skin_wizard.h
     src/start_screen.h
+    src/ui_idle_scheduler.h
     src/pch.h
 )
 
