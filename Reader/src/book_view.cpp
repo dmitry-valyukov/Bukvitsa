@@ -82,12 +82,7 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
       // на сцене: ей нужен композитор острова, а не окна.
       note_(window.chromeCompositor()),
       stop_(std::move(parent)),
-      readingScope_(stop_.token()),
-      // Анимация листания — настройка читателя, и меняется на ходу: флажок
-      // панели привязан к тому же полю. Поле живёт дольше полосы — слушателя
-      // полоса снимает за собой.
-      animateTurnsWatch_(
-          settings_.animateTurns.on_change(method(this, &BookView::animateTurnsChanged))) {
+      readingScope_(stop_.token()) {
     // Полоса ещё не экран: под источником чтения ждать нечему, пока
     // setActive(true) не заведёт новый.
     readingScope_.cancel();
@@ -97,6 +92,14 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
     // Стратегия переворота — до первой меры: мера доводит до конца всё, что
     // летит, и спрашивает у стратегии, куда рисовать.
     turnAnimation_ = makeTurnAnimation();
+
+    // Анимация листания — настройка читателя, и меняется на ходу: флажок
+    // панели привязан к тому же полю. Слушатель меняет стратегию и потому
+    // подписывается, когда она уже есть, а не в списке инициализации: брось
+    // makeTurnAnimation, слушатель с нашим this остался бы в поле, которое
+    // живёт дольше полосы, и снять его было бы некому. Снимает его деструктор.
+    animateTurnsWatch_ =
+        settings_.animateTurns.on_change(method(this, &BookView::animateTurnsChanged));
 
     // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из WM_SIZE,
     // раньше вёрстки XAML, и несёт размер в пикселях вместе с масштабом экрана
@@ -331,7 +334,7 @@ BookView::~BookView() {
     // иначе следующая перемена кегля, анимации или размера позвала бы уже
     // разрушенную полосу.
     for (auto& [field, cookie] : settingsWatches_) field->remove_change(cookie);
-    settings_.animateTurns.remove_change(animateTurnsWatch_);
+    settings_.animateTurns.remove_change(animateTurnsWatch_.value());
     window_.remove_onClientSizeChanged(sizeToken_);
 }
 
