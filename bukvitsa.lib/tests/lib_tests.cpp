@@ -1125,6 +1125,7 @@ void runBookPlacesTests();
 void runSettingsTests();
 // Пробы слоёв модели — каждая в своём файле.
 void runPageFlowTests();
+void runChapterTailTests();
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1171,6 +1172,8 @@ int main() {
     runPiecesTests();
     // Поток страниц верстает настоящую книгу: DirectWrite и WIC — после COM.
     runPageFlowTests();
+    // Досчёт главы — на том же романе, с поддельным простоем вместо окна.
+    runChapterTailTests();
 
     sta_loop::stop();
     ::CoUninitialize();
