@@ -340,8 +340,12 @@ void LeafTurnAnimation::Leaf::stop() {
 }
 
 void LeafTurnAnimation::Leaf::rest() const {
-    // Ничего не видно и ничего не носится: растр, который лист нёс, ему больше
-    // не нужен — кисть покоя его отпускает.
+    // Ничего не видно, и страницы ничего не носят: растр, который лист нёс,
+    // ему больше не нужен — кисть покоя его отпускает. Маску тени покой не
+    // трогает: её ставит газетный переворот кистью уходящей страницы, а
+    // погашенная тень невидимой страницы её не рисует. Держит она растр
+    // последнего газетного переворота листа — до следующего такого же или до
+    // отпускания листа.
     outgoingPage.isVisible(false);
     outgoingPage.brush(restBrush_);
     foldShadow.isVisible(false);
@@ -349,7 +353,6 @@ void LeafTurnAnimation::Leaf::rest() const {
     incomingPage.isVisible(false);
     incomingPage.brush(restBrush_);
     flatLeafShadow.opacity(0.0f);
-    flatLeafShadow.mask(restBrush_);
 
     // Плоский лист — на месте и ровно.
     outgoingPage.offset({0.0f, 0.0f, 0.0f});
