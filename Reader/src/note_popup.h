@@ -38,10 +38,12 @@ public:
 
     /// Показывает тело сноски, стараясь встать рядом с её знаком.
     ///
+    /// @param body   номер тела сноски (`typography::PlacedNote::body`): его
+    ///               блоки книга уже развернула в своём хранилище.
     /// @param anchor низ знака сноски в координатах полосы, DIP.
     /// @param area   размер полосы: в него всплывашка и вписывается.
     /// @param scale  масштаб экрана: поверхность живёт в пикселях.
-    void show(Book& book, const fb3::Node* note, wxl::Point anchor, wxl::Size area,
+    void show(Book& book, uint32_t body, wxl::Point anchor, wxl::Size area,
               const Theme& theme, float fontSize, float scale);
 
     void hide();

@@ -25,7 +25,6 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -91,19 +90,18 @@ public:
     void setActive(bool active);
 
     /// Открывает книгу на этом символе. Книгу держит поток страниц, пока её не
-    /// сменит другая: пагинатор внутри неё указывает в её же узлы.
-    void open(std::shared_ptr<Book> book, uint32_t charOffset);
+    /// сменит другая, — ссылку он добавляет сам: главы внутри книги смотрят в
+    /// её хранилище.
+    void open(not_null<Book> book, uint32_t charOffset);
 
     /// Открыта ли книга. Спрашивают перед записью места чтения: полоса без
     /// книги честно отвечает «символ нулевой», и записать этот ноль значило бы
     /// стереть место, на котором читатель остановился.
     bool isOpen() const { return flow_.isOpen(); }
 
+    /// Открытая книга — у неё хранилище, на котором стоят оглавление, поиск и
+    /// закладки; nullptr — книги нет.
     Book* book() const { return flow_.book(); }
-
-    /// Книга в блоках — то, на чём стоят оглавление и поиск. Пусто, если книги
-    /// нет.
-    std::span<const typography::Block> blocks() const { return flow_.blocks(); }
 
     /// Место чтения — буква, до которой дошёл читатель (`PageFlow::position`):
     /// меняется открытием книги, листанием и прыжком. Наблюдаемое и только на
