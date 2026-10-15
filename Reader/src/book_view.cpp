@@ -82,7 +82,7 @@ constexpr float kShadowReach = kShadowShift + kShadowBlur;
 /// вдвое меньше, чем у обычного переворота, — отсюда и время меньше kTurn.
 /// Кривая хода та же, что у всего листания, — пологая S-кривая (kEase*).
 ///
-/// ВРЕМЕННО замедлено вдесятеро против рабочих 280 мс: так переворот видно
+/// ВРЕМЕННО замедлено почти вдвое против рабочих 280 мс: так переворот видно
 /// глазом и по кадрам. Вернуть перед тем, как читать книгу.
 constexpr auto kLeafSlide = 500ms;
 
@@ -608,8 +608,9 @@ void BookView::setActive(bool active) {
     for (auto const& page : pages_) page.isVisible(active);
 
     // Листы в покое не нужны: разворот видно страницами. Они выходят на сцену
-    // только на время переворота — показывает их startTurn, прячут обратно
-    // finishFlip и cancelTurn.
+    // только на время переворота — показывает их startTurn, а прячет обратно
+    // settleSheets, когда сели все (из landWhenDone и cancelTurn); finishFlip
+    // прячет лишь визуалы своего листа.
     sheets_.isVisible(false);
 }
 
@@ -1317,7 +1318,7 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     // бумагой с первого же кадра открывается НОВАЯ страница, а неперелистываемая
     // остаётся СТАРОЙ, пока приходящий лист её не накроет. Для того страницы и
     // два визуала: перелистываемую переставляем на новый разворот сейчас,
-    // другую — при оседании (settleSheets).
+    // другую — когда лист сядет (landFlip).
     SpriteVisual const& going = flip.sheet;
     InsetClip const& goingCrop = flip.clip;
     SpriteVisual const& coming = flip.leaf;
