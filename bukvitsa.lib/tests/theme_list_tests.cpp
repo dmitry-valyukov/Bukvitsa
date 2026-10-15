@@ -132,6 +132,26 @@ void testRemoval() {
           "системная тёзка удалением не задета");
 }
 
+/// Удалили другую обложку, а текущая стояла последней. Список номера не
+/// правит: прежний номер текущей после смены списка смотрит мимо, и новый
+/// ставит сценарий по ответу, полученному до смены. В настройки уходит та же
+/// обложка и прежний ключ встроенной — затирать его первой темой некому.
+void testRemovalKeepsThemeKey() {
+    std::printf("\n=== темы: удаление другой, текущая последняя ===\n");
+
+    ThemeList list = listOf({u"Альфа", u"Бета"});
+    const int current = indexOf(list, u"Бета");
+    const int next = list.afterRemoval(u"Альфа", current, u"Night");
+
+    list.setSkins(registry({u"Бета"}));
+    check(list.skinAt(current) == nullptr && list.normalize(current) == 0,
+          "прежний номер — за краем укоротившегося списка: обложки нет, по кругу — первая тема");
+    check(next == indexOf(list, u"Бета"), "ответ, полученный до смены, — та же обложка в новом списке");
+
+    const ThemeList::Persisted saved = list.persist(next, u"Night");
+    check(saved.skin == u"Бета" && saved.theme == u"Night", "в настройки — та же обложка и прежний ключ встроенной");
+}
+
 void testSaveBecomesCurrent() {
     std::printf("\n=== темы: сохранённая становится текущей ===\n");
 
@@ -245,6 +265,7 @@ void runThemeListTests() {
     testNumbersAndNames();
     testNormalizeWraps();
     testRemoval();
+    testRemovalKeepsThemeKey();
     testSaveBecomesCurrent();
     testStartFromSettings();
     testPersistKeepsThemeKey();

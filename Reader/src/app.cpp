@@ -103,7 +103,7 @@ App::App()
       ws_{standardDataDirectory()},
       notices_{window_, screenTheme_},
       start_{window_.chromeCompositor(), *this},
-      view_{window_, ws_.settings, *this},
+      view_{window_, ws_.settings, themes_, *this},
       shelf_{ws_.library.cards(), ws_.settings.continueReading, ws_.coverDirectory(), *this},
       wizard_{window_.chromeCompositor(), *this},
       panel_{window_.chromeCompositor(), view_, ws_.settings, places_, themes_, search_, *this},
@@ -158,8 +158,9 @@ App::App()
     // вместе с ним.
     static_cast<void>(wizard_.skin().on_change(method(this, &App::preview)));
 
-    // Клавиши, общие для всех экранов, — на корнях трёх экранов, после их
-    // собственных: полоса и заставка разбирают свои раньше и метят их.
+    // Клавиши — на корнях трёх экранов, на пути вниз: что значит клавиша,
+    // решает карта, исполняет onKey. Свой обработчик раньше этого — только у
+    // заставки (Enter, Escape): она метит своё.
     start_.root().add_onPreviewKeyDown(method(this, &App::onKey));
     shelf_.root().add_onPreviewKeyDown(method(this, &App::onKey));
     view_.root().add_onPreviewKeyDown(method(this, &App::onKey));
@@ -218,11 +219,11 @@ detached_task App::start() {
 
     // Обложки — раньше темы: выбранной темой может оказаться обложка, а её
     // индекс продолжает список за встроенными и без реестра не существует.
-    setSkins();
+    themes_.setSkins(ws_.skins.list());
 
     // Обложка по имени, а нет такой — встроенная по ключу: номера считаются
     // по полному списку, вместе с системными обложками впереди реестровых.
-    view_.setTheme(themes_.indexFromSettings(ws_.settings.theme, ws_.settings.skin));
+    applySkins(themes_.indexFromSettings(ws_.settings.theme, ws_.settings.skin));
 
     window_.resize({kInitialWidth, kInitialHeight});
 
@@ -494,42 +495,29 @@ void App::continueReadingChanged(bool) noexcept {
 ///
 /// Что значит клавиша, решает карта клавиш (`resolve`, bukvitsa.lib): там вся
 /// матрица — полоса, мастер, ползунок и поле ввода, приоритет Escape. Здесь —
-/// только контекст для неё и исполнение ответа.
+/// только контекст для неё и исполнение ответа. Над книгой это единственный
+/// обработчик клавиш у корня: листание, кегль, тему и сноску исполняет полоса
+/// (perform), тем же методом, что её колесо и щелчок.
 ///
 /// Флага «мы в полном экране» нет намеренно: он был бы вторым местом, где это
-/// записано, — а состояние знает само окно (window_.fullScreen()).
+/// записано, — а состояние знает само окно (window_.fullScreen()). Так же и
+/// мастер: открыт ли он, знает он сам, а не предпросмотр полосы.
 void App::onKey(Object const&, KeyRoutedEventArgs& args) {
-    // Листание, кегль и тему полоса пока разбирает сама — её обработчик стоит
-    // на том же корне раньше этого и помечает свои клавиши. Помеченная сюда
-    // не доходит, и команд полосы приложение не исполняет; карта отвечает за
-    // них так же, как полоса.
-    if (args.handled()) return;   // полоса набора своё уже разобрала
+    if (args.handled()) return;   // заставка своё уже разобрала
 
-    const KeyPress press = keyPressOf(args.key());
-
-    // Открыта ли сноска, полоса пока не говорит: dismissOverlays()
-    // спрашивает и закрывает разом. Поэтому сноска считается открытой, пока
-    // полоса не ответит, что закрывать было нечего, — тогда клавиша
-    // разбирается заново без неё. Спрашивает только Escape над книгой без
-    // панели: прочие клавиши от сноски не зависят.
-    auto context = KeyContext{
+    auto const context = KeyContext {
         .shown = shown_.get(),
         .cameFrom = cameFrom_.get(),
         .wizardOpen = wizard_.isOpen(),
         .panelOpen = panel_.isOpen(),
-        .noteOpen = true,
+        .noteOpen = view_.noteOpen(),
         .fullScreen = window_.fullScreen(),
         .origin = focusOriginOf(args.originalSource()),
         .bookOpen = view_.isOpen(),
     };
 
-    Command resolved = resolve(press, context);
-    if (resolved == Command::DismissNote && !view_.dismissOverlays()) {
-        context.noteOpen = false;
-        resolved = resolve(press, context);
-    }
-
-    switch (resolved) {
+    const Command command = resolve(keyPressOf(args.key()), context);
+    switch (command) {
         case Command::ShowLibrary:
         case Command::BackToLibrary:
             show(Screen::Library);
@@ -552,8 +540,6 @@ void App::onKey(Object const&, KeyRoutedEventArgs& args) {
         case Command::ClosePanel:
             panel_.close();   // фокус полосе возвращает сама панель
             break;
-        case Command::DismissNote:
-            break;   // сноску закрыла полоса — больше ничего не нужно
         case Command::ToggleFullScreen:
             window_.fullScreen(!window_.fullScreen());
             break;
@@ -561,9 +547,7 @@ void App::onKey(Object const&, KeyRoutedEventArgs& args) {
             window_.fullScreen(false);
             break;
 
-        // Команды полосы — фаза 2: их исполнит приложение, когда полоса
-        // отдаст свой обработчик карте. Сейчас они сюда не доходят (см.
-        // выше), а дошедшую — не метим.
+        // Полосы: листание, начало и конец книги, кегль, тема, сноска.
         case Command::TurnForward:
         case Command::TurnBackward:
         case Command::GoToStart:
@@ -572,6 +556,10 @@ void App::onKey(Object const&, KeyRoutedEventArgs& args) {
         case Command::FontSmaller:
         case Command::FontReset:
         case Command::NextTheme:
+        case Command::DismissNote:
+            view_.perform(command);
+            break;
+
         case Command::None:
             return;   // не наша клавиша: пусть идёт дальше
     }
