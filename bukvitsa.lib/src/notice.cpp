@@ -5,25 +5,24 @@
 import wxl.async;
 import wxl.core;
 
-using wxl::async::system_exception;
+using wxl::async::last_error;
 
 namespace bukvitsa::reader {
 
-std::wstring reasonOf(const system_exception& failure) {
-    const std::string_view narrow = failure.what();
-    const int size = static_cast<int>(narrow.size());
+std::wstring reasonOf(const last_error& failure) {
+    std::wstring words = failure.explanation();
+    if (!words.empty()) return words;
 
-    std::wstring wide(static_cast<size_t>(::MultiByteToWideChar(CP_ACP, 0, narrow.data(), size, nullptr, 0)),
-                      L'\0');
-    ::MultiByteToWideChar(CP_ACP, 0, narrow.data(), size, wide.data(), static_cast<int>(wide.size()));
-
-    return wide;
+    // Системе нечего сказать о коде: показывается диагностика — что делали, код и
+    // «unknown error»; текст наш и ASCII, но проверяется, как любой чужой.
+    const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
+    return said ? std::wstring(said->to_utf16().wchars()) : std::wstring(L"(сообщение не в UTF-8)");
 }
 
 Notice noticeOf(std::exception_ptr error) {
     try {
         std::rethrow_exception(std::move(error));
-    } catch (const system_exception& failure) {
+    } catch (const last_error& failure) {
         return {L"Не удалось выполнить операцию с файлом", reasonOf(failure)};
     } catch (const std::exception& failure) {
         // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
@@ -35,7 +34,7 @@ Notice noticeOf(std::exception_ptr error) {
     }
 }
 
-Notice noticeOf(std::wstring headline, std::wstring details, const system_exception& failure) {
+Notice noticeOf(std::wstring headline, std::wstring details, const last_error& failure) {
     if (!details.empty()) details += L"\n\n";
     details += reasonOf(failure);
     return {std::move(headline), std::move(details)};

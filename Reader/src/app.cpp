@@ -9,7 +9,7 @@
 // код обычный: он трогает XAML и общее состояние, потому что он и есть тот
 // самый поток. Reader диска не трогает вовсе: файлы читает и пишет рабочее
 // место (`Workspace`) из своих корутин `task<T>`, сбой операции приходит
-// исключением `system_exception`. Сценарий ловит то, на что у него есть ответ
+// исключением `last_error`. Сценарий ловит то, на что у него есть ответ
 // читателю; остальное всплывает в `on_detached_task_failure` (его ставит
 // `Notices`): читатель видит окно с причиной, сценарий на этом кончается.
 //
@@ -48,7 +48,7 @@ using namespace std::chrono_literals;
 using wxl::async::cancellation_source;
 using wxl::async::cancellation_token;
 using wxl::async::detached_task;
-using wxl::async::system_exception;
+using wxl::async::last_error;
 using wxl::async::task;
 
 namespace {
@@ -403,7 +403,7 @@ task<> App::writeState(WaitableTimer& timer, cancellation_token stop) {
 
             try {
                 co_await ws_.saveState(places_.guid(), places_.stateAt(view_.position().get()));
-            } catch (const system_exception& failure) {
+            } catch (const last_error& failure) {
                 notices_.post(noticeOf(L"Не удалось сохранить место чтения", book.wstring(), failure));
             }
         }
@@ -423,7 +423,7 @@ task<> App::writeSettings(WaitableTimer& timer, cancellation_token stop) {
 
         try {
             co_await ws_.saveSettings();
-        } catch (const system_exception& failure) {
+        } catch (const last_error& failure) {
             notices_.post(noticeOf(L"Не удалось сохранить настройки", ws_.settingsPath().wstring(), failure));
         }
 
@@ -443,7 +443,7 @@ task<> App::writeLibrary(WaitableTimer& timer, cancellation_token stop) {
 
         try {
             co_await ws_.saveLibrary();
-        } catch (const system_exception& failure) {
+        } catch (const last_error& failure) {
             notices_.post(noticeOf(L"Не удалось сохранить реестр книг", ws_.libraryPath().wstring(), failure));
         }
 
