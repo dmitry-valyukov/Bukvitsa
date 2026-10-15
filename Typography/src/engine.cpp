@@ -261,9 +261,15 @@ struct FaceKey {
 
 /// Всё, что вёрстка узнаёт об абзаце один раз и переиспользует.
 struct ShapedParagraph::Data {
-    /// Абзац живёт у того, кто его завёл; здесь только вид в него. Строки
-    /// ссылаются на его текст, поэтому пережить его нельзя (см. заголовок).
-    const Paragraph* paragraph = nullptr;
+    /// Хранилище книги и абзац в нём, а не разрешённые виды: из хранилища же
+    /// берутся позиция каждой строки (charOffsetAt) и якоря сносок, и тем же
+    /// вызовом shape абзац перешейпливается, когда стиль разошёлся. Абзац —
+    /// копией: это четыре диапазона в массивы книги, ничем не владеющие, и
+    /// место, где его держал зовущий, переживать ничего не обязано.
+    /// Хранилище — обязано, и на том же месте: его держит книга, пока жива
+    /// её вёрстка (см. заголовок).
+    const BookText* book = nullptr;
+    Paragraph paragraph;
 
     sta_vector<ShapedRun> runs;
     sta_vector<DWRITE_LINE_BREAKPOINT> breakpoints;
@@ -449,21 +455,24 @@ struct Engine::Impl {
     }
 
     /// Пересечение всех разбиений сразу: стиль, письменность, направление, шрифт.
-    sta_vector<FormatRun> formatRuns(const Paragraph& paragraph, const ParagraphStyle& blockStyle,
+    ///
+    /// Прогоны стиля — разбиение текста по построению: абзац без разметки
+    /// несёт один прогон на весь текст, а не ни одного, и подставлять здесь
+    /// нечего. Абзац с текстом без прогонов или прогон за концом текста —
+    /// нарушенный инвариант хранилища, а не случай вёрстки.
+    sta_vector<FormatRun> formatRuns(u16_view text, std::span<const StyleSpan> spans,
+                                     const ParagraphStyle& blockStyle,
                                      const AnalysisSink& analysis) {
-        const auto textLength = static_cast<uint32_t>(paragraph.text.size());
-        sta_vector<FormatRun> runs;
+        assert(!spans.empty() &&
+               "у абзаца с текстом прогоны стиля — разбиение текста, хотя бы один прогон");
 
-        // Абзац без разметки — тот же абзац: один прогон стиля по умолчанию.
-        // std::vector, а не пул: список подставляется вместо paragraph.spans
-        // (модель книги, обычная куча), и в тернарном выборе типы обязаны
-        // совпасть. Один элемент — цена пренебрежимая.
-        const std::vector<StyleSpan> whole{StyleSpan{0, textLength, FontStyle{}}};
-        const std::vector<StyleSpan>& spans = paragraph.spans.empty() ? whole : paragraph.spans;
+        const auto textLength = static_cast<uint32_t>(text.size());
+        sta_vector<FormatRun> runs;
 
         for (const StyleSpan& span : spans) {
             uint32_t at = span.start;
-            const uint32_t spanEnd = std::min(span.start + span.length, textLength);
+            const uint32_t spanEnd = span.start + span.length;
+            assert(spanEnd <= textLength && "прогон стиля не выходит за текст абзаца");
 
             while (at < spanEnd) {
                 uint32_t end = at + 1;
@@ -490,10 +499,10 @@ struct Engine::Impl {
                 if (end - at > kMaxRunLength) {
                     uint32_t cut = at + kMaxRunLength;
                     const uint32_t limit = cut - std::min<uint32_t>(kMaxRunLength / 8, cut - at - 1);
-                    while (cut > limit && paragraph.text.plain()[cut - 1] != u' ')
+                    while (cut > limit && text.plain()[cut - 1] != u' ')
                         --cut;
 
-                    const u16_view rest = u16_view(paragraph.text).substr(at);
+                    const u16_view rest = text.substr(at);
                     size_t letters = unicode::floor_grapheme_boundary(rest, cut - at);
                     if (letters == 0)
                         letters = unicode::next_grapheme_boundary(rest, 0);
@@ -524,8 +533,8 @@ struct Engine::Impl {
                     prototype.ascenderOffset = -blockStyle.fontSize * kSubscriptDrop;
                 }
 
-                appendFontRuns(runs, prototype, paragraph.text.c_str(), textLength, familyFor(merged).c_str(),
-                               merged.bold, merged.italic);
+                appendFontRuns(runs, prototype, text.wchars().data(), textLength,
+                               familyFor(merged).c_str(), merged.bold, merged.italic);
                 at = end;
             }
         }
@@ -535,11 +544,11 @@ struct Engine::Impl {
 
     /* ---------------- шейпинг ---------------- */
 
-    ShapedRun shape(const Paragraph& paragraph, const FormatRun& format) {
+    ShapedRun shape(u16_view paragraph, const FormatRun& format) {
         ShapedRun shaped;
         shaped.format = format;
 
-        const wchar_t* const text = paragraph.text.c_str() + format.start;
+        const wchar_t* const text = paragraph.wchars().data() + format.start;
         const UINT32 length = format.length;
         const BOOL rightToLeft = (format.bidiLevel & 1) != 0;
 
@@ -612,8 +621,7 @@ struct Engine::Impl {
         // границы между ними нет своего глифа.
         if (format.style.spaced) {
             const float spacing = format.fontSize * kSpacedTracking;
-            const u16_view letters =
-                u16_view(paragraph.text).substr(format.start, length);
+            const u16_view letters = paragraph.substr(format.start, length);
 
             for (size_t letter = 0; letter < length;) {
                 const size_t next = unicode::next_grapheme_boundary(letters, letter);
@@ -660,20 +668,22 @@ struct Engine::Impl {
     /// Анализ и шейпинг абзаца целиком — шаги 1–3 вёрстки. Дорогая часть:
     /// именно здесь происходят все обращения к DirectWrite, кроме выключки по
     /// формату.
-    void shapeInto(ShapedParagraph::Data& into, const Paragraph& paragraph,
+    void shapeInto(ShapedParagraph::Data& into, const BookText& book, const Paragraph& paragraph,
                    const ParagraphStyle& blockStyle) {
-        into.paragraph = &paragraph;
+        into.book = &book;
+        into.paragraph = paragraph;
         into.referenceFontSize = blockStyle.fontSize;
         into.bold = blockStyle.bold;
         into.italic = blockStyle.italic;
         into.monospace = blockStyle.monospace;
         into.styleGeneration = styleGeneration;
 
-        const auto textLength = static_cast<uint32_t>(paragraph.text.size());
+        const u16_view text = book.textOf(paragraph);
+        const auto textLength = static_cast<uint32_t>(text.size());
         if (textLength == 0)
             return;
 
-        AnalysisSource source(paragraph.text.c_str(), textLength, style.locale.c_str());
+        AnalysisSource source(text.wchars().data(), textLength, style.locale.c_str());
         AnalysisSink analysis(textLength);
 
         check(analyzer->AnalyzeScript(&source, 0, textLength, &analysis));
@@ -681,9 +691,10 @@ struct Engine::Impl {
         check(analyzer->AnalyzeLineBreakpoints(&source, 0, textLength, &analysis));
 
         into.breakpoints = analysis.breakpoints();
-        into.hyphens = hyphenPointsOf(paragraph.text);
+        into.hyphens = hyphenPointsOf(text);
 
-        const sta_vector<FormatRun> formats = formatRuns(paragraph, blockStyle, analysis);
+        const sta_vector<FormatRun> formats =
+            formatRuns(text, book.spansOf(paragraph), blockStyle, analysis);
         into.runs.reserve(formats.size());
 
         for (const FormatRun& format : formats) {
@@ -692,7 +703,7 @@ struct Engine::Impl {
             // отдавать нельзя: он отвечает E_INVALIDARG.
             if (format.length == 0 || format.fontFace == nullptr || format.fontSize <= 0.0f)
                 continue;
-            into.runs.push_back(shape(paragraph, format));
+            into.runs.push_back(shape(text, format));
         }
 
         hideSoftHyphens(into);
@@ -833,18 +844,14 @@ struct Engine::Impl {
     /// вернул бы нас к строке с дырой, — но пусть разбивка берёт его последним.
     static constexpr float kShortTailHyphenPenalty = 300.0f;
 
-    /// @param from символ, с которого начинается набор. Не ноль тогда, когда
-    ///        страница начата с середины абзаца: мгновенная вёрстка ставит
-    ///        первую строку ровно с места чтения, а не с красной строки.
-    static sta_vector<BreakItem> breakItems(const Paragraph& paragraph,
-                                            const CharacterMetrics& metrics,
+    static sta_vector<BreakItem> breakItems(u16_view text, const CharacterMetrics& metrics,
                                             const sta_vector<DWRITE_LINE_BREAKPOINT>& points,
                                             std::span<const uint8_t> hyphens,
-                                            bool ragged, float maxWidth, uint32_t from) {
-        const auto textLength = static_cast<uint32_t>(paragraph.text.size());
+                                            bool ragged, float maxWidth) {
+        const auto textLength = static_cast<uint32_t>(text.size());
 
         sta_vector<BreakItem> items;
-        items.reserve((textLength - from) / 4 + 8);
+        items.reserve(textLength / 4 + 8);
 
         // Слово, которое не помещается в полосу целиком (длинный адрес,
         // склеенный текст, а в примере nightmare — нарочно целая строка
@@ -868,7 +875,6 @@ struct Engine::Impl {
         // только вперёд и только в словах, которые рубятся, — то есть почти
         // никогда: весь остальной текст рвётся по переломам DirectWrite, а
         // внутри буквы их не бывает.
-        const u16_view text = paragraph.text;
         size_t letter = 0;
 
         float pending = 0.0f;
@@ -942,11 +948,11 @@ struct Engine::Impl {
             pendingShrink = 0.0f;
         };
 
-        for (uint32_t i = from; i < textLength; ++i) {
+        for (uint32_t i = 0; i < textLength; ++i) {
             const DWRITE_LINE_BREAKPOINT& point = points[i];
             const bool space = point.isWhitespace != 0;
 
-            if (i > from && point.breakConditionBefore == DWRITE_BREAK_CONDITION_MUST_BREAK) {
+            if (i > 0 && point.breakConditionBefore == DWRITE_BREAK_CONDITION_MUST_BREAK) {
                 flush(i);
 
                 // Клей бесконечной растяжимости перед обязательным разрывом —
@@ -964,7 +970,7 @@ struct Engine::Impl {
                 items.push_back(fill);
 
                 penalty(i, -kInfinitePenalty);
-            } else if (i > from && point.breakConditionBefore == DWRITE_BREAK_CONDITION_CAN_BREAK &&
+            } else if (i > 0 && point.breakConditionBefore == DWRITE_BREAK_CONDITION_CAN_BREAK &&
                        !space && (points[i - 1].isWhitespace == 0)) {
                 // Разрыв внутри непробельного текста: после дефиса, после
                 // мягкого переноса из книги, между иероглифами.
@@ -981,7 +987,7 @@ struct Engine::Impl {
 
                 penalty(i, soft || afterHyphen ? kHyphenPenalty : 0.0f, soft || afterHyphen,
                         soft ? metrics.hyphen[i - 1] : 0.0f);
-            } else if (i > from && !space && i < hyphens.size() && hyphens[i] != 0) {
+            } else if (i > 0 && !space && i < hyphens.size() && hyphens[i] != 0) {
                 // Место переноса по образцам. Стоит оно ширины дефиса, и платит
                 // её только та строка, которая здесь и кончится.
                 flush(i);
@@ -1006,7 +1012,7 @@ struct Engine::Impl {
                 // него: это то же слово, и просмотр вперёд так проходит по
                 // каждому символу ровно один раз за слово, то есть по книге —
                 // один раз.
-                if (!space && (i == from || points[i - 1].isWhitespace != 0)) {
+                if (!space && (i == 0 || points[i - 1].isWhitespace != 0)) {
                     float piece = 0.0f;
                     float widest = 0.0f;
                     uint32_t at = i;
@@ -1327,31 +1333,22 @@ float Engine::averageCharWidth(float fontSize) const {
     return impl.charWidth;
 }
 
-ShapedParagraphPtr Engine::shape(const Paragraph& paragraph, const ParagraphStyle& style) {
+ShapedParagraphPtr Engine::shape(const BookText& book, const Paragraph& paragraph,
+                                 const ParagraphStyle& style) {
     // Конструктор закрыт: отшейпленный абзац умеет делать только движок.
     ShapedParagraphPtr result(new ShapedParagraph());
-    impl_->shapeInto(*result->data_, paragraph, style);
+    impl_->shapeInto(*result->data_, book, paragraph, style);
     return result;
 }
 
-sta_vector<Line> Engine::layout(const Paragraph& paragraph, float width,
+sta_vector<Line> Engine::layout(const BookText& book, const Paragraph& paragraph, float width,
                                 const ParagraphStyle& style) {
-    const ShapedParagraphPtr shaped = shape(paragraph, style);
+    const ShapedParagraphPtr shaped = shape(book, paragraph, style);
     return layout(*shaped, width, style);
 }
 
 sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
                                 const ParagraphStyle& style) {
-    return layoutRange(given, 0, width, style);
-}
-
-sta_vector<Line> Engine::layoutFrom(const ShapedParagraph& given, uint32_t firstChar,
-                                    float width, const ParagraphStyle& style) {
-    return layoutRange(given, firstChar, width, style);
-}
-
-sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, uint32_t firstChar,
-                                     float width, const ParagraphStyle& style) {
     Impl& impl = *impl_;
 
     // Стиль мог разойтись с тем, на котором абзац шейпили, не только размером.
@@ -1360,24 +1357,18 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, uint32_t firs
     const ShapedParagraph::Data* data = given.data_.get();
     ShapedParagraphPtr reshaped;
 
-    if (data->paragraph != nullptr &&
-        (data->styleGeneration != impl.styleGeneration || data->bold != style.bold ||
-         data->italic != style.italic || data->monospace != style.monospace)) {
-        reshaped = shape(*data->paragraph, style);
+    if (data->styleGeneration != impl.styleGeneration || data->bold != style.bold ||
+        data->italic != style.italic || data->monospace != style.monospace) {
+        reshaped = shape(*data->book, data->paragraph, style);
         data = reshaped->data_.get();
     }
 
-    const Paragraph& paragraph = *data->paragraph;
-    const auto textLength = static_cast<uint32_t>(paragraph.text.size());
-    if (textLength == 0 || firstChar >= textLength || width <= 0.0f ||
-        data->referenceFontSize <= 0.0f)
+    const BookText& book = *data->book;
+    const Paragraph& paragraph = data->paragraph;
+    const u16_view text = book.textOf(paragraph);
+    const auto textLength = static_cast<uint32_t>(text.size());
+    if (textLength == 0 || width <= 0.0f || data->referenceFontSize <= 0.0f)
         return {};
-
-    // Место чтения — позиция символа, и она может указывать на знак внутри
-    // буквы. Строка начинается с самой буквы.
-    if (firstChar > 0)
-        firstChar = static_cast<uint32_t>(
-            unicode::floor_grapheme_boundary(paragraph.text, firstChar));
 
     /* 1-3. Анализ, прогоны формата и шейпинг уже сделаны — берём готовое.
        Кегль подгоняется отношением: метрики шейпинга линейны по нему. */
@@ -1394,12 +1385,9 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, uint32_t firs
                                : std::span<const uint8_t>();
 
     const sta_vector<BreakItem> items =
-        Impl::breakItems(paragraph, metrics, data->breakpoints, hyphens, ragged, width, firstChar);
+        Impl::breakItems(text, metrics, data->breakpoints, hyphens, ragged, width);
 
-    // Отступ первой строки — свойство начала абзаца, а не начала полосы.
-    // Страница, начатая с середины абзаца, его продолжает, и красная строка
-    // посреди предложения соврала бы читателю о том, где он стоит.
-    const float indent = firstChar == 0 ? style.firstLineIndent : 0.0f;
+    const float indent = style.firstLineIndent;
     const bool indented = indent != 0.0f;
     const float firstWidth = std::max(width - indent, width * 0.2f);
     const float lineWidths[2] = {firstWidth, width};
@@ -1419,17 +1407,30 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, uint32_t firs
         settings.lineEndStretch = kInfinitePenalty;
     }
 
-    const std::vector<uint32_t> breaks =
+    std::vector<uint32_t> breaks =
         breakLines(items, std::span<const float>(lineWidths, indented ? 2 : 1), settings);
 
     if (breaks.empty())
         return {};
 
+    // Строки за концом текста не бывает. За последним боксом абзаца стоит
+    // клей — пробел, который свёртка оставила в конце (преформат, перевод
+    // строки от `<br/>`, неразрывный пробел), или хвостовой клей самого
+    // абзаца, — и это место разрыва: разбивка его берёт, когда строка с
+    // пробелом вылезает за поле, а без него помещается, или когда аварийный
+    // проход потерял все прочие узлы. Разрыв пробел съедает, и завершающему
+    // штрафу остаётся строка нулевой длины, начатая на самом конце текста:
+    // ставить в ней нечего, и позиции у её начала нет. Её и не заводим —
+    // последней становится строка, кончившаяся на этом клее, и выключается
+    // как последняя.
+    if (breaks.size() > 1 && items[breaks[breaks.size() - 2]].textEnd == textLength)
+        breaks.pop_back();
+
     /* 6. Строки. */
     sta_vector<Line> lines;
     lines.reserve(breaks.size());
 
-    uint32_t from = firstChar;
+    uint32_t from = 0;
     for (size_t index = 0; index < breaks.size(); ++index) {
         const BreakItem& at = items[breaks[index]];
         const uint32_t to = std::max(from, at.textPosition);
@@ -1438,9 +1439,7 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, uint32_t firs
         Line line;
         line.textStart = from;
         line.textLength = to - from;
-        line.charOffset = from < paragraph.charOffsets.size()
-                              ? paragraph.charOffsets[from]
-                              : (paragraph.charOffsets.empty() ? 0 : paragraph.charOffsets.back());
+        line.charOffset = book.charOffsetAt(paragraph, from);
 
         for (const ShapedRun& run : shaped) {
             LineRun piece;
@@ -1516,12 +1515,12 @@ sta_vector<Line> Engine::layoutRange(const ShapedParagraph& given, uint32_t firs
         // отрезает знак в отдельные прогоны, поэтому его место на строке — это
         // просто объединение прогонов, лежащих внутри него; отдельно измерять
         // ничего не нужно.
-        for (const NoteAnchor& note : paragraph.notes) {
+        for (const NoteAnchor& note : book.notesOf(paragraph)) {
             if (note.position + note.length <= from || note.position >= to)
                 continue;
 
             PlacedNote placed;
-            placed.target = note.target;
+            placed.body = note.body;
             bool started = false;
 
             for (const GlyphRun& run : line.runs) {
