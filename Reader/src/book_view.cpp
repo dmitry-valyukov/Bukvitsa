@@ -74,24 +74,25 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
       note_(window.chromeCompositor()),
       stop_(std::move(parent)),
       readingScope_(stop_.token()),
-      chapterTail_(flow_, idleScheduler_, stop_.token(), method(this, &BookView::redraw)) {
+      chapterTail_(flow_, idleScheduler_, stop_.token(), method(this, &BookView::redraw)),
+      // Стратегия переворота — до первой меры: мера доводит до конца всё, что
+      // летит, и спрашивает у стратегии, куда рисовать. Всё, что она читает, —
+      // разворот, поток страниц, источники, настройки и тон бумаги (paper()
+      // спрашивает предпросмотр) — объявлено раньше неё.
+      turnAnimation_(makeTurnAnimation()),
+      // Анимация листания — настройка читателя, и меняется на ходу: флажок
+      // панели привязан к тому же полю. Слушатель меняет стратегию и потому
+      // подписывается, когда она уже есть: брось её создание, слушателя с
+      // нашим this в поле, которое живёт дольше полосы, не будет. Снимает его
+      // деструктор.
+      animateTurnsWatch_(
+          settings_.animateTurns.on_change(method(this, &BookView::animateTurnsChanged))) {
     // Полоса ещё не экран: под источником чтения ждать нечему, пока
-    // setActive(true) не заведёт новый.
+    // setActive(true) не заведёт новый. Серия стратегии, заведённая под ним
+    // выше, отменяется вместе с ним.
     readingScope_.cancel();
 
     buildTree();
-
-    // Стратегия переворота — до первой меры: мера доводит до конца всё, что
-    // летит, и спрашивает у стратегии, куда рисовать.
-    turnAnimation_ = makeTurnAnimation();
-
-    // Анимация листания — настройка читателя, и меняется на ходу: флажок
-    // панели привязан к тому же полю. Слушатель меняет стратегию и потому
-    // подписывается, когда она уже есть, а не в списке инициализации: брось
-    // makeTurnAnimation, слушатель с нашим this остался бы в поле, которое
-    // живёт дольше полосы, и снять его было бы некому. Снимает его деструктор.
-    animateTurnsWatch_ =
-        settings_.animateTurns.on_change(method(this, &BookView::animateTurnsChanged));
 
     // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из WM_SIZE,
     // раньше вёрстки XAML, и несёт размер в пикселях вместе с масштабом экрана
@@ -326,7 +327,7 @@ BookView::~BookView() {
     // иначе следующая перемена кегля, анимации или размера позвала бы уже
     // разрушенную полосу.
     for (auto& [field, cookie] : settingsWatches_) field->remove_change(cookie);
-    settings_.animateTurns.remove_change(animateTurnsWatch_.value());
+    settings_.animateTurns.remove_change(animateTurnsWatch_);
     window_.remove_onClientSizeChanged(sizeToken_);
 }
 
