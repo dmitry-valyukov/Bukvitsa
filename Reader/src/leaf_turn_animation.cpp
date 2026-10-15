@@ -223,11 +223,15 @@ LeafTurnAnimation::Leaf::Leaf(const Compositor& compositor, const ContainerVisua
       restBrush_(restBrush) {
     outgoingPage.clip(outgoingPageClip);
 
-    // Тень уезжающего плоского листа — маской ей кисть листа (её ставит
-    // переворот), поэтому тень повторяет лист, а не описанный прямоугольник.
+    // Тень уезжающего плоского листа повторяет лист, а не описанный
+    // прямоугольник: маска ей — содержимое самой страницы, а не своя кисть.
+    // Так у листа одна ссылка на растр — кисть страницы, — и тень всегда
+    // повторяет ровно то, что лист носит; покой, сняв кисть, отпускает растр
+    // целиком. Своя кисть маски держала бы растр мимо пула и мимо resize.
     // Гасится и зажигается прозрачностью.
     flatLeafShadow.blurRadius(kShadowBlur);
     flatLeafShadow.offset({kShadowShift, 0.0f, 0.0f});
+    flatLeafShadow.sourcePolicy(CompositionDropShadowSourcePolicy::InheritFromVisualContent);
     outgoingPage.shadow(flatLeafShadow);
 
     // Тень сгиба (книжное листание): горизонтальный градиент в долях своей
@@ -340,12 +344,9 @@ void LeafTurnAnimation::Leaf::stop() {
 }
 
 void LeafTurnAnimation::Leaf::rest() const {
-    // Ничего не видно, и страницы ничего не носят: растр, который лист нёс,
-    // ему больше не нужен — кисть покоя его отпускает. Маску тени покой не
-    // трогает: её ставит газетный переворот кистью уходящей страницы, а
-    // погашенная тень невидимой страницы её не рисует. Держит она растр
-    // последнего газетного переворота листа — до следующего такого же или до
-    // отпускания листа.
+    // Ничего не видно и ничего не носится: растр, который лист нёс, ему больше
+    // не нужен — кисть покоя его отпускает, а другой ссылки на растр у листа
+    // нет (тень берёт маску из содержимого страницы).
     outgoingPage.isVisible(false);
     outgoingPage.brush(restBrush_);
     foldShadow.isVisible(false);
@@ -489,11 +490,10 @@ void LeafTurnAnimation::turnStarted(bool forward) {
         spread_.dressPage(flippingSide, startingTurn.incomingRaster);
         startingLeaf.incomingPage.brush(spread_.raster(startingTurn.incomingRaster).brush());
     } else {
-        // Уезжающий лист несёт уходящую страницу — бывший осевший растр — и им
-        // же маскирует тень: в газете лист открывает страницы под собой, а не
-        // повторяет их.
+        // Уезжающий лист несёт уходящую страницу — бывший осевший растр: в
+        // газете лист открывает страницы под собой, а не повторяет их. Тень
+        // берёт форму из неё же сама.
         startingLeaf.outgoingPage.brush(spread_.raster(startingTurn.outgoingRaster).brush());
-        startingLeaf.flatLeafShadow.mask(startingLeaf.outgoingPage.brush());
     }
 
     leafLayer_.isVisible(true);   // листы — на время переворота
