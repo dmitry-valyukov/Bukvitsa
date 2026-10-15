@@ -19,6 +19,8 @@ wxl_add_executable(Reader
     src/app_skins.cpp
     src/start_screen.cpp
     src/book_view.cpp
+    src/spread_view.cpp
+    src/leaf_turn_animation.cpp
     src/library_screen.cpp
     src/reader_panel.cpp
     src/note_popup.cpp
@@ -31,13 +33,16 @@ wxl_add_executable(Reader
     src/deferred_write.h
     src/file_dialog.h
     src/keys.h
+    src/leaf_turn_animation.h
     src/library_screen.h
     src/look.h
     src/reader_panel.h
     src/note_popup.h
     src/notices.h
     src/skin_wizard.h
+    src/spread_view.h
     src/start_screen.h
+    src/turn_animation.h
     src/pch.h
 )
 
