@@ -23,7 +23,6 @@
 // wxl.core: стандартный заголовок, включённый после импорта, MSVC уже не
 // принимает.
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,7 +42,8 @@
 #include "bukvitsa/reader/theme.h"
 
 // Импорт — последним: хвост главы считает корутина async::task, которой владеет
-// полоса, а намерения — корутины `detached_task`.
+// полоса, конец переворота ждёт `detached_task` под её источником отмены, а
+// намерения — тоже корутины `detached_task`.
 import wxl.async;
 
 namespace bukvitsa::reader {
@@ -70,7 +70,11 @@ public:
     ///        перевёрстывается сама, и в них же пишет колесом и клавишами,
     ///        так что одно поле видят и ползунки панели, и файл. Слушателей
     ///        полоса снимает за собой.
-    BookView(const wxl::CompositionWindow& window, Settings& settings, Actions& actions);
+    /// @param parent токен отмены владельца: от него полоса заводит свой
+    ///        источник для своих ожиданий. Отменяет их сама полоса, умирая, а
+    ///        закрытие приложения — вместе со всеми.
+    BookView(const wxl::CompositionWindow& window, Settings& settings, Actions& actions,
+             wxl::async::cancellation_token parent);
     ~BookView();
 
     /// Корень, который отдаётся окну как содержимое.
@@ -352,6 +356,12 @@ private:
     /// (liftSheet). Конец отслеживается пакетом, по нему лист садится.
     void animateSpreadTurn(Flip& flip, bool forward);
 
+    /// Ждёт конца пакета анимаций листа и сажает лист: finishFlip, landFlip,
+    /// settleSheets. Зовётся до `batch.end()`: корутина начинается в вызове и
+    /// к его возврату уже подписана на конец пакета. Ждёт под `stop_`.
+    wxl::async::detached_task landWhenDone(wxl::CompositionScopedBatch batch, Flip* which,
+                                           uint64_t epoch);
+
     /// Перекрашивает тени под нынешнюю тему. Цвет у них не свой, а темы, и
     /// меняется вместе с ней; прозрачность каждой остаётся своей.
     void applyShadowTint();
@@ -459,11 +469,11 @@ private:
     /// startTurn).
     observable<uint32_t> position_{0};
 
-    /// Знак жизни для того же обработчика: конец пакета приходит позже, чем
-    /// полосу могут закрыть, и `this` в нём к тому времени уже ничей. Владеет
-    /// полоса, а обработчик держит слабую ссылку — поле умирает вместе с
-    /// полосой, и ссылка сама становится пустой.
-    std::shared_ptr<int> alive_ = std::make_shared<int>(0);
+    /// Источник отмены полосы, дочерний от токена владельца: под ним ждут
+    /// концы пакетов переворотов (landWhenDone). Конец пакета может прийти
+    /// позже, чем полосу разрушат, — деструктор отменяет источник, и ожидание
+    /// кончается отменой, больше не трогая `this`.
+    wxl::async::cancellation_source stop_;
 
     /// Идущий досчёт главы. Владение и есть отмена: новая вёрстка сбрасывает
     /// его, и кадр, стоящий в ожидании простоя, уничтожается вместе с

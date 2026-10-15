@@ -19,6 +19,7 @@
 // и уже он ведёт к импорту модуля книги.
 #include "UiThread.h"
 #include "book_view.h"
+#include "event_awaitable.h"
 
 #include "bukvitsa/reader/imaging.h"
 
@@ -276,7 +277,8 @@ bool controlHeld() {
 
 }  // namespace
 
-BookView::BookView(const CompositionWindow& window, Settings& settings, Actions& actions)
+BookView::BookView(const CompositionWindow& window, Settings& settings, Actions& actions,
+                   async::cancellation_token parent)
     : window_(window),
       settings_(settings),
       actions_(actions),
@@ -288,7 +290,8 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, Actions&
       releaseTimer_(window.dispatcherQueue().createTimer()),
       // Всплывашка сноски — XAML-остров, её рисунок висит в дереве острова, а не
       // на сцене: ей нужен композитор острова, а не окна.
-      note_(window.chromeCompositor()) {
+      note_(window.chromeCompositor()),
+      stop_(std::move(parent)) {
     buildTree();
 
     // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из WM_SIZE,
@@ -402,8 +405,8 @@ void BookView::buildTree() {
     }
 
     // Пул листов зарезервирован под предел: дальше push_back не переселяет
-    // вектор, и указатели на листы, что держат обработчики конца переворота,
-    // остаются годными.
+    // вектор, и указатели на листы, что держат ожидания конца переворота
+    // (landWhenDone), остаются годными.
     flips_.reserve(kMaxFlips);
 
     // Листы переворотов — на сцене окна над страницами, привешены к
@@ -605,6 +608,11 @@ void BookView::loaded(Grid const& self) {
 }
 
 BookView::~BookView() {
+    // Ожидания полосы — концы пакетов переворотов — ей больше не нужны:
+    // отменяет их владелец, то есть она сама. Корутины кончатся отменой на
+    // своём ожидании и полосы уже не тронут.
+    stop_.cancel();
+
     // Настройки и окно переживают полосу: слушатели с нашим this снимаются,
     // иначе следующая перемена кегля или размера позвала бы уже разрушенную
     // полосу.
@@ -1011,7 +1019,7 @@ BookView::Flip& BookView::acquireFlip() {
 
     // Ещё не набрали лимит — заводим новый. Пул зарезервирован под kMaxFlips
     // (buildTree), так что push_back не переселяет вектор: указатели на листы,
-    // что держат обработчики конца, остаются годными.
+    // что держат ожидания конца, остаются годными.
     if (flips_.size() < kMaxFlips) {
         flips_.push_back(makeFlip());
         Flip& fresh = flips_.back();
@@ -1028,7 +1036,7 @@ BookView::Flip& BookView::acquireFlip() {
     for (Flip& f : flips_)
         if (f.started < oldest->started)
             oldest = &f;
-    oldest->epoch = ++flipClock_;   // его обработчик конца, придя, увидит чужой номер
+    oldest->epoch = ++flipClock_;   // его ожидание конца, дождавшись, увидит чужой номер
     finishFlip(*oldest);
     landFlip(*oldest);
     oldest->active = true;
@@ -1222,9 +1230,9 @@ void BookView::settleSheets() {
 
 void BookView::cancelTurn() {
     // Все идущие перевороты — в покой рывком. Пакеты их концов ещё придут, но
-    // каждому листу здесь меняется epoch, и обработчик, придя, увидит чужой
-    // номер и промолчит: остановленная анимация закрывает пакет так же, как
-    // доигравшая. Садится при этом один самый новый: его разворот — нынешний,
+    // каждому листу здесь меняется epoch, и ожидание конца, дождавшись, увидит
+    // чужой номер и промолчит: остановленная анимация закрывает пакет так же,
+    // как доигравшая. Садится при этом один самый новый: его разворот — нынешний,
     // а развороты остальных пропущены — в книге их уже нет.
     Flip* newest = nullptr;
     for (Flip& f : flips_)
@@ -1351,21 +1359,13 @@ void BookView::animateTurn(Flip& flip, bool forward) {
     flip.shadow.opacity(kShadowOpacity);
     flip.sheet.isVisible(true);
 
-    // Конец переворота отслеживается пакетом: по нему лист освобождается в пул.
-    // Пакет закрывает и остановленную анимацию, поэтому обработчик проверяет и
-    // жизнь полосы, и свой ли это лист (epoch).
-    const uint64_t epoch = flip.epoch;
-    Flip* const which = &flip;
+    // Конец переворота отслеживается пакетом: по нему лист освобождается в пул
+    // (landWhenDone). Ждать начинаем до закрытия пакета: корутина начинается в
+    // вызове, и к end() её подписка на конец уже стоит.
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
     flip.sheet.startAnimation(L"Offset", slide);
     flip.sheet.startAnimation(L"RotationAngleInDegrees", turn);
-    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
-                              Object const&, CompositionBatchCompletedEventArgs&) {
-        if (alive.expired() || which->epoch != epoch) return;
-        finishFlip(*which);
-        landFlip(*which);
-        settleSheets();
-    });
+    landWhenDone(batch, &flip, flip.epoch);
     batch.end();
 }
 
@@ -1604,14 +1604,11 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     rim.isVisible(true);
     coming.isVisible(true);
 
-    // Конец отслеживается пакетом: по нему лист освобождается в пул. Пакет
-    // закрывает и остановленную анимацию (лист добили при быстром листании или
-    // сбросили при перевёрстке), поэтому обработчик проверяет и жизнь полосы, и
-    // свой ли это лист — по epoch: у добитого он уже сменился, и обработчик
-    // узнаёт свой номер чужим и молчит.
-    const uint64_t epoch = flip.epoch;
-    Flip* const which = &flip;
-
+    // Конец отслеживается пакетом: по нему лист освобождается в пул
+    // (landWhenDone). Пакет закрывает и остановленную анимацию (лист добили при
+    // быстром листании или сбросили при перевёрстке), поэтому ожидание конца
+    // проверяет, свой ли это лист, — по epoch: у добитого он уже сменился, и
+    // ожидание узнаёт свой номер чужим и молчит.
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
 
     goingCrop.startAnimation(inset, crawl);
@@ -1626,14 +1623,32 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     flip.bend.startAnimation(L"Opacity", settle);
     flip.lift.startAnimation(L"Amount", rise);
 
-    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
-                        Object const&, CompositionBatchCompletedEventArgs&) {
-        if (alive.expired() || which->epoch != epoch) return;
-        finishFlip(*which);
-        landFlip(*which);
-        settleSheets();
-    });
+    // Ждать конца — до закрытия пакета, как и в плоском листании.
+    landWhenDone(batch, &flip, flip.epoch);
     batch.end();
+}
+
+// Пакет закрывается не только доигравшей анимацией, но и остановленной: лист
+// добили при быстром листании или сбросили перевёрсткой, и конец пакета
+// приходит к листу, который уже служит другому перевороту. Свой ли это конец,
+// говорит epoch — у добитого листа он сменился.
+//
+// Полосы к концу пакета может уже не быть: окно закрыли посреди переворота.
+// Корутина её жизни не проверяет — ожидание стоит под токеном полосы, а его
+// отменяет владелец: деструктор полосы, а при закрытии окна ещё раньше — общий
+// источник приложения. Отменённое ожидание кончается
+// operation_canceled_exception, обычным концом detached_task, даже если конец
+// пакета пришёл уже после отмены, — и до `this` и `which` дело не доходит.
+// Кадр полосу не держит (она не самосчитающая), и знак жизни ему не нужен.
+async::detached_task BookView::landWhenDone(CompositionScopedBatch batch, Flip* which,
+                                            uint64_t epoch) {
+    co_await dsl::onCompleted(batch, stop_.token());
+
+    if (which->epoch != epoch) co_return;
+
+    finishFlip(*which);
+    landFlip(*which);
+    settleSheets();
 }
 
 void BookView::goToCharOffset(uint32_t charOffset) {
