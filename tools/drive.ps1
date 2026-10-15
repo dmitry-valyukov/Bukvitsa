@@ -38,10 +38,10 @@
 #
 # Команды быстрых событий — для того, что длится десятки миллисекунд (досчёт
 # главы, летящий лист): после них драйвер не ждёт, а штатный снимок с его
-# подъёмом окна идёт ~200 мс и такое пропускает. cwheelat, closenow, burst и
-# hold окна не поднимают и идут после click/shot/raise или другой команды,
-# поднявшей окно; cwheelat и hold нужен ещё и передний план у Reader. Без
-# этого они останавливают прогон.
+# подъёмом окна идёт ~200 мс и такое пропускает. cwheelat, vkey, ckey,
+# closenow, burst и hold окна не поднимают и идут после click/shot/raise или
+# другой команды, поднявшей окно; тем, что жмут клавиши (cwheelat, vkey, ckey,
+# hold), нужен ещё и передний план у Reader. Без этого они останавливают прогон.
 #   raise             поднять окно поверх всех, как перед снимком, — и только
 #   stamp [метка]     напечатать время с миллисекундами — отметка в выводе
 #   clicknow <x> <y>  щелчок без паузы после: указатель подводится заранее
@@ -51,6 +51,9 @@
 #                     деления (отрицательные — к себе), Ctrl отпускается; без
 #                     пауз после. SendKeys тут не годится: Ctrl у колеса
 #                     читается из состояния клавиатуры, а не из нажатия
+#   vkey <буква>      буква через keybd_event (SendKeys до читалки не доходит)
+#   ckey <буква>      Ctrl+буква через keybd_event: Ctrl+T, Ctrl+L и т. п.;
+#                     буква — латинская A–Z или цифра
 #   closenow <x> <y>  щелчок по точке заголовка (крестик) одним махом и
 #                     ожидание выхода: время от щелчка, код возврата; не
 #                     вышло за 20 с — зависание на выходе, прогон падает
@@ -358,6 +361,17 @@ function Save-Burst([string]$file, [int]$count, [int]$gap, [string[]]$area) {
     Write-Output "burst: $path с $started, $span мс, кадров $count, смен $($kept.Count - 1)"
 }
 
+# Буква для vkey и ckey. VK латинской буквы и цифры — её код ASCII в верхнем
+# регистре; у прочих знаков свои VK_OEM_*, и тот же перевод молча нажал бы
+# не ту клавишу.
+function Get-LetterKey([string]$what, [string]$text) {
+    $letter = (Split-Arguments $what $text 1)[0]
+    if ($letter -cnotmatch '^[A-Za-z0-9]$') {
+        throw "${what}: нужна одна латинская буква A–Z или цифра, дано '$letter'."
+    }
+    return [byte][char]$letter.ToUpperInvariant()
+}
+
 function Get-VirtualKey([string]$name) {
     $keys = [ordered]@{ pgdn = 0x22; pgup = 0x21; left = 0x25; up = 0x26; right = 0x27; down = 0x28
                         space = 0x20; home = 0x24; end = 0x23 }
@@ -483,6 +497,43 @@ try {
                     Start-Sleep -Milliseconds 15
                     for ($k = 0; $k -lt [Math]::Abs($notches); $k++) {
                         [Win]::mouse_event(0x0800, 0, 0, $delta, [UIntPtr]::Zero)   # WHEEL
+                    }
+                    Start-Sleep -Milliseconds 15
+                }
+                finally {
+                    [Win]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)      # VK_CONTROL вверх
+                }
+            }
+            'vkey' {
+                # Буква — через keybd_event: SendKeys до читалки её не
+                # доносит. Отпускание — в finally: и Ctrl+C посреди не
+                # оставит клавишу нажатой в системе.
+                $vk = Get-LetterKey 'vkey' $rest
+                Assert-Raised 'vkey' -Keyboard
+                Write-Output "vkey $rest $(Get-Stamp)"
+                try {
+                    [Win]::keybd_event($vk, 0, 0, [UIntPtr]::Zero)
+                    Start-Sleep -Milliseconds 15
+                }
+                finally {
+                    [Win]::keybd_event($vk, 0, 2, [UIntPtr]::Zero)      # KEYEVENTF_KEYUP
+                }
+            }
+            'ckey' {
+                # Ctrl+буква — через keybd_event: у SendKeys Ctrl до читалки не
+                # доходит. Ctrl держится 15 мс до и после буквы — тот же запас,
+                # что у cwheelat. И Ctrl, и буква отпускаются в finally.
+                $vk = Get-LetterKey 'ckey' $rest
+                Assert-Raised 'ckey' -Keyboard
+                Write-Output "ckey $rest $(Get-Stamp)"
+                try {
+                    [Win]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)      # VK_CONTROL вниз
+                    Start-Sleep -Milliseconds 15
+                    try {
+                        [Win]::keybd_event($vk, 0, 0, [UIntPtr]::Zero)
+                    }
+                    finally {
+                        [Win]::keybd_event($vk, 0, 2, [UIntPtr]::Zero)  # KEYEVENTF_KEYUP
                     }
                     Start-Sleep -Milliseconds 15
                 }
