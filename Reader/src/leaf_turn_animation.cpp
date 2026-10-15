@@ -293,10 +293,10 @@ void LeafTurnAnimation::Leaf::tint(const D2D1_COLOR_F& hue) const {
     // Все кисти теней устроены одинаково: гуще всего у того, кто тень
     // отбрасывает, потом середина спада, потом ничего. Цвет во всех трёх
     // остановках один, разная только прозрачность — в том числе и в последней,
-    // где она нулевая: см. tinted().
+    // где она нулевая: см. tinted(). Остановок у каждой кисти три — их кладёт
+    // конструктор листа.
     auto const paintRamp = [&hue](Collection<CompositionColorGradientStop> const& stops,
                                   uint32_t dense, uint32_t middle) {
-        if (stops.size() < 3) return;
         stops[0].color(tinted(hue, alphaOf(dense)));
         stops[1].color(tinted(hue, alphaOf(middle)));
         stops[2].color(tinted(hue, 0.0f));
@@ -427,6 +427,13 @@ LeafTurnAnimation::~LeafTurnAnimation() {
 }
 
 void LeafTurnAnimation::turnStarting(bool forward) {
+    // Переворот — только в чтении. Под отменённым источником чтения источники
+    // серии и переворота родились бы отменёнными, ожидание конца пакета
+    // кончилось бы отменой, и переворот остался бы в liveTurns_ навсегда —
+    // лист в воздухе, пул и отпускание стоят. Сегодня так не бывает, но
+    // нарушение не должно проходить молча.
+    if (readingScope_.is_canceled()) core::abort("LeafTurnAnimation: переворот вне чтения");
+
     // Встречное листание сперва доводит до конца всё, что летит, — в обоих
     // режимах: серия — перевороты в одну сторону. В книге бумага снимается с
     // осевшего разворота, а у летящего листа перелистываемая страница ещё в
