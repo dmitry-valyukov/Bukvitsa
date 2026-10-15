@@ -15,6 +15,8 @@ namespace bukvitsa::reader {
 
 using namespace wxl;
 
+using wxl::async::cancellation_source;
+using wxl::async::cancellation_token;
 using wxl::async::detached_task;
 using wxl::async::system_exception;
 
@@ -22,14 +24,17 @@ using wxl::async::system_exception;
 //
 // Новая обложка, правка существующей и другой снимок под открытым мастером —
 // у каждой своя корутина над общим шагом checkImage: снимок проверяется до
-// мастера, а мастеру достаётся путь уже проверенного. Предпросмотр мастер
-// включает сам — открытием правки (preview).
+// мастера, а мастеру достаётся путь уже проверенного. Шаг ждёт под токеном
+// своего сценария. Предпросмотр мастер включает сам — открытием правки
+// (preview).
 
 detached_task App::addSkin() {
+    auto const stop = cancellation_source{stop_.token()};
+
     const std::filesystem::path path = askForImage(window_.handle());
     if (path.empty()) co_return;
 
-    if (!co_await checkImage(path)) co_return;
+    if (!co_await checkImage(path, stop.token())) co_return;
 
     wizard_.openNew(path);
     panel_.close();
@@ -39,6 +44,8 @@ detached_task App::addSkin() {
 /// По полному списку тем, а не по реестру: системные обложки живут только в
 /// нём, а шестерёнка есть и у них — правка «на основе».
 detached_task App::editSkin(u16_text name) {
+    auto const stop = cancellation_source{stop_.token()};
+
     const std::optional<int> index = themes_.indexOfSkin(name);
     const Skin* known = index ? themes_.skinAt(*index) : nullptr;
     if (!known) co_return;   // список успел перемениться под руками
@@ -48,7 +55,7 @@ detached_task App::editSkin(u16_text name) {
     const Skin skin = *known;
     const std::filesystem::path image = ws_.skinImagePath(skin);
 
-    if (!co_await checkImage(image)) co_return;
+    if (!co_await checkImage(image, stop.token())) co_return;
 
     wizard_.openEdit(skin, image);
     panel_.close();
@@ -56,12 +63,14 @@ detached_task App::editSkin(u16_text name) {
 }
 
 detached_task App::chooseAnotherImage() {
+    auto const stop = cancellation_source{stop_.token()};
+
     const std::filesystem::path path = askForImage(window_.handle());
 
     // Отказался — остаёмся на прежнем снимке: читатель ничего не терял.
     if (path.empty()) co_return;
 
-    if (!co_await checkImage(path)) co_return;
+    if (!co_await checkImage(path, stop.token())) co_return;
 
     wizard_.openNew(path);
 }
@@ -70,9 +79,9 @@ detached_task App::chooseAnotherImage() {
 /// говорится, что именно не так. Байты для показа полосе приносит потом
 /// loadBackdrop: второе чтение того же файла дешевле, чем нести байты через
 /// мастер в полосу.
-wxl::async::task<bool> App::checkImage(std::filesystem::path image) {
+wxl::async::task<bool> App::checkImage(std::filesystem::path image, cancellation_token stop) {
     try {
-        if (co_await ws_.isImage(image, stop_.token())) co_return true;
+        if (co_await ws_.isImage(image, std::move(stop))) co_return true;
         notices_.post({L"Это не изображение", image.wstring()});
     } catch (const system_exception& failure) {
         notices_.post(noticeOf(L"Не удалось открыть изображение", image.wstring(), failure));
@@ -95,10 +104,12 @@ detached_task App::leaveWizard() {
 /// рабочее место не начало писать: тогда не записано ничего и применять
 /// нечего; начатое сохранение доходит до конца и применяется.
 detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
+    auto const stop = cancellation_source{stop_.token()};
+
     const u16_text skinName = skin.name;
 
     try {
-        co_await ws_.saveSkin(std::move(skin), photo, stop_.token());
+        co_await ws_.saveSkin(std::move(skin), photo, stop.token());
     } catch (const system_exception& failure) {
         notices_.post(noticeOf(L"Не удалось сохранить обложку", photo.wstring(), failure));
         co_return;
@@ -130,6 +141,8 @@ detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
 /// Удалили ту, что была на экране, — читатель возвращается на встроенную
 /// тему, номер которой читалка держит в настройках ровно на этот случай.
 detached_task App::deleteSkin(u16_text name) {
+    auto const stop = cancellation_source{stop_.token()};
+
     if (!ws_.skins.find(name)) co_return;   // реестр успел перемениться под руками
 
     // Удаление спрашивает: точки по снимку читатель расставлял руками, вернуть
@@ -164,7 +177,7 @@ detached_task App::deleteSkin(u16_text name) {
         if (co_await dialog.showAsync() != ContentDialogResult::Primary) co_return;
     }
 
-    if (stop_.is_canceled()) co_return;
+    if (stop.is_canceled()) co_return;
 
     if (!ws_.skins.find(name)) co_return;   // реестр мог перемениться, пока спрашивали
 
@@ -175,7 +188,7 @@ detached_task App::deleteSkin(u16_text name) {
     // к которому читатель должен вернуться.
     const int theme = themes_.afterRemoval(name, view_.theme.get(), ws_.settings.theme);
 
-    co_await ws_.deleteSkin(name);
+    co_await ws_.deleteSkin(name, stop.token());
 
     setSkins();
 
@@ -229,8 +242,10 @@ void App::showBackdrop() {
 /// с ошибкой при каждой смене темы. Пока читали, могли захотеть другой —
 /// тогда этот не нужен.
 detached_task App::loadBackdrop(std::filesystem::path file) {
+    auto const stop = cancellation_source{stop_.token()};
+
     try {
-        std::string bytes = co_await ws_.readBytes(file, stop_.token());
+        std::string bytes = co_await ws_.readBytes(file, stop.token());
         if (file == backdrop_) view_.setBackdrop(std::move(bytes));
     } catch (const system_exception&) {
     }

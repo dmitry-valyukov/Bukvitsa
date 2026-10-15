@@ -13,8 +13,9 @@
 // читателю; остальное всплывает в `on_detached_task_failure` (его ставит
 // `Notices`): читатель видит окно с причиной, сценарий на этом кончается.
 //
-// Отмена — не сбой. Чтения и ожидания сценариев идут под токеном `stop_`, и
-// после просьбы (`stopScenarios`) кончаются `operation_canceled_exception`;
+// Отмена — не сбой. Сценарий заводит свой источник отмены, дочерний от общего
+// `stop_`, и ждёт под его токеном; закрытие окна отменяет общий, а с ним и все
+// дочерние. Отменённое ожидание кончается `operation_canceled_exception`;
 // непойманная, она кончает сценарий молча — `detached_task` её глотает, до
 // обработчика сбоев она не доходит. Ловить её раньше надо только там, где
 // сценарий ловит всё (`std::exception`) и говорит об этом читателю, — иначе
@@ -36,6 +37,7 @@ namespace bukvitsa::reader {
 using namespace wxl;
 using namespace std::chrono_literals;
 
+using wxl::async::cancellation_source;
 using wxl::async::detached_task;
 
 namespace {
@@ -70,8 +72,9 @@ App::App()
     : window_{CompositionWindow {
           dsl::title = u"Буквица",
           dsl::minSize = SizeInt32{720, 520},
-          // Закрытие пишет отложенное, пока окно ещё есть: Teardown приходит
-          // уже без него, и места окна было бы не у кого спросить.
+          // Закрытие отменяет сценарии и пишет отложенное, пока окно ещё есть:
+          // Teardown приходит уже без него, и места окна было бы не у кого
+          // спросить.
           dsl::onClosed = method(this, &App::close),
       }},
       ws_{standardDataDirectory()},
@@ -136,10 +139,12 @@ App::App()
 /// файл настроек читает рабочий поток, а этот тем временем уже крутит цикл
 /// сообщений.
 detached_task App::start() {
+    auto const stop = cancellation_source{stop_.token()};
+
     // Настройки, обложки, реестр — у рабочего места, одной корутиной; что
     // при этом не удалось, читатель узнаёт словами, а запуск идёт дальше с
     // умолчаниями.
-    const Started started = co_await ws_.start(stop_.token());
+    const Started started = co_await ws_.start(stop.token());
 
     for (const Notice& notice : started.notices) notices_.post(notice);
 
@@ -186,11 +191,11 @@ detached_task App::start() {
 }
 
 void App::close() {
-    autosave_.flush();
-}
-
-void App::stopScenarios() noexcept {
+    // Сначала отмена: сценарий, который ждёт под токеном, кончится на этом
+    // ожидании и до записей за ним не дойдёт; запись, которая уже идёт,
+    // токена не берёт и доходит до конца.
     stop_.cancel();
+    autosave_.flush();
 }
 
 /* ---------------- навигация ---------------- */

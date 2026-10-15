@@ -15,6 +15,7 @@ namespace bukvitsa::reader {
 
 using namespace wxl;
 
+using wxl::async::cancellation_source;
 using wxl::async::detached_task;
 using wxl::async::operation_canceled_exception;
 using wxl::async::system_exception;
@@ -23,6 +24,8 @@ using wxl::async::system_exception;
 /// пути. Протух — спрашиваем реестр по guid; нет и там — читателю нечего
 /// продолжать, и он хотел открыть книгу.
 detached_task App::continueReading() {
+    auto const stop = cancellation_source{stop_.token()};
+
     std::filesystem::path path = ws_.settings.lastBookPath;
 
     // Прогретую книгу открываем не спрашивая диск вовсе: она уже в памяти
@@ -34,7 +37,7 @@ detached_task App::continueReading() {
         co_return;
     }
 
-    path = co_await ws_.lastBookPath(stop_.token());
+    path = co_await ws_.lastBookPath(stop.token());
 
     if (path.empty()) {
         chooseBook();
@@ -69,6 +72,8 @@ detached_task App::openBook(u16_text guid) {
 /// обложка, а движок вёрстки с пагинатором книге, которую никто не открывал,
 /// ни к чему (`Workspace::addFolder`).
 detached_task App::chooseFolder() {
+    auto const stop = cancellation_source{stop_.token()};
+
     const std::filesystem::path folder = askForFolder(window_.handle());
     if (folder.empty()) co_return;
 
@@ -84,7 +89,7 @@ detached_task App::chooseFolder() {
         // ставит её в конец своих карточек, и полка, привязанная к ним,
         // встаёт одной карточкой больше, а не пересобирается — прогресс,
         // который уже проступил на соседях, остаётся.
-        result = co_await ws_.addFolder(folder, stop_.token());
+        result = co_await ws_.addFolder(folder, stop.token());
     } catch (const system_exception& failure) {
         notices_.post(noticeOf(L"Не удалось добавить каталог", folder.wstring(), failure));
         co_return;
@@ -111,6 +116,8 @@ detached_task App::chooseFolder() {
 /// документ с блоками. Разбор идёт в интерфейсном потоке, как и при открытии:
 /// память разбора берётся из STA-пула, а он чужого потока не терпит.
 detached_task App::warmBook(std::filesystem::path path) {
+    auto const stop = cancellation_source{stop_.token()};
+
     // Чью книгу ждём, записывается здесь и сразу — до того, как чтение уйдёт к
     // диску. По этой записи прогрев потом и узнаёт, нужен ли ещё его результат.
     warm_.expect(path);
@@ -118,7 +125,7 @@ detached_task App::warmBook(std::filesystem::path path) {
     Warmed warmed;
 
     try {
-        warmed = co_await ws_.readBook(path, stop_.token());
+        warmed = co_await ws_.readBook(path, stop.token());
     } catch (std::exception const&) {
         // Молча: читатель ни о чём не просил, и жаловаться ему пока не на что.
         // Файл не прочитался или книга испорчена — он узнает об этом, когда
@@ -148,6 +155,8 @@ detached_task App::warmBook(std::filesystem::path path) {
 /// Две короткие дороги в начале: книга уже открыта (читатель вернулся к ней) —
 /// показать; книга прогрета (warmBook) — взять её из памяти и не трогать диск.
 detached_task App::open(std::filesystem::path path) {
+    auto const stop = cancellation_source{stop_.token()};
+
     // Эта книга уже открыта — читатель просто вернулся к ней со стартового
     // экрана или с полки. Ни читать, ни разбирать заново нечего: полоса держит
     // её со всей вёрсткой и местом чтения, а реестр и настройки давно на неё
@@ -174,7 +183,7 @@ detached_task App::open(std::filesystem::path path) {
         Warmed read;
 
         try {
-            read = co_await ws_.readBook(path, stop_.token());
+            read = co_await ws_.readBook(path, stop.token());
         } catch (const operation_canceled_exception&) {
             co_return;   // отмена — не сбой: сказать читателю нечего
         } catch (const system_exception& failure) {
@@ -198,7 +207,7 @@ detached_task App::open(std::filesystem::path path) {
     // (панель идёт за списками сама). Настройки уже укажут на новую книгу, а
     // на полосе пока прежняя, и её место пишется под guid её мест — их
     // открытие не трогает.
-    Opened opened = co_await ws_.openBook(*book, fileSize, stop_.token());
+    Opened opened = co_await ws_.openBook(*book, fileSize, stop.token());
 
     // Отсюда и до конца — ни одного ожидания: книга сменяется одним шагом.
     // Место чтения прежней — на диск сейчас, пока её место у полосы, а
@@ -237,6 +246,8 @@ detached_task App::toggleBookmark() {
 /// с сотней книг не ждёт сотни обращений к диску, чтобы показать первую.
 /// Строка — поле карточки (`ShelfCard::showState`): полка не пересобирается.
 detached_task App::fillProgress() {
+    auto const stop = cancellation_source{stop_.token()};
+
     // Карточки — копией указателей: пока файлы читаются, обход каталога может
     // дополнить полку, а карточку, которую читают, держит сама копия.
     std::vector<intrusive_ptr<ShelfCard>> const cards(ws_.library.cards().begin(), ws_.library.cards().end());
@@ -244,7 +255,7 @@ detached_task App::fillProgress() {
     for (const intrusive_ptr<ShelfCard>& card : cards) {
         if (card->entry.characterCount == 0) continue;   // не открывалась — и читать нечего
 
-        const BookState state = co_await ws_.readState(card->entry.guid, stop_.token());
+        const BookState state = co_await ws_.readState(card->entry.guid, stop.token());
         card->showState(state);
     }
 }

@@ -379,7 +379,12 @@ task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_
     co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
 }
 
-task<> Workspace::deleteSkin(u16_view name) {
+task<> Workspace::deleteSkin(u16_view name, cancellation_token stop) {
+    // Под отменённым токеном удаление не начинается: реестр в памяти не тронут.
+    // Дальше токен не спрашивается — чтений нет, а строка, убранная из реестра
+    // в памяти, должна уйти и с диска: иначе следующий запуск вернул бы её.
+    stop.throw_if_canceled();
+
     if (!skins.remove(name)) co_return;   // реестр успел перемениться под руками
 
     std::string xml = skins.toXml();
