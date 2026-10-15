@@ -53,7 +53,7 @@ bool readSettings(std::string xml, Settings& into) {
         // Сравнение — с тем, что не умолчание: значение, которого мы не
         // писали, как и пропущенное, читается умолчанием.
         if (const wxl::xml::node* turning = root.child("turning")) {
-            animateTurns = turning->attribute("animated") != "false";
+            animateTurns = !(turning->attribute("animated") == "false");
         }
         if (const wxl::xml::node* look = root.child("skin")) {
             skin = attributeOf(*look, "name");
