@@ -1,7 +1,8 @@
 // Тесты потока страниц (PageFlow) на настоящей книге: колонки по мере строки и
 // гистерезис растяжки, место чтения сквозь перевёрстку, лента колонок через
 // стык глав и у краёв книги, прыжок в далёкую главу, хвост главы и «из M»,
-// попадание в знак сноски. Окна нет: DirectWrite и вёрстка работают и так.
+// попадание в знак сноски и вёрстка её тела. Окна нет: DirectWrite и вёрстка
+// работают и так.
 
 #include <algorithm>
 #include <chrono>
@@ -11,15 +12,17 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "check.h"
 
-// Последним: поток страниц ведёт к импорту модулей книги и wxl.core.
+// Последними: поток страниц ведёт к импорту модулей книги и wxl.core, сноска —
+// через те же заголовки вёрстки.
 #include "bukvitsa/reader/page_flow.h"
+#include "bukvitsa/typography/note.h"
 
 using namespace bukvitsa;
 using namespace bukvitsa::reader;
@@ -52,22 +55,24 @@ std::string bytesOf(const std::filesystem::path& file) {
 }
 
 /// Роман, открытый заново для каждой пробы: кэш глав и текущая глава у книги
-/// свои, и пробы не должны видеть друг друга через них.
-std::shared_ptr<Book> openNovel() {
-    std::shared_ptr<Book> book;
+/// свои, и пробы не должны видеть друг друга через них. Документ разбора
+/// живёт только на время открытия, как у рабочего места. Пусто — роман не
+/// открылся, и проба кончается, не начавшись.
+intrusive_ptr<Book> openNovel() {
+    intrusive_ptr<Book> book;
     try {
-        book = std::make_shared<Book>(kNovel, bytesOf(kNovel), dwriteFactory());
+        book = make_refcounted<Book>(kNovel, fb3::Document{bytesOf(kNovel)}, dwriteFactory());
     } catch (const std::exception&) {
-        book.reset();
+        book = nullptr;
     }
     check(book && book->chapterCount() > 3, "роман открыт, в нём главы");
-    if (book && book->chapterCount() <= 3) book.reset();
+    if (book && book->chapterCount() <= 3) book = nullptr;
     return book;
 }
 
 /// Поток на книге с этого места, в окне такой ширины, видом по умолчанию.
-void setUp(PageFlow& flow, std::shared_ptr<Book> book, uint32_t at, float width) {
-    flow.open(std::move(book), at);
+void setUp(PageFlow& flow, not_null<Book> book, uint32_t at, float width) {
+    flow.open(book, at);
     flow.setStyle(kFontSize, kLineHeight, kMargin);
     flow.resize(width, kHeight);
     flow.relayout();
@@ -111,7 +116,7 @@ bool letterInLeftColumn(const PageFlow& flow, uint32_t letter) {
 /// Колонки — по длине строки в знаках, ширина — по полям.
 void testColumnsFollowLineLength() {
     std::printf("\n=== поток страниц: колонки по длине строки ===\n");
-    const std::shared_ptr<Book> novel = openNovel();
+    const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
     typography::Engine& engine = novel->engine();
@@ -121,7 +126,7 @@ void testColumnsFollowLineLength() {
           "мера знака по кеглю: вдвое крупнее — вдвое шире");
 
     PageFlow flow;
-    setUp(flow, novel, 0, 700.0f);
+    setUp(flow, as_not_null(novel.get()), 0, 700.0f);
     check(flow.columns() == 1, "узкое окно — одна колонка");
 
     // Правило меры на сетке окон и кеглей: колонок ровно столько, сколько
@@ -163,11 +168,11 @@ void testColumnsFollowLineLength() {
 /// Гистерезис числа колонок — на растяжке окна, и только на ней.
 void testColumnHysteresis() {
     std::printf("\n=== поток страниц: гистерезис колонок при растяжке ===\n");
-    const std::shared_ptr<Book> novel = openNovel();
+    const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
     PageFlow flow;
-    setUp(flow, novel, 0, 600.0f);
+    setUp(flow, as_not_null(novel.get()), 0, 600.0f);
 
     // Граница одной и двух колонок — делением пополам, без гистерезиса.
     float one = 600.0f;
@@ -220,7 +225,7 @@ void testColumnHysteresis() {
 /// ищется по ней.
 void testAnchorSurvivesRelayout() {
     std::printf("\n=== поток страниц: перевёрстка не двигает место чтения ===\n");
-    const std::shared_ptr<Book> novel = openNovel();
+    const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
     // Буква в середине длинной главы — заведомо не начало колонки.
@@ -229,7 +234,7 @@ void testAnchorSurvivesRelayout() {
         novel->chapterFirstChar(chapter) + chapterLength(*novel, chapter) * 3 / 5;
 
     PageFlow flow;
-    setUp(flow, novel, letter, 1400.0f);
+    setUp(flow, as_not_null(novel.get()), letter, 1400.0f);
     check(flow.anchor().chapter == chapter && flow.position() == letter &&
               letterInLeftColumn(flow, letter),
           "открыли на букве — она в левой колонке разворота");
@@ -267,7 +272,7 @@ void testAnchorSurvivesRelayout() {
 /// Разворот на стыке глав: правая колонка — начало следующей.
 void testSpreadAcrossChapters() {
     std::printf("\n=== поток страниц: разворот на стыке глав ===\n");
-    const std::shared_ptr<Book> novel = openNovel();
+    const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
     // Следующая глава — самая длинная: войдя в неё, хвост заведомо досчитывать.
@@ -277,7 +282,7 @@ void testSpreadAcrossChapters() {
     const size_t chapter = next - 1;
 
     PageFlow flow;
-    setUp(flow, novel, 0, 1400.0f);
+    setUp(flow, as_not_null(novel.get()), 0, 1400.0f);
     const float width = widthForColumns(flow, 2);
     check(width > 0.0f, "есть окно под разворот в две колонки");
     if (width <= 0.0f) return;
@@ -315,11 +320,11 @@ void testSpreadAcrossChapters() {
 /// Лента у краёв книги: дальше первого и последнего разворота листать некуда.
 void testRibbonStopsAtBookEdges() {
     std::printf("\n=== поток страниц: лента у краёв книги ===\n");
-    const std::shared_ptr<Book> novel = openNovel();
+    const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
     PageFlow flow;
-    setUp(flow, novel, 0, 1400.0f);
+    setUp(flow, as_not_null(novel.get()), 0, 1400.0f);
     check(!flow.turnTarget(false), "назад с начала книги — некуда");
     check(flow.turnTarget(true).has_value(), "вперёд с начала книги — есть куда");
 
@@ -334,11 +339,11 @@ void testRibbonStopsAtBookEdges() {
 /// Прыжок по закладке в далёкую главу — разрыв ленты.
 void testJumpToDistantChapter() {
     std::printf("\n=== поток страниц: прыжок в далёкую главу ===\n");
-    const std::shared_ptr<Book> novel = openNovel();
+    const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
     PageFlow flow;
-    setUp(flow, novel, 0, 1400.0f);
+    setUp(flow, as_not_null(novel.get()), 0, 1400.0f);
 
     const size_t distant = novel->chapterCount() - 2;
     const uint32_t letter =
@@ -360,12 +365,12 @@ void testJumpToDistantChapter() {
 /// Хвост главы порциями: «из M» появляется, показанное не меняется.
 void testTailCompletesChapter() {
     std::printf("\n=== поток страниц: хвост главы и «из M» ===\n");
-    const std::shared_ptr<Book> novel = openNovel();
+    const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
     const size_t chapter = longestChapter(*novel);
     PageFlow flow;
-    setUp(flow, novel, novel->chapterFirstChar(chapter), 1400.0f);
+    setUp(flow, as_not_null(novel.get()), novel->chapterFirstChar(chapter), 1400.0f);
     check(flow.needsTail() && !flow.isComplete() && !flow.status().total,
           "после перевёрстки глава свёрстана до разворота — «из …»");
 
@@ -388,25 +393,31 @@ void testTailCompletesChapter() {
 /// Знак сноски ловится щелчком там, где его рисуют.
 void testNoteMarkIsHit() {
     std::printf("\n=== поток страниц: попадание в знак сноски ===\n");
-    const std::shared_ptr<Book> novel = openNovel();
+    const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
-    // Первый знак сноски в книге — туда и прыгаем.
-    const fb3::Node* wanted = nullptr;
+    // Первый знак сноски в потоке чтения — туда и прыгаем. Знак — текст
+    // абзаца, как всё остальное, и его место в книге дают прогоны позиций.
+    const typography::BookText& text = novel->text();
+    std::optional<uint32_t> wanted;   // номер тела; пусто — знака не нашлось
     uint32_t mark = 0;
-    for (const typography::Block& block : novel->blocks()) {
-        if (block.paragraph.notes.empty()) continue;
-        const typography::NoteAnchor& note = block.paragraph.notes.front();
-        if (note.position >= block.paragraph.charOffsets.size()) continue;
-        wanted = note.target;
-        mark = block.paragraph.charOffsets[note.position];
+    for (const typography::Block& block : text.flow()) {
+        const std::span<const typography::NoteAnchor> notes = text.notesOf(block.paragraph);
+        if (notes.empty()) continue;
+        wanted = notes.front().body;
+        mark = text.charOffsetAt(block.paragraph, notes.front().position);
         break;
     }
-    check(wanted != nullptr, "в романе есть сноски");
+    check(wanted.has_value(), "в романе есть сноски");
     if (!wanted) return;
 
+    // Тело знака — в хранилище, за потоком чтения: всплывашке есть что верстать.
+    check(*wanted < text.noteBodies.size() && text.noteBodies[*wanted].count > 0 &&
+              text.noteBodies[*wanted].first >= text.flowCount,
+          "у знака есть тело — блоки за потоком чтения");
+
     PageFlow flow;
-    setUp(flow, novel, 0, 1400.0f);
+    setUp(flow, as_not_null(novel.get()), 0, 1400.0f);
     flow.show(flow.columnOf(mark));
 
     // Знак ищем в строках разворота, а щёлкаем в его середину на высоте строки.
@@ -419,7 +430,7 @@ void testNoteMarkIsHit() {
             const float baseline = flow.verticalMargin() + placed.baseline;
             const float x = flow.columnLeft(column) + placed.x;
             for (const typography::PlacedNote& note : line.notes) {
-                if (note.target != wanted) continue;
+                if (note.body != *wanted) continue;
                 const float middle = x + note.x + note.width * 0.5f;
                 at = PageFlow::Point{middle, baseline - line.ascent * 0.5f};
                 under = PageFlow::Point{middle, baseline + line.descent};
@@ -431,12 +442,20 @@ void testNoteMarkIsHit() {
     check(at.has_value(), "знак сноски — на развороте, куда прыгнули");
     if (!at) return;
 
-    const PageFlow::NoteHit hit = flow.noteAt(*at);
-    check(hit.target == wanted, "щелчок по знаку — его сноска");
-    check(std::abs(hit.anchor.x - under.x) < 0.5f && std::abs(hit.anchor.y - under.y) < 0.5f,
-          "всплывашка встаёт под знаком");
-    check(flow.noteAt(PageFlow::Point{flow.columnLeft(0) + 1.0f, 1.0f}).target == nullptr,
+    check(!flow.noteAt(PageFlow::Point{flow.columnLeft(0) + 1.0f, 1.0f}),
           "щелчок в верхнее поле — мимо");
+
+    const std::optional<PageFlow::NoteHit> hit = flow.noteAt(*at);
+    check(hit && hit->body == *wanted, "щелчок по знаку — его сноска");
+    if (!hit) return;
+    check(std::abs(hit->anchor.x - under.x) < 0.5f && std::abs(hit->anchor.y - under.y) < 0.5f,
+          "всплывашка встаёт под знаком");
+
+    // Всплывашка верстает тело по номеру из щелчка тем же движком и из того же
+    // хранилища — здесь то же самое без окна.
+    const typography::NoteLayout body =
+        typography::layoutNote(novel->engine(), text, text.noteBodies[hit->body], 300.0f, kFontSize);
+    check(!body.lines.empty() && body.height > 0.0f, "тело сноски по номеру из щелчка верстается");
 }
 
 }  // namespace

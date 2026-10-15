@@ -22,7 +22,7 @@ u16_text prompt() {
 
 BookSearch::BookSearch() : status_{prompt()} {}
 
-void BookSearch::run(std::span<const typography::Block> blocks) {
+void BookSearch::run(const typography::BookText& book) {
     // Текст поля уже проверен привязкой; `searchQuery` здесь решает только,
     // есть ли в нём слово, — правило пустого запроса одно на всю читалку.
     const std::optional<u16_view> needle = searchQuery(query.get().plain());
@@ -32,7 +32,7 @@ void BookSearch::run(std::span<const typography::Block> blocks) {
         return;
     }
 
-    sta_vector<SearchHit> found = searchBook(blocks, *needle);
+    sta_vector<SearchHit> found = searchBook(book, *needle);
 
     // Подпись собрана раньше, чем поля заговорят: `needle` — вид в запрос, а
     // слушатель находок волен запрос поменять.
