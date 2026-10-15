@@ -16,6 +16,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "check.h"
@@ -40,15 +41,25 @@ const std::filesystem::path kNovel = std::filesystem::path(BUKVITSA_TESTDATA_DIR
 /// Высота полосы во всех пробах — окно ноутбука; ширина у каждой своя.
 constexpr float kHeight = 900.0f;
 
-/// Окно читалки при первом запуске. На кегле 20 и 21 в нём разворот в две
-/// колонки — пробы стыка глав идут на нём.
-constexpr float kWindowWidth = 1280.0f;
-constexpr float kWindowHeight = 860.0f;
+/// Мера полосы проб стыка глав: 1280 × 860 DIP — около окна первого запуска
+/// при масштабе 100 % (окну задают внешний размер в пикселях, полоса получает
+/// его клиентскую часть в DIP). На кегле 20 и 21 на ней разворот в две
+/// колонки.
+constexpr float kStripWidth = 1280.0f;
+constexpr float kStripHeight = 860.0f;
 
 /// Вид по умолчанию — тот, что у настроек.
 constexpr float kFontSize = 20.0f;
 constexpr float kLineHeight = 1.45f;
 constexpr float kMargin = 0.075f;
+
+/// Кегль на шаг крупнее — перевёрстка, как от Ctrl с колесом.
+constexpr float kLargerFontSize = kFontSize + 1.0f;
+
+/// Главы романа по индексу: 0 — титул, дальше I, II, … IX — индекс 9, в
+/// колонцифре «Глава 10»; X — индекс 10; VIII перед IX — индекс 8.
+constexpr size_t kNinthChapter = 9;
+constexpr size_t kTenthChapter = 10;
 
 /// Мера строки: колонку добавляют, пока строка длиннее 85 знаков и
 /// пока следующая колонка не выйдет уже 43.
@@ -76,19 +87,11 @@ intrusive_ptr<Book> openNovel() {
     return book;
 }
 
-/// Поток на книге с этого места, в окне такой ширины, видом по умолчанию.
-void setUp(PageFlow& flow, not_null<Book> book, uint32_t at, float width) {
+/// Поток на книге с этого места, на полосе такой меры, видом по умолчанию.
+void setUp(PageFlow& flow, not_null<Book> book, uint32_t at, float width, float height = kHeight) {
     flow.open(book, at);
     flow.setStyle(kFontSize, kLineHeight, kMargin);
-    flow.resize(width, kHeight);
-    flow.relayout();
-}
-
-/// Поток на книге с этого места в окне читалки, видом по умолчанию.
-void setUpWindow(PageFlow& flow, not_null<Book> book, uint32_t at) {
-    flow.open(book, at);
-    flow.setStyle(kFontSize, kLineHeight, kMargin);
-    flow.resize(kWindowWidth, kWindowHeight);
+    flow.resize(width, height);
     flow.relayout();
 }
 
@@ -145,8 +148,10 @@ bool atChapterStart(const PageFlow& flow, size_t chapter) {
 }
 
 /// Главы, на которых проба не сошлась, — номерами колонцифры.
-void listChapters(const char* probe, const std::vector<size_t>& chapters) {
-    for (const size_t chapter : chapters) std::printf("        %s: глава %zu\n", probe, chapter + 1);
+void listChapters(std::string_view probe, const std::vector<size_t>& chapters) {
+    for (const size_t chapter : chapters)
+        std::printf("        %.*s: глава %zu\n", static_cast<int>(probe.size()), probe.data(),
+                    chapter + 1);
 }
 
 /// Колонки — по длине строки в знаках, ширина — по полям.
@@ -409,11 +414,12 @@ void testChapterStartSurvivesRelayout() {
     if (!novel) return;
 
     PageFlow flow;
-    setUpWindow(flow, as_not_null(novel.get()), 0);
+    setUp(flow, as_not_null(novel.get()), 0, kStripWidth, kStripHeight);
     const bool twoUp = flow.columns() == 2;
-    flow.setStyle(kFontSize + 1.0f, kLineHeight, kMargin);
+    flow.setStyle(kLargerFontSize, kLineHeight, kMargin);
     flow.relayout();
-    check(twoUp && flow.columns() == 2, "окно читалки: на кегле 20 и 21 — разворот в две колонки");
+    check(twoUp && flow.columns() == 2,
+          "полоса 1280 × 860: на кегле 20 и 21 — разворот в две колонки");
 
     std::vector<size_t> jumped;   // прыжок встал не на первую колонку главы
     std::vector<size_t> moved;    // перевёрстка увела разворот с начала главы
@@ -428,13 +434,14 @@ void testChapterStartSurvivesRelayout() {
             continue;
         }
 
-        flow.setStyle(kFontSize + 1.0f, kLineHeight, kMargin);
+        flow.setStyle(kLargerFontSize, kLineHeight, kMargin);
         flow.relayout();
         if (flow.position() != letter || !atChapterStart(flow, chapter)) moved.push_back(chapter);
     }
     listChapters("прыжок", jumped);
     listChapters("перевёрстка", moved);
-    check(jumped.empty(), "прыжок на первую букву главы — первая колонка этой главы, на каждом стыке");
+    check(jumped.empty(),
+          "прыжок на первую букву главы — первая колонка этой главы, на каждом стыке");
     check(moved.empty(),
           "кегль 20 → 21 на начале главы — разворот с той же буквы той же главы, на каждом стыке");
 }
@@ -444,51 +451,63 @@ void testChapterStartSurvivesRelayout() {
 /// или искомая глава уже лежит правой колонкой разворота на стыке.
 /// Ближайшая известная колонка здесь не ответ: на стыке это последняя колонка
 /// предыдущей главы.
+///
+/// Недосчитанной предыдущая глава остаётся после прыжка на её начало, если в
+/// ней больше страниц, чем досчитывает прыжок до видимого разворота. Так на
+/// каждом стыке, кроме стыка I: титул — одна страница, и прыжок на него
+/// досчитывает его до конца.
 void testJumpToChapterStartFromNeighbour() {
     std::printf("\n=== поток страниц: прыжок на начало главы из предыдущей ===\n");
     const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
     PageFlow flow;
-    setUpWindow(flow, as_not_null(novel.get()), 0);
-    check(flow.columns() == 2, "окно читалки — разворот в две колонки");
+    setUp(flow, as_not_null(novel.get()), 0, kStripWidth, kStripHeight);
+    check(flow.columns() == 2, "полоса 1280 × 860 — разворот в две колонки");
     if (flow.columns() != 2) return;
 
     // Прыжок оглавлением: колонка по букве, книга — на неё.
     const auto jump = [&flow](uint32_t letter) { flow.show(flow.columnOf(letter)); };
 
-    std::vector<size_t> tailing;   // предыдущая ещё досчитывается
-    std::vector<size_t> counted;   // предыдущая досчитана
-    std::vector<size_t> ribbon;    // глава уже на ленте — правая колонка стыка
-    size_t undercounted = 0;       // стыков, где хвост предыдущей и правда не досчитан
+    std::vector<size_t> untailed;   // стыки, где предыдущая досчитана уже прыжком
+    std::vector<size_t> tailing;    // предыдущая ещё досчитывается
+    std::vector<size_t> counted;    // предыдущая досчитана
+    std::vector<size_t> ribbon;     // глава уже на ленте — правая колонка стыка
     for (size_t chapter = 1; chapter < novel->chapterCount(); ++chapter) {
-        const uint32_t start = novel->chapterFirstChar(chapter);
-        const uint32_t before = novel->chapterFirstChar(chapter - 1);
+        const uint32_t chapterStart = novel->chapterFirstChar(chapter);
+        const uint32_t previousStart = novel->chapterFirstChar(chapter - 1);
 
-        jump(before);
-        if (flow.needsTail()) ++undercounted;
-        jump(start);
-        if (!atChapterStart(flow, chapter)) tailing.push_back(chapter);
+        jump(previousStart);
+        const bool tailRunning = flow.needsTail();
+        jump(chapterStart);
+        if (!tailRunning)
+            untailed.push_back(chapter);
+        else if (!atChapterStart(flow, chapter))
+            tailing.push_back(chapter);
 
-        jump(before);
+        jump(previousStart);
         int slices = 0;
         while (flow.advanceTail(50ms) && slices < 10000) ++slices;
         const bool complete = flow.isComplete();
-        jump(start);
+        jump(chapterStart);
         if (!complete || !atChapterStart(flow, chapter)) counted.push_back(chapter);
 
-        // Последняя буква предыдущей главы — её последняя колонка слева, начало
-        // этой — справа.
-        jump(start - 1);
-        const bool seam = flow.anchor().chapter == chapter - 1 &&
-                          flow.spread().pages.size() == 2 && flow.spread().ownColumns == 1;
-        jump(start);
-        if (!seam || !atChapterStart(flow, chapter)) ribbon.push_back(chapter);
+        // Последняя буква предыдущей главы — её последняя колонка слева, первая
+        // страница этой — справа.
+        jump(chapterStart - 1);
+        const PageFlow::Spread& seam = flow.spread();
+        const bool onSeam = flow.anchor().chapter == chapter - 1 && seam.pages.size() == 2 &&
+                            seam.ownColumns == 1 &&
+                            seam.pages[1] == &novel->chapterAt(chapter).page(0);
+        jump(chapterStart);
+        if (!onSeam || !atChapterStart(flow, chapter)) ribbon.push_back(chapter);
     }
+    listChapters("без недосчёта", untailed);
     listChapters("хвост идёт", tailing);
     listChapters("досчитана", counted);
     listChapters("на стыке", ribbon);
-    check(undercounted > 0, "на части стыков хвост предыдущей главы ещё не досчитан");
+    check(untailed == std::vector<size_t>{1},
+          "хвост предыдущей главы не досчитан на каждом стыке, кроме стыка I за титулом");
     check(tailing.empty(), "предыдущая глава досчитывается — прыжок в первую колонку искомой");
     check(counted.empty(), "предыдущая глава досчитана — прыжок в первую колонку искомой");
     check(ribbon.empty(), "искомая глава — правая колонка стыка — прыжок в её первую колонку");
@@ -496,37 +515,35 @@ void testJumpToChapterStartFromNeighbour() {
 
 /// Прыжок в IX и сразу в X, пока хвост IX не досчитан: место чтения — первая
 /// буква X, и роман, открытый заново на этом месте, встаёт на первый разворот
-/// X — запись места в файл и открытие по ней видят ту же главу.
+/// X — место, которое читалка пишет в файл (`position()`), и открытие по нему
+/// видят ту же главу.
 void testJumpThenReopen() {
     std::printf("\n=== поток страниц: прыжок и открытие заново на том же месте ===\n");
     const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
-    // Главы романа: титул, затем I, II, … — IX девятая, X десятая.
-    constexpr size_t kNinth = 9;
-    constexpr size_t kTenth = 10;
-    check(novel->chapterCount() > kTenth, "в романе есть главы IX и X");
-    if (novel->chapterCount() <= kTenth) return;
+    check(novel->chapterCount() > kTenthChapter, "в романе есть главы IX и X");
+    if (novel->chapterCount() <= kTenthChapter) return;
 
     PageFlow flow;
-    setUpWindow(flow, as_not_null(novel.get()), 0);
-    flow.show(flow.columnOf(novel->chapterFirstChar(kNinth)));
-    check(atChapterStart(flow, kNinth) && flow.needsTail(),
+    setUp(flow, as_not_null(novel.get()), 0, kStripWidth, kStripHeight);
+    flow.show(flow.columnOf(novel->chapterFirstChar(kNinthChapter)));
+    check(atChapterStart(flow, kNinthChapter) && flow.needsTail(),
           "прыжок в IX — её первый разворот, хвост ещё досчитывается");
 
-    flow.show(flow.columnOf(novel->chapterFirstChar(kTenth)));
+    flow.show(flow.columnOf(novel->chapterFirstChar(kTenthChapter)));
     const uint32_t saved = flow.position();
-    check(atChapterStart(flow, kTenth) && letterInChapter(*novel, kTenth, saved),
+    check(atChapterStart(flow, kTenthChapter) && letterInChapter(*novel, kTenthChapter, saved),
           "сразу прыжок в X — её первый разворот, место чтения — её первая буква");
 
     // Открытие заново — другая книга из того же файла и свежий поток, как у
     // читалки после перезапуска.
-    const intrusive_ptr<Book> again = openNovel();
-    if (!again) return;
-    PageFlow reopened;
-    setUpWindow(reopened, as_not_null(again.get()), saved);
-    check(atChapterStart(reopened, kTenth) && reopened.position() == saved,
-          "открыли заново на записанном месте — первый разворот X");
+    const intrusive_ptr<Book> reopenedNovel = openNovel();
+    if (!reopenedNovel) return;
+    PageFlow reopenedFlow;
+    setUp(reopenedFlow, as_not_null(reopenedNovel.get()), saved, kStripWidth, kStripHeight);
+    check(atChapterStart(reopenedFlow, kTenthChapter) && reopenedFlow.position() == saved,
+          "открыли заново на этом месте — первый разворот X");
 }
 
 /// Переворот назад с первого разворота главы — на целый разворот по ленте: за
@@ -538,19 +555,25 @@ void testTurnBackFromChapterStart() {
     const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
-    constexpr size_t kNinth = 9;
-    check(novel->chapterCount() > kNinth, "в романе есть глава IX");
-    if (novel->chapterCount() <= kNinth) return;
+    check(novel->chapterCount() > kNinthChapter, "в романе есть глава IX");
+    if (novel->chapterCount() <= kNinthChapter) return;
 
     PageFlow flow;
-    setUpWindow(flow, as_not_null(novel.get()), 0);
-    check(flow.columns() == 2, "окно читалки — разворот в две колонки");
+    setUp(flow, as_not_null(novel.get()), 0, kStripWidth, kStripHeight);
+    check(flow.columns() == 2, "полоса 1280 × 860 — разворот в две колонки");
     if (flow.columns() != 2) return;
 
     flow.show(flow.columnOf(novel->chapterFirstChar(1)));
     const std::optional<Column> toTitle = flow.turnTarget(false);
-    check(toTitle && *toTitle == Column{0, 0}, "назад с начала главы I — самый первый разворот книги");
-    if (toTitle) {
+    check(toTitle && *toTitle == Column{0, 0},
+          "назад с начала главы I — самый первый разворот книги");
+
+    // Разворот «титул и начало I» — только у титула в одну страницу; это
+    // разбивка этой полосы, а не правило ленты, и проверяется отдельно.
+    const typography::Chapter& title = novel->chapterAt(0);
+    const bool titleOnePage = title.isComplete() && title.pageCount() == 1;
+    check(titleOnePage, "титул на этой полосе — одна страница");
+    if (toTitle && titleOnePage) {
         flow.show(*toTitle);
         const PageFlow::Spread& spread = flow.spread();
         check(flow.status().chapter == 0 && flow.status().first == 0 && spread.pages.size() == 2 &&
@@ -558,15 +581,15 @@ void testTurnBackFromChapterStart() {
               "титул слева, начало главы I справа, колонцифра — по титулу");
     }
 
-    flow.show(flow.columnOf(novel->chapterFirstChar(kNinth)));
+    flow.show(flow.columnOf(novel->chapterFirstChar(kNinthChapter)));
     const std::optional<Column> toEighth = flow.turnTarget(false);
-    const size_t eighth = novel->chapterAt(kNinth - 1).pageCount();
-    check(eighth >= 2 && toEighth && *toEighth == Column{kNinth - 1, eighth - 2},
+    const size_t eighthPages = novel->chapterAt(kNinthChapter - 1).pageCount();
+    check(eighthPages >= 2 && toEighth && *toEighth == Column{kNinthChapter - 1, eighthPages - 2},
           "назад с начала IX — последний полный разворот VIII");
     if (toEighth) {
         flow.show(*toEighth);
         const PageFlow::Status status = flow.status();
-        check(status.chapter == kNinth - 1 && status.own == 2 && status.total == eighth,
+        check(status.chapter == kNinthChapter - 1 && status.own == 2 && status.total == eighthPages,
               "обе колонки — VIII, «из M» — число её страниц");
     }
 }
