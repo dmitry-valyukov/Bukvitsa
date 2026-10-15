@@ -38,8 +38,7 @@ detached_task App::continueReading() {
         // Задача переходит в кадр сценария до ожидания: дождаться её может
         // лишь один, и сценарий, пришедший за это время, — второе нажатие или
         // открытие другой книги, — найдёт поле пустым.
-        task<LoadedBook> preload = std::move(*preload_);
-        preload_.reset();
+        task<LoadedBook> preload = std::exchange(preload_, {});
 
         LoadedBook loaded;
 
@@ -142,7 +141,7 @@ detached_task App::chooseFolder() {
 /// ждёт продолжение чтения, а отменяет владелец — открытие книги. Здесь ничего
 /// не проверяется и ничего не ждётся.
 void App::preloadBook(std::filesystem::path path) {
-    preload_.emplace(ws_.readBook(std::move(path), preloadStop_.token()));
+    preload_ = ws_.readBook(std::move(path), preloadStop_.token());
 }
 
 /// Порядок здесь — это порядок обязательств. Сначала книга читается и
@@ -180,8 +179,7 @@ detached_task App::open(std::filesystem::path path) {
     preloadStop_.cancel();
 
     if (preload_) {
-        task<LoadedBook> preload = std::move(*preload_);
-        preload_.reset();
+        task<LoadedBook> preload = std::exchange(preload_, {});
 
         try {
             static_cast<void>(co_await preload);
