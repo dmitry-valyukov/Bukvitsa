@@ -100,7 +100,9 @@ struct Document::Impl {
     wxl::xml::document bodyXml;
     wxl::xml::document descriptionXml;
 
-    Description description;
+    /// Пусто, когда описание забрала книга (takeDescription): у описания
+    /// своего пустого состояния нет, а «отдано» и «пустая книга» — разное.
+    std::optional<Description> description;
 
     // Узлы и их нагрузка живут в deque: адреса не двигаются при росте,
     // а освобождается всё разом вместе с книгой.
@@ -115,9 +117,15 @@ struct Document::Impl {
     std::deque<SpanData> spans;
 
     Node* body = nullptr;
-    std::uint32_t characterCount = 0;
 
-    std::unordered_map<std::string_view, const Node*> noteBodies;
+    /// codePoints по ходу разбора — позиция следующего символа: от неё узлы
+    /// получают charOffset, а по концу это characterCount().
+    Measures measures;
+
+    /// Тела сносок в порядке документа и номер каждого по идентификатору:
+    /// ссылка получает узел и номер одним поиском.
+    std::vector<const Node*> noteBodies;
+    std::unordered_map<std::string_view, std::uint32_t> noteBodyIndex;
     std::vector<NoteRefData*> pendingNoteRefs;
 
     mutable std::vector<ImagePart> images;
@@ -126,6 +134,18 @@ struct Document::Impl {
     /// Текстовые узлы в порядке документа: по ним восстанавливается место
     /// чтения из позиции символа — поиском по возрастающему ключу.
     std::vector<const Node*> textNodes;
+
+    /// Часть картинки с байтами. Байты читаются при первом обращении: книге
+    /// с сотней иллюстраций незачем держать их в памяти ради оглавления.
+    ImagePart& loadImage(std::uint32_t index) {
+        ImagePart& part = images[index];
+
+        if (part.bytes.empty())
+            if (auto source = package.partByRelationshipId(bodyPart, part.relationshipId))
+                part.bytes = package.readPart(*source);
+
+        return part;
+    }
 };
 
 /* ------------------------------------------------------------------ */
@@ -152,9 +172,61 @@ private:
     Node* makeNode(NodeKind kind, const void* data = nullptr) {
         Node& node = doc_.nodes.emplace_back();
         node.kind_ = kind;
-        node.charOffset_ = doc_.characterCount;
+        node.charOffset_ = doc_.measures.codePoints;
         node.data_ = data;
+        measure(kind);
         return &node;
+    }
+
+    /// Меры считаются там, где рождается каждый узел: свой обход ради них
+    /// прошёл бы ещё раз по десяткам тысяч узлов книги.
+    void measure(NodeKind kind) {
+        Measures& measures = doc_.measures;
+
+        switch (kind) {
+        // Абзац, подзаголовок и pre вёрстка делает блоком всегда, а заголовок,
+        // подпись, пункт списка и ячейку — когда в них нет блочных детей.
+        case NodeKind::Paragraph:
+        case NodeKind::Subtitle:
+        case NodeKind::Preformatted:
+        case NodeKind::Title:
+        case NodeKind::Subscription:
+        case NodeKind::ListItem:
+        case NodeKind::TableCell:
+            ++measures.paragraphs;
+            return;
+
+        case NodeKind::Image:
+            ++measures.images;
+            return;
+
+        // `<br>` между блоками — разделитель, внутри абзаца — перевод строки,
+        // а граница бумажной страницы внутри абзаца не значит ничего; вид у
+        // них один, и по виду это верхняя оценка.
+        case NodeKind::Break:
+        case NodeKind::PaperPageBreak:
+            ++measures.separators;
+            return;
+
+        case NodeKind::Strong:
+        case NodeKind::Emphasis:
+        case NodeKind::Strikethrough:
+        case NodeKind::Underline:
+        case NodeKind::Superscript:
+        case NodeKind::Subscript:
+        case NodeKind::Code:
+        case NodeKind::SmallCaps:
+        case NodeKind::Spacing:
+            ++measures.inlineStyles;
+            return;
+
+        case NodeKind::NoteRef:
+            ++measures.noteRefs;
+            return;
+
+        default:
+            return;
+        }
     }
 
     static void append(Node& parent, Node& child) {
@@ -207,9 +279,16 @@ private:
             Node* const node = makeNode(*kind, payloadFor(*kind, child));
             append(parent, *node);
 
-            if (*kind == NodeKind::NoteBody)
+            // Номер тела — его место в порядке документа: в этом порядке
+            // вёрстка их и развернёт. Тело без id в списке есть, хоть
+            // сослаться на него и нельзя: список — все тела книги.
+            if (*kind == NodeKind::NoteBody) {
+                const auto number = static_cast<std::uint32_t>(doc_.noteBodies.size());
+                doc_.noteBodies.push_back(node);
+
                 if (const auto id = child.attribute("id"))
-                    doc_.noteBodies.emplace(id->chars(), node);
+                    doc_.noteBodyIndex.emplace(id->chars(), number);
+            }
 
             buildChildren(child, *node, depth + 1);
         }
@@ -235,7 +314,7 @@ private:
         append(parent, *node);
 
         doc_.textNodes.push_back(node);
-        doc_.characterCount += static_cast<std::uint32_t>(wxl::core::unicode::code_point_count(value));
+        doc_.measures.codePoints += static_cast<std::uint32_t>(wxl::core::unicode::code_point_count(value));
     }
 
     const void* payloadFor(NodeKind kind, const xmlnode& source) {
@@ -251,7 +330,7 @@ private:
                 source.attribute("first-char-pos")
                     .transform(&wxl::core::u8_view::chars)
                     .and_then(toInt)
-                    .value_or(static_cast<int>(doc_.characterCount)));
+                    .value_or(static_cast<int>(doc_.measures.codePoints)));
             return &data;
         }
 
@@ -345,9 +424,12 @@ private:
     /// на каждом проходе незачем.
     void resolveNotes() {
         for (NoteRefData* ref : doc_.pendingNoteRefs) {
-            const auto found = doc_.noteBodies.find(ref->targetId.chars());
-            if (found != doc_.noteBodies.end())
-                ref->target = found->second;
+            const auto found = doc_.noteBodyIndex.find(ref->targetId.chars());
+            if (found == doc_.noteBodyIndex.end())
+                continue;   // битая ссылка: ни узла, ни номера
+
+            ref->body = found->second;
+            ref->target = doc_.noteBodies[found->second];
         }
     }
 
@@ -419,15 +501,15 @@ void Document::parse() {
     if (auto cover = impl_->package.partByPackageRelationship(kRelThumbnail)) {
         for (std::uint32_t i = 0; i < impl_->images.size(); ++i)
             if (impl_->images[i].contentType == cover->contentType)
-                impl_->description.coverImageIndex = i;
+                impl_->description->coverImageIndex = i;
     }
 
-    if (!impl_->description.coverImageIndex) {
+    if (!impl_->description->coverImageIndex) {
         for (std::uint32_t i = 0; i < impl_->images.size(); ++i) {
             std::string id(impl_->images[i].relationshipId.chars());
             wxl::core::make_ascii_lower(id);
             if (id.find("cover") != std::string::npos) {
-                impl_->description.coverImageIndex = i;
+                impl_->description->coverImageIndex = i;
                 break;
             }
         }
@@ -436,16 +518,34 @@ void Document::parse() {
 
 Document::~Document() = default;
 
-const Description& Document::description() const { return impl_->description; }
+const Description& Document::description() const {
+    if (!impl_->description)
+        wxl::core::abort("FB3: описание книги уже отдано takeDescription()");
+
+    return *impl_->description;
+}
+
+Description Document::takeDescription() {
+    if (!impl_->description)
+        wxl::core::abort("FB3: takeDescription() зовут второй раз — описание уже отдано");
+
+    Description taken = std::move(*impl_->description);
+    impl_->description.reset();
+    return taken;
+}
 
 const Node& Document::body() const { return *impl_->body; }
 
 const Node* Document::noteBody(std::string_view id) const {
-    const auto found = impl_->noteBodies.find(id);
-    return found == impl_->noteBodies.end() ? nullptr : found->second;
+    const auto found = impl_->noteBodyIndex.find(id);
+    return found == impl_->noteBodyIndex.end() ? nullptr : impl_->noteBodies[found->second];
 }
 
-std::uint32_t Document::characterCount() const { return impl_->characterCount; }
+std::span<const Node* const> Document::noteBodies() const { return impl_->noteBodies; }
+
+std::uint32_t Document::characterCount() const { return impl_->measures.codePoints; }
+
+Measures Document::measures() const { return impl_->measures; }
 
 std::span<const ImagePart> Document::images() const { return impl_->images; }
 
@@ -453,15 +553,17 @@ const ImagePart* Document::image(std::uint32_t index) const {
     if (index >= impl_->images.size())
         return nullptr;
 
-    ImagePart& part = impl_->images[index];
+    return &impl_->loadImage(index);
+}
 
-    // Байты читаются при первом обращении: книге с сотней иллюстраций
-    // незачем держать их в памяти ради оглавления.
-    if (part.bytes.empty())
-        if (auto source = impl_->package.partByRelationshipId(impl_->bodyPart, part.relationshipId))
-            part.bytes = impl_->package.readPart(*source);
+std::string Document::takeImageBytes(std::uint32_t index) {
+    if (index >= impl_->images.size())
+        wxl::core::abort(std::format("FB3: takeImageBytes({}) — картинок в книге {}", index,
+                                     impl_->images.size()));
 
-    return &part;
+    // exchange, а не move: что строка после перемещения пуста, стандарт не
+    // обещает, а части обещано, что байтов у неё больше нет.
+    return std::exchange(impl_->loadImage(index).bytes, std::string{});
 }
 
 const Node* Document::nodeAtCharOffset(std::uint32_t offset) const {
