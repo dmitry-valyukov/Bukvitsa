@@ -7,6 +7,7 @@ add_executable(bukvitsa_lib_tests
     key_map_tests.cpp
     page_flow_tests.cpp
     pieces_tests.cpp
+    settings_tests.cpp
     skin_editor_tests.cpp
     theme_list_tests.cpp
 )

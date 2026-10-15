@@ -20,6 +20,7 @@ bool readSettings(std::string xml, Settings& into) {
     double fontSize = kFontSizeDefault;
     double lineHeight = 145.0;
     double margin = 7.5;
+    bool animateTurns = true;
     u16_text skin;
     u16_text lastBookGuid;
     std::filesystem::path lastBookPath;
@@ -49,6 +50,11 @@ bool readSettings(std::string xml, Settings& into) {
             lineHeight = realOf(*typeset, "lineHeight", 1.45) * 100.0;
             margin = realOf(*typeset, "margin", 0.075) * 100.0;
         }
+        // Сравнение — с тем, что не умолчание: значение, которого мы не
+        // писали, как и пропущенное, читается умолчанием.
+        if (const wxl::xml::node* turning = root.child("turning")) {
+            animateTurns = !(turning->attribute("animated") == "false");
+        }
         if (const wxl::xml::node* look = root.child("skin")) {
             skin = attributeOf(*look, "name");
         }
@@ -70,6 +76,7 @@ bool readSettings(std::string xml, Settings& into) {
     into.fontSize.set(std::clamp(fontSize, kFontSizeMin, kFontSizeMax));
     into.lineHeight.set(std::clamp(lineHeight, kLineHeightMin, kLineHeightMax));
     into.margin.set(std::clamp(margin, kMarginMin, kMarginMax));
+    into.animateTurns.set(animateTurns);
     into.skin = std::move(skin);
     into.lastBookGuid = std::move(lastBookGuid);
     into.lastBookPath = std::move(lastBookPath);
@@ -93,6 +100,10 @@ std::string settingsXml(const Settings& settings) {
     out.format("  <text theme=\"{}\" fontSize=\"{}\" lineHeight=\"{}\" margin=\"{}\"/>\n",
                xmlValue(settings.theme), settings.fontSize.get(), settings.lineHeight.get() / 100.0,
                settings.margin.get() / 100.0);
+    // Листание — своим элементом, а не ещё одним атрибутом <reading>: тот о
+    // том, чем открыться, а это о том, как листать, и строка
+    // `<turning animated="false"/>` читается в файле без пояснений.
+    out.format("  <turning animated=\"{}\"/>\n", settings.animateTurns.get() ? "true" : "false");
 
     if (!settings.skin.empty()) {
         out.format("  <skin name=\"{}\"/>\n", xmlValue(settings.skin));
