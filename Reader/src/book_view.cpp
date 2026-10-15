@@ -19,6 +19,7 @@
 // и уже он ведёт к импорту модуля книги.
 #include "UiThread.h"
 #include "book_view.h"
+#include "event_awaitable.h"
 
 #include "bukvitsa/reader/imaging.h"
 
@@ -268,17 +269,21 @@ void liftSheet(ExpressionAnimation const& warp, CompositionPropertySet const& ph
     visual.startAnimation(L"TransformMatrix", warp);
 }
 
-bool controlHeld() {
-    // Клавиатурные модификаторы у KeyRoutedEventArgs не спросить: WinUI их там
-    // не отдаёт. Состояние клавиши знает Win32, и вопрос к нему — один вызов.
-    return (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+/// Кнопка щелчка — словами карты: правая, левая или иная.
+PointerButton buttonOf(PointerPoint const& point) {
+    auto const buttons = point.properties();
+    if (buttons.isRightButtonPressed()) return PointerButton::Right;
+    if (buttons.isLeftButtonPressed()) return PointerButton::Left;
+    return PointerButton::Other;
 }
 
 }  // namespace
 
-BookView::BookView(const CompositionWindow& window, Settings& settings, Actions& actions)
+BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeList& themes,
+                   Actions& actions, async::cancellation_token parent)
     : window_(window),
       settings_(settings),
+      themes_(themes),
       actions_(actions),
       compositor_(window.compositor()),
       // Визуалы сцены — сразу, от композитора окна; buildTree() их одевает и
@@ -288,7 +293,8 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, Actions&
       releaseTimer_(window.dispatcherQueue().createTimer()),
       // Всплывашка сноски — XAML-остров, её рисунок висит в дереве острова, а не
       // на сцене: ей нужен композитор острова, а не окна.
-      note_(window.chromeCompositor()) {
+      note_(window.chromeCompositor()),
+      stop_(std::move(parent)) {
     buildTree();
 
     // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из WM_SIZE,
@@ -402,8 +408,8 @@ void BookView::buildTree() {
     }
 
     // Пул листов зарезервирован под предел: дальше push_back не переселяет
-    // вектор, и указатели на листы, что держат обработчики конца переворота,
-    // остаются годными.
+    // вектор, и указатели на листы, что держат ожидания конца переворота
+    // (landWhenDone), остаются годными.
     flips_.reserve(kMaxFlips);
 
     // Листы переворотов — на сцене окна над страницами, привешены к
@@ -437,166 +443,12 @@ void BookView::buildTree() {
 
         onLoaded = method(this, &BookView::loaded),
 
-        onPreviewKeyDown =
-            [this](Object const&, KeyRoutedEventArgs& args) {
-                // Клавиша начинается у элемента в фокусе, а туннель приводит её сюда
-                // раньше него. Ползунок панели и поле ввода — поиск, имя обложки в
-                // мастере — ходят по клавишам сами: стрелки, Home/End, пробел и буквы
-                // принадлежат им, иначе с клавиатуры их не тронуть, а «т» в поиске
-                // меняла бы тему. PgUp/PgDn ни ползунок, ни однострочное поле не
-                // читают (проверено: ползунок WinUI на них не шагает) — ими листают
-                // из любого фокуса. Кнопка и корень мастера по клавишам не ходят — из
-                // них листать можно всем.
-                const Object origin = args.originalSource();
-                if (origin.is<Slider>() || origin.is<TextBox>()) {
-                    switch (args.key()) {
-                        case VirtualKey::PageDown:
-                        case VirtualKey::PageUp:
-                            break;
-                        default:
-                            return;
-                    }
-                }
-
-                // Поверх полосы лежит мастер, но листание остаётся: изгибы
-                // подстраивают под конкретный текст, и ходить по книге нужно прямо
-                // из него. Всё остальное — Enter, Escape, тема — мастера.
-                if (preview_) {
-                    switch (args.key()) {
-                        case VirtualKey::PageDown:
-                        case VirtualKey::Right:
-                        case VirtualKey::Down:
-                        case VirtualKey::Space:
-                            turnPage(1);
-                            break;
-                        case VirtualKey::PageUp:
-                        case VirtualKey::Left:
-                        case VirtualKey::Up:
-                            turnPage(-1);
-                            break;
-                        case VirtualKey::Home:
-                            if (flow_.isOpen()) goToCharOffset(0);
-                            break;
-                        case VirtualKey::End:
-                            if (flow_.isOpen()) goToCharOffset(flow_.book()->characterCount());
-                            break;
-                        default: return;
-                    }
-                    args.handled(true);
-                    return;
-                }
-                switch (args.key()) {
-                    case VirtualKey::PageDown:
-                    case VirtualKey::Right:
-                    case VirtualKey::Down:
-                    case VirtualKey::Space:
-                        turnPage(1);
-                        break;
-                    case VirtualKey::PageUp:
-                    case VirtualKey::Left:
-                    case VirtualKey::Up:
-                        turnPage(-1);
-                        break;
-                    case VirtualKey::Home:
-                        if (flow_.isOpen()) goToCharOffset(0);
-                        break;
-                    case VirtualKey::End:
-                        // Конец книги известен только досчитанной, поэтому здесь
-                        // чистовой набор доводится до самого конца.
-                        if (flow_.isOpen()) goToCharOffset(flow_.book()->characterCount());
-                        break;
-                    case VirtualKey::Add:
-                        if (controlHeld()) nudgeFontSize(kFontSizeStep);
-                        break;
-                    case VirtualKey::Subtract:
-                        if (controlHeld()) nudgeFontSize(-kFontSizeStep);
-                        break;
-                    case VirtualKey::Number0:
-                    case VirtualKey::NumberPad0:
-                        if (controlHeld()) settings_.fontSize.set(kFontSizeDefault);
-                        break;
-                    case VirtualKey::T:
-                        // Голая T меняет тему; Ctrl+T -- оглавление, и его разбирает
-                        // приложение: сюда оно не должно доходить вовсе.
-                        if (controlHeld()) return;
-                        setTheme(theme.get() + 1);
-                        break;
-                    default:
-                        return;   // не наша клавиша: пусть идёт дальше
-                }
-                args.handled(true);
-            },
-
-        onPointerWheelChanged =
-            [this](Object const&, PointerRoutedEventArgs& args) {
-                // Работает и под мастером: колесо листает, а Ctrl с колесом меняет
-                // кегль — изгиб подстраивают под конкретный текст в конкретном виде.
-                const int delta = args.getCurrentPoint(root_).properties().mouseWheelDelta();
-                const bool control = (static_cast<uint32_t>(args.keyModifiers()) &
-                                      static_cast<uint32_t>(VirtualKeyModifiers::Control)) != 0;
-
-                if (control) {
-                    nudgeFontSize(delta > 0 ? kFontSizeStep : -kFontSizeStep);
-                } else {
-                    turnPage(delta > 0 ? -1 : 1);
-                }
-                args.handled(true);
-            },
-
-        onPointerPressed =
-            [this](Object const&, PointerRoutedEventArgs& args) {
-                const PointerPoint touch = args.getCurrentPoint(root_);
-                const Point point = touch.position();
-
-                // Поверх полосы лежит мастер: из всего щелчка полосе остаётся
-                // листание по третям — ни ящика, ни сносок, ни фокуса. Сюда доходят
-                // только щелчки мимо точек сетки: попавшие мастер разобрал сам.
-                if (preview_) {
-                    if (!touch.properties().isLeftButtonPressed()) return;
-                    const float third = flow_.width() / 3.0f;
-                    if (point.x < third) {
-                        turnPage(-1);
-                    } else if (point.x > flow_.width() - third) {
-                        turnPage(1);
-                    }
-                    return;
-                }
-                root_.focus(FocusState::Programmatic);
-                args.handled(true);
-
-                // Правая кнопка — единственная дорога к ящику для того, кто держит
-                // мышь: у страницы нет ни полосы меню, ни кнопок, и заводить их ради
-                // этого значило бы завесить книгу обстановкой.
-                if (touch.properties().isRightButtonPressed()) {
-                    actions_.togglePanel();
-                    return;
-                }
-
-                // Знак сноски важнее перелистывания: он мелкий, и промах по нему из-за
-                // того, что страница уже перевернулась, читателя злит.
-                const std::optional<PageFlow::NoteHit> mark = flow_.noteAt(PageFlow::Point{point.x, point.y});
-                if (mark) {
-                    note_.show(*flow_.book(), mark->body, Point{mark->anchor.x, mark->anchor.y},
-                               {flow_.width(), flow_.height()}, paper(), flow_.fontSize(), scale_);
-                    return;
-                }
-
-                // Щелчок мимо знака закрывает то, что открыто поверх полосы: читатель
-                // прочёл примечание и вернулся к книге.
-                if (note_.visible()) {
-                    note_.hide();
-                    return;
-                }
-
-                // Щелчок по левой трети полосы — назад, по правой — вперёд. Середина
-                // не делает ничего: там текст, и промах по ссылке не должен листать.
-                const float third = flow_.width() / 3.0f;
-                if (point.x < third) {
-                    turnPage(-1);
-                } else if (point.x > flow_.width() - third) {
-                    turnPage(1);
-                }
-            },
+        // Клавиш здесь нет: их разбирает приложение у этого же корня, на
+        // пути вниз, по карте клавиш, а команды полосы отдаёт в perform.
+        // Колесо и щелчок — полосы: щелчку нужна сноска, которой карта не
+        // знает.
+        onPointerWheelChanged = method(this, &BookView::wheelTurned),
+        onPointerPressed = method(this, &BookView::pressed),
     };
 }
 
@@ -604,7 +456,121 @@ void BookView::loaded(Grid const& self) {
     self.focus(FocusState::Programmatic);
 }
 
+void BookView::wheelTurned(Object const&, PointerRoutedEventArgs& args) {
+    const int delta = args.getCurrentPoint(root_).properties().mouseWheelDelta();
+    const bool control = (static_cast<uint32_t>(args.keyModifiers()) &
+                          static_cast<uint32_t>(VirtualKeyModifiers::Control)) != 0;
+
+    const Command command = resolveWheel(delta, control, pointerContext());
+    if (command == Command::None) return;
+
+    perform(command);
+    args.handled(true);
+}
+
+void BookView::pressed(Object const&, PointerRoutedEventArgs& args) {
+    const PointerPoint touch = args.getCurrentPoint(root_);
+    const Point point = touch.position();
+    const Command command = resolveTap(point.x, flow_.width(), buttonOf(touch), pointerContext());
+
+    // Поверх полосы лежит мастер: из всего щелчка полосе остаётся листание по
+    // третям — ни ящика, ни сносок, ни фокуса. Сюда доходят только щелчки мимо
+    // точек сетки: попавшие мастер разобрал сам.
+    if (preview_) {
+        if (command != Command::None) perform(command);
+        return;
+    }
+    root_.focus(FocusState::Programmatic);
+    args.handled(true);
+
+    // Правая кнопка — единственная дорога к ящику для того, кто держит мышь:
+    // у страницы нет ни полосы меню, ни кнопок, и заводить их ради этого
+    // значило бы завесить книгу обстановкой. Панель полосе не принадлежит —
+    // её открывает владелец.
+    if (command == Command::TogglePanel) {
+        actions_.togglePanel();
+        return;
+    }
+
+    // Знак сноски важнее перелистывания: он мелкий, и промах по нему из-за
+    // того, что страница уже перевернулась, читателя злит.
+    const std::optional<PageFlow::NoteHit> mark = flow_.noteAt(PageFlow::Point{point.x, point.y});
+    if (mark) {
+        note_.show(*flow_.book(), mark->body, Point{mark->anchor.x, mark->anchor.y},
+                   {flow_.width(), flow_.height()}, paper(), flow_.fontSize(), scale_);
+        return;
+    }
+
+    // Щелчок мимо знака закрывает то, что открыто поверх полосы: читатель
+    // прочёл примечание и вернулся к книге.
+    if (note_.visible()) {
+        note_.hide();
+        return;
+    }
+
+    if (command != Command::None) perform(command);
+}
+
+KeyContext BookView::pointerContext() const {
+    return KeyContext {
+        .shown = Screen::Book,
+        .wizardOpen = previewing(),
+        .noteOpen = noteOpen(),
+        .bookOpen = isOpen(),
+    };
+}
+
+void BookView::perform(Command command) {
+    switch (command) {
+        case Command::TurnForward:
+            turnPage(1);
+            return;
+        case Command::TurnBackward:
+            turnPage(-1);
+            return;
+
+        // Начало и конец карта отдаёт только при открытой книге: конец
+        // известен лишь ей, и чистовой набор доводится до самого конца.
+        case Command::GoToStart:
+        case Command::GoToEnd:
+            if (!flow_.isOpen()) core::abort("BookView::perform: начало или конец книги без книги");
+            goToCharOffset(command == Command::GoToStart ? 0u : flow_.book()->characterCount());
+            return;
+
+        // Кегль — в настройки: к полосе перемена вернётся слушателем, как и к
+        // ползунку панели.
+        case Command::FontLarger:
+            nudgeFontSize(kFontSizeStep);
+            return;
+        case Command::FontSmaller:
+            nudgeFontSize(-kFontSizeStep);
+            return;
+        case Command::FontReset:
+            settings_.fontSize.set(kFontSizeDefault);
+            return;
+
+        case Command::NextTheme:
+            setTheme(theme.get() + 1);
+            return;
+        case Command::DismissNote:
+            note_.hide();
+            return;
+
+        default:
+            break;
+    }
+
+    // Экраны, ящики и полный экран — приложения, а `None` исполнять нечего:
+    // дошедшая сюда — ошибка проводки, а не клавиша, которую можно пропустить.
+    core::abort("BookView::perform: команда не полосы");
+}
+
 BookView::~BookView() {
+    // Ожидания полосы — концы пакетов переворотов — ей больше не нужны:
+    // отменяет их владелец, то есть она сама. Корутины кончатся отменой на
+    // своём ожидании и полосы уже не тронут.
+    stop_.cancel();
+
     // Настройки и окно переживают полосу: слушатели с нашим this снимаются,
     // иначе следующая перемена кегля или размера позвала бы уже разрушенную
     // полосу.
@@ -621,12 +587,6 @@ void BookView::open(not_null<Book> book, uint32_t charOffset) {
     flow_.open(book, charOffset);
     requestRelayout();
     position_.set(flow_.position());
-}
-
-bool BookView::dismissOverlays() {
-    if (!note_.visible()) return false;
-    note_.hide();
-    return true;
 }
 
 void BookView::setActive(bool active) {
@@ -654,11 +614,10 @@ void BookView::setActive(bool active) {
 }
 
 void BookView::setTheme(int index) {
-    // Приводится к списку и кладётся в поле; всё, что следует за сменой темы,
-    // делает слушатель (themeChanged) — так же, как если бы поле поменял кто-то
-    // другой. Та же тема, что и была, слушателя не зовёт.
-    const int count = themeCount();
-    theme.set(((index % count) + count) % count);
+    // Приводится к списку по кругу и кладётся в поле; всё, что следует за
+    // сменой темы, делает слушатель (themeChanged) — так же, как если бы поле
+    // поменял кто-то другой. Та же тема, что и была, слушателя не зовёт.
+    theme.set(themes_.normalize(index));
 }
 
 void BookView::themeChanged(int) noexcept {
@@ -681,31 +640,21 @@ void BookView::themeChanged(int) noexcept {
     redraw();
 }
 
-void BookView::setSkins(std::vector<Skin> skins) {
-    // Системные — первыми и всегда: они есть и на машине, где реестра ещё не
-    // заводили. Склейка здесь, а не у вызывающего, потому что номер темы
-    // считается по этому списку, и двух его версий быть не должно.
-    const std::span<const Skin> system = systemSkins();
-
-    skins_.assign(system.begin(), system.end());
-    skins_.insert(skins_.end(), std::make_move_iterator(skins.begin()),
-                  std::make_move_iterator(skins.end()));
-
-    // Реестр мог и похудеть: тема, показывающая исчезнувшую обложку, честно
-    // возвращается к первой встроенной.
-    if (theme.get() >= themeCount()) theme.set(0);
-
-    // Пересохранённая обложка могла сменить и снимок, и кривые: снимок
-    // принесёт владелец заново.
+void BookView::skinsChanged(int index) {
+    // Снимок и карта сделаны из прежней обложки: снимок принесёт владелец
+    // заново, карта соберётся по новым кривым.
     dropBackdrop();
     warpMap_.Reset();
     warpFlat_ = false;
-    redraw();
-}
 
-const Skin* BookView::activeSkin() const {
-    if (theme.get() < kThemeCount) return nullptr;
-    return &skins_[static_cast<size_t>(theme.get() - kThemeCount)];
+    // Другой номер перекрасит и перерисует слушатель темы (themeChanged). На
+    // тот же номер слушатель молчит, а кривые под ним могли смениться —
+    // перерисовать здесь.
+    if (themes_.normalize(index) != theme.get()) {
+        setTheme(index);
+    } else {
+        redraw();
+    }
 }
 
 void BookView::setPreview(const Skin* skin) {
@@ -1011,7 +960,7 @@ BookView::Flip& BookView::acquireFlip() {
 
     // Ещё не набрали лимит — заводим новый. Пул зарезервирован под kMaxFlips
     // (buildTree), так что push_back не переселяет вектор: указатели на листы,
-    // что держат обработчики конца, остаются годными.
+    // что держат ожидания конца, остаются годными.
     if (flips_.size() < kMaxFlips) {
         flips_.push_back(makeFlip());
         Flip& fresh = flips_.back();
@@ -1028,7 +977,7 @@ BookView::Flip& BookView::acquireFlip() {
     for (Flip& f : flips_)
         if (f.started < oldest->started)
             oldest = &f;
-    oldest->epoch = ++flipClock_;   // его обработчик конца, придя, увидит чужой номер
+    oldest->epoch = ++flipClock_;   // его ожидание конца, дождавшись, увидит чужой номер
     finishFlip(*oldest);
     landFlip(*oldest);
     oldest->active = true;
@@ -1222,9 +1171,9 @@ void BookView::settleSheets() {
 
 void BookView::cancelTurn() {
     // Все идущие перевороты — в покой рывком. Пакеты их концов ещё придут, но
-    // каждому листу здесь меняется epoch, и обработчик, придя, увидит чужой
-    // номер и промолчит: остановленная анимация закрывает пакет так же, как
-    // доигравшая. Садится при этом один самый новый: его разворот — нынешний,
+    // каждому листу здесь меняется epoch, и ожидание конца, дождавшись, увидит
+    // чужой номер и промолчит: остановленная анимация закрывает пакет так же,
+    // как доигравшая. Садится при этом один самый новый: его разворот — нынешний,
     // а развороты остальных пропущены — в книге их уже нет.
     Flip* newest = nullptr;
     for (Flip& f : flips_)
@@ -1351,21 +1300,13 @@ void BookView::animateTurn(Flip& flip, bool forward) {
     flip.shadow.opacity(kShadowOpacity);
     flip.sheet.isVisible(true);
 
-    // Конец переворота отслеживается пакетом: по нему лист освобождается в пул.
-    // Пакет закрывает и остановленную анимацию, поэтому обработчик проверяет и
-    // жизнь полосы, и свой ли это лист (epoch).
-    const uint64_t epoch = flip.epoch;
-    Flip* const which = &flip;
+    // Конец переворота отслеживается пакетом: по нему лист освобождается в пул
+    // (landWhenDone). Ждать начинаем до закрытия пакета: корутина начинается в
+    // вызове, и к end() её подписка на конец уже стоит.
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
     flip.sheet.startAnimation(L"Offset", slide);
     flip.sheet.startAnimation(L"RotationAngleInDegrees", turn);
-    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
-                              Object const&, CompositionBatchCompletedEventArgs&) {
-        if (alive.expired() || which->epoch != epoch) return;
-        finishFlip(*which);
-        landFlip(*which);
-        settleSheets();
-    });
+    landWhenDone(batch, &flip, flip.epoch);
     batch.end();
 }
 
@@ -1604,14 +1545,11 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     rim.isVisible(true);
     coming.isVisible(true);
 
-    // Конец отслеживается пакетом: по нему лист освобождается в пул. Пакет
-    // закрывает и остановленную анимацию (лист добили при быстром листании или
-    // сбросили при перевёрстке), поэтому обработчик проверяет и жизнь полосы, и
-    // свой ли это лист — по epoch: у добитого он уже сменился, и обработчик
-    // узнаёт свой номер чужим и молчит.
-    const uint64_t epoch = flip.epoch;
-    Flip* const which = &flip;
-
+    // Конец отслеживается пакетом: по нему лист освобождается в пул
+    // (landWhenDone). Пакет закрывает и остановленную анимацию (лист добили при
+    // быстром листании или сбросили при перевёрстке), поэтому ожидание конца
+    // проверяет, свой ли это лист, — по epoch: у добитого он уже сменился, и
+    // ожидание узнаёт свой номер чужим и молчит.
     auto batch = compositor_.createScopedBatch(CompositionBatchTypes::Animation);
 
     goingCrop.startAnimation(inset, crawl);
@@ -1626,14 +1564,32 @@ void BookView::animateSpreadTurn(Flip& flip, bool forward) {
     flip.bend.startAnimation(L"Opacity", settle);
     flip.lift.startAnimation(L"Amount", rise);
 
-    batch.add_onCompleted([this, alive = std::weak_ptr<int>(alive_), which, epoch](
-                        Object const&, CompositionBatchCompletedEventArgs&) {
-        if (alive.expired() || which->epoch != epoch) return;
-        finishFlip(*which);
-        landFlip(*which);
-        settleSheets();
-    });
+    // Ждать конца — до закрытия пакета, как и в плоском листании.
+    landWhenDone(batch, &flip, flip.epoch);
     batch.end();
+}
+
+// Пакет закрывается не только доигравшей анимацией, но и остановленной: лист
+// добили при быстром листании или сбросили перевёрсткой, и конец пакета
+// приходит к листу, который уже служит другому перевороту. Свой ли это конец,
+// говорит epoch — у добитого листа он сменился.
+//
+// Полосы к концу пакета может уже не быть: окно закрыли посреди переворота.
+// Корутина её жизни не проверяет — ожидание стоит под токеном полосы, а его
+// отменяет владелец: деструктор полосы, а при закрытии окна ещё раньше — общий
+// источник приложения. Отменённое ожидание кончается
+// operation_canceled_exception, обычным концом detached_task, даже если конец
+// пакета пришёл уже после отмены, — и до `this` и `which` дело не доходит.
+// Кадр полосу не держит (она не самосчитающая), и знак жизни ему не нужен.
+async::detached_task BookView::landWhenDone(CompositionScopedBatch batch, Flip* which,
+                                            uint64_t epoch) {
+    co_await dsl::onCompleted(batch, stop_.token());
+
+    if (which->epoch != epoch) co_return;
+
+    finishFlip(*which);
+    landFlip(*which);
+    settleSheets();
 }
 
 void BookView::goToCharOffset(uint32_t charOffset) {

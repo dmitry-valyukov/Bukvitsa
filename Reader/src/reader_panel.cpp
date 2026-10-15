@@ -588,8 +588,8 @@ void ReaderPanel::bookmarkClicked(ListView const&, ItemClickEventArgs& args) {
 
 int ReaderPanel::selectionOf(int theme) const {
     // Номер темы за краем строк бывает на миг: список тем уже укоротился
-    // (удалили обложку), а полоса ещё не поправила свой номер. Выбор такой
-    // строки список не принял бы.
+    // (удалили обложку), а новый номер сценарий удаления ставит следом. Выбор
+    // такой строки список не принял бы.
     return theme >= 0 && theme < themes_.count() ? theme : -1;
 }
 
