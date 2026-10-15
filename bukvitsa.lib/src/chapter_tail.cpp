@@ -30,27 +30,34 @@ ChapterTail::ChapterTail(PageFlow& flow, IdleScheduler& scheduler,
       stop_(parent_) {}
 
 ChapterTail::~ChapterTail() {
-    release();
+    stop_.cancel();
 }
 
 void ChapterTail::start() {
-    if (loop_ && !loop_.done()) return;   // идёт — возьмёт и эту главу
+    if (running_ || stop_.is_canceled()) return;   // идёт — возьмёт и эту главу; или владелец ушёл
+    if (!flow_.needsTail()) return;                // досчитывать нечего
 
-    release();
-    if (!flow_.needsTail()) return;   // досчитывать нечего
-
-    // Корутина доходит до первого ожидания ещё внутри вызова, так что в loop_
-    // ложится кадр, который уже ждёт простоя.
-    loop_ = loop();
+    // Корутина доходит до первого ожидания ещё внутри вызова: кадр, который
+    // уже ждёт простоя.
+    running_ = true;
+    loop();
 }
 
 void ChapterTail::restart() {
     stop_.cancel();
-    release();
+    running_ = false;
     stop_ = wxl::async::cancellation_source{parent_};
 }
 
-wxl::async::task<> ChapterTail::loop() {
+wxl::async::detached_task ChapterTail::loop() {
+    // Правило кадра: отменённый, он не трогает `this` — ни знака, ни потока
+    // страниц, ни получателя. Ожидание под отменённым токеном бросает отмену,
+    // кадр по ней выходит, и это всё: к этому ходу очереди у держателя может
+    // идти уже другой кадр (перевёрстка), а сам держатель может быть разрушен
+    // (выход приложения). Поэтому всё, что трогает `this`, стоит либо до
+    // первого ожидания (внутри start()), либо после ожидания, которое
+    // кончилось не отменой.
+    //
     // Порции продолжают счёт с курсора текущей главы, не начиная заново:
     // синхронно посчитанные страницы остаются на месте, добирается лишь хвост
     // ради общего числа страниц. Меняется от него только «из M» — и то один
@@ -65,21 +72,8 @@ wxl::async::task<> ChapterTail::loop() {
         if (!flow_.advanceTail(kSlice)) break;
     }
 
+    running_ = false;
     completed_();
-}
-
-void ChapterTail::release() {
-    // Кадр уходит из поля раньше, чем читается его конец: сбой достаётся
-    // зовущему один раз, и кадр разрушается с локальной, даже когда сбой
-    // летит наверх.
-    auto const finished = std::exchange(loop_, {});
-    if (!finished || !finished.done()) return;   // стоящий в ожидании — разрушается с ним
-
-    try {
-        finished.result();
-    } catch (const wxl::async::operation_canceled_exception&) {
-        // Владелец ушёл, досчёт стал не нужен — обычный конец, не сбой.
-    }
 }
 
 }  // namespace bukvitsa::reader
