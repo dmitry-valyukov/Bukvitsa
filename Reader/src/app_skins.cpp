@@ -120,8 +120,8 @@ detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
     // Номер — по полному списку, а не по реестру: номера считаются вместе с
     // системными обложками, которые стоят впереди реестровых.
     //
-    // Имя обложки в настройки и их запись — дело слушателя темы (Autosave):
-    // смена темы здесь ничем не отличается от смены клавишей T.
+    // Имя обложки в настройки и их запись — дело слушателя темы
+    // (themeChanged): смена темы здесь ничем не отличается от смены клавишей T.
     view_.setTheme(themes_.afterSave(skinName, view_.theme.get()));
 
     leaveWizard();
@@ -193,7 +193,7 @@ detached_task App::deleteSkin(u16_text name) {
     setSkins();
 
     // Настройки — имя обложки или ключ темы — поправит и запишет слушатель
-    // темы (Autosave).
+    // темы (themeChanged).
     view_.setTheme(theme);
 }
 
