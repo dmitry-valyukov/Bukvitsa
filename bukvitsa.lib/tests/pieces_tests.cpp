@@ -24,7 +24,7 @@ import wxl.core;
 
 using namespace bukvitsa::reader;
 using bukvitsa::reader::tests::check;
-using wxl::async::system_exception;
+using wxl::async::last_error;
 
 namespace {
 
@@ -33,13 +33,18 @@ namespace {
 void testNoticeOfFailure() {
     std::printf("\n=== слова о сбое сценария ===\n");
 
-    const system_exception failure("ReadFile", static_cast<int>(ERROR_FILE_NOT_FOUND));
+    const last_error failure("ReadFile", static_cast<int>(ERROR_FILE_NOT_FOUND));
     const Notice onFile = noticeOf(std::make_exception_ptr(failure));
     check(onFile.headline == L"Не удалось выполнить операцию с файлом",
           "операция с файлом — заголовок о файле, а не «Ошибка»");
     check(onFile.details == reasonOf(failure), "подробности — причина словами системы");
-    check(onFile.details.find(L"ReadFile") != std::wstring::npos && onFile.details.find(L"= 2") != std::wstring::npos,
-          "в причине — что делали и код системы");
+    check(!onFile.details.empty() && onFile.details == failure.explanation(),
+          "причина — слова системы на языке читателя, без имени вызова и кода");
+
+    const last_error nonsense("ReadFile", 0x1FFFFFFF);
+    const std::wstring diagnostic = reasonOf(nonsense);
+    check(diagnostic.find(L"ReadFile") != std::wstring::npos && diagnostic.find(L"536870911") != std::wstring::npos,
+          "системе нечего сказать о коде — остаётся диагностика: что делали и код");
 
     const Notice withPath = noticeOf(L"Не удалось прочитать файл книги", L"C:\\книги\\роман.fb3", failure);
     check(withPath.headline == L"Не удалось прочитать файл книги" &&
