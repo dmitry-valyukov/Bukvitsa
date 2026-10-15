@@ -70,31 +70,11 @@ const char* nameOf(typography::BlockKind kind) {
     return "?";
 }
 
-/// UTF-16 обратно в UTF-8 — только чтобы напечатать в консоль.
+/// UTF-16 обратно в UTF-8 — только чтобы напечатать в консоль. Сюда идут и
+/// пути из файловой системы, поэтому текст чинится: сломанное место выходит
+/// знаком U+FFFD, видным в выводе.
 std::string toUtf8(std::wstring_view text) {
-    std::string out;
-    for (size_t i = 0; i < text.size(); ++i) {
-        char32_t code = text[i];
-        if (code >= 0xD800 && code <= 0xDBFF && i + 1 < text.size())
-            code = 0x10000 + ((code - 0xD800) << 10) + (text[++i] - 0xDC00);
-
-        if (code < 0x80) {
-            out += static_cast<char>(code);
-        } else if (code < 0x800) {
-            out += static_cast<char>(0xC0 | (code >> 6));
-            out += static_cast<char>(0x80 | (code & 0x3F));
-        } else if (code < 0x10000) {
-            out += static_cast<char>(0xE0 | (code >> 12));
-            out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-            out += static_cast<char>(0x80 | (code & 0x3F));
-        } else {
-            out += static_cast<char>(0xF0 | (code >> 18));
-            out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
-            out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-            out += static_cast<char>(0x80 | (code & 0x3F));
-        }
-    }
-    return out;
+    return std::string(unicode::repaired(text).to_utf8().chars());
 }
 
 /// Хранилище из одного абзаца — то, что дала бы книга из одного `<p>`: текст,
@@ -193,6 +173,28 @@ void testFormulas(IDWriteFactory* dwrite) {
         threw = true;
     }
     check(!threw, "мусор не выходит наружу исключением");
+
+    // Знак вне BMP доходит до шрифта одной кодовой точкой. \Textit отдаёт
+    // аргумент бэкенду строкой целиком, мимо разбора MicroTeX по wchar_t; ни
+    // 📖, ни 字 у Georgia нет, и каждый из них — один глиф .notdef. Пара,
+    // разорванная на половины, дала бы два, и формула вышла бы шире.
+    {
+        const std::unique_ptr<typography::Formula> astral =
+            formulas.parse(L"\\Textit{\U0001F4D6}", 20.0f, 600.0f);
+        const std::unique_ptr<typography::Formula> one =
+            formulas.parse(L"\\Textit{\u5B57}", 20.0f, 600.0f);
+        const std::unique_ptr<typography::Formula> two =
+            formulas.parse(L"\\Textit{\u5B57\u5B57}", 20.0f, 600.0f);
+        check(astral && one && two, "\\Textit со знаком вне BMP разобран");
+        if (astral && one && two) {
+            std::printf("       ширина: 📖 %.2f, 字 %.2f, 字字 %.2f\n", astral->width(),
+                        one->width(), two->width());
+            check(two->width() > one->width() + 1.0f,
+                  "у .notdef есть ширина: сравнение что-то значит");
+            check(std::fabs(astral->width() - one->width()) < 0.01f,
+                  "знак вне BMP — один глиф, пара не разорвана");
+        }
+    }
 
     // Вся цепочка EPUB: MathML → TeX → MicroTeX. Формула квадратного
     // уравнения в том виде, в каком её пишут конвертеры издателей.

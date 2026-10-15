@@ -49,16 +49,6 @@ BackendState& backend() {
     return state;
 }
 
-std::wstring widen(const std::string& text) {
-    if (text.empty()) return {};
-    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(),
-                                           static_cast<int>(text.size()), nullptr, 0);
-    std::wstring wide(static_cast<size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(),
-                        length);
-    return wide;
-}
-
 }  // namespace
 
 namespace tex {
@@ -101,22 +91,16 @@ public:
 
 using FontPtr = sptr<Font_dw>;
 
-// Кодовые точки UTF-16 строки — GetGlyphIndices принимает их, а не единицы.
+// Кодовые точки строки — GetGlyphIndices принимает их, а не единицы UTF-16.
+// Строку даёт MicroTeX, а его разбор идёт по wchar_t и может отдать половину
+// пары отдельно — символом в drawChar или краем куска. Поэтому текст чинится,
+// а не берётся на веру: одинокая половина становится U+FFFD, знаком замены,
+// который и показывает на странице сломанное место.
 std::vector<UINT32> codepoints(std::wstring_view text) {
+    const u16_text whole = unicode::repaired(text);
     std::vector<UINT32> points;
-    points.reserve(text.size());
-    for (size_t i = 0; i < text.size(); ++i) {
-        const wchar_t unit = text[i];
-        if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < text.size()) {
-            const wchar_t low = text[i + 1];
-            if (low >= 0xDC00 && low <= 0xDFFF) {
-                points.push_back(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00));
-                ++i;
-                continue;
-            }
-        }
-        points.push_back(unit);
-    }
+    points.reserve(whole.size());
+    for (const char32_t code : unicode::code_points(whole)) points.push_back(code);
     return points;
 }
 
@@ -132,7 +116,10 @@ FontPtr createFileFont(const std::string& file, float size) {
     auto font = sptrOf<Font_dw>();
     font->size = size;
 
-    const std::wstring path = widen(file);
+    // Путь собирает MicroTeX: каталог res, ASCII по контракту FormulaEngine,
+    // и имена файлов из своих XML. Не UTF-8 здесь — нарушенный контракт, а не
+    // чужие данные: value() бросает, и беда программы идёт наверх.
+    const u16_text path = unicode::checked(file).value().to_utf16();
     ComPtr<IDWriteFontFile> fontFile;
     if (FAILED(backend().factory->CreateFontFileReference(path.c_str(), nullptr, &fontFile))) {
         return font;
@@ -227,10 +214,14 @@ Font* Font::create(const std::string& file, float size) {
 
 sptr<Font> Font::_create(const std::string& name, int style, float size) {
     const BackendState& state = backend();
+    // Кроме своих Serif и SansSerif, MicroTeX передаёт сюда только аргумент
+    // \externalFont, перекодированный им из UTF-16 формулы, — а его
+    // перекодировка даёт правильный UTF-8 на любом входе. Не UTF-8 здесь —
+    // ошибка программы, как и с путём шрифта.
     std::wstring family;
     if (name.empty() || name == "Serif") family = state.serif;
     else if (name == "SansSerif") family = state.sans;
-    else family = widen(name);
+    else family = unicode::checked(name).value().to_utf16().wchars();
     return createNamedFont(std::move(family), style, size);
 }
 
