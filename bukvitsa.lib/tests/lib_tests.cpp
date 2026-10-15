@@ -905,6 +905,62 @@ void testWorkspaceSaveSkinStopsBeforeWrites() {
           "на диске и строка реестра, и копия, на которую она ссылается");
 }
 
+/// Удаление обложки под отменённым токеном не начинается: реестр не тронут
+/// ни в памяти, ни на диске; без отмены — обложка убрана и там, и там.
+void testWorkspaceDeleteSkinStopsBeforeChange() {
+    std::printf("\n=== отмена: удаление обложки ===\n");
+
+    Sandbox box("stop-delete-skin");
+    Workspace ws(box.root);
+
+    Skin skin = defaultSkin();
+    skin.name = u16_text{u"Бумага"};
+    ws.skins.put(std::move(skin));
+
+    // Реестр на диске — с этой обложкой: начатое удаление переписало бы его.
+    const std::string written = ws.skins.toXml();
+    putOnDisk(ws.skinsPath(), written);
+
+    cancellation_source before;
+    before.cancel();
+    check(canceled(ws.deleteSkin(u"Бумага", before.token())), "под отменённым токеном — отмена");
+    check(ws.skins.find(u"Бумага") != nullptr && onDisk(ws.skinsPath()) == written,
+          "под отменённым токеном реестр обложек не тронут — ни в памяти, ни на диске");
+
+    run(ws.deleteSkin(u"Бумага", never));
+
+    Skins onDiskSkins;
+    check(ws.skins.find(u"Бумага") == nullptr && onDiskSkins.loadFrom(onDisk(ws.skinsPath())) &&
+              onDiskSkins.list().empty(),
+          "без отмены — обложка убрана и в памяти, и на диске");
+}
+
+/// Дерево источников: отмена родителя доходит до чтения, которое ждёт под
+/// токеном дочернего, — так закрытие окна кончает сценарии; отмена дочернего
+/// родителя не трогает — так владелец отменяет одну задачу.
+void testWorkspaceReadsStopWithParent() {
+    std::printf("\n=== отмена: дерево источников ===\n");
+
+    Sandbox box("stop-tree");
+    Workspace ws(box.root);
+
+    cancellation_source parent;
+    auto const child = cancellation_source{parent.token()};
+
+    task<Warmed> reading = ws.readBook(kBook, child.token());
+    check(!reading.done(), "чтение книги под дочерним токеном ушло к диску");
+    parent.cancel();
+    check(child.is_canceled(), "отмена родителя отменяет дочерний источник");
+    check(canceled(std::move(reading)), "отмена родителя кончает чтение под дочерним токеном");
+
+    check(cancellation_source{parent.token()}.is_canceled(), "под отменённым родителем источник отменён с рождения");
+
+    cancellation_source owner;
+    auto piece = cancellation_source{owner.token()};
+    piece.cancel();
+    check(piece.is_canceled() && !owner.is_canceled(), "отмена дочернего не отменяет родителя");
+}
+
 /// Обход каталога, которому сказали кончиться на первой книге: дальше он не
 /// читает, а реестр с ней пишет — полка её уже показала — и лишь потом
 /// кончается отменой.
@@ -988,6 +1044,8 @@ int main() {
     testWorkspaceStartReadsModelsWhole();
     testWorkspaceOpenStopsOutsideWrites();
     testWorkspaceSaveSkinStopsBeforeWrites();
+    testWorkspaceDeleteSkinStopsBeforeChange();
+    testWorkspaceReadsStopWithParent();
     testWorkspaceFolderKeepsWhatShelfShowed();
 
     runPiecesTests();
