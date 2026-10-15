@@ -95,6 +95,146 @@ void testBook(const std::filesystem::path& path) {
     }
 }
 
+// Числа ниже сверены с body.xml этих книг обходом, который повторяет разбор:
+// роман без картинок и официальный пример, где есть всё.
+constexpr const char* kNovel = "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
+constexpr const char* kNightmare = "nightmare_example.fb3";
+
+void printMeasures(const Measures& measures) {
+    std::printf("  кодовых точек: %u, абзацев: %u, картинок: %u, разделителей: %u, "
+                "стилей: %u, ссылок на сноски: %u\n",
+                measures.codePoints, measures.paragraphs, measures.images, measures.separators,
+                measures.inlineStyles, measures.noteRefs);
+}
+
+/// Меры прохода разбора: по ним вёрстка резервирует массивы, и меры, которые
+/// разошлись с книгой, — это разбор, который что-то потерял или выдумал.
+void testMeasures(const std::filesystem::path& testdata) {
+    std::printf("\n=== меры: %s ===\n", kNovel);
+    {
+        Document book(testdata / kNovel);
+        const Measures measures = book.measures();
+        printMeasures(measures);
+
+        check(measures.codePoints == book.characterCount(), "кодовые точки — это characterCount()");
+        check(measures.images == 0, "картинок в тексте нет");
+        check(measures.separators == 0, "разделителей нет");
+        check(measures.noteRefs == 155, "155 ссылок на сноски");
+        check(measures.paragraphs > 2000, "больше двух тысяч абзацев");
+    }
+
+    std::printf("\n=== меры: %s ===\n", kNightmare);
+    {
+        Document book(testdata / kNightmare);
+        const Measures measures = book.measures();
+        printMeasures(measures);
+
+        check(measures.images == 124, "124 картинки в тексте");
+        check(measures.noteRefs == 40, "40 ссылок на сноски");
+        // Разделитель — вид узла, а не блок вёрстки: 38 `<br>` (ни одного с
+        // clear) и 8 границ бумажной страницы, хоть семь из них и стоят внутри
+        // абзаца или подзаголовка.
+        check(measures.separators == 46, "46 разделителей: 38 <br> и 8 границ страницы");
+    }
+}
+
+/// Тела сносок по порядку: номер в ссылке указывает на то же тело, что и
+/// узел, — иначе вёрстка, перейдя на номера, развернула бы чужую сноску.
+void testNoteBodies(const std::filesystem::path& testdata) {
+    std::printf("\n=== тела сносок: %s ===\n", kNovel);
+
+    Document book(testdata / kNovel);
+    const auto bodies = book.noteBodies();
+    std::printf("  тел: %zu\n", bodies.size());
+
+    check(bodies.size() == 155, "155 тел сносок");
+
+    bool allNoteBodies = true;
+    bool inDocumentOrder = true;
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        allNoteBodies = allNoteBodies && bodies[i]->kind() == NodeKind::NoteBody;
+        if (i > 0 && bodies[i - 1]->charOffset() > bodies[i]->charOffset())
+            inDocumentOrder = false;
+    }
+    check(allNoteBodies, "в списке только узлы NoteBody");
+    check(inDocumentOrder, "тела идут в порядке документа");
+
+    int refs = 0, numbered = 0, same = 0;
+    auto walk = [&](const Node& n, auto& self) -> void {
+        if (const NoteRefData* ref = n.noteRef()) {
+            ++refs;
+            if (ref->body) {
+                ++numbered;
+                if (*ref->body < bodies.size() && bodies[*ref->body] == ref->target &&
+                    bodies[*ref->body]->kind() == NodeKind::NoteBody)
+                    ++same;
+            }
+        }
+        for (const Node& child : n.children()) self(child, self);
+    };
+    walk(book.body(), walk);
+
+    std::printf("  ссылок: %d, с номером тела: %d, номер и узел совпали: %d\n", refs, numbered, same);
+    check(refs == 155 && numbered == refs, "у каждой ссылки стоит номер тела");
+    check(same == refs, "номер указывает на тот же NoteBody, что и target");
+}
+
+/// Байты картинок уходят книге: у части остаются связь и тип, а байты
+/// пустеют — теперь они у того, кто их взял.
+void testTakeImageBytes(const std::filesystem::path& testdata) {
+    std::printf("\n=== байты картинок отдаются: %s ===\n", kNightmare);
+
+    Document book(testdata / kNightmare);
+    const size_t count = book.images().size();
+    std::printf("  частей-картинок: %zu\n", count);
+    check(count > 0, "у книги есть части-картинки");
+
+    bool allBytes = true, allEmptied = true, allKept = true;
+    for (uint32_t index = 0; index < count; ++index) {
+        const std::string relationshipId(book.images()[index].relationshipId.chars());
+        const std::string contentType(book.images()[index].contentType.chars());
+
+        const std::string bytes = book.takeImageBytes(index);
+
+        // Смотрим images(), а не image(): тот прочёл бы байты из пакета заново.
+        const ImagePart& part = book.images()[index];
+        allBytes = allBytes && !bytes.empty();
+        allEmptied = allEmptied && part.bytes.empty();
+        allKept = allKept && part.relationshipId.chars() == relationshipId &&
+                  part.contentType.chars() == contentType;
+    }
+
+    check(allBytes, "takeImageBytes отдаёт непустые байты каждой части");
+    check(allEmptied, "после взятия байты части пусты");
+    check(allKept && book.images().size() == count, "связь, тип и число частей прежние");
+}
+
+/// Описание уходит книге. Второго вызова здесь нет: он — нарушение, на
+/// котором процесс останавливается.
+void testTakeDescription(const std::filesystem::path& testdata) {
+    std::printf("\n=== описание отдаётся: %s ===\n", kNovel);
+
+    Document book(testdata / kNovel);
+    const std::string title(book.description().title.chars());
+
+    const Description description = book.takeDescription();
+    std::printf("  название: %s\n", description.title.c_str());
+
+    check(!description.title.empty() && description.title.chars() == title,
+          "takeDescription отдаёт название");
+}
+
+/// Проверка на одной книге: исключение разбора — её провал, а не конец теста.
+template <class Test>
+void guarded(const char* what, const Test& test) {
+    try {
+        test();
+    } catch (const std::exception& error) {
+        std::printf("FAILED %s: %s\n", what, error.what());
+        ++failures;
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -120,6 +260,11 @@ int main() {
             ++failures;
         }
     }
+
+    guarded("меры", [&] { testMeasures(testdata); });
+    guarded("тела сносок", [&] { testNoteBodies(testdata); });
+    guarded("байты картинок", [&] { testTakeImageBytes(testdata); });
+    guarded("описание", [&] { testTakeDescription(testdata); });
 
     std::printf("\n%s\n", failures == 0 ? "OK" : "ЕСТЬ ОШИБКИ");
     return failures;
