@@ -65,7 +65,8 @@ constexpr size_t kMaxLeaves = 16;
 /// по одному в секунду, пока не останется один (его держим на следующее
 /// листание, чтобы не заводить поверхность заново). Так пик памяти держится
 /// лишь на время листания, а в покое от пула остаются один лист и один
-/// свободный растр.
+/// свободный растр. Паузы две, и таймера два: интервал у WaitableTimer свой на
+/// всю его жизнь.
 constexpr auto kLeafReleaseFirst = 10s;
 constexpr auto kLeafReleaseStep = 1s;
 
@@ -384,27 +385,21 @@ LeafTurnAnimation::LeafTurnAnimation(const Compositor& compositor, const Contain
                                      const PageFlow& flow,
                                      const async::cancellation_source& readingScope)
     : compositor_(compositor),
+      queue_(queue),
       leafLayer_(leafLayer),
       spread_(spread),
       flow_(flow),
       readingScope_(readingScope),
       restBrush_(compositor.createColorBrush(rgba(0, 0, 0, 0))),
-      turnSeries_(readingScope.token()),
-      releaseTimer_(queue.createTimer()) {
-    // Таймер отпускания пула не повторяется — перезаводится сам с новой паузой
-    // (armRelease/onReleaseTick).
-    releaseTimer_.isRepeating(false);
-    releaseTick_ = releaseTimer_.add_onTick(method(this, &LeafTurnAnimation::onReleaseTick));
-}
+      turnSeries_(readingScope.token()) {}
 
 LeafTurnAnimation::~LeafTurnAnimation() {
     // Ожидания концов переворотов этой стратегии больше никому не нужны: её
     // сменили или полоса умирает. Отменяет их владелец — она сама; корутины
-    // кончатся отменой ходом очереди и стратегии уже не тронут. Таймер пула —
-    // тоже её, и тик после неё звал бы мёртвое.
+    // кончатся отменой ходом очереди и стратегии уже не тронут. Цикл
+    // отпускания пула — её задача, и умирает он вместе с ней, раньше своих
+    // таймеров (IdleRelease).
     turnSeries_.cancel();
-    releaseTimer_.stop();
-    releaseTimer_.remove_onTick(releaseTick_);
 }
 
 void LeafTurnAnimation::turnStarting(bool forward) {
@@ -422,8 +417,8 @@ void LeafTurnAnimation::turnStarting(bool forward) {
     // чтения: тот полоса заводит заново при каждом входе.
     if (liveTurns_.empty()) turnSeries_ = async::cancellation_source{readingScope_.token()};
 
-    // Снова листают — отпускание пула отменяется.
-    releaseTimer_.stop();
+    // Отпускание пула таймеров не трогает: цикл, проснувшись, сам увидит, что
+    // листают, и не отпустит ничего, пока все не сядут.
 
     // Лист возьмётся свободный, новый или у старейшего переворота — см.
     // acquireLeaf. Режим решаем сразу: в книге (две колонки) есть корешок и
@@ -918,9 +913,56 @@ void LeafTurnAnimation::finishTurn(size_t newestFinished) {
 void LeafTurnAnimation::settle() {
     // Все сели. В книге осевший разворот — самого нового, и обе страницы уже
     // на нём: неперелистываемую одел finishTurn, а перелистываемая носит его
-    // растр. Одевать заново нечего; листам в покое на сцене не место.
+    // растр. Одевать заново нечего; листам в покое на сцене не место, а пулу —
+    // в памяти: долгая пауза отпускания начинается заново.
     leafLayer_.isVisible(false);
-    armRelease();   // все листы свободны — отпускать пул по таймеру
+    restartIdleRelease();
+}
+
+/* ---------------- отпускание пула ---------------- */
+
+LeafTurnAnimation::IdleRelease::IdleRelease(LeafTurnAnimation& owner, const DispatcherQueue& queue,
+                                            async::cancellation_token readingToken)
+    : readingToken_(readingToken),
+      firstPause_{queue, kLeafReleaseFirst, readingToken},
+      stepPause_{queue, kLeafReleaseStep, readingToken},
+      loop_{owner.releaseIdleLeaves(firstPause_, stepPause_, readingToken)} {}
+
+void LeafTurnAnimation::restartIdleRelease() {
+    // Вне чтения пул не отпускается: цикл живёт под источником чтения, и вход
+    // в чтение заведёт его заново (полоса начинает вход с finishAll).
+    async::cancellation_token const readingToken = readingScope_.token();
+    if (readingToken.is_canceled()) return;
+
+    // Цикла нет — или он от прежнего чтения и кончился либо кончается: новый.
+    // Прежний держатель уходит целиком; его цикл, если ещё не размотан, стоит
+    // в отменённом ожидании, и разрушить его снаружи можно.
+    if (!idleRelease_ || idleRelease_->ended())
+        idleRelease_.emplace(*this, queue_, readingToken);
+    idleRelease_->restart();
+}
+
+async::task<> LeafTurnAnimation::releaseIdleLeaves(WaitableTimer& firstPause,
+                                                   WaitableTimer& stepPause,
+                                                   async::cancellation_token readingToken) {
+    for (;;) {
+        // Долгая пауза: её начинает заново каждая посадка всех (restart). Тик,
+        // пришедший, пока цикл отпускал, не теряется — следующее ожидание его
+        // возьмёт и не встанет. Отмена чтения кончает ожидание без исключения,
+        // и токен цикл спрашивает сам.
+        co_await firstPause;
+        if (readingToken.is_canceled()) co_return;
+
+        // Дальше — по листу в секунду, пока есть лишние и никто не летит.
+        // Листают снова — цикл увидит это сам, проснувшись, и вернётся ждать
+        // долгую паузу: её начнёт посадка.
+        while (liveTurns_.empty() && hasSpareLeaves()) {
+            releaseSpareLeaf();
+            stepPause.restart();
+            co_await stepPause;
+            if (readingToken.is_canceled()) co_return;
+        }
+    }
 }
 
 bool LeafTurnAnimation::hasSpareLeaves() const {
@@ -940,30 +982,6 @@ void LeafTurnAnimation::releaseSpareLeaf() {
     // Один свободный держим, как и лист.
     auto const inFlight = [this](SpreadView::RasterId raster) { return rasterInFlight(raster); };
     if (spread_.spareRasters(inFlight) > 1) spread_.dropSpareRaster(inFlight);
-}
-
-void LeafTurnAnimation::armRelease() {
-    // Отпускать нечего, пока лишних нет.
-    if (!hasSpareLeaves()) return;
-    releaseTimer_.stop();
-    releaseTimer_.interval(kLeafReleaseFirst);
-    releaseTimer_.start();
-}
-
-void LeafTurnAnimation::onReleaseTick() {
-    releaseTimer_.stop();
-
-    // Снова листают — пул нужен, ничего не трогаем. turnStarting таймер уже
-    // остановил, но тик мог уйти в очередь раньше остановки.
-    if (!liveTurns_.empty()) return;
-
-    releaseSpareLeaf();
-
-    // Ещё есть лишние — следующий через секунду.
-    if (hasSpareLeaves()) {
-        releaseTimer_.interval(kLeafReleaseStep);
-        releaseTimer_.start();
-    }
 }
 
 }  // namespace bukvitsa::reader
