@@ -13,6 +13,7 @@
 #   tools\build.ps1 -Configure       # принудительно перенастроить
 #   tools\build.ps1 -Target fb3_tests
 #   tools\build.ps1 -Configure -Define BUKVITSA_WXL_ROOT=M:/wxl
+#   tools\build.ps1 -Toolset 14.52  # другой установленный тулсет MSVC; по умолчанию — ниже
 
 [CmdletBinding()]
 param(
@@ -21,6 +22,12 @@ param(
     [string]$Preset = 'x64',
     [string]$Target,
     [switch]$Configure,
+
+    # Тулсет MSVC, который просится у vcvars64.bat (-vcvars_ver). Закреплён здесь,
+    # а не оставлен умолчанию машины: дерево само называет, чем собирается, и
+    # смена — одно значение, а не три файла в Program Files. Внутри уже открытого
+    # developer prompt не действует — там выбор сделан самим prompt'ом.
+    [string]$Toolset = '14.53',
 
     # Записи кэша для шага настройки, без -D. Остаются в CMakeCache.txt, так что
     # следующий запуск без них сохраняет то, что было задано.
@@ -46,7 +53,7 @@ function Import-VisualStudioEnvironment {
     $vcvars = Join-Path $install 'VC\Auxiliary\Build\vcvars64.bat'
     if (-not (Test-Path $vcvars)) { throw "vcvars64.bat не найден: $vcvars" }
 
-    & "$env:ComSpec" /c "`"$vcvars`" >nul 2>nul && set" | ForEach-Object {
+    & "$env:ComSpec" /c "`"$vcvars`" -vcvars_ver=$Toolset >nul 2>nul && set" | ForEach-Object {
         if ($_ -match '^([^=]+)=(.*)$') {
             Set-Item -Path "env:$($Matches[1])" -Value $Matches[2]
         }
