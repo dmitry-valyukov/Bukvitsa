@@ -1782,6 +1782,33 @@ void testCharOffsets() {
           "тело сноски — один блок сразу за потоком");
 }
 
+/// Пробел в конце абзаца, который свёртка не тронула (так бывает в
+/// преформате), — место разрыва, и разбивка берёт его, когда строка с ним
+/// вылезает за поле, а без него помещается. Разрыв пробел съедает, но строки
+/// за концом текста при этом не бывает: последней остаётся та, что кончилась
+/// на пробеле.
+void testTrailingSpace(typography::Engine& engine) {
+    std::printf("\n=== пробел в конце абзаца ===\n");
+
+    typography::ParagraphStyle ragged;
+    ragged.alignment = typography::Alignment::Left;
+
+    // Цифры: ни переноса, ни разрыва между ними нет, и слово — один бокс.
+    const float word = layoutOf(engine, paragraphOf(u"12345"), 1000.0f, ragged).front().width;
+    const typography::BookText spaced = paragraphOf(u"12345    ");
+    const auto lines = layoutOf(engine, spaced, word + 1.0f, ragged);
+
+    std::printf("  слово %.1f, полоса %.1f, строк %zu\n", word, word + 1.0f, lines.size());
+    check(lines.size() == 1 && lines[0].textStart == 0 && lines[0].textLength == 5 &&
+              lines[0].charOffset == 0,
+          "одна строка — слово, хвостовой пробел съеден разрывом");
+
+    bool inside = true;
+    for (const typography::Line& line : lines)
+        if (line.textStart >= onlyParagraph(spaced).text.count) inside = false;
+    check(inside, "строки за концом текста нет");
+}
+
 /// Тела сносок настоящих книг в хранилище: лежат за потоком чтения по
 /// порядку документа, глав не открывают, у каждого якоря непустое тело, и
 /// тело верстается тем же хранилищем, без разбора заново.
@@ -1869,6 +1896,7 @@ int main() {
     testCharOffsets();
     testHyphenation();
     testHyphenationInLayout(engine);
+    testTrailingSpace(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
     testHyphenSeries(engine, testdata);
