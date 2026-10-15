@@ -73,8 +73,8 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
       compositor_(window.compositor()),
       // Страницы разворота встают на сцену окна сразу, под всем, что на ней
       // будет; рисует в его растры полоса — то, что показывает поток страниц.
-      spread_(compositor_, window.contentVisual(),
-              [this](ID2D1DeviceContext* context) { paintSpread(context); }),
+      spreadView_(compositor_, window.contentVisual(),
+                  [this](ID2D1DeviceContext* context) { paintSpread(context); }),
       // Контейнер листов — сразу, от композитора окна; buildTree() его одевает
       // и ставит на сцену над страницами.
       leafLayer_(compositor_.createContainerVisual()),
@@ -82,12 +82,7 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
       // на сцене: ей нужен композитор острова, а не окна.
       note_(window.chromeCompositor()),
       stop_(std::move(parent)),
-      readingScope_(stop_.token()),
-      // Анимация листания — настройка читателя, и меняется на ходу: флажок
-      // панели привязан к тому же полю. Поле живёт дольше полосы — слушателя
-      // полоса снимает за собой.
-      animateTurnsWatch_(
-          settings_.animateTurns.on_change(method(this, &BookView::animateTurnsChanged))) {
+      readingScope_(stop_.token()) {
     // Полоса ещё не экран: под источником чтения ждать нечему, пока
     // setActive(true) не заведёт новый.
     readingScope_.cancel();
@@ -97,6 +92,14 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
     // Стратегия переворота — до первой меры: мера доводит до конца всё, что
     // летит, и спрашивает у стратегии, куда рисовать.
     turnAnimation_ = makeTurnAnimation();
+
+    // Анимация листания — настройка читателя, и меняется на ходу: флажок
+    // панели привязан к тому же полю. Слушатель меняет стратегию и потому
+    // подписывается, когда она уже есть, а не в списке инициализации: брось
+    // makeTurnAnimation, слушатель с нашим this остался бы в поле, которое
+    // живёт дольше полосы, и снять его было бы некому. Снимает его деструктор.
+    animateTurnsWatch_ =
+        settings_.animateTurns.on_change(method(this, &BookView::animateTurnsChanged));
 
     // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из WM_SIZE,
     // раньше вёрстки XAML, и несёт размер в пикселях вместе с масштабом экрана
@@ -164,7 +167,7 @@ void BookView::buildTree() {
     // режется по прямоугольнику страницы, а не по описанному вокруг него. Сами
     // листы заводит по требованию стратегия переворота — при быстром листании
     // их в воздухе несколько разом. Страницы под ним уже на сцене — их
-    // поставил разворот (spread_).
+    // поставил разворот (spreadView_).
     leafLayer_.clip(compositor_.createInsetClip());
 
     // Листы переворотов — на сцене окна над страницами, привешены к
@@ -331,7 +334,7 @@ BookView::~BookView() {
     // иначе следующая перемена кегля, анимации или размера позвала бы уже
     // разрушенную полосу.
     for (auto& [field, cookie] : settingsWatches_) field->remove_change(cookie);
-    settings_.animateTurns.remove_change(animateTurnsWatch_);
+    settings_.animateTurns.remove_change(animateTurnsWatch_.value());
     window_.remove_onClientSizeChanged(sizeToken_);
 }
 
@@ -349,9 +352,9 @@ void BookView::open(not_null<Book> book, uint32_t charOffset) {
 void BookView::setActive(bool active) {
     // Показаны страницы или нет, решается первым: при уходе посадка листа их
     // уже не одевает, при входе их одевает посадка и redraw.
-    spread_.show(active);
+    spreadView_.show(active);
 
-    // Страница в чтении — две страницы-визуала на сцене окна (spread_), а
+    // Страница в чтении — две страницы-визуала на сцене окна (spreadView_), а
     // задник окна без кисти: страницы кроют его целиком, и красить под ними
     // нечего. Входя, снимаем кисть и показываем страницы тем же кадром, что
     // redraw рисует разворот и одевает их. Уходя — наоборот: страницы
@@ -359,17 +362,17 @@ void BookView::setActive(bool active) {
     // приходит асинхронно) берёт осевший разворот сам — иначе окно сквозило
     // бы на стол.
     if (active) {
+        // Всё, что летит, — в конечное состояние первым делом, тем же порядком,
+        // что и при уходе: сперва посадка, потом источник чтения. Уход уже
+        // посадил листы, и здесь это страховка: полоса могла быть экраном и
+        // раньше (книгу открыли поверх), а новой серии нужен покой.
+        turnAnimation_->finishAll();
+
         // Новое чтение — новый источник: прежний отменён уходом, а если полоса
-        // уже была экраном (книгу открыли поверх), отменяется здесь; отменённый
-        // источник не переиспользуется.
+        // уже была экраном, отменяется здесь; отменённый источник не
+        // переиспользуется. Серии под прежним уже нет — её кончил finishAll.
         readingScope_.cancel();
         readingScope_ = async::cancellation_source{stop_.token()};
-
-        // Всё, что летит, — в конечное состояние первым делом. Уход из чтения
-        // уже посадил листы, и здесь это страховка: полоса могла быть экраном
-        // и раньше (книгу открыли поверх), а новой серии нужен покой и новый
-        // источник чтения.
-        turnAnimation_->finishAll();
 
         window_.clearBackground();
         redraw();
@@ -388,7 +391,8 @@ void BookView::setActive(bool active) {
 
         // Задник берёт осевший растр — после посадки нынешний разворот живёт
         // в нём.
-        if (spread_.measured()) window_.background(spread_.raster(turnAnimation_->drawTarget()));
+        if (spreadView_.measured())
+            window_.background(spreadView_.raster(turnAnimation_->drawTarget()));
     }
 
     // Листы в покое не нужны: разворот видно страницами. Они выходят на сцену
@@ -433,7 +437,7 @@ void BookView::animateTurnsChanged(bool) noexcept {
     turnAnimation_->finishAll();
     leafLayer_.children().removeAll();
     turnAnimation_ = makeTurnAnimation();
-    spread_.dropSpareRasters();
+    spreadView_.dropSpareRasters();
 }
 
 std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
@@ -441,9 +445,9 @@ std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     if (settings_.animateTurns.get()) {
         chosenAnimation =
             std::make_unique<LeafTurnAnimation>(compositor_, leafLayer_, window_.dispatcherQueue(),
-                                                spread_, flow_, readingScope_, stop_.token());
+                                                spreadView_, flow_, readingScope_, stop_.token());
     } else {
-        chosenAnimation = std::make_unique<InstantTurnAnimation>(spread_);
+        chosenAnimation = std::make_unique<InstantTurnAnimation>(spreadView_);
     }
 
     // Тени переворота — тоном нынешней темы.
@@ -504,7 +508,8 @@ bool BookView::applySize(SizeInt32 pixels, float scale) {
     // Пиксели — мера; DIP, в которых верстается и рисуется полоса, — их доля.
     const float width = static_cast<float>(pixels.width) / scale;
     const float height = static_cast<float>(pixels.height) / scale;
-    if (width == flow_.width() && height == flow_.height() && scale == scale_ && spread_.measured())
+    if (width == flow_.width() && height == flow_.height() && scale == scale_ &&
+        spreadView_.measured())
         return false;
 
     flow_.resize(width, height);
@@ -515,7 +520,7 @@ bool BookView::applySize(SizeInt32 pixels, float scale) {
     // Растры разворота меняют размер, а не пересоздаются: кисти, которые их
     // уже показывают (фон окна, страницы, листы), продолжают показывать их же.
     // Листы мерит сама стратегия — на каждый переворот.
-    spread_.resize(pixels);
+    spreadView_.resize(pixels);
     leafLayer_.size({width, height});
 
     // Окна кроя листов заданы в прежних числах и после смены размера
@@ -602,7 +607,7 @@ void BookView::showColumn(const PageFlow::Column& target) {
 }
 
 void BookView::redraw() {
-    if (!spread_.measured() || flow_.width() <= 0.0f || flow_.height() <= 0.0f) return;
+    if (!spreadView_.measured() || flow_.width() <= 0.0f || flow_.height() <= 0.0f) return;
 
     // Разворот собран потоком страниц, когда он менялся (перевёрстка, прыжок,
     // переворот): рисование и попадание по сноске читают уже готовый.
@@ -614,7 +619,7 @@ void BookView::redraw() {
     // («из …» стало «из M»), одевала бы обе страницы в новое, и летящий лист
     // пропадал бы на глазах — на тех же точках под ним. Разворот одевает
     // страницы, только когда рисует в осевший растр (SpreadView::redraw).
-    spread_.redraw(turnAnimation_->drawTarget());
+    spreadView_.redraw(turnAnimation_->drawTarget());
 }
 
 void BookView::paintSpread(ID2D1DeviceContext* context) {
