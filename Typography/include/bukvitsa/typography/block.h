@@ -150,9 +150,15 @@ struct BookText {
     sta_vector<OffsetSpan> offsets;
     sta_vector<Block> blocks;      ///< поток чтения, затем блоки тел сносок
 
+    /// Сколько первых блоков — поток чтения: по ним режутся главы, идут
+    /// оглавление и поиск. Дальше в blocks лежат тела сносок.
+    uint32_t flowCount = 0;
+
     /// Блоки тела сноски по её номеру (NoteAnchor::body): вне потока чтения,
     /// в главы не входят, лежат в blocks после него.
     sta_vector<Range> noteBodies;
+
+    std::span<const Block> flow() const { return std::span(blocks).first(flowCount); }
 
     /// Часть режется из вида: у владеющего текста substr нет намеренно, а
     /// границы диапазона — границы кодовых точек по построению.
