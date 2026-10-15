@@ -19,6 +19,7 @@ wxl_add_executable(Reader
     src/app_skins.cpp
     src/start_screen.cpp
     src/book_view.cpp
+    src/spread_view.cpp
     src/library_screen.cpp
     src/reader_panel.cpp
     src/note_popup.cpp
@@ -37,6 +38,7 @@ wxl_add_executable(Reader
     src/note_popup.h
     src/notices.h
     src/skin_wizard.h
+    src/spread_view.h
     src/start_screen.h
     src/pch.h
 )
