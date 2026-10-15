@@ -132,7 +132,12 @@ struct NoteRefData {
     wxl::core::u8_view targetId;    ///< id соответствующего NoteBody
     NoteRole role = NoteRole::Auto;
     NoteNumbering numbering = NoteNumbering::Arabic;
-    const class Node* target = nullptr; ///< разрешён при загрузке: без поиска при вёрстке
+
+    /// Тело сноски разрешено при загрузке — без поиска при вёрстке. Оба поля
+    /// ставятся разом, а у битой ссылки нет ни узла, ни номера. target — для
+    /// нынешнего flatten; номер — для адресации тела в хранилище.
+    const class Node* target = nullptr;
+    std::optional<std::uint32_t> body; ///< номер тела в Document::noteBodies()
 };
 
 struct LinkData {
