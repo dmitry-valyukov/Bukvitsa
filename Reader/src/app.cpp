@@ -103,7 +103,7 @@ App::App()
       ws_{standardDataDirectory()},
       notices_{window_, screenTheme_},
       start_{window_.chromeCompositor(), *this},
-      view_{window_, ws_.settings, themes_, *this},
+      view_{window_, ws_.settings, themes_, *this, stop_.token()},
       shelf_{ws_.library.cards(), ws_.settings.continueReading, ws_.coverDirectory(), *this},
       wizard_{window_.chromeCompositor(), *this},
       panel_{window_.chromeCompositor(), view_, ws_.settings, places_, themes_, search_, *this},
