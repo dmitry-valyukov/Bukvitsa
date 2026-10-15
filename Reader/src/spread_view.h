@@ -21,7 +21,6 @@
 // wxl.core: стандартный заголовок, включённый после импорта, MSVC уже не
 // принимает.
 #include <array>
-#include <functional>
 #include <optional>
 #include <vector>
 
@@ -79,7 +78,8 @@ public:
 
     /// Рисует в данный ему контекст то, что поток страниц показывает сейчас.
     /// Контекст приходит с преобразованием атласа поверхности, в пикселях.
-    using Painter = std::function<void(ID2D1DeviceContext*)>;
+    /// Получатель один — функция wxl.core.
+    using Painter = function<void(ID2D1DeviceContext*)>;
 
     /// Ставит обе страницы на сцену под всем, что на ней будет, скрытыми: их
     /// покажет show(true).
