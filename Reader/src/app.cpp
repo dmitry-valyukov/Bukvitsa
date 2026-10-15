@@ -21,11 +21,13 @@
 // сценарий ловит всё (`std::exception`) и говорит об этом читателю, — иначе
 // отмена дошла бы до него как ошибка.
 //
-// Отложенные записи — два цикла-корутины, `task<>`-члены writeState и
-// writeSettings. Держит их приложение (`DeferredWrite`), а не промис: цикл
-// живёт, пока живо приложение, и на выходе держатель докручивает его
-// синхронно. Записи токена не берут и доходят до конца; сбой записи цикл
-// говорит читателю и ждёт дальше — следующая перемена запишет снова.
+// Состояние книги, настройки и реестр книг пишут три цикла-корутины,
+// `task<>`-члены writeState, writeSettings и writeLibrary, — по одному
+// писателю на файл; рабочее место эти модели только меняет в памяти. Держит
+// циклы приложение (`DeferredWrite`), а не промис: цикл живёт, пока живо
+// приложение, и на выходе держатель докручивает его синхронно. Записи токена
+// не берут и доходят до конца; сбой записи цикл говорит читателю и ждёт
+// дальше — следующая перемена запишет снова.
 
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
@@ -62,6 +64,7 @@ constexpr auto kSplashHold = 1000ms;
 
 // Пауза, после которой настройки вида и место окна попадают на диск. Окно
 // таскают и ползунок двигают непрерывно, а писать на каждый пиксель незачем.
+// У реестра книг она та же, но паузы он не ждёт: его будят только «сейчас».
 constexpr auto kSaveQuiet = 800ms;
 
 // То же для места чтения: страницы листают подряд, а файл на книгу один.
@@ -112,6 +115,10 @@ App::App()
                      [this](WaitableTimer& timer, cancellation_token stop) {
                          return writeSettings(timer, std::move(stop));
                      }},
+      libraryWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
+                    [this](WaitableTimer& timer, cancellation_token stop) {
+                        return writeLibrary(timer, std::move(stop));
+                    }},
       splash_{window_.dispatcherQueue().createTimer()},
       // Место чтения — отложенно, как и место окна: перелистывание — самое
       // частое действие в читалке, а файл состояния книги переписывается
@@ -232,6 +239,11 @@ detached_task App::start() {
     // его поставят.
     geometryWatch_ = window_.add_onGeometryChanged(method(this, &App::windowMoved));
 
+    // Место, где окно встало, — в настройки сразу, как всякая перемена: окно
+    // могло подогнаться под сегодняшние мониторы, а испорченный файл
+    // настроек этой записью и заменяется, о чём запуск уже сказал читателю.
+    windowMoved();
+
     if (ws_.settings.continueReading.get() && !started.lastBook.empty()) {
         open(started.lastBook);
     } else {
@@ -259,6 +271,7 @@ void App::close() {
     stop_.cancel();
     stateWrite_.signal();
     settingsWrite_.signal();
+    libraryWrite_.signal();
 }
 
 /* ---------------- навигация ---------------- */
@@ -412,6 +425,26 @@ task<> App::writeSettings(WaitableTimer& timer, cancellation_token stop) {
             co_await ws_.saveSettings();
         } catch (const system_exception& failure) {
             notices_.post(noticeOf(L"Не удалось сохранить настройки", ws_.settingsPath().wstring(), failure));
+        }
+
+        if (last) co_return;
+    }
+}
+
+/// Реестр книг целиком. Текст рабочее место собирает в момент вызова, до
+/// ожидания: «сейчас» будит ждущий цикл внутри своего вызова, и на диск уходит
+/// реестр этого мига.
+task<> App::writeLibrary(WaitableTimer& timer, cancellation_token stop) {
+    for (;;) {
+        co_await timer;
+
+        // Отмена посреди записи — ещё один круг, как у места чтения.
+        bool const last = stop.is_canceled();
+
+        try {
+            co_await ws_.saveLibrary();
+        } catch (const system_exception& failure) {
+            notices_.post(noticeOf(L"Не удалось сохранить реестр книг", ws_.libraryPath().wstring(), failure));
         }
 
         if (last) co_return;
