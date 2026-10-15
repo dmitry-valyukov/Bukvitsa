@@ -134,6 +134,24 @@ int main() {
            u8"<m:mi>y</m:mi></m:math>",
            L"y");
 
+    golden("пробельные края токена обрезаны",
+           u8"<math><mi> sin </mi><mi>\n\tx </mi><mrow> + </mrow></math>", L"\\sin x+");
+
+    // Знак вне BMP — в UTF-16 пара суррогатов — идёт одной кодовой точкой: не
+    // рвётся на половины и считается одной буквой, а не словом, поэтому
+    // одиночная 𝑥 остаётся переменной, а не уходит в \mathrm.
+    golden("буква вне BMP — одна буква, пара целая",
+           u8"<math><mi>\U0001D465</mi><mo>+</mo><mn>\U0001D7D9</mn></math>",
+           L"\U0001D465+\U0001D7D9");
+
+    golden("спецсимволы TeX экранируются и рядом со знаком вне BMP",
+           u8"<math><mtext>\U0001F4D6{$&amp;#%_\\}</mtext></math>",
+           L"\\text{\U0001F4D6\\{\\$\\&\\#\\%\\_\\backslash \\}}");
+
+    golden("разделитель mfenced вне BMP — целиком",
+           u8"<math><mfenced separators=\"\U0001D7D9\"><mi>a</mi><mi>b</mi></mfenced></math>",
+           L"\\left(a\U0001D7D9b\\right)");
+
     check(fails(u8"<math><mrow>оборванный"), "битый XML отвечает nullopt");
     check(fails(u8"<p>формулы нет</p>"), "XML без math отвечает nullopt");
 

@@ -79,8 +79,16 @@ const wchar_t* mappedChar(char32_t code) {
 // пустота; числами, потому что в редакторе эти символы не видны.
 constexpr bool isInvisible(char32_t code) { return code >= 0x2061 && code <= 0x2064; }
 
-constexpr bool isWhitespace(wchar_t c) {
-    return c == L' ' || c == L'\t' || c == L'\r' || c == L'\n';
+constexpr bool isWhitespace(char16_t c) {
+    return c == u' ' || c == u'\t' || c == u'\r' || c == u'\n';
+}
+
+// Больше одной кодовой точки — слово, а не знак. Единицы UTF-16 считать
+// нельзя: буква вне BMP — две единицы, но всё ещё одна буква.
+bool isWord(wxl::core::u16_view text) {
+    const wxl::core::unicode::code_points points(text);
+    auto point = points.begin();
+    return point != points.end() && ++point != points.end();
 }
 
 // Имена функций, у которых в TeX есть свой макрос: \sin набирается прямым,
@@ -177,38 +185,21 @@ private:
     }
 
     // Весь текст токена, одной строкой UTF-16, пробельные края обрезаны.
-    static std::wstring tokenText(const xml::node& e) {
-        std::wstring text;
-        for (const wxl::core::u8_view piece : e.text_pieces()) {
-            text += std::wstring_view{piece.to_utf16().wchars()};
-        }
+    // Куски — проверенный UTF-8: wxl.xml проверяет документ целиком до
+    // разбора. Склейка проверенного проверена, а края режутся по пробелам
+    // ASCII, то есть между кодовыми точками, — гарантия идёт до конца без
+    // assume_valid.
+    static wxl::core::u16_text tokenText(const xml::node& e) {
+        wxl::core::u16_text text;
+        for (const wxl::core::u8_view piece : e.text_pieces()) text += piece.to_utf16();
+        const std::u16string_view units = text.plain();
         std::size_t begin = 0;
-        std::size_t end = text.size();
-        while (begin < end && isWhitespace(text[begin])) ++begin;
-        while (end > begin && isWhitespace(text[end - 1])) --end;
-        return text.substr(begin, end - begin);
-    }
-
-    // Кодовая точка из UTF-16 с шагом; суррогатная пара — одна точка.
-    static char32_t pointAt(std::wstring_view text, std::size_t& i) {
-        const wchar_t unit = text[i++];
-        if (unit >= 0xD800 && unit <= 0xDBFF && i < text.size()) {
-            const wchar_t low = text[i];
-            if (low >= 0xDC00 && low <= 0xDFFF) {
-                ++i;
-                return 0x10000 + ((static_cast<char32_t>(unit) - 0xD800) << 10) + (low - 0xDC00);
-            }
-        }
-        return unit;
-    }
-
-    void appendPoint(char32_t code) {
-        if (code >= 0x10000) {
-            out_ += static_cast<wchar_t>(0xD800 + ((code - 0x10000) >> 10));
-            out_ += static_cast<wchar_t>(0xDC00 + ((code - 0x10000) & 0x3FF));
-        } else {
-            out_ += static_cast<wchar_t>(code);
-        }
+        std::size_t end = units.size();
+        while (begin < end && isWhitespace(units[begin])) ++begin;
+        while (end > begin && isWhitespace(units[end - 1])) --end;
+        text.erase(end);
+        text.erase(0, begin);
+        return text;
     }
 
     // Символ как есть, но со спецсимволами TeX под защитой.
@@ -223,14 +214,13 @@ private:
         case U'_': out_ += L"\\_"; break;
         case U'\\': out_ += L"\\backslash "; break;
         case U' ': out_ += L' '; break;
-        default: appendPoint(code);
+        default: wxl::core::unicode::append_utf16(out_, code);
         }
     }
 
-    // Текст токена: каждый символ — через таблицу или экранированным.
-    void appendMapped(std::wstring_view text) {
-        for (std::size_t i = 0; i < text.size();) {
-            const char32_t code = pointAt(text, i);
+    // Текст токена: каждая кодовая точка — через таблицу или экранированной.
+    void appendMapped(wxl::core::u16_view text) {
+        for (const char32_t code : wxl::core::unicode::code_points(text)) {
             if (isInvisible(code)) continue;
             if (const wchar_t* tex = mappedChar(code)) out_ += tex;
             else appendEscaped(code);
@@ -259,12 +249,13 @@ private:
     // ---- токены ----
 
     void identifier(const xml::node& e) {
-        const std::wstring text = tokenText(e);
+        const wxl::core::u16_text text = tokenText(e);
         if (text.empty()) return;
-        const bool multi = text.size() > 1 && mappedChar(text[0]) == nullptr;
+        const char32_t first = *wxl::core::unicode::code_points(text).begin();
+        const bool multi = isWord(text) && mappedChar(first) == nullptr;
         if (multi && isFunctionName(text)) {
             out_ += L'\\';
-            out_ += text;
+            out_ += text.wchars();
             out_ += L' ';
             return;
         }
@@ -282,11 +273,11 @@ private:
     void token(const xml::node& e) { appendMapped(tokenText(e)); }
 
     void operatorToken(const xml::node& e) {
-        const std::wstring text = tokenText(e);
+        const wxl::core::u16_text text = tokenText(e);
         appendMapped(text);
         // После словесного оператора (mod и подобных) TeX-имя требует зазора;
         // односимвольные и так отделены своей природой.
-        if (text.size() > 1 && text.find(L'\\') == std::wstring::npos) out_ += L' ';
+        if (isWord(text) && text.plain().find(u'\\') == std::u16string::npos) out_ += L' ';
     }
 
     void textToken(const xml::node& e) {
@@ -295,15 +286,8 @@ private:
         out_ += L'}';
     }
 
-    void looseText(const xml::node& text) {
-        const std::wstring wide = tokenText(text);
-        for (const wchar_t c : wide) {
-            if (!isWhitespace(c)) {
-                appendMapped(wide);
-                return;
-            }
-        }
-    }
+    // Края текста обрезаны, так что непустой остаток — уже не одни пробелы.
+    void looseText(const xml::node& text) { appendMapped(tokenText(text)); }
 
     // ---- структуры ----
 
@@ -345,7 +329,7 @@ private:
     // Акцент над основанием, когда второй ребёнок — известный значок.
     const wchar_t* accentMacro(const xml::node* accent) {
         if (!accent) return nullptr;
-        const std::wstring text = tokenText(*accent);
+        const wxl::core::u16_text text = tokenText(*accent);
         if (text == L"¯" || text == L"‾" || text == L"_") return L"\\bar";
         if (text == L"^" || text == L"ˆ") return L"\\hat";
         if (text == L"~" || text == L"˜") return L"\\tilde";
@@ -406,14 +390,20 @@ private:
     }
 
     void fenced(const xml::node& e) {
-        const auto attributeOr = [&](std::string_view name, std::wstring fallback) {
-            const std::optional<wxl::core::u8_view> value = e.attribute(name);
-            if (!value) return fallback;
-            return std::wstring{std::wstring_view{value->to_utf16().wchars()}};
+        // Значения атрибутов — проверенный UTF-8 из того же документа, что и
+        // текст токенов; у отсутствующего — умолчание спецификации mfenced.
+        const auto attributeOr = [&](std::string_view name, wxl::core::u8_view fallback) {
+            return e.attribute(name).value_or(fallback);
         };
-        const std::wstring open = attributeOr("open", L"(");
-        const std::wstring close = attributeOr("close", L")");
-        const std::wstring separators = attributeOr("separators", L",");
+        const wxl::core::u8_view open = attributeOr("open", u8"(");
+        const wxl::core::u8_view close = attributeOr("close", u8")");
+
+        // Разделитель — кодовая точка, а не единица: знак вне BMP иначе
+        // разорвался бы пополам.
+        const wxl::core::u8_view listed = attributeOr("separators", u8",");
+        std::vector<char32_t> separators;
+        for (const char32_t code : wxl::core::unicode::code_points(listed))
+            separators.push_back(code);
 
         const std::vector<const xml::node*> parts = elementChildren(e);
 
@@ -430,19 +420,20 @@ private:
         appendFence(L"\\right", close);
     }
 
-    void appendFence(std::wstring_view side, std::wstring_view fence) {
+    // Скобка — первая кодовая точка значения, целиком.
+    void appendFence(std::wstring_view side, wxl::core::u8_view fence) {
         out_ += side;
         if (fence.empty()) {
             out_ += L'.';
             return;
         }
-        const wchar_t c = fence.front();
-        if (c == L'{') out_ += L"\\{";
-        else if (c == L'}') out_ += L"\\}";
-        else if (c == L'⟨') out_ += L"\\langle ";
-        else if (c == L'⟩') out_ += L"\\rangle ";
-        else if (c == L'‖') out_ += L"\\Vert ";
-        else out_ += c;
+        const char32_t c = *wxl::core::unicode::code_points(fence).begin();
+        if (c == U'{') out_ += L"\\{";
+        else if (c == U'}') out_ += L"\\}";
+        else if (c == U'⟨') out_ += L"\\langle ";
+        else if (c == U'⟩') out_ += L"\\rangle ";
+        else if (c == U'‖') out_ += L"\\Vert ";
+        else wxl::core::unicode::append_utf16(out_, c);
     }
 
     void table(const xml::node& e) {
