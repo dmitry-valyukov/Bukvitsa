@@ -24,7 +24,6 @@ add_library(bukvitsa_lib STATIC
     src/skins.cpp
     src/store.cpp
     src/theme_list.cpp
-    src/warm_slot.cpp
     src/workspace.cpp
     include/bukvitsa/reader/book.h
     include/bukvitsa/reader/book_index.h
@@ -42,7 +41,6 @@ add_library(bukvitsa_lib STATIC
     include/bukvitsa/reader/store.h
     include/bukvitsa/reader/theme.h
     include/bukvitsa/reader/theme_list.h
-    include/bukvitsa/reader/warm_slot.h
     include/bukvitsa/reader/workspace.h
 )
 add_library(bukvitsa::lib ALIAS bukvitsa_lib)

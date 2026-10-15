@@ -1,14 +1,9 @@
-// Тесты мелких кусков модели читалки:
-// слова о сбое сценария, слот прогретой книги, строка карточки полки, запрос
-// поиска. Каждый — чистая функция или маленький
-// объект, и проверяется без окна.
+// Тесты мелких кусков модели читалки: слова о сбое сценария, строка карточки
+// полки, запрос поиска. Каждый — чистая функция или маленький объект, и
+// проверяется без окна.
 
 #include <cstdio>
 #include <exception>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
-#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -17,12 +12,12 @@
 
 #include "check.h"
 
-// Заголовки читалки после всех стандартных: они несут импорт. Порядок тот же,
-// что в lib_tests.cpp: индекс книги раньше, рабочее место (его включает слот
-// прогретой книги) — последним.
+// Заголовки читалки после всех стандартных: они несут импорт. Индекс книги —
+// раньше, как в lib_tests.cpp; слова о сбое — последними: они импортируют
+// wxl.async.
 #include "bukvitsa/reader/book_index.h"
 #include "bukvitsa/reader/shelf_text.h"
-#include "bukvitsa/reader/warm_slot.h"
+#include "bukvitsa/reader/notice.h"
 
 import wxl.async;
 import wxl.core;
@@ -32,13 +27,6 @@ using bukvitsa::reader::tests::check;
 using wxl::async::system_exception;
 
 namespace {
-
-const std::filesystem::path testdata = BUKVITSA_TESTDATA_DIR;
-
-std::string bytesOf(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-}
 
 /// Сбой сценария словами: операция с файлом — причиной системы, исключение с
 /// текстом — его текстом, если он UTF-8, всё прочее — фактом.
@@ -71,50 +59,6 @@ void testNoticeOfFailure() {
     const Notice unknown = noticeOf(std::make_exception_ptr(42));
     check(unknown.headline == L"Неизвестная ошибка" && unknown.details == L"Сценарий прерван.",
           "брошено не исключение — просто факт");
-}
-
-/// Слот прогретой книги и гонка «открыли, пока грелось». Книга настоящая:
-/// «есть ли книга в слоте» — это указатель, и пустой слот за книгу не считает.
-void testWarmSlotRace() {
-    std::printf("\n=== слот прогретой книги ===\n");
-
-    const std::filesystem::path a = testdata / L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
-    const std::filesystem::path b = testdata / L"nightmare_example.fb3";
-
-    std::string bytes = bytesOf(a);
-    const uint64_t size = bytes.size();
-    const auto book = std::make_shared<Book>(a, std::move(bytes), dwriteFactory());
-
-    // Открыли, пока грелось: открытие сняло заказ, прогрев вернулся позже.
-    WarmSlot slot;
-    slot.expect(a);
-    slot.cancel();
-    slot.fill(a, book, size);
-    check(!slot.holds(a) && !slot.take(a), "открыли, пока грелось, — прогретое выброшено");
-    check(book.use_count() == 1, "выброшенную книгу слот не держит — второй копии в памяти нет");
-
-    // Прогрелась вовремя: отдаётся только своему пути и один раз.
-    slot.expect(a);
-    slot.fill(a, book, size);
-    check(slot.holds(a), "прогретая лежит под своим путём");
-    check(!slot.holds(b) && !slot.take(b), "другой книге прогретую не отдают");
-    check(slot.holds(a), "чужая просьба слот не опустошает");
-
-    const std::optional<Warmed> taken = slot.take(a);
-    check(taken && taken->book == book && taken->fileSize == size, "своей — та же книга и её размер");
-    check(!slot.holds(a) && !slot.take(a), "взятая — слот пуст");
-
-    // Заказ сменился, пока грелась прежняя: прежняя не ложится.
-    slot.expect(a);
-    slot.expect(b);
-    slot.fill(a, book, size);
-    check(!slot.holds(a) && !slot.holds(b), "заказ сменился — прежний прогрев выброшен");
-
-    // Новый заказ начинает с пустого слота: держится одна книга.
-    slot.expect(a);
-    slot.fill(a, book, size);
-    slot.expect(a);
-    check(!slot.holds(a), "новый заказ выбрасывает прогретое прежде");
 }
 
 /// Строка карточки полки: проценты, «не открывалась», закладки.
@@ -167,7 +111,6 @@ void testSearchQuery() {
 
 void runPiecesTests() {
     testNoticeOfFailure();
-    testWarmSlotRace();
     testShelfLine();
     testSearchQuery();
 }

@@ -619,12 +619,12 @@ void testWorkspaceOpensBook() {
     Sandbox box("open");
     Workspace ws(box.root);
 
-    const Warmed warmed = run(ws.readBook(kBook, never));
+    const LoadedBook loaded = run(ws.readBook(kBook, never));
 
-    check(warmed.book != nullptr, "книга прочитана и разобрана");
-    check(warmed.fileSize == std::filesystem::file_size(kBook), "размер файла — настоящий");
+    check(loaded.book != nullptr, "книга прочитана и разобрана");
+    check(loaded.fileSize == std::filesystem::file_size(kBook), "размер файла — настоящий");
 
-    const Opened opened = run(ws.openBook(*warmed.book, warmed.fileSize, never));
+    const Opened opened = run(ws.openBook(*loaded.book, loaded.fileSize, never));
 
     check(opened.state.charOffset == 0 && opened.state.bookmarks.empty(), "новая книга — с чистого листа");
     check(ws.settings.lastBookGuid == opened.entry.guid && ws.settings.lastBookPath == kBook,
@@ -642,7 +642,7 @@ void testWorkspaceOpensBook() {
     state.charOffset = 12345;
     run(ws.saveState(opened.entry.guid, state));
 
-    const Opened reopened = run(ws.openBook(*warmed.book, warmed.fileSize, never));
+    const Opened reopened = run(ws.openBook(*loaded.book, loaded.fileSize, never));
 
     check(reopened.entry.guid == opened.entry.guid, "повторное открытие — та же запись");
     check(reopened.state.charOffset == 12345, "повторное открытие — то же место");
@@ -738,14 +738,14 @@ void testStateGoesUnderPlacesGuid() {
     Sandbox box("places");
     Workspace ws(box.root);
 
-    const Warmed first = run(ws.readBook(kBook, never));
+    const LoadedBook first = run(ws.readBook(kBook, never));
     Opened firstOpened = run(ws.openBook(*first.book, first.fileSize, never));
 
     BookPlaces places;
     places.open(firstOpened.entry.guid, first.book->blocks(), std::move(firstOpened.state.bookmarks));
     places.toggleBookmark(500, u16_text{u"пятьсот"});
 
-    const Warmed second = run(ws.readBook(kOtherBook, never));
+    const LoadedBook second = run(ws.readBook(kOtherBook, never));
     const Opened secondOpened = run(ws.openBook(*second.book, second.fileSize, never));
 
     check(ws.settings.lastBookGuid == secondOpened.entry.guid, "настройки уже указывают на новую книгу");
@@ -788,7 +788,7 @@ void testWorkspaceReadsStopOnRequest() {
     check(canceled(ws.lastBookPath(stop)), "последняя книга: не начинается — отмена, а не «продолжать нечего»");
 
     cancellation_source later;
-    task<Warmed> reading = ws.readBook(kBook, later.token());
+    task<LoadedBook> reading = ws.readBook(kBook, later.token());
     check(!reading.done(), "чтение книги ушло к диску");
     later.cancel();
     check(canceled(std::move(reading)), "попросили посреди чтения — отмена, а не книга");
@@ -828,18 +828,18 @@ void testWorkspaceOpenStopsOutsideWrites() {
     Sandbox box("stop-open");
     Workspace ws(box.root);
 
-    const Warmed warmed = run(ws.readBook(kBook, never));
+    const LoadedBook loaded = run(ws.readBook(kBook, never));
 
     cancellation_source before;
     before.cancel();
 
-    check(canceled(ws.openBook(*warmed.book, warmed.fileSize, before.token())), "под отменённым токеном — отмена");
+    check(canceled(ws.openBook(*loaded.book, loaded.fileSize, before.token())), "под отменённым токеном — отмена");
     check(ws.library.cards().empty() && ws.settings.lastBookGuid.empty(), "до записей: модель не тронута");
     check(!std::filesystem::exists(ws.libraryPath()) && !std::filesystem::exists(ws.settingsPath()),
           "до записей: на диске ничего");
 
     cancellation_source during;
-    task<Opened> opening = ws.openBook(*warmed.book, warmed.fileSize, during.token());
+    task<Opened> opening = ws.openBook(*loaded.book, loaded.fileSize, during.token());
     check(!opening.done(), "открытие стоит на первой записи");
     during.cancel();
 
@@ -947,7 +947,7 @@ void testWorkspaceReadsStopWithParent() {
     cancellation_source parent;
     auto const child = cancellation_source{parent.token()};
 
-    task<Warmed> reading = ws.readBook(kBook, child.token());
+    task<LoadedBook> reading = ws.readBook(kBook, child.token());
     check(!reading.done(), "чтение книги под дочерним токеном ушло к диску");
     parent.cancel();
     check(child.is_canceled(), "отмена родителя отменяет дочерний источник");
@@ -997,8 +997,7 @@ void testWorkspaceFolderKeepsWhatShelfShowed() {
 
 // Тесты других слоёв модели — каждый в своём файле.
 void runSkinEditorTests();
-// Мелкие куски модели, вынесенные из экранов (pieces_tests.cpp). Слот
-// прогретой книги открывает настоящую книгу — потому после COM.
+// Мелкие куски модели, вынесенные из экранов (pieces_tests.cpp).
 void runPiecesTests();
 // Слои модели своими файлами: карта клавиш, список тем, поиск по книге, места
 // открытой книги.

@@ -50,8 +50,8 @@ struct Started {
     std::filesystem::path lastBook;
 };
 
-/// Книга, прочитанная и разобранная: прогрев или первый шаг открытия.
-struct Warmed {
+/// Что отдаёт чтение книги: разобранная книга и размер файла.
+struct LoadedBook {
     std::shared_ptr<Book> book;
     uint64_t fileSize = 0;   ///< размер файла: его записывает реестр
 };
@@ -130,7 +130,7 @@ public:
     /// Читает и разбирает книгу: байты — операцией, разбор — здесь. Файл не
     /// прочитался — `system_exception`; не разобрался — исключение разбора;
     /// попросили остановиться до разбора — отмена, и книга не разбирается.
-    wxl::async::task<Warmed> readBook(std::filesystem::path path, wxl::async::cancellation_token stop);
+    wxl::async::task<LoadedBook> readBook(std::filesystem::path path, wxl::async::cancellation_token stop);
 
     /// Регистрирует книгу: запись в реестре и обложка в кэше. Сам реестр не
     /// пишет — это решает вызывающий: открытие пишет сразу, обход каталога
