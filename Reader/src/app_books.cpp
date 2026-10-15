@@ -1,6 +1,8 @@
 // Приложение: книги — открыть, продолжить, загрузить заранее, добавить книгу
 // или каталог, полка с прогрессом.
 
+#include <optional>
+
 // Свои заголовки со стандартными внутри — до всего, что тянет import
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
 #include "file_dialog.h"
@@ -40,10 +42,13 @@ detached_task App::continueReading() {
         // открытие другой книги, — найдёт поле пустым.
         task<LoadedBook> preload = std::exchange(preload_, {});
 
-        LoadedBook loaded;
+        // Пусто — предзагрузка не удалась: у прочитанной книги пустого
+        // состояния нет, а не удаться ей законно. Открытие — вне try: его
+        // сбой — не сбой предзагрузки и молча не глотается.
+        std::optional<LoadedBook> loaded;
 
         try {
-            loaded = co_await preload;
+            loaded.emplace(co_await preload);
         } catch (const operation_canceled_exception&) {
             // Её отменил владелец: открывается другая книга или закрыто окно —
             // продолжать нечего.
@@ -53,8 +58,8 @@ detached_task App::continueReading() {
             // ниже прочитает её сама и скажет читателю поимённо.
         }
 
-        if (loaded.book) {
-            co_await openLoaded(std::move(loaded), stop.token());
+        if (loaded) {
+            co_await openLoaded(std::move(*loaded), stop.token());
             co_return;
         }
     }
@@ -143,7 +148,7 @@ detached_task App::chooseFolder() {
 ///
 /// Вёрстки здесь нет и быть не может: она зависит от размера окна и настроек
 /// вида. Заранее читается ровно то, что от вида не зависит: байты файла и
-/// разобранный документ с блоками.
+/// книга, развёрнутая в хранилище, с описанием и обложкой для реестра.
 ///
 /// Задача стартует в этом вызове, как всякая `task`, и остаётся в поле: её
 /// ждёт продолжение чтения, а отменяет владелец — открытие книги. Здесь ничего
@@ -197,10 +202,13 @@ detached_task App::open(std::filesystem::path path) {
         }
     }
 
-    LoadedBook loaded;
+    // Пусто, пока книга не прочитана: у прочитанной пустого состояния нет, а
+    // читается она под try, чьи обработчики кончают сценарий. Открытие — за
+    // try: его сбой не выдаётся читателю за сбой чтения файла.
+    std::optional<LoadedBook> loaded;
 
     try {
-        loaded = co_await ws_.readBook(path, stop.token());
+        loaded.emplace(co_await ws_.readBook(path, stop.token()));
     } catch (const operation_canceled_exception&) {
         co_return;   // отмена — не сбой: сказать читателю нечего
     } catch (const last_error& failure) {
@@ -215,7 +223,7 @@ detached_task App::open(std::filesystem::path path) {
         co_return;
     }
 
-    co_await openLoaded(std::move(loaded), stop.token());
+    co_await openLoaded(std::move(*loaded), stop.token());
 }
 
 /// Вторая половина открытия — общая для открытия и продолжения чтения с
@@ -227,7 +235,7 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
     // сигналы циклам записи. Настройки уже укажут на новую книгу, а
     // на полосе пока прежняя, и её место пишется под guid её мест — их
     // открытие не трогает.
-    Opened opened = co_await ws_.openBook(*loaded.book, loaded.fileSize, std::move(stop));
+    Opened opened = co_await ws_.openBook(loaded, std::move(stop));
 
     // Отсюда и до конца — ни одного ожидания: книга сменяется одним шагом.
     //
@@ -245,13 +253,15 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
     stateWrite_.signal();
 
     // Оглавление и закладки — новой книги, пока прежняя ещё на полосе: строки
-    // прежнего оглавления смотрят в её блоки, и панель должна отпустить их
+    // прежнего оглавления смотрят в её текст, и панель должна отпустить их
     // раньше, чем книга уйдёт. Находки прежнего поиска указывают в прежнюю
     // книгу.
-    places_.open(std::move(opened.entry.guid), loaded.book->blocks(), std::move(opened.state.bookmarks));
+    places_.open(std::move(opened.entry.guid), loaded.book->text(), std::move(opened.state.bookmarks));
     search_.clear();
 
-    view_.open(std::move(loaded.book), opened.state.charOffset);
+    // Полоса добавляет свою ссылку на книгу; ссылка прочитанной уходит с
+    // кадром этого шага.
+    view_.open(loaded.book.get(), opened.state.charOffset);
 
     show(Screen::Book);
 }
@@ -264,7 +274,7 @@ detached_task App::toggleBookmark() {
     if (!view_.isOpen()) co_return;
 
     const uint32_t here = view_.position().get();
-    places_.toggleBookmark(here, hintAt(view_.blocks(), here));
+    places_.toggleBookmark(here, hintAt(view_.book()->text(), here));
 
     stateWrite_.signal();
 }

@@ -561,7 +561,8 @@ void ReaderPanel::close() {
 
 void ReaderPanel::searchKeyDown(TextBox const&, KeyRoutedEventArgs& args) {
     if (args.key() != VirtualKey::Enter) return;
-    search_.run(view_.blocks());
+    // Без книги искать негде: под панелью пустая полоса, и поле молчит.
+    if (const Book* book = view_.book()) search_.run(book->text());
     args.handled(true);
 }
 

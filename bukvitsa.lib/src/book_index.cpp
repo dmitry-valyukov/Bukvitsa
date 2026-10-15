@@ -98,13 +98,6 @@ size_t matchLength(const SearchFolding& fold, std::wstring_view text, size_t at,
     return end - at;
 }
 
-/// Позиция символа абзаца в книге. Таблица позиций может быть короче текста —
-/// у блоков без текста её нет вовсе, — и тогда отвечает начало блока.
-uint32_t offsetAt(const typography::Block& block, size_t index) {
-    const std::vector<uint32_t>& offsets = block.paragraph.charOffsets;
-    return index < offsets.size() ? offsets[index] : block.charOffset;
-}
-
 /// Кусок текста вокруг находки: немного до и побольше после.
 ///
 /// Края считаются в единицах UTF-16 и потому сдвигаются к началу буквы: знак
@@ -127,21 +120,20 @@ u16_text contextAround(u16_view text, size_t at, size_t length) {
 
 }  // namespace
 
-sta_vector<ContentsEntry> contentsOf(std::span<const typography::Block> blocks) {
+sta_vector<ContentsEntry> contentsOf(const typography::BookText& book) {
     sta_vector<ContentsEntry> contents;
 
-    for (const typography::Block& block : blocks) {
+    for (const typography::Block& block : book.flow()) {
         if (block.kind != typography::BlockKind::Title) continue;
-        if (block.paragraph.text.empty()) continue;
+        if (block.paragraph.text.count == 0) continue;
 
-        contents.push_back({block.paragraph.text, block.level, block.charOffset});
+        contents.push_back({book.textOf(block.paragraph), block.level, block.charOffset});
     }
 
     return contents;
 }
 
-sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
-                                 u16_view needle, size_t limit) {
+sta_vector<SearchHit> searchBook(const typography::BookText& book, u16_view needle, size_t limit) {
     sta_vector<SearchHit> hits;
     if (needle.empty() || limit == 0) return hits;
 
@@ -155,8 +147,11 @@ sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
 
     // Абзац не копируется: сравнение идёт по его тексту как есть, так что место
     // находки — сразу место в абзаце, а пропущенный мягкий перенос его не сдвигает.
-    for (const typography::Block& block : blocks) {
-        const std::wstring_view text = block.paragraph.text.wchars();
+    // Позицию в книге даёт хранилище по прогонам позиций абзаца; у блока без
+    // текста находок нет, и спрашивать её не о чем.
+    for (const typography::Block& block : book.flow()) {
+        const u16_view paragraph = book.textOf(block.paragraph);
+        const std::wstring_view text = paragraph.wchars();
 
         for (size_t at = 0; at < text.size(); ++at) {
             if (fold(text[at]) != key.front()) continue;
@@ -164,7 +159,8 @@ sta_vector<SearchHit> searchBook(std::span<const typography::Block> blocks,
             const size_t length = matchLength(fold, text, at, key);
             if (length == 0) continue;
 
-            hits.push_back({contextAround(block.paragraph.text, at, length), offsetAt(block, at)});
+            hits.push_back({contextAround(paragraph, at, length),
+                            book.charOffsetAt(block.paragraph, static_cast<uint32_t>(at))});
             if (hits.size() >= limit) return hits;
 
             at += length - 1;
@@ -183,21 +179,21 @@ std::optional<u16_view> searchQuery(std::u16string_view typed) {
     return needle;
 }
 
-u16_text hintAt(std::span<const typography::Block> blocks, uint32_t charOffset) {
+u16_text hintAt(const typography::BookText& book, uint32_t charOffset) {
     constexpr size_t kWords = 60;
 
-    // Последний блок, начинающийся не позже искомой позиции: блоки идут по
-    // возрастанию, и это проверено тестом вёрстки.
+    // Последний блок потока, начинающийся не позже искомой позиции: блоки идут
+    // по возрастанию, и это проверено тестом вёрстки.
     const typography::Block* found = nullptr;
-    for (const typography::Block& block : blocks) {
+    for (const typography::Block& block : book.flow()) {
         if (block.charOffset > charOffset) break;
-        if (!block.paragraph.text.empty()) found = &block;
+        if (block.paragraph.text.count != 0) found = &block;
     }
     if (!found) return {};
 
     // Граница в kWords единиц может прийтись на середину буквы — тогда
     // подсказка на эту букву короче, зато без её обрубка.
-    const u16_view text = found->paragraph.text;
+    const u16_view text = book.textOf(found->paragraph);
     const size_t cut = unicode::floor_grapheme_boundary(text, kWords);
 
     u16_text hint(text.substr(0, cut));

@@ -71,17 +71,19 @@ struct Page {
 /// пересчитывается, а позиции чтения остаются те же, потому что они в символах.
 class Chapter {
 public:
-    /// @param blocks блоки книги — вид, не копия: пагинатор их не меняет и не
-    ///        владеет ими, поэтому список обязан его пережить. Держит его Book,
-    ///        и пагинатор смотрит в одну её главу за раз.
+    /// @param book хранилище книги — то, во что смотрят блоки: текст, прогоны,
+    ///        якоря. Вид, не копия; держит его Book, и оно обязано пережить
+    ///        пагинатор.
+    /// @param blocks блоки главы — вид в поток чтения хранилища: пагинатор их
+    ///        не меняет и не владеет ими, и смотрит в одну главу за раз.
     /// @param characterCount полный размер книги в символах — знаменатель
     ///        прогресса; по блокам его не восстановить, потому что вёрстка
     ///        выбрасывает пробелы между ними.
     /// @param imageSize размеры картинки по её индексу в книге; вёрстка
     ///        картинок не декодирует, поэтому спрашивает у приложения. Пусто —
     ///        спросить не у кого, и картинкам места на полосе нет.
-    Chapter(Engine& engine, std::span<const Block> blocks, uint32_t characterCount,
-              nullable<function<ImageSize(uint32_t)>> imageSize = {});
+    Chapter(Engine& engine, const BookText& book, std::span<const Block> blocks,
+            uint32_t characterCount, nullable<function<ImageSize(uint32_t)>> imageSize = {});
     ~Chapter();
 
     Chapter(const Chapter&) = delete;

@@ -1,6 +1,7 @@
 #include <shlobj.h>
 
 #include <exception>
+#include <optional>
 
 // Свои заголовки — после системных: они несут импорт, а заголовок после
 // импорта MSVC принимает не всякий.
@@ -175,7 +176,7 @@ task<Started> Workspace::start(cancellation_token stop) {
 // ---- книги ----------------------------------------------------------------
 
 task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_token stop) {
-    // Не const: байты уходят в книгу перемещением. Разбор — здесь, на потоке
+    // Не const: байты уходят в документ перемещением. Разбор — здесь, на потоке
     // вызова: память разбора берётся из STA-пула, а он чужого потока не терпит.
     std::string bytes = co_await async_file::read_all(poolPath(path), stop);
 
@@ -184,14 +185,27 @@ task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_to
     // дорогой, а книгу уже не ждут.
     stop.throw_if_canceled();
 
-    LoadedBook loaded;
-    loaded.fileSize = bytes.size();
-    loaded.book = std::make_shared<Book>(path, std::move(bytes), dwriteFactory());
+    const uint64_t fileSize = bytes.size();
 
-    co_return loaded;
+    // Документ — только на время открытия: умирает в конце этой корутины, и
+    // ожиданий до её конца больше нет.
+    fb3::Document document{std::move(bytes)};
+
+    // Что нужно регистрации, снимается раньше книги. Обложка — копией и первой:
+    // её индекс — в описании, а байты картинок книга заберёт себе, и документ
+    // читал бы их из пакета заново. Описание — перемещением: книге оно не
+    // нужно, и строится она из документа, у которого его уже нет.
+    std::optional<BookCover> cover = copyCover(document);
+    fb3::Description description = document.takeDescription();
+
+    auto book =
+        not_null<intrusive_ptr<Book>>{make_refcounted<Book>(path, std::move(document), dwriteFactory())};
+
+    co_return LoadedBook{std::move(book), std::move(description), std::move(cover), fileSize};
 }
 
-task<Registered> Workspace::registerBook(const fb3::Document& document, std::filesystem::path path,
+task<Registered> Workspace::registerBook(const fb3::Description& description, uint32_t characterCount,
+                                         const std::optional<BookCover>& cover, std::filesystem::path path,
                                          uint64_t fileSize) {
     // Guid, под которым настройки помнят этот файл: реестр мог книгу потерять
     // (битый library.xml), а её место чтения в books\{guid}.xml цело, и
@@ -203,15 +217,16 @@ task<Registered> Workspace::registerBook(const fb3::Document& document, std::fil
 
     // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
     // переедет вместе со всеми ссылками в него.
-    Registered registered{library.add(document, path, fileSize, remembered), library.cards().size() != knownBefore};
+    Registered registered{library.add(description, characterCount, cover, path, fileSize, remembered),
+                          library.cards().size() != knownBefore};
 
-    if (const CoverBytes cover = coverOf(document, registered.entry.guid); !cover.name.empty())
-        co_await async_file::write_all(poolPath(coverDirectory() / cover.name.wchars()), std::string(cover.bytes));
+    if (const CoverBytes cached = coverOf(cover, registered.entry.guid); !cached.name.empty())
+        co_await async_file::write_all(poolPath(coverDirectory() / cached.name.wchars()), std::string(cached.bytes));
 
     co_return registered;
 }
 
-task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize, cancellation_token stop) {
+task<Opened> Workspace::openBook(const LoadedBook& loaded, cancellation_token stop) {
     // Под отменённым токеном открытие не начинается — модель не тронута. Дальше
     // токен слушает только чтение состояния, а оно стоит последним: отмена,
     // пришедшая на записи обложки, реестра и настроек в памяти не разделяет —
@@ -223,7 +238,8 @@ task<Opened> Workspace::openBook(const Book& book, uint64_t fileSize, cancellati
     // памяти, и лишь потом её состояние. Файлы реестра и настроек пишут циклы
     // приложения, по одному на файл: запись отсюда шла бы разом с их записью
     // того же файла.
-    const Registered registered = co_await registerBook(book.document(), book.path(), fileSize);
+    const Registered registered = co_await registerBook(loaded.description, loaded.book->characterCount(),
+                                                        loaded.cover, loaded.book->path(), loaded.fileSize);
 
     settings.lastBookGuid = registered.entry.guid;
     settings.lastBookPath = registered.entry.path;
@@ -282,10 +298,18 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellatio
             continue;
         }
 
+        // Реестру нужны описание, число знаков и обложка — их снимаем, и
+        // документ умирает до ожидания: держать разобранное тело, пока пишется
+        // обложка, незачем. Обложка — раньше описания: её индекс в нём.
+        const std::optional<BookCover> cover = copyCover(*document);
+        const uint32_t characterCount = document->characterCount();
+        const fb3::Description description = document->takeDescription();
+        document.reset();
+
         // Полка растёт на каждой книге, а не в конце: в этом и смысл — читатель
         // видит, как она наполняется. Новая книга встаёт карточкой реестра
         // прямо в регистрации, и полка, привязанная к карточкам, слышит её сама.
-        co_await registerBook(*document, path, fileSize);
+        co_await registerBook(description, characterCount, cover, path, fileSize);
 
         result.added = true;
     }

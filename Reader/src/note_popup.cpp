@@ -103,13 +103,15 @@ void NotePopup::draw(const Theme& theme, float width, float height, float scale)
     });
 }
 
-void NotePopup::show(Book& book, const fb3::Node* note, Point anchor, Size area, const Theme& theme,
+void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const Theme& theme,
                      float fontSize, float scale) {
     const float width = std::min(kMaxWidth, std::max(area.width * 0.6f, 220.0f));
     const float inner = width - kPadding * 2.0f;
 
-    body_ = note ? typography::layoutNote(book.engine(), *note, inner, fontSize)
-                 : typography::NoteLayout{};
+    // Тело верстается из хранилища книги: его блоки развёрнуты там вместе с
+    // потоком чтения, заново ничего не разворачивается.
+    const typography::BookText& text = book.text();
+    body_ = typography::layoutNote(book.engine(), text, text.noteBodies[body], inner, fontSize);
     if (body_.lines.empty()) {
         hide();
         return;

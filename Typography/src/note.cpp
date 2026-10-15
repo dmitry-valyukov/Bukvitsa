@@ -1,4 +1,7 @@
-// Сноска: тело -> блоки -> строки на базовых линиях.
+// Сноска: блоки тела -> строки на базовых линиях.
+//
+// Тело сноски развёрнуто в хранилище книги заодно с потоком чтения, поэтому
+// показ сноски — только вёрстка её готовых блоков, без разбора заново.
 //
 // Стиль сноски — здесь, а не у того, кто её показывает, по той же причине, по
 // какой таблица стилей блоков живёт в пагинаторе: как выглядит сноска, знает
@@ -10,7 +13,8 @@
 
 namespace bukvitsa::typography {
 
-NoteLayout layoutNote(Engine& engine, const fb3::Node& note, float width, float fontSize) {
+NoteLayout layoutNote(Engine& engine, const BookText& book, Range body, float width,
+                      float fontSize) {
     NoteLayout result;
     if (width <= 0.0f) return result;
 
@@ -23,10 +27,10 @@ NoteLayout layoutNote(Engine& engine, const fb3::Node& note, float width, float 
 
     float y = 0.0f;
 
-    for (const Block& block : flatten(note)) {
-        if (block.paragraph.text.empty()) continue;
+    for (const Block& block : book.blocksOf(body)) {
+        if (block.paragraph.text.count == 0) continue;
 
-        for (Line& line : engine.layout(block.paragraph, width, style)) {
+        for (Line& line : engine.layout(book, block.paragraph, width, style)) {
             y += line.ascent;
             const float baseline = y;
             y += line.height - line.ascent;

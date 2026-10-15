@@ -3,7 +3,7 @@
 
 #include <objbase.h>
 
-// «book.h» больше не нужен: реестр работает с разобранным документом.
+// «book.h» здесь нет: реестру хватает описания книги и копии её обложки.
 
 // Последними: реестр и хранилище импортируют wxl.core.
 #include "bukvitsa/reader/library.h"
@@ -38,8 +38,8 @@ void attribute(text_builder<sta_allocator>& out, std::string_view name, const au
 }
 
 /// Определена ниже, рядом с тем, что делает, — а нужна уже в add().
-BookEntry describe(const fb3::Document& document, const std::filesystem::path& path,
-                   uint64_t fileSize);
+BookEntry describe(const fb3::Description& description, uint32_t characterCount,
+                   const std::filesystem::path& path, uint64_t fileSize);
 
 /// Карточка записи. Самосчитающая рождается со счётчиком 1, и указатель эту
 /// ссылку принимает, а не добавляет свою.
@@ -175,16 +175,17 @@ std::optional<uint32_t> Library::placeOfSame(const BookEntry& candidate) const {
     return std::nullopt;
 }
 
-const BookEntry& Library::add(const fb3::Document& document, const std::filesystem::path& path,
+const BookEntry& Library::add(const fb3::Description& description, uint32_t characterCount,
+                              const std::optional<BookCover>& cover, const std::filesystem::path& path,
                               uint64_t fileSize, u16_view rememberedGuid) {
-    BookEntry entry = describe(document, path, fileSize);
+    BookEntry entry = describe(description, characterCount, path, fileSize);
 
     if (const std::optional<uint32_t> known = placeOfSame(entry)) {
         // Guid остаётся прежним: за ним место чтения, и книга, которую
         // переложили в другую папку, должна открыться там же, где закрылась.
         const ShelfCard& stored = *cards_[*known];
         entry.guid = stored.entry.guid;
-        entry.cover = coverOf(document, entry.guid).name;
+        entry.cover = coverOf(cover, entry.guid).name;
 
         // Та же запись — та же карточка: книгу открыли снова, и полке нечего
         // перестраивать. Другая — новая карточка на том же месте; строку
@@ -201,36 +202,42 @@ const BookEntry& Library::add(const fb3::Document& document, const std::filesyst
     // Прежний guid — только свободный: занятый значил бы, что по пути из
     // настроек лежит уже другая книга, а эта запись — чья-то ещё.
     entry.guid = rememberedGuid.empty() || find(rememberedGuid) ? newGuid() : u16_text{rememberedGuid};
-    entry.cover = coverOf(document, entry.guid).name;
+    entry.cover = coverOf(cover, entry.guid).name;
     cards_.push_back(cardOf(std::move(entry)));
     return cards_[cards_.size() - 1]->entry;
 }
 
 
-CoverBytes coverOf(const fb3::Document& document, u16_view guid) {
+std::optional<BookCover> copyCover(const fb3::Document& document) {
     const std::optional<uint32_t> index = document.description().coverImageIndex;
-    if (!index || guid.empty()) return {};
+    if (!index) return std::nullopt;
 
+    // image(), а не images()[index]: байты части читаются при первом
+    // обращении, и в списке их может ещё не быть.
     const fb3::ImagePart* part = document.image(*index);
-    if (!part || part->bytes.empty()) return {};
+    if (!part || part->bytes.empty()) return std::nullopt;
 
-    const u16_view extension = coverExtension(part->contentType.chars());
+    return BookCover{part->contentType, part->bytes};
+}
+
+CoverBytes coverOf(const std::optional<BookCover>& cover, u16_view guid) {
+    if (!cover || guid.empty()) return {};
+
+    const u16_view extension = coverExtension(cover->contentType.chars());
     if (extension.empty()) return {};   // svg и прочее, чего Image не покажет
 
-    CoverBytes cover;
-    cover.name = u16_text{guid};
-    cover.name += extension;
-    cover.bytes = part->bytes;
+    CoverBytes cached;
+    cached.name = u16_text{guid};
+    cached.name += extension;
+    cached.bytes = cover->bytes;
 
-    return cover;
+    return cached;
 }
 
 namespace {
 
-BookEntry describe(const fb3::Document& document, const std::filesystem::path& path,
-                   uint64_t fileSize) {
-    const fb3::Description& description = document.description();
-
+BookEntry describe(const fb3::Description& description, uint32_t characterCount,
+                   const std::filesystem::path& path, uint64_t fileSize) {
     BookEntry entry;
     entry.path = path;
     // Ни одного assume_valid: модель книги отдаёт проверенный текст, потому
@@ -238,7 +245,7 @@ BookEntry describe(const fb3::Document& document, const std::filesystem::path& p
     entry.bookId = description.id.to_utf16();
     entry.title = description.title.to_utf16();
     entry.authors = description.authorsLine().to_utf16();
-    entry.characterCount = document.characterCount();
+    entry.characterCount = characterCount;
 
     // Размер файла приходит снаружи: узнать его -- обращение к диску, а на
     // этом потоке их не бывает. Спрашивает его тот, кто читал сам файл, и

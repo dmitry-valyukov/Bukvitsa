@@ -357,7 +357,8 @@ size_t nonEmptyLimit(const sta_vector<LaidOutBlock>& blocks) {
 
 struct Chapter::Impl {
     Engine& engine;
-    std::span<const Block> blocks;   ///< книги: вид в мастер-список Book, не копия
+    const BookText& bookText;        ///< хранилище книги: то, во что смотрят блоки
+    std::span<const Block> blocks;   ///< главы: вид в поток чтения хранилища, не копия
     nullable<function<ImageSize(uint32_t)>> imageSize;   ///< пусто — картинкам места на полосе нет
 
     PageStyle style;
@@ -380,9 +381,9 @@ struct Chapter::Impl {
     size_t lastNonEmpty = 0;         ///< за него набору заходить нельзя
     bool complete = true;
 
-    Impl(Engine& engine_, std::span<const Block> blocks_, uint32_t characterCount_,
-         nullable<function<ImageSize(uint32_t)>> imageSize_)
-        : engine(engine_), blocks(blocks_), imageSize(std::move(imageSize_)),
+    Impl(Engine& engine_, const BookText& bookText_, std::span<const Block> blocks_,
+         uint32_t characterCount_, nullable<function<ImageSize(uint32_t)>> imageSize_)
+        : engine(engine_), bookText(bookText_), blocks(blocks_), imageSize(std::move(imageSize_)),
           characterCount(characterCount_) {}
 
     /// Сбрасывает раскладку главы под новый стиль — строки, страницы, набор, —
@@ -414,11 +415,7 @@ struct Chapter::Impl {
     }
 
     /// Верстает один блок в строки.
-    ///
-    /// @param firstChar символ внутри абзаца, с которого начинать. Не ноль
-    ///        только у первого блока мгновенной страницы: она начинается с
-    ///        места чтения, а не с красной строки.
-    LaidOutBlock layOut(size_t index, uint32_t firstChar) {
+    LaidOutBlock layOut(size_t index) {
         const Block& block = blocks[index];
 
         LaidOutBlock item;
@@ -426,9 +423,7 @@ struct Chapter::Impl {
         item.indent = indentFor(block, style);
 
         const Spacing spacing = spacingFor(block);
-        // Абзац, начатый с середины, ничего сверху не отбивает: отбивка
-        // принадлежит началу блока, а оно осталось на прошлой странице.
-        item.spaceBefore = firstChar == 0 ? spacing.before * style.fontSize : 0.0f;
+        item.spaceBefore = spacing.before * style.fontSize;
         item.spaceAfter = spacing.after * style.fontSize;
 
         if (block.kind == BlockKind::Image) {
@@ -447,11 +442,9 @@ struct Chapter::Impl {
         // только метрики, а они линейны по кеглю. Второй и все следующие
         // проходы обходятся одной разбивкой на строки.
         if (!shaped[index])
-            shaped[index] = engine.shape(block.paragraph, blockStyle);
+            shaped[index] = engine.shape(bookText, block.paragraph, blockStyle);
 
-        item.lines = firstChar == 0
-                         ? engine.layout(*shaped[index], measure, blockStyle)
-                         : engine.layoutFrom(*shaped[index], firstChar, measure, blockStyle);
+        item.lines = engine.layout(*shaped[index], measure, blockStyle);
 
         // Заголовок держится за то, что за ним: сам по себе он ничего не
         // значит. Так же ведёт себя подзаголовок и подпись — она относится
@@ -489,7 +482,7 @@ struct Chapter::Impl {
             return true;   // уже досчитано досюда — лишнего блока не считаем
 
         while (layoutCursor < blocks.size()) {
-            laidOut[layoutCursor] = layOut(layoutCursor, 0);
+            laidOut[layoutCursor] = layOut(layoutCursor);
             if (laidOut[layoutCursor].occupies())
                 lastNonEmpty = layoutCursor;
             ++layoutCursor;
@@ -515,7 +508,7 @@ struct Chapter::Impl {
             return false;
 
         while (layoutCursor < blocks.size()) {
-            laidOut[layoutCursor] = layOut(layoutCursor, 0);
+            laidOut[layoutCursor] = layOut(layoutCursor);
             if (laidOut[layoutCursor].occupies())
                 lastNonEmpty = layoutCursor;
             ++layoutCursor;
@@ -547,9 +540,9 @@ struct Chapter::Impl {
 
 /* ================================================================== */
 
-Chapter::Chapter(Engine& engine, std::span<const Block> blocks, uint32_t characterCount,
-                     nullable<function<ImageSize(uint32_t)>> imageSize)
-    : impl_(std::make_unique<Impl>(engine, blocks, characterCount, std::move(imageSize))) {}
+Chapter::Chapter(Engine& engine, const BookText& book, std::span<const Block> blocks,
+                 uint32_t characterCount, nullable<function<ImageSize(uint32_t)>> imageSize)
+    : impl_(std::make_unique<Impl>(engine, book, blocks, characterCount, std::move(imageSize))) {}
 
 Chapter::~Chapter() = default;
 

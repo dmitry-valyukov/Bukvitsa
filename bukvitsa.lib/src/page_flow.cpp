@@ -1,8 +1,6 @@
 #include <algorithm>
 #include <chrono>
-#include <memory>
 #include <optional>
-#include <span>
 
 // Заголовки модели после всех стандартных: они ведут к импорту модулей книги и
 // wxl.core, а стандартный заголовок после импорта MSVC уже не принимает. Свой
@@ -66,10 +64,11 @@ constexpr size_t kNoChapter = static_cast<size_t>(-1);
 
 /* ---------------- книга ---------------- */
 
-void PageFlow::open(std::shared_ptr<Book> book, uint32_t charOffset) {
+void PageFlow::open(not_null<Book> book, uint32_t charOffset) {
     // Разворот указывает в страницы прежней книги — отпускается раньше неё.
     spread_ = Spread{};
-    book_ = std::move(book);
+    // Ссылка добавляется от голого указателя: счётчик — в самой книге.
+    book_ = book.get();
     position_ = charOffset;
     page_ = 0;
 }
@@ -79,11 +78,6 @@ void PageFlow::close() {
     book_.reset();
     position_ = 0;
     page_ = 0;
-}
-
-std::span<const typography::Block> PageFlow::blocks() const {
-    if (!book_) return {};
-    return book_->blocks();
 }
 
 bool PageFlow::readable() const {
@@ -462,8 +456,8 @@ float PageFlow::spine() const {
     return columnLeft(1) - gutter * 0.5f;
 }
 
-PageFlow::NoteHit PageFlow::noteAt(Point point) const {
-    if (!book_) return NoteHit{};
+std::optional<PageFlow::NoteHit> PageFlow::noteAt(Point point) const {
+    if (!book_) return std::nullopt;
 
     for (size_t column = 0; column < spread_.pages.size(); ++column) {
         const float left = columnLeft(column);
@@ -484,12 +478,12 @@ PageFlow::NoteHit PageFlow::noteAt(Point point) const {
                 const float x = left + placed.x + note.x;
                 if (point.x < x - slack || point.x > x + note.width + slack) continue;
 
-                return NoteHit{note.target, Point{x + note.width * 0.5f, baseline + line.descent}};
+                return NoteHit{note.body, Point{x + note.width * 0.5f, baseline + line.descent}};
             }
         }
     }
 
-    return NoteHit{};
+    return std::nullopt;
 }
 
 }  // namespace bukvitsa::reader
