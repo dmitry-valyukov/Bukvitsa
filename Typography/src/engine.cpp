@@ -25,6 +25,9 @@
 #include <dwrite_2.h>
 #include <wrl/client.h>
 
+// ensure — макрос: с импортом он не приходит.
+#include "abi.h"
+
 // Свои заголовки после всех стандартных: они ведут к импорту модуля книги, а
 // стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/hyphenation.h"
@@ -463,16 +466,23 @@ struct Engine::Impl {
     sta_vector<FormatRun> formatRuns(u16_view text, std::span<const StyleSpan> spans,
                                      const ParagraphStyle& blockStyle,
                                      const AnalysisSink& analysis) {
-        assert(!spans.empty() &&
-               "у абзаца с текстом прогоны стиля — разбиение текста, хотя бы один прогон");
-
         const auto textLength = static_cast<uint32_t>(text.size());
         sta_vector<FormatRun> runs;
 
+        // Границы прогонов — счёт flatten по набранному тексту, не числа из
+        // файла. Пустой список, дыра, перекрытие памяти не трогают — текст
+        // вышел бы ненабранным или набранным дважды, — их ловит Debug. Прогон
+        // за концом текста читал бы за концом и текст, и массивы анализа: эта
+        // граница — во всех сборках, раз на прогон стиля, что рядом с анализом
+        // абзаца в DirectWrite ничто.
+        [[maybe_unused]] uint32_t covered = 0;   // читают только проверки Debug
         for (const StyleSpan& span : spans) {
+            assert(span.start == covered && "прогоны стиля идут подряд, без дыр и перекрытий");
+            ensure(span.start <= textLength && span.length <= textLength - span.start);
+
             uint32_t at = span.start;
             const uint32_t spanEnd = span.start + span.length;
-            assert(spanEnd <= textLength && "прогон стиля не выходит за текст абзаца");
+            covered = spanEnd;
 
             while (at < spanEnd) {
                 uint32_t end = at + 1;
@@ -539,6 +549,7 @@ struct Engine::Impl {
             }
         }
 
+        assert(covered == textLength && "прогоны стиля покрывают текст абзаца до конца");
         return runs;
     }
 

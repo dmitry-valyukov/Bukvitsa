@@ -27,6 +27,10 @@
 #include <span>
 #include <vector>
 
+// ensure — макрос, а макросы с импортом не приходят: его даёт открытый
+// заголовок wxl.core, а функцию, которую он зовёт в Release, — импорт ниже.
+#include "abi.h"
+
 // Импорт последним, и он же — причина, по которой объявить `fb3::Node` вперёд
 // больше нельзя: тип принадлежит модулю, и такое объявление завело бы другую
 // сущность, а не ту же самую. Оттуда же берётся STA-аллокатор: вся динамическая
@@ -209,10 +213,20 @@ struct BookText {
     /// index < paragraph.text.count — у строки и у находки начало всегда внутри
     /// текста, и спрашивать за его концом некому.
     uint32_t charOffsetAt(const Paragraph& paragraph, uint32_t index) const {
+        // Индекс даёт вёрстка строки или поиск, не файл. За концом текста он
+        // лишь дал бы неверное число, памяти за абзацем не трогая, — довольно
+        // Debug.
         assert(index < paragraph.text.count);
         const std::span<const OffsetSpan> runs = offsetsOf(paragraph);
         const auto after = std::upper_bound(runs.begin(), runs.end(), index,
                                             [](uint32_t at, const OffsetSpan& run) { return at < run.start; });
+
+        // А прогона перед индексом может не оказаться: у абзаца без текста
+        // прогонов позиций нет вовсе, и prev от начала читал бы чужой элемент
+        // или память перед массивом. Проверка во всех сборках: сравнение на
+        // вызов рядом с двоичным поиском, а зовут её раз на строку и на
+        // находку, не на символ.
+        ensure(after != runs.begin());
         const OffsetSpan& run = *std::prev(after);
         return run.charOffset + (index - run.start);
     }
