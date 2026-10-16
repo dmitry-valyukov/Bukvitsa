@@ -311,6 +311,131 @@ void testEdgeThroughPoints() {
     check(highest < 0.111f && lowest > 0.014f, "утянутая точка ведёт кромку без большого размаха");
 }
 
+/// Обложка, чья верхняя кромка ставлена по правилам мастера — доли снимка,
+/// не ниже четверти высоты, зазор между точками не меньше 0,02, — но у
+/// правого края сплайн между близкими точками перелетает их и уводит кромку
+/// выше верха почти на высоту полосы. Нижняя кромка — начальная прямая.
+reader::Skin foldedSkin() {
+    reader::Skin folded = reader::defaultSkin();
+    folded.top.x = {0.156f, 0.194f, 0.371f, 0.465f, 0.5f, 0.877f, 0.905f, 0.927f, 0.948f};
+    folded.top.y = {0.0f, 0.0f, 0.0f, 0.0f, 0.039f, 0.0f, 0.25f, 0.0f, 0.0f};
+    return folded;
+}
+
+/// Точки полосы на одном расстоянии с допуском в тысячную DIP — столько
+/// float и даёт на высоте окна; глазом и мышью не видно и в сотни раз больше.
+bool aboutSamePoint(reader::PageWarp::Point a, reader::PageWarp::Point b) {
+    return std::abs(a.x - b.x) < 1e-3f && std::abs(a.y - b.y) < 1e-3f;
+}
+
+/// Изгиб страницы: под ровной обложкой перевод — тождество; кромка, поднятая
+/// в столбце на Δ, поднимает там набор у верхнего края ровно на Δ высоты, а
+/// опущенная нижняя — опускает у нижнего; знак сдвига тот же, что у карты
+/// изгиба; экран и вёрстка переводятся друг в друга туда и обратно — и у
+/// корешка с обеих сторон.
+void testPageWarp() {
+    std::printf("\n=== изгиб страницы ===\n");
+    using reader::PageWarp;
+    constexpr auto area = PageWarp::Size{1280.0f, 860.0f};
+
+    // Сетка точек полосы: края, середина и корешок с обеих сторон — там у
+    // каждого листа своя кривая.
+    std::vector<PageWarp::Point> grid;
+    for (const float u : {0.0f, 0.1f, 0.3f, 0.45f, 0.4999f, 0.5f, 0.5001f, 0.55f, 0.8f, 1.0f})
+        for (const float v : {0.0f, 0.03f, 0.25f, 0.5f, 0.75f, 0.97f, 1.0f})
+            grid.push_back(PageWarp::Point{u * area.width, v * area.height});
+
+    // Ровная обложка: гнуть нечего, и обе стороны перевода отдают точку как
+    // есть — до последнего разряда.
+    auto const straight = PageWarp{reader::defaultSkin()};
+    bool identity = straight.flat();
+    for (const PageWarp::Point point : grid) {
+        const PageWarp::Point screen = straight.toScreen(point, area);
+        const PageWarp::Point layout = straight.toLayout(point, area);
+        const float shiftHere = straight.shift(point.x / area.width, point.y / area.height);
+        identity = identity && screen.x == point.x && screen.y == point.y && layout.x == point.x &&
+                   layout.y == point.y && shiftHere == 0.0f;
+    }
+    check(identity, "ровная обложка — плоская, перевод точки — тождество");
+
+    // Верхняя кромка поднята на Δ в точке левого листа, нижняя опущена на δ
+    // в точке правого; остальные точки на прямых — и листы друг другу не
+    // мешают.
+    constexpr float kRaise = 0.03f;
+    constexpr float kDrop = 0.02f;
+    constexpr size_t kLeftKnot = 2;
+    constexpr size_t kRightKnot = 6;
+    reader::Skin bent = reader::defaultSkin();
+    bent.top.y[kLeftKnot] = reader::kEdgeInset - kRaise;
+    bent.bottom.y[kRightKnot] = 1.0f - reader::kEdgeInset + kDrop;
+    auto const warp = PageWarp{bent};
+    check(!warp.flat(), "тронутая кромка — изгиб есть");
+
+    const float leftX = bent.top.x[kLeftKnot] * area.width;
+    const float rightX = bent.bottom.x[kRightKnot] * area.width;
+
+    // У поднятой верхней кромки экран показывает вёрстку на Δ·H ниже: набор
+    // поднят. Сдвиг там отрицательный — как в карте, где у строк, уезжающих
+    // вверх, канал выше середины: «взять снизу».
+    check(warp.shift(bent.top.x[kLeftKnot], 0.0f) < 0.0f &&
+              std::abs(warp.shift(bent.top.x[kLeftKnot], 0.0f) + kRaise) < 1e-6f,
+          "сдвиг у поднятой кромки — минус её подъём");
+    check(aboutSamePoint(warp.toLayout(PageWarp::Point{leftX, 0.0f}, area),
+                         PageWarp::Point{leftX, kRaise * area.height}) &&
+              aboutSamePoint(warp.toScreen(PageWarp::Point{leftX, kRaise * area.height}, area),
+                             PageWarp::Point{leftX, 0.0f}),
+          "поднятая на Δ верхняя кромка поднимает набор у верхнего края на Δ·H");
+    check(aboutSamePoint(warp.toLayout(PageWarp::Point{leftX, area.height}, area),
+                         PageWarp::Point{leftX, area.height}),
+          "нижний край того же столбца, где нижняя кромка прямая, — на месте");
+
+    // У опущенной нижней — вёрстка на δ·H выше: набор опущен.
+    auto const lowered = PageWarp::Point{rightX, area.height - kDrop * area.height};
+    check(warp.shift(bent.bottom.x[kRightKnot], 1.0f) > 0.0f &&
+              aboutSamePoint(warp.toLayout(PageWarp::Point{rightX, area.height}, area), lowered) &&
+              aboutSamePoint(warp.toScreen(lowered, area), PageWarp::Point{rightX, area.height}),
+          "опущенная на δ нижняя кромка опускает набор у нижнего края на δ·H");
+    check(aboutSamePoint(warp.toLayout(PageWarp::Point{rightX, 0.0f}, area),
+                         PageWarp::Point{rightX, 0.0f}),
+          "верхний край того же столбца, где верхняя кромка прямая, — на месте");
+
+    // Туда и обратно — на сетке, с этой кромкой и с «Брошюрой», у которой
+    // изгиб у корешка в десятки DIP. По горизонтали изгиб не двигает ничего.
+    const auto roundTrips = [&](const PageWarp& pageWarp) {
+        bool back = true;
+        for (const PageWarp::Point point : grid) {
+            const PageWarp::Point screen = pageWarp.toScreen(point, area);
+            back = back && screen.x == point.x &&
+                   aboutSamePoint(pageWarp.toLayout(screen, area), point) &&
+                   aboutSamePoint(pageWarp.toScreen(pageWarp.toLayout(point, area), area), point);
+        }
+        return back;
+    };
+    check(roundTrips(warp), "вёрстка → экран → вёрстка и обратно — та же точка");
+
+    const reader::Skin* booklet = nullptr;
+    for (const reader::Skin& system : reader::systemSkins())
+        if (system.name == u"Брошюра") booklet = &system;
+    check(booklet != nullptr, "среди системных обложек есть «Брошюра»");
+    if (!booklet) return;
+
+    auto const bookletWarp = PageWarp{*booklet};
+    check(!bookletWarp.flat() && roundTrips(bookletWarp),
+          "«Брошюра»: туда и обратно — та же точка, у корешка с обеих сторон тоже");
+
+    // Столбцы не выворачивает ни одна системная обложка и ни одна кромка выше.
+    bool systemKeep = straight.keepsColumns() && warp.keepsColumns();
+    for (const reader::Skin& system : reader::systemSkins())
+        systemKeep = systemKeep && PageWarp{system}.keepsColumns();
+    check(systemKeep, "системные обложки и тронутая кромка столбцов не выворачивают");
+
+    // Точки — как ставит мастер: доли снимка, верхняя до четверти высоты, с
+    // зазором не меньше 0,02. Но у правого края кромка между близкими точками
+    // перелетает их выше верха почти на высоту полосы.
+    check(!PageWarp{foldedSkin()}.keepsColumns(),
+          "кромка, перелетевшая полосу между точками, выворачивает столбец");
+}
+
 /// Реестр второй версии — листы порознь, по пять точек, — читается в кривые
 /// из девяти: две точки у корешка становятся одной, на середине и высотой
 /// посередине между ними. Записывается уже третья версия, и она читается
@@ -402,6 +527,41 @@ void testSkinsReadSeparateLeaves() {
     check(straightened.list().size() == 1 && straightened.list()[0].top.x == fresh.top.x &&
               straightened.list()[0].top.y == fresh.top.y,
           "точки не по порядку — кромка становится начальной прямой");
+
+    // Кромки, которые между точками разошлись на высоту полосы и вывернули бы
+    // столбец: ровной становится вся обложка.
+    reader::Skin namedFold = foldedSkin();
+    namedFold.name = u16_text{u"Вывернутая"};
+    namedFold.image = u16_text{u"folded.png"};
+    reader::Skins foldingRegistry;
+    foldingRegistry.put(namedFold);
+    reader::Skins unfolded;
+    unfolded.loadFrom(foldingRegistry.toXml());
+    check(unfolded.list().size() == 1 && unfolded.list()[0].top.y == fresh.top.y &&
+              unfolded.list()[0].bottom.y == fresh.bottom.y &&
+              reader::PageWarp{unfolded.list()[0]}.flat(),
+          "обложка, выворачивающая столбец, читается ровной");
+
+    // Файл поправили руками: первые две точки верхней кромки — на нулевом и на
+    // субнормальном иксе. По возрастанию они идут, но шаг между ними сплайн
+    // переводит в бесконечность и NaN, и карта изгиба взяла бы из него байт.
+    // Файлу не верят: такая обложка тоже читается ровной.
+    const std::string subnormal = R"(<?xml version="1.0" encoding="utf-8"?>
+<skins version="3">
+  <skin name="Сломанная" image="broken.png">
+    <top>
+      <point x="0" y="0.02"/>
+      <point x="1e-45" y="0.03"/>
+    </top>
+  </skin>
+</skins>
+)";
+    reader::Skins broken;
+    broken.loadFrom(subnormal);
+    check(broken.list().size() == 1 && broken.list()[0].top.x == fresh.top.x &&
+              broken.list()[0].top.y == fresh.top.y &&
+              reader::PageWarp{broken.list()[0]}.flat(),
+          "кромка на субнормальном шаге читается ровной");
 }
 
 
@@ -1147,6 +1307,7 @@ int main(int argc, char* argv[]) {
     testSearchPlacesHitsByOffsetRuns();
     testSearchMatchesWhatTheReaderMeans();
     testEdgeThroughPoints();
+    testPageWarp();
     testSkinsReadSeparateLeaves();
     runSkinEditorTests();
     runKeyMapTests();

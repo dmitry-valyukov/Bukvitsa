@@ -193,6 +193,19 @@ private:
     };
     std::vector<PendingMarker> pendingMarkers_;
 
+    /// Якорь знака сноски, чей текст начнётся с первой же буквы. С неё
+    /// заводится новый прогон стиля, даже если начертание то же, что у
+    /// прежней, и с неё же якорь отсчитывает своё начало. Место знака на
+    /// строке — объединение его прогонов, и чужой текст в них — `<sup>`
+    /// вплотную или соседний знак — растянул бы это место на себя: щелчок по
+    /// чужому открывал бы эту сноску. А начало — по букве, а не по входу в
+    /// `<note>`: знак, поставленный вёрсткой для пустого `<note/>` перед ним,
+    /// встаёт перед этой же буквой, и якорь, отсчитанный от входа, накрыл бы
+    /// и его; так же и знак внутри знака, стоящий до его первой буквы. Съедает
+    /// якорь первая же буква; блок, закрывшийся раньше неё, уносит его с собой
+    /// (openBlock).
+    std::optional<size_t> openingAnchor_;
+
     /* ---------------- хранилище ---------------- */
 
     /// Резерв по мерам разбора. Это оценка, а не граница: символ вне BMP —
@@ -254,6 +267,11 @@ private:
         pendingSpace_ = false;
         letters_ = {};
         ++blockSerial_;
+
+        // Якорь, ждавший буквы, остался в закрытом блоке: тот выбросил его
+        // вместе с нулевой длиной (cutTail), и номер больше ни на что не
+        // указывает.
+        openingAnchor_.reset();
     }
 
     void finishBlock() {
@@ -358,7 +376,8 @@ private:
     /* ---------------- текст ---------------- */
 
     /// Прогоны стиля образуют разбиение текста, а не вложенные интервалы:
-    /// новый прогон начинается там, где сменилось начертание. Так шейперу
+    /// новый прогон начинается там, где сменилось начертание, и там, где
+    /// начинается знак сноски с якорем (`openingAnchor_`). Так шейперу
     /// не приходится разбирать перекрытия, а `<strong><em>` — это просто
     /// прогон, у которого стоят оба флага.
     ///
@@ -380,8 +399,12 @@ private:
         const uint32_t at = length();
 
         if (sizeOf(book_.spans) == block_.paragraph.spans.first ||
-            (startsLetter && !(book_.spans.back().style == styles_.back())))
+            (startsLetter && (openingAnchor_ || !(book_.spans.back().style == styles_.back()))))
             book_.spans.push_back(StyleSpan{at, 0, styles_.back()});
+        if (startsLetter && openingAnchor_) {
+            book_.notes[*openingAnchor_].position = at;
+            openingAnchor_.reset();
+        }
 
         book_.text.push_back(code);
         const uint32_t units = length() - at;
@@ -410,19 +433,44 @@ private:
         std::vector<PendingMarker> markers = std::move(pendingMarkers_);
         pendingMarkers_.clear();
 
+        // Знаки встают перед буквой, которую набирает зовущий; якорь, который
+        // ждёт её, — его, и после знаков он должен остаться как был: начало
+        // ему отсчитает та буква, уже за знаками.
+        const std::optional<size_t> callerAnchor = openingAnchor_;
+
         for (const PendingMarker& marker : markers) {
             const uint32_t position = length();
+            if (marker.anchor) book_.notes[*marker.anchor].position = position;
 
             styles_.push_back(marker.style);
+            openingAnchor_ = marker.anchor;
             for (const wchar_t sign : marker.text)
                 appendCodePoint(sign, marker.charOffset);
+            openingAnchor_.reset();
             styles_.pop_back();
 
             if (marker.anchor) {
                 NoteAnchor& note = book_.notes[*marker.anchor];
-                note.position = position;
-                note.length = length() - position;
+                note.length = length() - note.position;
+                markNote(note.position);
             }
+        }
+
+        openingAnchor_ = callerAnchor;
+    }
+
+    /// Роль знака — прогонам знака, чей якорь жив: его длина записана в том же
+    /// блоке, где он начат. Роль ставится здесь, а не стилем на входе в
+    /// `<note>`: якорь, чей блок сменился, пока знак набирался (картинка внутри
+    /// знака), выбрасывается, и роль его тексту тогда не достаётся вовсе — по
+    /// роли знак красят, а щёлкнуть по нему было бы нечем. Прогоны знака —
+    /// хвост прогонов блока: с начала знака там разрез (`openingAnchor_`), а
+    /// за знаком ещё ничего не набрано.
+    void markNote(uint32_t position) {
+        for (size_t at = book_.spans.size(); at > block_.paragraph.spans.first; --at) {
+            StyleSpan& span = book_.spans[at - 1];
+            if (span.start < position) break;
+            span.style.role = TextRole::NoteMark;
         }
     }
 
@@ -533,7 +581,8 @@ private:
             // Знак сноски набирается надстрочным, а место запоминается: по нему
             // читалка потом ловит щелчок и показывает тело сноски. Якорь — только
             // у ссылки, за которой есть тело: по битой показать нечего. Знак она
-            // всё равно получает — где автор сослался, видно и так.
+            // всё равно получает — где автор сослался, видно и так, — но без
+            // роли знака: щелчка он не держит.
             flushPendingSpace();
 
             const fb3::NoteRefData* data = node.noteRef();
@@ -543,15 +592,34 @@ private:
             if (data && data->body) {
                 assert(*data->body < noteBodyCount_ &&
                        "номер тела сноски — индекс в списке тел документа");
+                // Начало якорю ставит первая буква знака (openingAnchor_), а
+                // пустому — знак вёрстки (flushMarkers); вход остаётся началом
+                // только у знака без единого начала буквы.
                 anchor = book_.notes.size();
                 book_.notes.push_back(NoteAnchor{length(), 0, *data->body});
             }
 
             pushStyle([](FontStyle& s) { s.script = 1; });
 
+            // Знак с якорем начинает свой прогон стиля, каким бы ни было
+            // начертание перед ним, и с его первой буквы якорь отсчитывает
+            // начало (openingAnchor_); роль знака его прогоны получат, когда
+            // станет известна длина (markNote). Якорь, не взятый буквой, —
+            // знак без своего текста — снимается: знак, поставленный
+            // вёрсткой, возьмёт его сам (flushMarkers).
+            //
+            // Якорь внешнего знака, ещё ждущий своей первой буквы, — не наш:
+            // этот знак стоит внутри него до его первой буквы, и буква этого
+            // знака внешнему не своя. После этого знака якорь внешнего
+            // возвращается, как и после знаков вёрстки, — если блок тот же:
+            // сменившийся блок унёс его с собой (openBlock).
+            const std::optional<size_t> outerAnchor = openingAnchor_;
+            openingAnchor_ = anchor;
             const uint32_t before = length();
             for (const fb3::Node& child : node.children())
                 walkInline(child, context);
+            openingAnchor_.reset();
+            if (serial == blockSerial_) openingAnchor_ = outerAnchor;
 
             // Автор знака не поставил — ставим сами и нумеруем по порядку. Но
             // не сразу, а перед следующей буквой: `<note>` мог встать между
@@ -574,6 +642,7 @@ private:
                 NoteAnchor& note = book_.notes[*anchor];
                 const uint32_t end = length();
                 note.length = end > note.position ? end - note.position : 0;
+                markNote(note.position);
             }
             return;
         }
@@ -591,7 +660,8 @@ private:
 
         default:
             // Ссылка, span и всё, чего вёрстка v1 не различает: содержимое
-            // остаётся, оформление не меняется.
+            // остаётся, оформление не меняется. Роли у ссылки нет: перехода по
+            // ней читалка не делает, и цвет ссылки обещал бы то, чего нет.
             for (const fb3::Node& child : node.children())
                 walkInline(child, context);
             return;

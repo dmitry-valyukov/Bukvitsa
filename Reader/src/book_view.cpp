@@ -150,6 +150,31 @@ void BookView::buildTree() {
     window_.contentVisual().children().insertAtTop(leafLayer_);
     leafLayer_.isVisible(false);
 
+    // Слой страницы — прозрачный, во всю полосу, первым ребёнком корня, под
+    // сноской и оверлеями: указатель над ним — над самой страницей. Наведение и
+    // курсор — у него, а не у корня: курсор предка WinUI показывает над всеми
+    // потомками без своего, и рука корня легла бы на панель, мастер и поля
+    // ввода в них, где нужен их собственный. Над сноской, панелью и мастером
+    // указатель не над слоем — они лежат выше него, а не в нём, — так что
+    // спрашивать, откуда пришло движение, не нужно: оно приходит только со
+    // страницы. Щелчок и колесо со слоя всплывают к корню, как и прежде.
+    Apply {
+        pageLayer_,
+        // Кисть прозрачная, но она есть: без кисти Grid в проверке попадания
+        // не участвует, и движения над страницей не было бы вовсе.
+        background = colors.transparent,
+
+        // Стрелка с самого начала, а не пустой курсор («без перемены»): форма
+        // слоя всегда одна из двух известных, а меняется только при смене
+        // (updateCursor).
+        cursor = InputSystemCursorShape::Arrow,
+
+        // Указатель над знаком сноски — рукой, как над ссылкой: щелчок по
+        // знаку откроет сноску, и это видно до щелчка.
+        onPointerMoved = method(this, &BookView::pointerMoved),
+        onPointerExited = method(this, &BookView::pointerExited),
+    };
+
     Apply {
         root_,
         // Корень берёт фокус на себя: событие клавиши начинается у того, на
@@ -162,14 +187,15 @@ void BookView::buildTree() {
         // красит только полосу.
         requestedTheme = ElementTheme::Dark,
 
-        // Кисть прозрачная, но она есть: без кисти Grid не участвует в проверке
-        // попадания вовсе, и щелчок по полосе не доходил бы никуда — ни до знака
-        // сноски, ни до трети страницы. Прозрачная потому, что страница теперь
-        // на сцене под этим островом, и сквозь него должна быть видна она.
-        // Бумагу вместе с набором несут страницы-визуалы на сцене, а задник
-        // окна в чтении без кисти вовсе (см. activate).
+        // Кисть прозрачная: страница на сцене под этим островом, и сквозь него
+        // должна быть видна она — бумагу вместе с набором несут
+        // страницы-визуалы на сцене, а задник окна в чтении без кисти вовсе
+        // (см. activate). Попадание по странице ловит слой страницы во всю
+        // полосу, а щелчок и колесо с него всплывают сюда; самому корню кисть
+        // для этого уже не нужна.
         background = colors.transparent,
 
+        pageLayer_,
         note_.root(),
 
         onLoaded = method(this, &BookView::loaded),
@@ -208,7 +234,45 @@ void BookView::pressed(Object const&, PointerRoutedEventArgs& args) {
         root_.focus(FocusState::Programmatic);
         args.handled(true);
     }
-    presenter_.tap(PageFlow::Point{touchPosition.x, touchPosition.y}, buttonOf(touchPoint));
+    presenter_.tap(layoutPointOf(PageWarp::Point{touchPosition.x, touchPosition.y}),
+                   buttonOf(touchPoint));
+}
+
+void BookView::pointerMoved(Object const&, PointerRoutedEventArgs& args) {
+    // Слой во всю полосу, так что его точка — та же, что у корня и у потока
+    // страниц; в вёрстку её переводят там, где спрашивают ведущего.
+    const Point hoverPosition = args.getCurrentPoint(pageLayer_).position();
+    hoverPoint_ = PageWarp::Point{hoverPosition.x, hoverPosition.y};
+    updateCursor();
+}
+
+void BookView::pointerExited(Object const&, PointerRoutedEventArgs&) {
+    // Указатель ушёл со страницы — за край полосы или на сноску, панель,
+    // мастер: точки над страницей больше нет.
+    hoverPoint_.reset();
+    updateCursor();
+}
+
+void BookView::updateCursor() {
+    const InputSystemCursorShape hoverShape =
+        hoverPoint_ && presenter_.pointsAtNoteMark(layoutPointOf(*hoverPoint_))
+            ? InputSystemCursorShape::Hand
+            : InputSystemCursorShape::Arrow;
+    if (hoverShape == cursorShape_) return;
+
+    cursorShape_ = hoverShape;
+    pageLayer_.cursor(hoverShape);
+}
+
+PageWarp::Size BookView::stripSize() const {
+    const PageFlow& flow = presenter_.flow();
+    return PageWarp::Size{flow.width(), flow.height()};
+}
+
+PageFlow::Point BookView::layoutPointOf(PageWarp::Point screenPoint) const {
+    auto const layoutPoint =
+        pageWarp_ ? pageWarp_->toLayout(screenPoint, stripSize()) : screenPoint;
+    return PageFlow::Point{layoutPoint.x, layoutPoint.y};
 }
 
 BookView::~BookView() {
@@ -281,6 +345,11 @@ void BookView::activate(bool entersReading) {
         // в нём.
         if (spreadView_.measured())
             window_.background(spreadView_.raster(turnAnimation_->drawTarget()));
+
+        // Страницы под указателем больше нет; вернувшись в чтение, полоса
+        // узнает его точку с первым движением.
+        hoverPoint_.reset();
+        updateCursor();
     }
 
     // Листы в покое не нужны: разворот видно страницами. Они выходят на сцену
@@ -309,7 +378,14 @@ void BookView::restyle() {
 
 bool BookView::showNote(const PageFlow::NoteHit& noteHit) {
     const PageFlow& flow = presenter_.flow();
-    note_.show(*flow.book(), noteHit.body, Point{noteHit.anchor.x, noteHit.anchor.y},
+
+    // Якорь — в координатах вёрстки, а всплывашка встаёт под знаком там, где
+    // он нарисован: под изогнутой обложкой у корешка это десятки DIP разницы.
+    auto const layoutAnchor = PageWarp::Point{noteHit.anchor.x, noteHit.anchor.y};
+    auto const screenAnchor =
+        pageWarp_ ? pageWarp_->toScreen(layoutAnchor, stripSize()) : layoutAnchor;
+
+    note_.show(*flow.book(), noteHit.body, Point{screenAnchor.x, screenAnchor.y},
                {flow.width(), flow.height()}, presenter_.paper(), flow.fontSize(),
                presenter_.scale());
     return note_.visible();
@@ -334,6 +410,10 @@ void BookView::redraw() {
     // пропадал бы на глазах — на тех же точках под ним. Разворот одевает
     // страницы, только когда рисует в осевший растр (SpreadView::redraw).
     spreadView_.redraw(turnAnimation_->drawTarget());
+
+    // Разворот мог смениться под неподвижной мышью — переворот с клавиш,
+    // прыжок, перевёрстка, мастер поверх: указатель — по новому.
+    updateCursor();
 }
 
 /* ---------------- своё ---------------- */
@@ -386,6 +466,11 @@ void BookView::applySize(SizeInt32 pixels, float scale) {
         leafLayer_.size({width, height});
     }
 
+    // Пустая мера — окно свёрнуто или ещё не показано: рисовать некуда, и
+    // изгиба нарисованной страницы больше нет — переводить точку указателя не
+    // в чем.
+    if (width <= 0.0f || height <= 0.0f) pageWarp_.reset();
+
     // Размер в DIP и масштаб — ведущему: поток страниц берёт размер, и полоса
     // перевёрстывается, доведя до конца всё, что летит. Гистерезис колонок —
     // его, по этой дороге и только по ней.
@@ -414,6 +499,7 @@ void BookView::paintSpread(ID2D1DeviceContext* context) {
     if (!flow.spread().pages.empty()) {
         drawPage(context, flow.width(), flow.height());
     } else {
+        pageWarp_.reset();   // приглашение не гнётся
         drawInvitation(context, flow.width(), flow.height());
     }
 }
@@ -511,27 +597,31 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
             return false;
         }
 
-        // Отклонения краёв от их прямых начальных линий, в долях высоты
-        // полосы, по значению на столбец карты. У каждой границы каждого листа
-        // изгиб свой; какой лист под столбцом, кривая решает сама — по своей
-        // точке корешка.
-        const int columns = static_cast<int>(pixels.width);
-        std::vector<float> topEdge(static_cast<size_t>(columns));
-        std::vector<float> bottomEdge(static_cast<size_t>(columns));
-
-        // Касательные считаются один раз на обе кромки, а не на каждый столбец.
-        const EdgeSpline upper{skin->top};
-        const EdgeSpline lower{skin->bottom};
-        for (int x = 0; x < columns; ++x) {
-            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
-            topEdge[static_cast<size_t>(x)] = upper.at(u) - kEdgeInset;
-            bottomEdge[static_cast<size_t>(x)] = lower.at(u) - (1.0f - kEdgeInset);
+        // Сдвиг по кромкам обложки — математика изгиба (PageWarp): ею же
+        // полоса переводит точку указателя, так что знак под указателем — тот,
+        // что нарисован. Обложка с нетронутыми точками — плоская: гнуть нечего.
+        auto const warp = PageWarp{*skin};
+        if (warp.flat()) {
+            warpFlat_ = true;
+            return false;
         }
 
-        float amplitude = 0.0f;
+        // Отклонения кромок от их прямых начальных линий, в долях высоты
+        // полосы, — по столбцу карты, один раз на столбец, а не на каждый
+        // пиксель. У каждой границы каждого листа изгиб свой; какой лист под
+        // столбцом, кривая решает сама — по своей точке корешка.
+        const int columns = static_cast<int>(pixels.width);
+        std::vector<PageWarp::Column> edges(static_cast<size_t>(columns));
         for (int x = 0; x < columns; ++x) {
-            amplitude = std::max({amplitude, std::abs(topEdge[static_cast<size_t>(x)]),
-                                  std::abs(bottomEdge[static_cast<size_t>(x)])});
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(columns);
+            edges[static_cast<size_t>(x)] = warp.column(u);
+        }
+
+        // Изгиб есть, но меньше, чем видно на столбцах карты, — гнуть тоже
+        // нечего, а размах ушёл бы в знаменатель.
+        float amplitude = 0.0f;
+        for (const PageWarp::Column& edge : edges) {
+            amplitude = std::max({amplitude, std::abs(edge.top), std::abs(edge.bottom)});
         }
         if (amplitude <= 0.0f) {
             warpFlat_ = true;
@@ -539,17 +629,17 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
         }
         warpAmplitude_ = amplitude;
 
-        // Карта хранит чистую форму изгиба: канал G — доля смещения по Y от
-        // размаха эффекта, 128 — «не смещать». Смещение обратное (эффект
-        // читает «откуда взять», а не «куда сдвинуть»), поэтому у строк,
-        // уезжающих вверх, в карте стоит плюс — взять снизу. Между краями
-        // отклонение интерполируется линейно по высоте.
+        // Карта хранит чистую форму изгиба: канал G — доля сдвига по Y от
+        // размаха эффекта, 128 — «не смещать». Сдвиг отсчитан в точке экрана и
+        // обратный (эффект читает «откуда взять», а не «куда сдвинуть» —
+        // PageWarp::shift), поэтому у строк, уезжающих вверх, в карте стоит
+        // плюс — взять снизу.
         std::vector<uint8_t> bytes(size_t{pixels.width} * pixels.height * 4);
         for (UINT32 y = 0; y < pixels.height; ++y) {
             const float down = (static_cast<float>(y) + 0.5f) / static_cast<float>(pixels.height);
             uint8_t* row = &bytes[size_t{y} * pixels.width * 4];
             for (UINT32 x = 0; x < pixels.width; ++x) {
-                const float shift = topEdge[x] + (bottomEdge[x] - topEdge[x]) * down;
+                const float shift = edges[x].at(down);
                 uint8_t* px = row + size_t{x} * 4;
                 px[0] = 128;   // B — не читается
                 px[1] = static_cast<uint8_t>(127.5f * (1.0f - shift / amplitude) + 0.5f);
@@ -613,6 +703,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     // фотоподложки, а текст ложится поверх неё — всё в одну поверхность, одним
     // битмапом, без отдельного визуала под страницей.
     if (!hasBackdrop()) {
+        pageWarp_.reset();   // ровная тема: набор там, где его положила вёрстка
         context->Clear(presenter_.paper().background);
         drawPageContent(context, width, height);
         return;
@@ -628,6 +719,16 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     }
 
     const bool warped = ensureWarp(context);
+
+    // Точку указателя полоса переводит тем изгибом, которым страница
+    // нарисована: не вышло изгиба — набор на экране там же, где в вёрстке.
+    // Обложка та же, по которой ensureWarp строил карту: её смену полоса
+    // узнаёт restyle, и карта строится заново.
+    if (warped) {
+        pageWarp_.emplace(*presenter_.pageSkin());
+    } else {
+        pageWarp_.reset();
+    }
 
     // Под конфигуратором изгиба набор слегка размывается: текст отступает на
     // второй план, и направляющие мастера читаются чётче. Ещё не согнутая —
@@ -684,10 +785,17 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     const float top = flow.verticalMargin();
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> linkBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;
     context->CreateSolidColorBrush(shade.text, &textBrush);
+    context->CreateSolidColorBrush(shade.link, &linkBrush);
     context->CreateSolidColorBrush(shade.dim, &dimBrush);
-    if (!textBrush || !dimBrush) return;
+    if (!textBrush || !linkBrush || !dimBrush) return;
+
+    // Знак сноски — цветом ссылки: по нему щёлкают, и видно это должно быть
+    // без мыши.
+    auto const lineBrushes = typography::TextBrushes{not_null<ID2D1Brush>{textBrush.Get()},
+                                                     not_null<ID2D1Brush>{linkBrush.Get()}};
 
     // Колонки разворота — готовая лента потока страниц: каждая своя
     // страница, идущие подряд, при нужде со стыка из следующей главы. Разворот
@@ -708,7 +816,7 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
 
         for (const typography::PlacedLine& placed : page.lines) {
             typography::drawLine(context, *placed.line, left + placed.x, top + placed.baseline,
-                                 textBrush.Get());
+                                 lineBrushes);
         }
     }
 
