@@ -12,23 +12,14 @@
 // такие пробы идут в дочернем процессе: тот же исполняемый файл с флагом
 // `--stop-probe=<имя>`. Смотрится код выхода и отчёт об остановке в stderr:
 // остановиться проба обязана своей строкой, а не чужой.
-//
-// Помощники романа и поддельный простой повторены из проб потока страниц и
-// досчёта главы — общий заголовок для них ещё не заведён.
 
 #include <algorithm>
 #include <coroutine>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#include <deque>
-#include <exception>
-#include <filesystem>
-#include <fstream>
 #include <initializer_list>
-#include <iterator>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,9 +29,10 @@
 
 #include "check.h"
 
-// Последними: поток страниц ведёт к импорту модулей книги и wxl.core, ведущий
-// — к wxl.async.
+// Последними: поток страниц ведёт к импорту модулей книги и wxl.core, роман
+// проб и ведущий — к wxl.async.
 #include "bukvitsa/reader/page_flow.h"
+#include "novel.h"
 #include "bukvitsa/reader/book_presenter.h"
 #include "bukvitsa/reader/field_watch.h"
 
@@ -49,22 +41,13 @@ import wxl.core;
 
 using namespace bukvitsa;
 using namespace bukvitsa::reader;
-using bukvitsa::reader::tests::check;
+using namespace bukvitsa::reader::tests;
 using wxl::async::cancellation_source;
-using wxl::async::cancellation_token;
 using wxl::async::detached_task;
-using wxl::async::operation_canceled_exception;
-using wxl::async::task;
 
 namespace {
 
 using Column = PageFlow::Column;
-
-const std::filesystem::path kNovel = std::filesystem::path(BUKVITSA_TESTDATA_DIR) /
-                                     L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
-
-/// Высота полосы во всех пробах — окно ноутбука.
-constexpr float kHeight = 900.0f;
 
 /// Ширины полосы на кегле по умолчанию: на первой строка длиннее 85 знаков —
 /// разворот в две колонки, на второй короче — одна колонка.
@@ -74,10 +57,6 @@ constexpr float kOneColumnWidth = 700.0f;
 /// Масштаб экрана в пробах меры — 125 %, не единица: так видно, что ведущий
 /// его взял, а не оставил прежним.
 constexpr float kScaledScreen = 1.25f;
-
-/// Сколько ходов очереди проба делает самое большее: глава романа досчитывается
-/// за единицы порций, а зависшая проба хуже упавшей.
-constexpr int kMaxTurns = 10000;
 
 /// Ход колеса на одну защёлку.
 constexpr int kWheelNotch = 120;
@@ -118,180 +97,6 @@ constexpr UINT kKilledProbeExitCode = 0xDEAD;
 
 /// Буфер канала отчёта: отчёт об остановке — одна строка, и с запасом.
 constexpr DWORD kReportPipeBytes = 64 * 1024;
-
-std::string bytesOf(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-}
-
-/// Роман, открытый заново для каждой пробы: кэш глав и текущая глава у книги
-/// свои. Пусто — роман не открылся, и проба кончается, не начавшись.
-intrusive_ptr<Book> openNovel() {
-    intrusive_ptr<Book> book;
-    try {
-        book = make_refcounted<Book>(kNovel, fb3::Document{bytesOf(kNovel)}, dwriteFactory());
-    } catch (const std::exception&) {
-        book = nullptr;
-    }
-    check(book && book->chapterCount() > 3, "роман открыт, в нём главы");
-    if (book && book->chapterCount() <= 3) book = nullptr;
-    return book;
-}
-
-/// Длина главы в символах книги.
-uint32_t chapterLength(const Book& book, size_t chapterIndex) {
-    const uint32_t chapterEnd = chapterIndex + 1 < book.chapterCount()
-                                    ? book.chapterFirstChar(chapterIndex + 1)
-                                    : book.characterCount();
-    return chapterEnd - book.chapterFirstChar(chapterIndex);
-}
-
-/// Самая длинная глава: у неё хвост заведомо есть, и в её середине развороту
-/// есть куда шагнуть в обе стороны, не выходя из неё.
-size_t longestChapter(const Book& book) {
-    size_t longestIndex = 0;
-    for (size_t chapterIndex = 1; chapterIndex < book.chapterCount(); ++chapterIndex)
-        if (chapterLength(book, chapterIndex) > chapterLength(book, longestIndex))
-            longestIndex = chapterIndex;
-    return longestIndex;
-}
-
-/// Буква на трёх пятых самой длинной главы: от её разворота есть куда шагнуть
-/// в обе стороны, не выходя из главы, а хвост у главы заведомо есть.
-uint32_t middleLetter(const Book& book) {
-    const size_t longestIndex = longestChapter(book);
-    return book.chapterFirstChar(longestIndex) + chapterLength(book, longestIndex) * 3 / 5;
-}
-
-/// Буква лежит в левой колонке разворота: колонка начинается не позже неё, а
-/// следующая колонка той же главы — позже.
-bool letterInLeftColumn(const PageFlow& flow, uint32_t letter) {
-    const typography::Chapter& currentChapter = flow.book()->paginator();
-    const size_t leftColumn = flow.page();
-    if (currentChapter.pageCount() == 0 ||
-        currentChapter.page(leftColumn).firstCharOffset > letter)
-        return false;
-    return leftColumn + 1 >= currentChapter.pageCount() ||
-           currentChapter.page(leftColumn + 1).firstCharOffset > letter;
-}
-
-/// Место чтения — начало левой колонки разворота: туда его ставят листание и
-/// прыжок.
-bool placeAtLeftColumn(const PageFlow& flow) {
-    return !flow.spread().pages.empty() &&
-           flow.position() == flow.spread().pages[0]->firstCharOffset;
-}
-
-/// Первый знак сноски в потоке чтения: номер тела и буква знака.
-struct NoteMark {
-    uint32_t noteBody = 0;
-    uint32_t markLetter = 0;
-};
-
-std::optional<NoteMark> firstNoteMark(const Book& book) {
-    const typography::BookText& bookText = book.text();
-    for (const typography::Block& flowBlock : bookText.flow()) {
-        const std::span<const typography::NoteAnchor> blockNotes =
-            bookText.notesOf(flowBlock.paragraph);
-        if (blockNotes.empty()) continue;
-        return NoteMark{blockNotes.front().body,
-                        bookText.charOffsetAt(flowBlock.paragraph, blockNotes.front().position)};
-    }
-    return std::nullopt;
-}
-
-/// Середина знака сноски с этим телом на показанном развороте, на высоте его
-/// строки, — туда и щёлкают; пусто — знака на развороте нет.
-std::optional<PageFlow::Point> markPointOf(const PageFlow& flow, uint32_t noteBody) {
-    const PageFlow::Spread& shownSpread = flow.spread();
-    for (size_t column = 0; column < shownSpread.pages.size(); ++column) {
-        for (const typography::PlacedLine& placedLine : shownSpread.pages[column]->lines) {
-            const typography::Line& line = *placedLine.line;
-            const float baseline = flow.verticalMargin() + placedLine.baseline;
-            const float lineLeft = flow.columnLeft(column) + placedLine.x;
-            for (const typography::PlacedNote& placedNote : line.notes) {
-                if (placedNote.body != noteBody) continue;
-                return PageFlow::Point{lineLeft + placedNote.x + placedNote.width * 0.5f,
-                                       baseline - line.ascent * 0.5f};
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-/// Точка в верхнем поле полосы на этой доле её ширины: мимо всякой строки, а
-/// значит, мимо всякого знака сноски, — щелчок решает одна карта.
-PageFlow::Point marginPoint(const PageFlow& flow, float widthShare) {
-    return PageFlow::Point{flow.width() * widthShare, 1.0f};
-}
-
-/// Простой, который будит проба: ожидания стоят в очереди, пока она не
-/// сделает ход (wake), и ход будит первое. Отмена никого не будит: под
-/// отменённым токеном ожидание не встаёт вовсе, а стоящее кончается отменой на
-/// том ходу, который его будит. Уход очереди (разрушение планировщика) кончает
-/// стоящие ожидания отменой и при живом токене. Тот же, что у проб досчёта
-/// главы, без хода со сбоем: здесь он не нужен.
-class ParkingIdle final : public IdleScheduler {
-public:
-    ~ParkingIdle() {
-        while (wake(true)) {
-        }
-    }
-
-    task<> idle(cancellation_token stop) override {
-        stop.throw_if_canceled();
-        const bool queueClosing = co_await Parking{*this};
-        if (queueClosing) throw operation_canceled_exception{};
-        stop.throw_if_canceled();
-    }
-
-    /// Ход очереди: будит первое стоящее ожидание; false — будить некого.
-    /// Ожидание уходит из очереди раньше, чем кадр возобновлён: кадр может
-    /// кончиться внутри этого вызова вместе с ожиданием.
-    bool wake(bool queueClosing = false) {
-        if (parkedWaits_.empty()) return false;
-        Parking* const firstParked = parkedWaits_.front();
-        parkedWaits_.pop_front();
-        firstParked->queueClosing = queueClosing;
-        auto const parkedWaiter = firstParked->waiter;
-        parkedWaiter.resume();
-        return true;
-    }
-
-    /// Сколько ожиданий стоит.
-    size_t parked() const { return parkedWaits_.size(); }
-
-private:
-    /// Ожидание в кадре корутины. Кадр досчёта владеет собой и стоящим не
-    /// разрушается — уходит только через ход, — так что указатель в очереди
-    /// живёт, пока ожидание в ней.
-    struct Parking {
-        ParkingIdle& owner;
-        std::coroutine_handle<> waiter;
-        bool queueClosing = false;
-
-        explicit Parking(ParkingIdle& scheduler) noexcept : owner(scheduler) {}
-        Parking(const Parking&) = delete;
-        Parking& operator=(const Parking&) = delete;
-
-        bool await_ready() const noexcept { return false; }
-
-        void await_suspend(std::coroutine_handle<> here) noexcept {
-            waiter = here;
-            owner.parkedWaits_.push_back(this);
-        }
-
-        bool await_resume() const noexcept { return queueClosing; }
-    };
-
-    std::deque<Parking*> parkedWaits_;
-};
-
-/// Ходы очереди, пока кто-нибудь ждёт простоя.
-void wakeAll(ParkingIdle& idle) {
-    for (int turns = 0; turns < kMaxTurns && idle.wake(); ++turns) {
-    }
-}
 
 /// Исполнитель намерений, который их только считает.
 class CountingActions final : public BookPresenter::Actions {

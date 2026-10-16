@@ -9,37 +9,26 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <exception>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <optional>
-#include <span>
-#include <string>
 #include <string_view>
 #include <vector>
 
 #include "check.h"
 
-// Последними: поток страниц ведёт к импорту модулей книги и wxl.core, сноска —
-// через те же заголовки вёрстки.
+// Последними: поток страниц ведёт к импорту модулей книги и wxl.core, роман
+// проб — к ним же и к wxl.async, сноска — через те же заголовки вёрстки.
 #include "bukvitsa/reader/page_flow.h"
+#include "novel.h"
 #include "bukvitsa/typography/note.h"
 
 using namespace bukvitsa;
 using namespace bukvitsa::reader;
-using bukvitsa::reader::tests::check;
+using namespace bukvitsa::reader::tests;
 using namespace std::chrono_literals;
 
 namespace {
 
 using Column = PageFlow::Column;
-
-const std::filesystem::path kNovel = std::filesystem::path(BUKVITSA_TESTDATA_DIR) /
-                                     L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
-
-/// Высота полосы во всех пробах — окно ноутбука; ширина у каждой своя.
-constexpr float kHeight = 900.0f;
 
 /// Мера полосы проб стыка глав: 1280 × 860 DIP — около окна первого запуска
 /// при масштабе 100 % (окну задают внешний размер в пикселях, полоса получает
@@ -47,11 +36,6 @@ constexpr float kHeight = 900.0f;
 /// колонки.
 constexpr float kStripWidth = 1280.0f;
 constexpr float kStripHeight = 860.0f;
-
-/// Вид по умолчанию — тот, что у настроек.
-constexpr float kFontSize = 20.0f;
-constexpr float kLineHeight = 1.45f;
-constexpr float kMargin = 0.075f;
 
 /// Кегль на шаг крупнее — перевёрстка, как от Ctrl с колесом.
 constexpr float kLargerFontSize = kFontSize + 1.0f;
@@ -65,27 +49,6 @@ constexpr size_t kTenthChapter = 10;
 /// пока следующая колонка не выйдет уже 43.
 constexpr float kMaxLineChars = 85.0f;
 constexpr float kMinLineChars = 43.0f;
-
-std::string bytesOf(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-}
-
-/// Роман, открытый заново для каждой пробы: кэш глав и текущая глава у книги
-/// свои, и пробы не должны видеть друг друга через них. Документ разбора
-/// живёт только на время открытия, как у рабочего места. Пусто — роман не
-/// открылся, и проба кончается, не начавшись.
-intrusive_ptr<Book> openNovel() {
-    intrusive_ptr<Book> book;
-    try {
-        book = make_refcounted<Book>(kNovel, fb3::Document{bytesOf(kNovel)}, dwriteFactory());
-    } catch (const std::exception&) {
-        book = nullptr;
-    }
-    check(book && book->chapterCount() > 3, "роман открыт, в нём главы");
-    if (book && book->chapterCount() <= 3) book = nullptr;
-    return book;
-}
 
 /// Поток на книге с этого места, на полосе такой меры, видом по умолчанию.
 void setUp(PageFlow& flow, not_null<Book> book, uint32_t at, float width, float height = kHeight) {
@@ -104,30 +67,6 @@ float widthForColumns(PageFlow& flow, int wanted) {
         if (flow.columns() == wanted) return width;
     }
     return 0.0f;
-}
-
-/// Длина главы в символах книги.
-uint32_t chapterLength(const Book& book, size_t index) {
-    const uint32_t end = index + 1 < book.chapterCount() ? book.chapterFirstChar(index + 1)
-                                                         : book.characterCount();
-    return end - book.chapterFirstChar(index);
-}
-
-/// Самая длинная глава: у неё хвост заведомо есть.
-size_t longestChapter(const Book& book) {
-    size_t longest = 0;
-    for (size_t index = 1; index < book.chapterCount(); ++index)
-        if (chapterLength(book, index) > chapterLength(book, longest)) longest = index;
-    return longest;
-}
-
-/// Буква лежит в левой колонке разворота: колонка начинается не позже неё, а
-/// следующая колонка той же главы — позже.
-bool letterInLeftColumn(const PageFlow& flow, uint32_t letter) {
-    const typography::Chapter& chapter = flow.book()->paginator();
-    const size_t left = flow.page();
-    if (chapter.pageCount() == 0 || chapter.page(left).firstCharOffset > letter) return false;
-    return left + 1 >= chapter.pageCount() || chapter.page(left + 1).firstCharOffset > letter;
 }
 
 /// Буква лежит в тексте этой главы.
@@ -271,8 +210,7 @@ void testAnchorSurvivesRelayout() {
 
     // Буква в середине длинной главы — заведомо не начало колонки.
     const size_t chapter = longestChapter(*novel);
-    const uint32_t letter =
-        novel->chapterFirstChar(chapter) + chapterLength(*novel, chapter) * 3 / 5;
+    const uint32_t letter = middleLetter(*novel);
 
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()), letter, 1400.0f);
@@ -628,59 +566,35 @@ void testNoteMarkIsHit() {
     const intrusive_ptr<Book> novel = openNovel();
     if (!novel) return;
 
-    // Первый знак сноски в потоке чтения — туда и прыгаем. Знак — текст
-    // абзаца, как всё остальное, и его место в книге дают прогоны позиций.
-    const typography::BookText& text = novel->text();
-    std::optional<uint32_t> wanted;   // номер тела; пусто — знака не нашлось
-    uint32_t mark = 0;
-    for (const typography::Block& block : text.flow()) {
-        const std::span<const typography::NoteAnchor> notes = text.notesOf(block.paragraph);
-        if (notes.empty()) continue;
-        wanted = notes.front().body;
-        mark = text.charOffsetAt(block.paragraph, notes.front().position);
-        break;
-    }
-    check(wanted.has_value(), "в романе есть сноски");
-    if (!wanted) return;
+    // Первый знак сноски в потоке чтения — туда и прыгаем.
+    const std::optional<NoteMark> noteMark = firstNoteMark(*novel);
+    check(noteMark.has_value(), "в романе есть сноски");
+    if (!noteMark) return;
 
     // Тело знака — в хранилище, за потоком чтения: всплывашке есть что верстать.
-    check(*wanted < text.noteBodies.size() && text.noteBodies[*wanted].count > 0 &&
-              text.noteBodies[*wanted].first >= text.flowCount,
+    const typography::BookText& text = novel->text();
+    check(noteMark->noteBody < text.noteBodies.size() &&
+              text.noteBodies[noteMark->noteBody].count > 0 &&
+              text.noteBodies[noteMark->noteBody].first >= text.flowCount,
           "у знака есть тело — блоки за потоком чтения");
 
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()), 0, 1400.0f);
-    flow.show(flow.columnOf(mark));
+    flow.show(flow.columnOf(noteMark->markLetter));
 
     // Знак ищем в строках разворота, а щёлкаем в его середину на высоте строки.
-    std::optional<PageFlow::Point> at;
-    PageFlow::Point under;
-    const PageFlow::Spread& spread = flow.spread();
-    for (size_t column = 0; column < spread.pages.size() && !at; ++column) {
-        for (const typography::PlacedLine& placed : spread.pages[column]->lines) {
-            const typography::Line& line = *placed.line;
-            const float baseline = flow.verticalMargin() + placed.baseline;
-            const float x = flow.columnLeft(column) + placed.x;
-            for (const typography::PlacedNote& note : line.notes) {
-                if (note.body != *wanted) continue;
-                const float middle = x + note.x + note.width * 0.5f;
-                at = PageFlow::Point{middle, baseline - line.ascent * 0.5f};
-                under = PageFlow::Point{middle, baseline + line.descent};
-                break;
-            }
-            if (at) break;
-        }
-    }
-    check(at.has_value(), "знак сноски — на развороте, куда прыгнули");
-    if (!at) return;
+    const std::optional<MarkPlace> markPlace = markPlaceOf(flow, noteMark->noteBody);
+    check(markPlace.has_value(), "знак сноски — на развороте, куда прыгнули");
+    if (!markPlace) return;
 
     check(!flow.noteAt(PageFlow::Point{flow.columnLeft(0) + 1.0f, 1.0f}),
           "щелчок в верхнее поле — мимо");
 
-    const std::optional<PageFlow::NoteHit> hit = flow.noteAt(*at);
-    check(hit && hit->body == *wanted, "щелчок по знаку — его сноска");
+    const std::optional<PageFlow::NoteHit> hit = flow.noteAt(markPlace->tapPoint);
+    check(hit && hit->body == noteMark->noteBody, "щелчок по знаку — его сноска");
     if (!hit) return;
-    check(std::abs(hit->anchor.x - under.x) < 0.5f && std::abs(hit->anchor.y - under.y) < 0.5f,
+    check(std::abs(hit->anchor.x - markPlace->popupAnchor.x) < 0.5f &&
+              std::abs(hit->anchor.y - markPlace->popupAnchor.y) < 0.5f,
           "всплывашка встаёт под знаком");
 
     // Всплывашка верстает тело по номеру из щелчка тем же движком и из того же
