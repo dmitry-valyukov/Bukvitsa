@@ -987,6 +987,28 @@ std::string fb3Of(std::string_view body) {
     return storedZip(parts);
 }
 
+/// Книга FB3 из одного тела и двух картинок: связи rIdA и rIdB ведут к своим
+/// частям, а rIdLost — к части, которой в пакете нет. Байты картинок — не
+/// картинки: вёрстке они не нужны, ей нужен номер части.
+std::string fb3WithImages(std::string_view body) {
+    const std::pair<std::string_view, std::string_view> parts[] = {
+        {"[Content_Types].xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/fb3/description.xml" ContentType="application/fb3-description+xml"/><Override PartName="/fb3/body.xml" ContentType="application/fb3-body+xml"/></Types>)"},
+        {"_rels/.rels",
+         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/Book" Target="fb3/description.xml"/></Relationships>)"},
+        {"fb3/description.xml",
+         R"(<?xml version="1.0" encoding="UTF-8"?><fb3-description xmlns="http://www.fictionbook.org/FictionBook3/description" id="00000000-0000-0000-0000-000000000007" version="1.0"><title><main>Картинки</main></title></fb3-description>)"},
+        {"fb3/_rels/description.xml.rels",
+         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/body" Target="body.xml"/></Relationships>)"},
+        {"fb3/_rels/body.xml.rels",
+         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/a.png"/><Relationship Id="rIdB" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/b.png"/><Relationship Id="rIdLost" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/lost.png"/></Relationships>)"},
+        {"fb3/body.xml", body},
+        {"fb3/img/a.png", "картинка A"},
+        {"fb3/img/b.png", "картинка B"},
+    };
+    return storedZip(parts);
+}
+
 /// Буквы из нескольких кодовых точек — то, на чём проверяется всякое место,
 /// где вёрстка сама выбирает позицию в тексте.
 struct CorpusLetter {
@@ -1804,7 +1826,7 @@ void testNoteMarkRole(typography::Engine& engine) {
 <p>z<note href="n1" xlink:role="footnote">4</note><note href="n2" xlink:role="footnote">5</note>w</p>
 <p>q<a xlink:href="#s1">ссылка</a>r</p>
 <p>u<note href="nowhere" xlink:role="footnote">6</note>v</p>
-<p>e<note href="n1" xlink:role="footnote">f<img src="nowhere"/>g</note>h</p>
+<p>e<note href="n1" xlink:role="footnote">f<img src="rIdA"/>g</note>h</p>
 <p>a<note href="n1" xlink:role="footnote"/>b</p>
 <p>c<note href="n1" xlink:role="footnote"/><note href="n2" xlink:role="footnote"/>d</p>
 <p>e<note href="n1" xlink:role="footnote"/><note href="n2" xlink:role="footnote">9</note>f</p>
@@ -1818,7 +1840,9 @@ void testNoteMarkRole(typography::Engine& engine) {
 <notebody id="n2"><p>вторая</p></notebody>
 </notes>
 </fb3-body>)";
-    auto const document = fb3::Document{fb3Of(body)};
+    // Пакет с картинками: картинка внутри знака должна быть целой, со своей
+    // частью, — битая блока не заводит и абзаца не режет.
+    auto const document = fb3::Document{fb3WithImages(body)};
     const typography::BookText book = typography::flatten(document);
     const std::span<const typography::Block> blocks = book.flow();
 
@@ -2106,6 +2130,213 @@ void testNoteBodies(typography::Engine& engine, const std::filesystem::path& tes
     checkBook("nightmare_example.fb3", 6);
 }
 
+/// Ссылки на сноски из испорченного файла. Номер тела ставит разбор FB3 по id
+/// из файла, и ссылка на id, которого среди тел нет, — на секцию, на пустой
+/// id, без href вовсе — остаётся без номера: книга открывается, а знак такой
+/// ссылки — надстрочный текст без якоря. Два тела с одним id — ссылка ведёт к
+/// первому, второе остаётся в списке тел. Номер, который дошёл до якоря, —
+/// всегда тело из списка, и оно верстается.
+void testBrokenNoteRefs(typography::Engine& engine) {
+    std::printf("\n=== битые ссылки на сноски ===\n");
+
+    const std::string body = R"(<?xml version="1.0" encoding="UTF-8"?>
+<fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" xmlns:xlink="http://www.w3.org/1999/xlink" id="00000000-0000-0000-0000-000000000006">
+<section id="s1">
+<p>a<note href="#nowhere" xlink:role="footnote">1</note>b</p>
+<p>c<note xlink:role="footnote">2</note>d</p>
+<p>e<note href="#" xlink:role="footnote">3</note>f</p>
+<p>g<note href="#s1" xlink:role="footnote">4</note>h</p>
+<p>i<note href="#twice" xlink:role="footnote">5</note>j</p>
+<p>k<note href="#n2" xlink:role="footnote"/>l</p>
+</section>
+<notes show="0">
+<notebody id="twice"><p>первое</p></notebody>
+<notebody id="twice"><p>второе</p></notebody>
+<notebody><p>без id</p></notebody>
+<notebody id="n2"><p>тело с битой ссылкой<note href="#gone" xlink:role="footnote">6</note> внутри</p></notebody>
+</notes>
+</fb3-body>)";
+    auto const document = fb3::Document{fb3Of(body)};
+
+    // Разбор: у каждой ссылки номер либо пуст, либо — тело из списка; пуст он
+    // ровно у тех, чьего id среди тел нет.
+    size_t refs = 0;
+    size_t numbered = 0;
+    bool inList = true;
+    const auto walk = [&](const fb3::Node& node, auto& self) -> void {
+        if (const fb3::NoteRefData* data = node.noteRef()) {
+            ++refs;
+            if (data->body) {
+                ++numbered;
+                if (*data->body >= document.noteBodies().size()) inList = false;
+            }
+        }
+        for (const fb3::Node& child : node.children()) self(child, self);
+    };
+    // Тела сносок — тоже в дереве тела книги, так что обход одного корня
+    // видит и ссылку внутри тела.
+    walk(document.body(), walk);
+
+    check(document.noteBodies().size() == 4, "тела все четыре: и с одним id на двоих, и без id");
+    check(refs == 7 && numbered == 2 && inList,
+          "номер — у двух ссылок с телом, у пяти битых его нет, номер — тело из списка");
+
+    // Вёрстка: битый знак — текст, якорь — только у ссылки с телом.
+    const typography::BookText book = typography::flatten(document);
+    const std::span<const typography::Block> blocks = book.flow();
+    check(blocks.size() == 6 && book.noteBodies.size() == 4,
+          "шесть абзацев потока и четыре тела за ним");
+    if (blocks.size() != 6 || book.noteBodies.size() != 4) return;
+
+    bool brokenAreText = true;
+    const wchar_t* const brokenTexts[] = {L"a1b", L"c2d", L"e3f", L"g4h"};
+    for (size_t i = 0; i < std::size(brokenTexts); ++i) {
+        const typography::Paragraph& paragraph = blocks[i].paragraph;
+        if (book.textOf(paragraph) != brokenTexts[i] || !book.notesOf(paragraph).empty())
+            brokenAreText = false;
+        for (const typography::StyleSpan& span : book.spansOf(paragraph))
+            if (span.style.role != typography::TextRole::Body) brokenAreText = false;
+    }
+    check(brokenAreText, "знак ссылки без тела — текст: ни якоря, ни роли знака");
+
+    const std::span<const typography::NoteAnchor> twice = book.notesOf(blocks[4].paragraph);
+    check(book.textOf(blocks[4].paragraph) == L"i5j" && twice.size() == 1 && twice[0].body == 0,
+          "id у двух тел — ссылка ведёт к первому");
+
+    const std::span<const typography::NoteAnchor> marked = book.notesOf(blocks[5].paragraph);
+    check(book.textOf(blocks[5].paragraph) == L"k1l" && marked.size() == 1 && marked[0].body == 3,
+          "пустой знак с телом — знак вёрстки и якорь к своему телу");
+
+    const typography::Range last = book.noteBodies[3];
+    check(last.count == 1 &&
+              book.textOf(book.blocks[last.first].paragraph) == L"тело с битой ссылкой6 внутри" &&
+              book.notesOf(book.blocks[last.first].paragraph).empty(),
+          "битая ссылка внутри тела — тоже текст без якоря");
+
+    // Каждый якорь книги ведёт к телу из списка, и тело верстается.
+    bool anchorsLayOut = true;
+    for (const typography::Block& block : book.blocks)
+        for (const typography::NoteAnchor& anchor : book.notesOf(block.paragraph)) {
+            if (anchor.body >= book.noteBodies.size()) {
+                anchorsLayOut = false;
+                continue;
+            }
+            const typography::NoteLayout note =
+                typography::layoutNote(engine, book, book.noteBodies[anchor.body], 300.0f, 20.0f);
+            if (note.lines.empty()) anchorsLayOut = false;
+        }
+    check(anchorsLayOut, "каждый якорь — тело из списка, и оно верстается");
+}
+
+/// Картинка, чей src не ведёт к части, — битая ссылка, как ссылка на сноску
+/// без тела: у разбора номера части у неё нет, у вёрстки нет блока — места
+/// она не занимает, абзац, в котором стоит, не режет, и чужая картинка, первая
+/// в книге, на её место не встаёт. Целые картинки — на своих местах.
+void testBrokenImageRefs() {
+    std::printf("\n=== битые ссылки на картинки ===\n");
+
+    const std::string body = R"(<?xml version="1.0" encoding="UTF-8"?>
+<fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" xmlns:xlink="http://www.w3.org/1999/xlink" id="00000000-0000-0000-0000-000000000007">
+<section id="s1">
+<p>до</p>
+<img src="nowhere"/>
+<p>между</p>
+<img src="rIdB"/>
+<p>x<img src="rIdLost"/>y</p>
+<img src="rIdA"/>
+<p>после<img src=""/></p>
+<p>e<note href="#n1" xlink:role="footnote">f<img src="gone"/>g</note>h</p>
+</section>
+<notes show="0"><notebody id="n1"><p>тело</p></notebody></notes>
+</fb3-body>)";
+    auto const document = fb3::Document{fb3WithImages(body)};
+
+    // Части — только те две, что есть в пакете; связь без части в список не идёт.
+    const auto partOf = [&](std::string_view id) -> std::optional<uint32_t> {
+        for (uint32_t i = 0; i < document.images().size(); ++i)
+            if (document.images()[i].relationshipId == id) return i;
+        return std::nullopt;
+    };
+    check(document.images().size() == 2 && partOf("rIdA") && partOf("rIdB") && !partOf("rIdLost"),
+          "частей две, связь без части в список не вошла");
+
+    // Разбор: номер части — только у src, за которым часть есть, и это её номер.
+    size_t images = 0;
+    size_t numbered = 0;
+    bool ownParts = true;
+    const auto walk = [&](const fb3::Node& node, auto& self) -> void {
+        if (const fb3::ImageData* data = node.image()) {
+            ++images;
+            if (data->partIndex) {
+                ++numbered;
+                if (*data->partIndex != partOf(data->relationshipId.chars())) ownParts = false;
+            } else if (partOf(data->relationshipId.chars())) {
+                ownParts = false;
+            }
+        }
+        for (const fb3::Node& child : node.children()) self(child, self);
+    };
+    walk(document.body(), walk);
+    check(images == 6 && numbered == 2 && ownParts,
+          "номер части — у двух картинок из шести, и он — их часть, а не первая в книге");
+
+    // Вёрстка: блоков у битых нет, абзац с битой картинкой не разрезан.
+    const typography::BookText book = typography::flatten(document);
+    const std::span<const typography::Block> blocks = book.flow();
+    check(blocks.size() == 7, "семь блоков: пять абзацев и две картинки");
+    if (blocks.size() != 7) return;
+
+    const auto isText = [&](size_t at, std::wstring_view text) {
+        return blocks[at].kind == typography::BlockKind::Paragraph &&
+               book.textOf(blocks[at].paragraph) == text;
+    };
+    const auto isImage = [&](size_t at, std::string_view id) {
+        return blocks[at].kind == typography::BlockKind::Image && partOf(id) &&
+               blocks[at].imageIndex == *partOf(id);
+    };
+    check(isText(0, L"до") && isText(1, L"между"),
+          "src в никуда — ни блока, ни подставленной первой картинки");
+    check(isImage(2, "rIdB") && isImage(4, "rIdA"), "целые картинки — на своих местах, со своими частями");
+    check(isText(3, L"xy"), "битая картинка в строке абзац не режет");
+    check(isText(5, L"после"), "пустой src — тоже без блока");
+
+    // Битая картинка внутри знака сноски блока не меняет: знак цел, его якорь —
+    // обе буквы вокруг картинки, и роль знака — у них.
+    const std::span<const typography::NoteAnchor> marked = book.notesOf(blocks[6].paragraph);
+    bool markWhole = isText(6, L"efgh") && marked.size() == 1 && marked[0].position == 1 &&
+                     marked[0].length == 2 && marked[0].body == 0;
+    for (const typography::StyleSpan& span : book.spansOf(blocks[6].paragraph)) {
+        const bool inMark = span.start >= 1 && span.start + span.length <= 3;
+        if ((span.style.role == typography::TextRole::NoteMark) != inMark) markWhole = false;
+    }
+    check(markWhole, "битая картинка в знаке сноски — знак цел, якорь длины 2");
+}
+
+/// Римские знаки сносок — до 3999: дальше у римских записи нет, и знак идёт
+/// арабскими цифрами, а не тысячами «m».
+void testRomanMarkers() {
+    std::printf("\n=== римские знаки сносок ===\n");
+
+    std::string paragraphs;
+    for (int i = 0; i < 4000; ++i)
+        paragraphs += R"(<p>a<note href="#n1" xlink:role="footnote" autotext="i"/></p>)";
+    const std::string body = std::string(R"(<?xml version="1.0" encoding="UTF-8"?>
+<fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" xmlns:xlink="http://www.w3.org/1999/xlink" id="00000000-0000-0000-0000-000000000008">
+<section id="s1">)") + paragraphs + R"(</section>
+<notes show="0"><notebody id="n1"><p>тело</p></notebody></notes>
+</fb3-body>)";
+    auto const document = fb3::Document{fb3Of(body)};
+    const typography::BookText book = typography::flatten(document);
+    const std::span<const typography::Block> blocks = book.flow();
+
+    check(blocks.size() == 4000, "четыре тысячи абзацев");
+    if (blocks.size() != 4000) return;
+    check(book.textOf(blocks[3].paragraph) == L"aiv" &&
+              book.textOf(blocks[3998].paragraph) == L"ammmcmxcix",
+          "знаки по 3999 — римские");
+    check(book.textOf(blocks[3999].paragraph) == L"a4000", "четырёхтысячный — арабскими");
+}
+
 }  // namespace
 
 int main() {
@@ -2127,6 +2358,9 @@ int main() {
     testClustersStayWhole(engine);
     testCharOffsets();
     testNoteMarkRole(engine);
+    testBrokenNoteRefs(engine);
+    testBrokenImageRefs();
+    testRomanMarkers();
     testHyphenation();
     testHyphenationInLayout(engine);
     testTrailingSpace(engine);
