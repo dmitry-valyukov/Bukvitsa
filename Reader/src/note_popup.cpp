@@ -8,6 +8,7 @@
 #include "Bind.h"
 
 #include "bukvitsa/typography/glyph_painter.h"
+#include "bukvitsa/typography/system_failure.h"
 
 namespace bukvitsa::reader {
 
@@ -84,7 +85,7 @@ void NotePopup::hide() {
     root_.visibility(Visibility::Collapsed);
 }
 
-void NotePopup::draw(const Theme& theme, float width, float height, float scale) {
+void NotePopup::draw(const Theme& theme, float width, float height, float scale) noexcept {
     const SizeInt32 pixels{static_cast<int32_t>(width * scale + 0.5f),
                            static_cast<int32_t>(height * scale + 0.5f)};
     if (pixels.width <= 0 || pixels.height <= 0) return;
@@ -107,9 +108,11 @@ void NotePopup::draw(const Theme& theme, float width, float height, float scale)
         context->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         context->Clear(D2D1::ColorF(0, 0, 0, 0));   // подложку рисует Border
 
+        // Отказ — остановка (system_failure.h): молча пустая сноска была бы
+        // сбоем без имени.
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ink;
-        context->CreateSolidColorBrush(theme.text, &ink);
-        if (!ink) return;
+        typography::stopIfFailed(context->CreateSolidColorBrush(theme.text, &ink),
+                                 "NotePopup: не создалась кисть сноски");
 
         // Знак сноски внутри сноски — цветом текста, а не ссылки: всплывашка
         // знаков не ловит, и цвет ссылки обещал бы щелчок, которого нет.
