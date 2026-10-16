@@ -166,10 +166,13 @@ DecodedPicture decodeImage(IWICImagingFactory* wic, std::string_view bytes, uint
     }
 
     // Пиксели — здесь, целиком (WICBitmapCacheOnLoad): битые данные
-    // отказывают сейчас, словом о файле, а не потом, на каждом кадре. Память,
-    // которую по ходу может держать сам декодер, ограничена бюджетом в байтах
-    // по формату кадра, так что нехватка памяти здесь — беда системы:
-    // остановка; прочие отказы — о файле.
+    // отказывают сейчас, словом о файле, а не потом, на каждом кадре.
+    // E_OUTOFMEMORY от CreateBitmapFromSource — остановка. Бюджет ограничил
+    // только кадр в его собственном формате, и обычно эта нехватка — беда
+    // системы; но прогрессивный JPEG держит по ходу ещё коэффициенты (4:2:0 —
+    // 3 байта на пиксель, 4:4:4 — 6, CMYK — 8, в пределах бюджета до 2 ГиБ),
+    // и тогда это остановка от данных — известная цена бюджета, который
+    // пропускает снимки телефонов на 200 Мп. Прочие его отказы — о файле.
     ComPtr<IWICBitmap> decodedPicture;
     const HRESULT cacheResult = wic->CreateBitmapFromSource(pixelSource.Get(), WICBitmapCacheOnLoad, &decodedPicture);
     if (cacheResult == E_OUTOFMEMORY) stopIfFailed(cacheResult, "WIC: не хватило памяти на снимок в бюджете");
