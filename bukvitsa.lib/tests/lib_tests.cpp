@@ -27,6 +27,7 @@
 
 #include "bukvitsa/reader/book_index.h"
 #include "bukvitsa/reader/book_places.h"
+#include "bukvitsa/reader/imaging.h"
 #include "bukvitsa/reader/shelf_text.h"
 #include "bukvitsa/reader/workspace.h"
 
@@ -447,6 +448,38 @@ void testPageWarp() {
           "кромка, перелетевшая полосу между точками, выворачивает столбец");
 }
 
+/// Бюджет пикселей из заголовка и уменьшение до предела — на краях: квадрат
+/// 16384² ровно в бюджете, на пиксель шире — нет, снимок на 200 Мп — в
+/// бюджете, PNG 65535² и нулевая сторона — нет; большая сторона уменьшенного —
+/// ровно предел, меньшая — целочисленно и не меньше пикселя, и при сторонах,
+/// чьё произведение не влезает в uint32_t.
+void testPictureBudget() {
+    std::printf("\n=== бюджет картинки ===\n");
+
+    check(reader::withinPictureBudget(16384, 16384), "16384×16384 — ровно в бюджете");
+    check(!reader::withinPictureBudget(16385, 16384) && !reader::withinPictureBudget(16384, 16385),
+          "на пиксель больше — за бюджетом");
+    check(reader::withinPictureBudget(16320, 12240), "снимок на 200 Мп — в бюджете");
+    check(!reader::withinPictureBudget(65535, 65535) && !reader::withinPictureBudget(0xFFFFFFFFu, 0xFFFFFFFFu),
+          "65535×65535 и стороны в предел uint32_t — за бюджетом, без переполнения");
+    check(!reader::withinPictureBudget(0, 100) && !reader::withinPictureBudget(100, 0),
+          "нулевая сторона — не картинка");
+    check(reader::withinPictureBudget(1, 1) && reader::withinPictureBudget(268435456, 1) &&
+              !reader::withinPictureBudget(268435457, 1),
+          "полоса в пиксель — до 2²⁸ включительно");
+
+    const auto same = [](reader::PictureSize size, uint32_t width, uint32_t height) {
+        return size.width == width && size.height == height;
+    };
+    check(same(reader::fittedSize(16320, 12240, 4096), 4096, 3072), "200 Мп до 4096 — 4096×3072");
+    check(same(reader::fittedSize(12240, 16320, 4096), 3072, 4096), "стоя — так же, большая сторона — предел");
+    check(same(reader::fittedSize(4097, 4097, 4096), 4096, 4096), "квадрат на пиксель больше — ровно предел");
+    check(same(reader::fittedSize(100000, 1, 4096), 4096, 1), "полоса — меньшая сторона не меньше пикселя");
+    check(same(reader::fittedSize(0xFFFFFFFFu, 0xFFFFFFFEu, 1), 1, 1), "предел в пиксель и огромные стороны — 1×1");
+    check(same(reader::fittedSize(0xFFFFFFFFu, 0x7FFFFFFFu, 4096), 4096, 2047),
+          "стороны, чьё произведение не влезает в uint32_t, — целочисленно в uint64_t");
+}
+
 /// Реестр второй версии — листы порознь, по пять точек, — читается в кривые
 /// из девяти: две точки у корешка становятся одной, на середине и высотой
 /// посередине между ними. Записывается уже третья версия, и она читается
@@ -495,6 +528,21 @@ void testSkinsReadSeparateLeaves() {
     const reader::Skin fresh = reader::defaultSkin();
     check(skin.bottom.x == fresh.bottom.x && skin.bottom.y == fresh.bottom.y,
           "чего в файле нет — начальная прямая");
+
+    // У первой точки правого листа нет высоты: на её месте — точка начальной
+    // прямой, а не точка корешка левого листа, так что корешок — посередине
+    // между точкой левого и прямой.
+    std::string rightWithoutHeight = old;
+    constexpr std::string_view rightFirstPoint = "<point x=\"0.51\" y=\"0.04\"/>";
+    const size_t rightFirstAt = rightWithoutHeight.find(rightFirstPoint);
+    check(rightFirstAt != std::string::npos, "первая точка правого листа записана как была");
+    if (rightFirstAt == std::string::npos) return;
+    rightWithoutHeight.replace(rightFirstAt, rightFirstPoint.size(), "<point x=\"0.51\"/>");
+    reader::Skins halvesRead;
+    const std::optional<std::vector<reader::CorrectedSkin>> halvesCorrected = halvesRead.loadFrom(rightWithoutHeight);
+    check(correctedOne(halvesCorrected, u"Старая", {reader::SkinFault::MissingCoordinate}) &&
+              aboutEqual(halvesRead.list()[0].top.y[spine], 0.5f * (0.02f + fresh.top.y[spine])),
+          "правый лист второй версии без высоты у первой точки — точка начальной прямой, а не корешок левого");
 
     const std::string written = skins.toXml();
     check(written.find("<skins version=\"3\">") != std::string::npos &&
@@ -1199,8 +1247,9 @@ void testWorkspaceNamesCorrectedSkins() {
                       holds(notice.details, L"Копия: " + registryCopy.wstring()),
                   "сообщение называет файл и копию");
             check(holds(notice.details, L"Первое же сохранение обложки в мастере или удаление обложки перепишет "
-                                        L"skins.xml исправленными кромками; правка рук сохранена в копии."),
-                  "сообщение говорит, что станет с правкой");
+                                        L"skins.xml исправленными кромками, а пропущенные обложки из него исчезнут; "
+                                        L"правка рук сохранена в копии."),
+                  "сообщение говорит, что станет с правкой и с пропущенными");
         }
 
         const Skin* const shownSpine = ws.skins.find(u"Сдвинутая");
@@ -1225,6 +1274,28 @@ void testWorkspaceNamesCorrectedSkins() {
         check(started.notices.size() == 1 &&
                   started.notices[0].headline == L"Обложка из skins.xml исправлена при чтении",
               "одна исправленная обложка — заголовок в единственном");
+        check(started.notices.size() == 1 &&
+                  holds(started.notices[0].details, L"перепишет skins.xml исправленными кромками; правка рук "
+                                                    L"сохранена в копии.") &&
+                  !holds(started.notices[0].details, L"пропущенные"),
+              "без пропущенных — о них ни слова");
+    }
+
+    {
+        Sandbox box("corrected-skipped");
+        Skins onlySkipped;
+        onlySkipped.put(good);
+        onlySkipped.put(imageless);
+        Workspace ws(box.root);
+        putOnDisk(ws.skinsPath(), onlySkipped.toXml());
+
+        const Started started = run(ws.start(never));
+
+        check(started.notices.size() == 1 &&
+                  holds(started.notices[0].details, L"перепишет skins.xml, и пропущенные обложки из него исчезнут; "
+                                                    L"правка рук сохранена в копии.") &&
+                  !holds(started.notices[0].details, L"исправленными кромками"),
+              "только пропущенные — о кромках ни слова, о пропущенных — что исчезнут");
     }
 
     {
@@ -2165,6 +2236,7 @@ int main(int argc, char* argv[]) {
     testSearchMatchesWhatTheReaderMeans();
     testEdgeThroughPoints();
     testPageWarp();
+    testPictureBudget();
     testSkinsReadSeparateLeaves();
     runSkinEditorTests();
     runKeyMapTests();

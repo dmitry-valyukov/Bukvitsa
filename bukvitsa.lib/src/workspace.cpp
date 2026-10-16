@@ -91,9 +91,22 @@ Notice correctedNotice(const std::vector<CorrectedSkin>& correctedSkins, const s
         }
         details += L".\n";
     }
+    // Что станет с файлом при первой записи: исправленные обложки лягут в
+    // него такими, как показаны, а пропущенные из него исчезнут — и те и
+    // другие в своём прежнем виде останутся только в копии.
+    const auto skipped = [](const CorrectedSkin& correctedSkin) {
+        return std::ranges::any_of(correctedSkin.faults, [](SkinFault fault) {
+            return fault == SkinFault::SkippedNoName || fault == SkinFault::SkippedNoImage;
+        });
+    };
+    const bool anySkipped = std::ranges::any_of(correctedSkins, skipped);
+    const bool anyShown = !std::ranges::all_of(correctedSkins, skipped);
     details += L"\nФайл: " + registryFile.wstring() + L"\nКопия: " + registryCopy.wstring() +
-               L"\n\nПервое же сохранение обложки в мастере или удаление обложки перепишет skins.xml "
-               L"исправленными кромками; правка рук сохранена в копии.";
+               L"\n\nПервое же сохранение обложки в мастере или удаление обложки перепишет skins.xml";
+    if (anyShown) details += L" исправленными кромками";
+    if (anySkipped)
+        details += anyShown ? L", а пропущенные обложки из него исчезнут" : L", и пропущенные обложки из него исчезнут";
+    details += L"; правка рук сохранена в копии.";
 
     // Заголовок — в числе по обложкам, а не по исправлениям.
     std::wstring headline = correctedSkins.size() == 1 ? L"Обложка из skins.xml исправлена при чтении"
