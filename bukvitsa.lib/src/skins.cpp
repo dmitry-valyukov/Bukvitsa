@@ -1,4 +1,8 @@
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <utility>
+#include <vector>
 
 // Заголовки проекта после стандартных: store.h несёт импорт, после которого
 // стандартный заголовок MSVC уже не принимает. Свой первым.
@@ -230,6 +234,127 @@ float EdgeSpline::at(float u) const {
            step * (h10 * slope_[s] + h11 * slope_[s + 1]);
 }
 
+namespace {
+
+/// Лежат ли все точки кривой на одной высоте. Тогда кромка — ровно эта
+/// высота всюду, без ошибки округления: хорды нулевые, касательные тоже, и
+/// отрезок Эрмита отдаёт значение своей первой точки.
+bool liesAt(const EdgeCurve& curve, float level) {
+    return std::all_of(curve.y.begin(), curve.y.end(), [level](float y) { return y == level; });
+}
+
+/// Мера полосы, в которой переводится точка: на пустую доли не делятся.
+void requireArea(PageWarp::Size area) {
+    if (!(area.width > 0.0f && area.height > 0.0f))
+        wxl::core::abort("PageWarp: точка переводится в пустой мере полосы");
+}
+
+}  // namespace
+
+PageWarp::PageWarp(const Skin& skin)
+    : upper_(skin.top),
+      lower_(skin.bottom),
+      flat_(liesAt(skin.top, kEdgeInset) && liesAt(skin.bottom, 1.0f - kEdgeInset)) {}
+
+PageWarp::Column PageWarp::column(float u) const {
+    return Column{upper_.at(u) - kEdgeInset, lower_.at(u) - (1.0f - kEdgeInset)};
+}
+
+PageWarp::Point PageWarp::toScreen(Point layout, Size area) const {
+    requireArea(area);
+
+    // Точка экрана y показывает вёрстку на y − (a + (b − a)·y/H)·H, где a и b —
+    // отклонения верхней и нижней кромок в столбце. Отсюда y·(1 + a − b) =
+    // y_вёрстки + a·H. Множитель — во сколько раз изгиб сжимает столбец по
+    // высоте: на экране вся высота вёрстки занимает H/(1 + a − b), у прямых
+    // кромок он единица. Ноль и ниже значили бы, что кромки разошлись против
+    // прямых на целую высоту полосы и столбец растянулся бы без конца или
+    // вывернулся. Таких кромок не ставит мастер — перенос точки, выворачивающий
+    // столбец, он отвергает (SkinEditor::drag), — а правленный руками реестр
+    // чтение делает ровным (keepsColumns); сюда они не доходят, и дошедшие —
+    // нарушенный инвариант.
+    const Column edges = column(layout.x / area.width);
+    const float stretch = 1.0f + edges.top - edges.bottom;
+    if (!(stretch > 0.0f))
+        wxl::core::abort("PageWarp::toScreen: кромки в столбце разошлись на высоту полосы");
+
+    return Point{layout.x, (layout.y + edges.top * area.height) / stretch};
+}
+
+bool PageWarp::keepsColumns() const {
+    // Между соседними точками обеих кривых каждая кромка — один кубический
+    // отрезок (за крайними точками — постоянная), и b − a там — кубика.
+    // Наибольшее её значение — на концах отрезка или в корне производной, а
+    // сама кубика восстанавливается по четырём значениям на равных шагах:
+    // касательные сплайна для этого не нужны.
+    //
+    // Узлы — края полосы и точки обеих кривых: их не больше, чем точек, и
+    // память на каждый перенос точки в мастере не выделяется.
+    constexpr size_t kKnots = 2 + 2 * static_cast<size_t>(EdgeCurve::kPoints);
+    auto knots = std::array<float, kKnots>{0.0f, 1.0f};
+    std::copy(upper_.curve().x.begin(), upper_.curve().x.end(), knots.begin() + 2);
+    std::copy(lower_.curve().x.begin(), lower_.curve().x.end(),
+              knots.begin() + 2 + EdgeCurve::kPoints);
+    std::sort(knots.begin(), knots.end());
+    const auto knotCount =
+        static_cast<size_t>(std::unique(knots.begin(), knots.end()) - knots.begin());
+
+    // Неконечное отклонение — не изгиб, а сломанная кромка: точки из
+    // правленного руками файла встают и на субнормальном шаге, сплайн даёт на
+    // нём бесконечность и NaN, а std::max с NaN пропустил бы его молча. Такая
+    // кромка считается выворотом — файлу не верят.
+    bool finite = true;
+    const auto gapAt = [this, &finite](double u) {
+        const Column edges = column(static_cast<float>(u));
+        const double gap = static_cast<double>(edges.bottom) - static_cast<double>(edges.top);
+        finite = finite && std::isfinite(gap);
+        return gap;
+    };
+
+    double widest = gapAt(0.0);
+    for (size_t index = 0; index + 1 < knotCount; ++index) {
+        const double from = knots[index];
+        const double span = static_cast<double>(knots[index + 1]) - from;
+        if (from < 0.0 || from + span > 1.0 || !(span > 0.0)) continue;
+
+        // Кубика по значениям в s = 0, 1/3, 2/3, 1 — коэффициенты Лагранжа.
+        const double f0 = gapAt(from);
+        const double f1 = gapAt(from + span / 3.0);
+        const double f2 = gapAt(from + span * 2.0 / 3.0);
+        const double f3 = gapAt(from + span);
+        const double c1 = (-11.0 * f0 + 18.0 * f1 - 9.0 * f2 + 2.0 * f3) / 2.0;
+        const double c2 = 9.0 * (2.0 * f0 - 5.0 * f1 + 4.0 * f2 - f3) / 2.0;
+        const double c3 = 9.0 * (-f0 + 3.0 * f1 - 3.0 * f2 + f3) / 2.0;
+
+        widest = std::max({widest, f0, f3});
+
+        // Корни производной c1 + 2·c2·s + 3·c3·s² внутри отрезка.
+        auto roots = std::array<double, 2>{};
+        size_t rootCount = 0;
+        if (std::abs(c3) > 1e-12) {
+            const double discriminant = c2 * c2 - 3.0 * c3 * c1;
+            if (discriminant >= 0.0) {
+                const double root = std::sqrt(discriminant);
+                roots[rootCount++] = (-c2 + root) / (3.0 * c3);
+                roots[rootCount++] = (-c2 - root) / (3.0 * c3);
+            }
+        } else if (std::abs(c2) > 1e-12) {
+            roots[rootCount++] = -c1 / (2.0 * c2);
+        }
+        for (size_t at = 0; at < rootCount; ++at)
+            if (roots[at] > 0.0 && roots[at] < 1.0)
+                widest = std::max(widest, gapAt(from + span * roots[at]));
+    }
+
+    return finite && widest < 1.0;
+}
+
+PageWarp::Point PageWarp::toLayout(Point screen, Size area) const {
+    requireArea(area);
+    const float shiftHere = shift(screen.x / area.width, screen.y / area.height);
+    return Point{screen.x, screen.y - shiftHere * area.height};
+}
+
 bool Skins::loadFrom(std::string xml) {
     skins_.clear();
 
@@ -271,6 +396,15 @@ bool Skins::loadFrom(std::string xml) {
             // такая кромка становится начальной прямой, а не роняет полосу.
             if (!ascending(skin.top)) skin.top = straight.top;
             if (!ascending(skin.bottom)) skin.bottom = straight.bottom;
+
+            // Кромки, которые где-то между точками разошлись против прямых на
+            // целую высоту полосы, вывернули бы столбец страницы: точку под
+            // таким изгибом не перевести. Порознь кривые бывают и ни при чём —
+            // выворачивает их пара, — так что ровной становится обложка.
+            if (!PageWarp{skin}.keepsColumns()) {
+                skin.top = straight.top;
+                skin.bottom = straight.bottom;
+            }
 
             // Обложка без имени не выбирается, без снимка не рисуется; такого
             // в файле, который писали мы, не бывает — но файл могли и
