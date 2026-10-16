@@ -119,26 +119,6 @@ private:
     /// страницы кроют окно целиком, и красить под ними нечего.
     void activate(bool entersReading) override;
 
-    // ---- подписки ----
-
-    /// Наша подписка на меру окна, снимаемая её же разрушением: окно живёт
-    /// дольше полосы, а обработчик держит её this. Подписка — в конструкторе
-    /// держателя, снятие — в деструкторе: недостроенная полоса её не оставит.
-    class ClientSizeWatch : private noncopyable {
-    public:
-        template <class Handler>
-        ClientSizeWatch(const wxl::CompositionWindow& watchedWindow, Handler&& sizeHandler)
-            : watchedWindow_(watchedWindow),
-              sizeToken_(
-                  watchedWindow.add_onClientSizeChanged(std::forward<Handler>(sizeHandler))) {}
-
-        ~ClientSizeWatch() { watchedWindow_.remove_onClientSizeChanged(sizeToken_); }
-
-    private:
-        const wxl::CompositionWindow& watchedWindow_;
-        wxl::EventToken sizeToken_;
-    };
-
     // ---- своё ----
 
     /// Одевает корень острова и ставит на сцену контейнер листов — над
@@ -190,11 +170,15 @@ private:
     /// Стратегия переворота по настройке читателя: листы или без анимации.
     std::unique_ptr<TurnAnimation> makeTurnAnimation();
 
-    /// Мера полосы по окну: клиентская область в пикселях и масштаб экрана
-    /// (DPI с увеличением окна). Та же мера — ничего; новая — растры и слой
-    /// листов в новый размер, а размер в DIP с масштабом — ведущему, и тот
-    /// перевёрстывает.
-    void applySize(wxl::SizeInt32 pixels, float scale);
+    /// Мера полосы по окну — такой, какой её приносит ClientSizeChanged:
+    /// клиентская область в пикселях и масштаб экрана (DPI с увеличением
+    /// окна). Слушатель меры окна (sizeWatch_); первую меру конструктор
+    /// снимает сам. Та же мера — ничего; новая — растры и слой листов в новый
+    /// размер, а размер в DIP с масштабом — ведущему, и тот перевёрстывает.
+    /// noexcept: исключению из обработчика окна идти некуда, и сбой здесь —
+    /// отказ поверхности растра или визуала, нехватка памяти, отказ
+    /// DirectWrite или Direct2D в перевёрстке — остановка.
+    void applySize(const wxl::ClientSize& client) noexcept;
 
     /// Рисует показанный разворот потока страниц в контекст растра — тело
     /// всякой отрисовки разворота (SpreadView::redraw).
@@ -347,9 +331,9 @@ private:
     std::optional<PageWarp> pageWarp_;
 
     /// Мера окна — после всего, что она трогает (разворот, слой листов,
-    /// ведущий): событие приходит из цикла сообщений, а умирает подписка
-    /// раньше них.
-    ClientSizeWatch sizeWatch_;
+    /// ведущий): событие приходит из цикла сообщений, а держатель снимается
+    /// сам, умирая раньше них.
+    wxl::WindowWatch<wxl::EventKey::ClientSizeChanged, &BookView::applySize> sizeWatch_;
 
     /// Связь холста с ведущим — последней: под ведущим полоса стоит, когда
     /// построена вся, — ведущий может просить её о чём угодно с первой меры, —
