@@ -54,6 +54,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <source_location>
 #include <span>
 #include <stdexcept>
 #include <string>

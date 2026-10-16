@@ -24,6 +24,7 @@
 
 #include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/glyph_painter.h"
+#include "bukvitsa/typography/system_failure.h"
 
 import wxl.fmt;
 
@@ -93,10 +94,7 @@ BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Se
       // его размер, а спрашивать остров (SizeChanged, XamlRoot) не нужно — и
       // нельзя было до Loaded. Событие приходит из цикла сообщений, то есть не
       // раньше, чем полоса достроится.
-      sizeWatch_(window_,
-                 [this](Object const&, ClientSize const& client) {
-                     applySize(client.size, client.scale);
-                 }),
+      sizeWatch_(window_, *this),
       // Холстом ведущего полоса становится последним членом: всё, о чём
       // ведущий её попросит, к этой минуте построено.
       canvasAttachment_(presenter_.attachCanvas(*this)) {
@@ -110,22 +108,22 @@ BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Se
     // Колонцифра — единственный текст в читалке, который рисуется не своей
     // вёрсткой: у него нет ни переносов, ни выключки по формату — одна строка,
     // выключенная по центру, — и ради неё заводить абзац незачем. До первой
-    // меры: та уже рисует разворот.
-    if (IDWriteFactory* const dwrite = dwriteFactory()) {
-        dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f,
-                                 L"ru-RU", &statusFormat_);
-        if (statusFormat_) {
-            statusFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            statusFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
-    }
+    // меры: та уже рисует разворот. Отказ DirectWrite — остановка
+    // (system_failure.h): полоса без колонцифры молчала бы о причине.
+    typography::stopIfFailed(dwriteFactory()->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                                               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                               12.0f, L"ru-RU", &statusFormat_),
+                             "BookView: не создался формат колонцифры");
+    typography::stopIfFailed(statusFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER),
+                             "BookView: колонцифре не задана выключка");
+    typography::stopIfFailed(statusFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),
+                             "BookView: колонцифре не задано место по высоте");
 
     // Первый WM_SIZE окно пережило до нас: текущая мера снимается сразу. Мера
     // — уже вёрстка, и ведущий рисует ею через холст, под которым полоса
-    // стоит с конца списка инициализации. Сорвись она — построенные члены
-    // разрушатся, и связь уведёт холст из-под ведущего, а подписки снимутся.
-    applySize(window_.clientSize(), window_.rasterizationScale());
+    // стоит с конца списка инициализации. Сбой в ней — остановка, как и в
+    // мере, пришедшей событием: applySize — noexcept.
+    applySize({window_.clientSize(), window_.rasterizationScale()});
 }
 
 void BookView::buildTree() {
@@ -395,7 +393,7 @@ void BookView::hideNote() {
     note_.hide();
 }
 
-void BookView::redraw() {
+void BookView::redraw() noexcept {
     const PageFlow& flow = presenter_.flow();
     if (!spreadView_.measured() || flow.width() <= 0.0f || flow.height() <= 0.0f) return;
 
@@ -445,8 +443,9 @@ std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     return chosenAnimation;
 }
 
-void BookView::applySize(SizeInt32 pixels, float scale) {
-    if (scale <= 0.0f) scale = 1.0f;
+void BookView::applySize(const ClientSize& client) noexcept {
+    const SizeInt32 pixels = client.size;
+    const float scale = client.scale > 0.0f ? client.scale : 1.0f;
 
     // Пиксели — мера; DIP, в которых верстается и рисуется полоса, — их доля.
     // Та же мера — ни растров, ни вёрстки: событие приходит и без перемены.
@@ -535,9 +534,8 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
         if (!warpContext_) {
             Microsoft::WRL::ComPtr<ID2D1Device> device;
             context->GetDevice(&device);
-            if (!device || FAILED(device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-                                                              &warpContext_)))
-                return false;
+            typography::stopIfFailed(device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &warpContext_),
+                                     "BookView: не создался контекст слоя изгиба");
             // Те же режимы, что redraw() ставит поверхности: слой — та же
             // страница, только в другой битмап.
             warpContext_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
@@ -551,8 +549,8 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
         const D2D1_BITMAP_PROPERTIES1 layerProps{
             {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED},
             96.0f, 96.0f, D2D1_BITMAP_OPTIONS_TARGET, nullptr};
-        if (FAILED(warpContext_->CreateBitmap(pixels, nullptr, 0, &layerProps, &warpLayer_)))
-            return false;
+        typography::stopIfFailed(warpContext_->CreateBitmap(pixels, nullptr, 0, &layerProps, &warpLayer_),
+                                 "BookView: не создался слой изгиба");
         warpPixels_ = pixels;
     }
 
@@ -561,20 +559,21 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     // через ту же вертикальную двойку. Подключение входов здесь не делается:
     // кто за кем стоит в цепочке, каждый кадр решает drawPage().
     if (!warpDisplace_) {
-        warpContext_->CreateEffect(CLSID_D2D1DisplacementMap, &warpDisplace_);
-        warpContext_->CreateEffect(CLSID_D2D1Scale, &warpShrink_);
-        if (!warpDisplace_ || !warpShrink_) {
-            warpDisplace_.Reset();
-            warpShrink_.Reset();
-            return false;
-        }
-        warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_X_CHANNEL_SELECT,
-                                D2D1_CHANNEL_SELECTOR_R);
-        warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_Y_CHANNEL_SELECT,
-                                D2D1_CHANNEL_SELECTOR_G);
-        warpShrink_->SetValue(D2D1_SCALE_PROP_SCALE, D2D1::Vector2F(1.0f, 0.5f));
-        warpShrink_->SetValue(D2D1_SCALE_PROP_INTERPOLATION_MODE,
-                              D2D1_SCALE_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
+        typography::stopIfFailed(warpContext_->CreateEffect(CLSID_D2D1DisplacementMap, &warpDisplace_),
+                                 "BookView: не создалось смещение слоя изгиба");
+        typography::stopIfFailed(warpContext_->CreateEffect(CLSID_D2D1Scale, &warpShrink_),
+                                 "BookView: не создалось ужатие слоя изгиба");
+        typography::stopIfFailed(
+            warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_X_CHANNEL_SELECT, D2D1_CHANNEL_SELECTOR_R),
+            "BookView: смещению не задан канал X");
+        typography::stopIfFailed(
+            warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_Y_CHANNEL_SELECT, D2D1_CHANNEL_SELECTOR_G),
+            "BookView: смещению не задан канал Y");
+        typography::stopIfFailed(warpShrink_->SetValue(D2D1_SCALE_PROP_SCALE, D2D1::Vector2F(1.0f, 0.5f)),
+                                 "BookView: ужатию не задан масштаб");
+        typography::stopIfFailed(warpShrink_->SetValue(D2D1_SCALE_PROP_INTERPOLATION_MODE,
+                                                       D2D1_SCALE_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC),
+                                 "BookView: ужатию не задана интерполяция");
     }
 
     // Обложка с нетронутыми точками — плоская: гнуть нечего, полоса рисуется
@@ -650,9 +649,9 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
         const D2D1_BITMAP_PROPERTIES1 mapProps{
             {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED},
             96.0f, 96.0f, D2D1_BITMAP_OPTIONS_NONE, nullptr};
-        if (FAILED(warpContext_->CreateBitmap(pixels, bytes.data(), pixels.width * 4, &mapProps,
-                                              &warpMap_)))
-            return false;
+        typography::stopIfFailed(
+            warpContext_->CreateBitmap(pixels, bytes.data(), pixels.width * 4, &mapProps, &warpMap_),
+            "BookView: не создалась карта изгиба");
     }
 
     warpDisplace_->SetInput(0, warpLayer_.Get());
@@ -661,22 +660,21 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     // это warpAmplitude_·высота·масштаб пикселей поверхности и вдвое больше в
     // слое двойной высоты; ещё двойка — потому что карта отклоняется от
     // середины не дальше половины размаха.
-    warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_SCALE,
-                            4.0f * warpAmplitude_ * flow.height() * scale);
+    typography::stopIfFailed(warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_SCALE,
+                                                     4.0f * warpAmplitude_ * flow.height() * scale),
+                             "BookView: смещению не задан размах");
     return true;
 }
 
-bool BookView::ensureBlur() {
-    if (warpBlur_) return true;
-    if (!warpContext_) return false;
-
-    warpContext_->CreateEffect(CLSID_D2D1GaussianBlur, &warpBlur_);
-    if (!warpBlur_) return false;
+void BookView::ensureBlur(not_null<ID2D1DeviceContext> layerContext) {
+    if (warpBlur_) return;
 
     // HARD вместо мягкой кромки по умолчанию: у границ полосы размытие не
     // должно подмешивать прозрачность из-за края слоя.
-    warpBlur_->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_BORDER_MODE_HARD);
-    return true;
+    typography::stopIfFailed(layerContext->CreateEffect(CLSID_D2D1GaussianBlur, &warpBlur_),
+                             "BookView: не создалось размытие предпросмотра");
+    typography::stopIfFailed(warpBlur_->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_BORDER_MODE_HARD),
+                             "BookView: размытию не задана кромка");
 }
 
 void BookView::drawThemeBackdrop(ID2D1DeviceContext* context, float width, float height) {
@@ -721,7 +719,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     const bool warped = ensureWarp(context);
 
     // Точку указателя полоса переводит тем изгибом, которым страница
-    // нарисована: не вышло изгиба — набор на экране там же, где в вёрстке.
+    // нарисована: гнуть нечего — набор на экране там же, где в вёрстке.
     // Обложка та же, по которой ensureWarp строил карту: её смену полоса
     // узнаёт restyle, и карта строится заново.
     if (warped) {
@@ -734,7 +732,8 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     // второй план, и направляющие мастера читаются чётче. Ещё не согнутая —
     // плоская — обложка идёт тем же слоем, но мимо смещения: размытию нужен
     // образ страницы, а прямому рисунку в поверхность его не дать.
-    const bool blurred = presenter_.previewing() && (warped || warpFlat_) && ensureBlur();
+    const bool blurred = presenter_.previewing() && (warped || warpFlat_);
+    if (blurred) ensureBlur(not_null<ID2D1DeviceContext>{warpContext_.Get()});
 
     if (!warped && !blurred) {
         drawPageContent(context, width, height);
@@ -747,8 +746,9 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     // Вертикальная двойка растит слой, горизонтальный масштаб — тот же, что
     // redraw() даёт поверхности: содержимое рисуется в DIP, слой — в пикселях.
     warpContext_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale * 2.0f));
+
     drawPageContent(warpContext_.Get(), width, height);
-    if (FAILED(warpContext_->EndDraw())) return;   // фон с фотографией уже есть
+    typography::stopIfFailed(warpContext_->EndDraw(), "BookView: не закрылся рисунок слоя изгиба");
 
     // Хвост цепочки собирается по месту: изгиб, если есть что гнуть, потом
     // ужатие двойной высоты, потом размытие, если открыт конфигуратор.
@@ -761,7 +761,9 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     ID2D1Effect* tail = warpShrink_.Get();
     if (blurred) {
         warpBlur_->SetInputEffect(0, tail);
-        warpBlur_->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, kPreviewBlur * scale);
+        typography::stopIfFailed(
+            warpBlur_->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, kPreviewBlur * scale),
+            "BookView: размытию не задана сила");
         tail = warpBlur_.Get();
     }
 
@@ -787,10 +789,12 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> linkBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;
-    context->CreateSolidColorBrush(shade.text, &textBrush);
-    context->CreateSolidColorBrush(shade.link, &linkBrush);
-    context->CreateSolidColorBrush(shade.dim, &dimBrush);
-    if (!textBrush || !linkBrush || !dimBrush) return;
+    typography::stopIfFailed(context->CreateSolidColorBrush(shade.text, &textBrush),
+                             "BookView: не создалась кисть текста");
+    typography::stopIfFailed(context->CreateSolidColorBrush(shade.link, &linkBrush),
+                             "BookView: не создалась кисть знака сноски");
+    typography::stopIfFailed(context->CreateSolidColorBrush(shade.dim, &dimBrush),
+                             "BookView: не создалась кисть колонцифры");
 
     // Знак сноски — цветом ссылки: по нему щёлкают, и видно это должно быть
     // без мыши.
@@ -850,74 +854,70 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
         };
 
         Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> stops;
-        context->CreateGradientStopCollection(ramp, static_cast<UINT32>(std::size(ramp)), &stops);
-        if (stops) {
-            Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> gutter;
-            context->CreateLinearGradientBrush(
-                D2D1::LinearGradientBrushProperties(D2D1::Point2F(centre - band, 0.0f),
-                                                    D2D1::Point2F(centre + band, 0.0f)),
-                stops.Get(), &gutter);
-            if (gutter) {
-                context->FillRectangle(D2D1::RectF(centre - band, 0.0f, centre + band, height),
-                                       gutter.Get());
-            }
-        }
+        typography::stopIfFailed(
+            context->CreateGradientStopCollection(ramp, static_cast<UINT32>(std::size(ramp)), &stops),
+            "BookView: не создалась шкала тени корешка");
+        Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> gutter;
+        typography::stopIfFailed(context->CreateLinearGradientBrush(
+                                     D2D1::LinearGradientBrushProperties(D2D1::Point2F(centre - band, 0.0f),
+                                                                         D2D1::Point2F(centre + band, 0.0f)),
+                                     stops.Get(), &gutter),
+                                 "BookView: не создалась кисть тени корешка");
+        context->FillRectangle(D2D1::RectF(centre - band, 0.0f, centre + band, height), gutter.Get());
     }
 
-    if (statusFormat_) {
-        // На развороте колонцифра называет обе страницы: читатель видит две, и
-        // одна в счётчике расходилась бы с тем, что перед глазами.
-        //
-        // Номер левой колонки известен сразу — видимый разворот посчитан
-        // начисто в тот же кадр. Общее же число страниц главы становится
-        // известно, только когда её набор кончился; пока нет — многоточие:
-        // число, которое сейчас сменится другим, хуже честного молчания.
-        // Процент при этом верен всегда, потому что считается по символам
-        // книги, а место чтения перевёрстка почти не двигает.
-        // Номера — по левой главе: разворот на стыке кончается колонками
-        // следующей, но «стр. X из M» называет ту главу, где стоит читатель, и
-        // не залезает в номера соседней. Числа решает поток страниц (status);
-        // здесь они только становятся строкой.
-        const PageFlow::Status status = flow.status();
-        const size_t first = status.first;
-        const size_t own = status.own;
-        const u16_text numbers = own <= 1 ? core::format(u"{}", first + 1)
-                                          : core::format(u"{}–{}", first + 1, first + own);
-        const u16_text total =
-            status.total ? core::format(u"{}", *status.total) : u16_text{u"…"};
+    // На развороте колонцифра называет обе страницы: читатель видит две, и
+    // одна в счётчике расходилась бы с тем, что перед глазами.
+    //
+    // Номер левой колонки известен сразу — видимый разворот посчитан
+    // начисто в тот же кадр. Общее же число страниц главы становится
+    // известно, только когда её набор кончился; пока нет — многоточие:
+    // число, которое сейчас сменится другим, хуже честного молчания.
+    // Процент при этом верен всегда, потому что считается по символам
+    // книги, а место чтения перевёрстка почти не двигает.
+    // Номера — по левой главе: разворот на стыке кончается колонками
+    // следующей, но «стр. X из M» называет ту главу, где стоит читатель, и
+    // не залезает в номера соседней. Числа решает поток страниц (status);
+    // здесь они только становятся строкой.
+    const PageFlow::Status status = flow.status();
+    const size_t first = status.first;
+    const size_t own = status.own;
+    const u16_text numbers = own <= 1 ? core::format(u"{}", first + 1)
+                                      : core::format(u"{}–{}", first + 1, first + own);
+    const u16_text total =
+        status.total ? core::format(u"{}", *status.total) : u16_text{u"…"};
 
-        // Номер и общее число — по главе: пагинатор знает лишь её, и «из M»
-        // здесь значит «из стольких страниц в этой главе». Процент — по всей
-        // книге, по символам; им читатель и меряет весь путь.
-        const u16_text line = core::format(u"Глава {} · стр. {} из {}     {:.0f}%",
-                                           status.chapter + 1, numbers, total,
-                                           status.progress * 100.0f);
-        context->DrawText(line.wchars().data(), static_cast<UINT32>(line.size()),
-                          statusFormat_.Get(),
-                          D2D1::RectF(margin, height - top, width - margin, height),
-                          dimBrush.Get());
-    }
+    // Номер и общее число — по главе: пагинатор знает лишь её, и «из M»
+    // здесь значит «из стольких страниц в этой главе». Процент — по всей
+    // книге, по символам; им читатель и меряет весь путь.
+    const u16_text line = core::format(u"Глава {} · стр. {} из {}     {:.0f}%",
+                                       status.chapter + 1, numbers, total,
+                                       status.progress * 100.0f);
+    context->DrawText(line.wchars().data(), static_cast<UINT32>(line.size()),
+                      statusFormat_.Get(),
+                      D2D1::RectF(margin, height - top, width - margin, height),
+                      dimBrush.Get());
 }
 
 void BookView::drawInvitation(ID2D1DeviceContext* context, float width, float height) {
     const Theme& shade = presenter_.paper();
     context->Clear(!hasBackdrop() ? shade.background : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-    IDWriteFactory* const dwrite = dwriteFactory();
-    if (!dwrite) return;
-
     if (!invitationFormat_) {
-        dwrite->CreateTextFormat(L"Georgia", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                                 DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STRETCH_NORMAL, 22.0f,
-                                 L"ru-RU", &invitationFormat_);
-        if (!invitationFormat_) return;
-        invitationFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        invitationFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        typography::stopIfFailed(dwriteFactory()->CreateTextFormat(L"Georgia", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                                                   DWRITE_FONT_STYLE_ITALIC,
+                                                                   DWRITE_FONT_STRETCH_NORMAL, 22.0f, L"ru-RU",
+                                                                   &invitationFormat_),
+                                 "BookView: не создался формат приглашения");
+        typography::stopIfFailed(invitationFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER),
+                                 "BookView: приглашению не задана выключка");
+        typography::stopIfFailed(invitationFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER),
+                                 "BookView: приглашению не задано место по высоте");
     }
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
-    context->CreateSolidColorBrush(shade.dim, &brush);
-    if (!brush) return;
+    typography::stopIfFailed(context->CreateSolidColorBrush(shade.dim, &brush),
+                             "BookView: не создалась кисть приглашения");
 
     static constexpr wchar_t kInvitation[] = L"Перетащите книгу FB3 в это окно";
     context->DrawText(kInvitation, static_cast<UINT32>(sizeof(kInvitation) / sizeof(wchar_t) - 1),

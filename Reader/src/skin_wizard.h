@@ -92,7 +92,9 @@ private:
     /// Пересчитывает поверхность сетки под размер окна и масштаб экрана.
     bool resizeSurface();
 
-    void redraw();
+    /// Направляющие и точки — в поверхность сетки. noexcept: отказу рисования
+    /// ответа нет — остановка.
+    void redraw() noexcept;
 
     /// Сетка в DIP — то, во что модель правки переводит доли снимка.
     SkinEditor::Size area() const { return {width_, height_}; }

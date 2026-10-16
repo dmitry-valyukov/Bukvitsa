@@ -240,16 +240,19 @@ void App::showBackdrop() {
 }
 
 /// Байты файла читает операция wxl, раскодирует их полоса у себя. Не
-/// прочитался — полоса остаётся при бумаге темы: снимок обложки не стоит окна
-/// с ошибкой при каждой смене темы. Пока читали, могли захотеть другой —
-/// тогда этот не нужен.
+/// прочитался — полоса остаётся при бумаге темы, а читатель узнаёт почему —
+/// один раз на путь за запуск: тему с этим снимком выбирают снова и снова (T,
+/// панель), и окно на каждый раз было бы шумом, а молчание прятало бы сбой.
+/// Пока читали, могли захотеть другой — тогда этот не нужен.
 detached_task App::loadBackdrop(std::filesystem::path file) {
     auto const stop = cancellation_source{stop_.token()};
 
     try {
         std::string bytes = co_await ws_.readBytes(file, stop.token());
         if (file == backdrop_) view_.setBackdrop(std::move(bytes));
-    } catch (const last_error&) {
+    } catch (const last_error& failure) {
+        if (reportedBackdrops_.insert(file).second)
+            notices_.post(noticeOf(L"Не удалось прочитать снимок обложки", file.wstring(), failure));
     }
 }
 
