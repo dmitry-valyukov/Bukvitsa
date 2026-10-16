@@ -108,9 +108,13 @@ Notice correctedNotice(const std::vector<CorrectedSkin>& correctedSkins, const s
         details += anyShown ? L", а пропущенные обложки из него исчезнут" : L", и пропущенные обложки из него исчезнут";
     details += L"; правка рук сохранена в копии.";
 
-    // Заголовок — в числе по обложкам, а не по исправлениям.
-    std::wstring headline = correctedSkins.size() == 1 ? L"Обложка из skins.xml исправлена при чтении"
-                                                       : L"Обложки из skins.xml исправлены при чтении";
+    // Заголовок — в числе по обложкам, а не по исправлениям; когда все они
+    // пропущены, исправлять было нечего, и заголовок говорит о пропуске.
+    const bool single = correctedSkins.size() == 1;
+    std::wstring headline = anyShown ? (single ? L"Обложка из skins.xml исправлена при чтении"
+                                               : L"Обложки из skins.xml исправлены при чтении")
+                                     : (single ? L"Обложка из skins.xml пропущена при чтении"
+                                               : L"Обложки из skins.xml пропущены при чтении");
     return Notice{std::move(headline), std::move(details)};
 }
 
@@ -637,10 +641,10 @@ task<> Workspace::deleteSkin(u16_view name, cancellation_token stop) {
     co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
 }
 
-task<bool> Workspace::isImage(std::filesystem::path image, cancellation_token stop) {
+task<PictureVerdict> Workspace::probeImage(std::filesystem::path image, cancellation_token stop) {
     const std::string bytes = co_await async_file::read_all(poolPath(image), std::move(stop));
 
-    co_return !!decodeImage(bytes);   // ComPtr отвечает на `!`, как в прежней проверке мастера
+    co_return decodeImage(bytes).verdict;   // пиксели пробе не нужны — битмап отпускается здесь же
 }
 
 task<std::string> Workspace::readBytes(std::filesystem::path file, cancellation_token stop) {

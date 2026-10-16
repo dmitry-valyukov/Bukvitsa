@@ -146,12 +146,13 @@ void Book::decodeImages(fb3::Document& document) {
         // При открытии — только размеры из заголовка: вёрстке они нужны сразу —
         // без них не построить страницу, — а пиксели — лишь при рисунке.
         // Раскодировать все картинки здесь значило бы держать их пиксели, пока
-        // книга открыта: сотни мегабайт у иллюстрированной. Не картинка —
-        // места на странице она не займёт.
+        // книга открыта: сотни мегабайт у иллюстрированной. Не картинка или
+        // больше бюджета памяти — места на странице она не займёт.
         asset.bytes = document.takeImageBytes(index);
-        if (const std::optional<PictureSize> size = pictureSizeOf(wic_.Get(), asset.bytes)) {
-            asset.width = static_cast<float>(size->width);
-            asset.height = static_cast<float>(size->height);
+        if (const std::optional<PictureHeader> header = pictureSizeOf(wic_.Get(), asset.bytes);
+            header && !header->tooLarge) {
+            asset.width = static_cast<float>(header->size.width);
+            asset.height = static_cast<float>(header->size.height);
         } else {
             asset.bytes = std::string{};
         }
@@ -174,11 +175,11 @@ ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
     // уже отвела — оно остаётся пустым. Отказ Direct2D — остановка
     // (deviceBitmapOf).
     const uint32_t deviceSide = std::min<uint32_t>(kMaxPictureSide, context->GetMaximumBitmapSize());
-    const Microsoft::WRL::ComPtr<IWICBitmap> decodedPicture = decodeImage(wic_.Get(), asset.bytes, deviceSide);
+    const DecodedPicture decodedPicture = decodeImage(wic_.Get(), asset.bytes, deviceSide);
     asset.bytes = std::string{};
-    if (!decodedPicture) return nullptr;
+    if (!decodedPicture.bitmap) return nullptr;
 
-    asset.bitmap = deviceBitmapOf(context, decodedPicture.Get());
+    asset.bitmap = deviceBitmapOf(context, decodedPicture.bitmap.Get());
     return asset.bitmap.Get();
 }
 

@@ -448,25 +448,36 @@ void testPageWarp() {
           "кромка, перелетевшая полосу между точками, выворачивает столбец");
 }
 
-/// Бюджет пикселей из заголовка и уменьшение до предела — на краях: квадрат
-/// 16384² ровно в бюджете, на пиксель шире — нет, снимок на 200 Мп — в
-/// бюджете, PNG 65535² и нулевая сторона — нет; большая сторона уменьшенного —
-/// ровно предел, меньшая — целочисленно и не меньше пикселя, и при сторонах,
-/// чьё произведение не влезает в uint32_t.
+/// Бюджет памяти из заголовка — в байтах, по формату кадра, — и уменьшение
+/// до предела — на краях: квадрат 16384² в 32 бита ровно в бюджете, на
+/// пиксель шире — нет; снимок на 200 Мп в 24 и 32 бита — в бюджете, в 48 —
+/// нет; формат уже 32 бит считается за 32; 16384² в 64 и 128 бит, 65535² и
+/// стороны в предел uint32_t — нет, без переполнения; нулевая сторона — нет.
+/// Большая сторона уменьшенного — ровно предел, меньшая — целочисленно и не
+/// меньше пикселя, и при сторонах, чьё произведение не влезает в uint32_t;
+/// не больше предела — как есть, без увеличения.
 void testPictureBudget() {
     std::printf("\n=== бюджет картинки ===\n");
 
-    check(reader::withinPictureBudget(16384, 16384), "16384×16384 — ровно в бюджете");
-    check(!reader::withinPictureBudget(16385, 16384) && !reader::withinPictureBudget(16384, 16385),
+    check(reader::withinPictureBudget(16384, 16384, 32), "16384×16384 в 32 бита — ровно в бюджете");
+    check(!reader::withinPictureBudget(16385, 16384, 32) && !reader::withinPictureBudget(16384, 16385, 32),
           "на пиксель больше — за бюджетом");
-    check(reader::withinPictureBudget(16320, 12240), "снимок на 200 Мп — в бюджете");
-    check(!reader::withinPictureBudget(65535, 65535) && !reader::withinPictureBudget(0xFFFFFFFFu, 0xFFFFFFFFu),
+    check(reader::withinPictureBudget(16320, 12240, 24) && reader::withinPictureBudget(16320, 12240, 32),
+          "снимок на 200 Мп в 24 и 32 бита — в бюджете");
+    check(!reader::withinPictureBudget(16320, 12240, 48), "снимок на 200 Мп в 48 бит — за бюджетом");
+    check(reader::withinPictureBudget(16384, 16384, 1) && !reader::withinPictureBudget(16385, 16384, 1),
+          "1 бит на пиксель считается за 32: декодер отдаёт PBGRA");
+    check(!reader::withinPictureBudget(16384, 16384, 64) && !reader::withinPictureBudget(16384, 16384, 128) &&
+              reader::withinPictureBudget(8192, 8192, 128),
+          "16384² в 64 и 128 бит — за бюджетом, 8192² в 128 — ровно в нём");
+    check(!reader::withinPictureBudget(65535, 65535, 1) &&
+              !reader::withinPictureBudget(0xFFFFFFFFu, 0xFFFFFFFFu, 128),
           "65535×65535 и стороны в предел uint32_t — за бюджетом, без переполнения");
-    check(!reader::withinPictureBudget(0, 100) && !reader::withinPictureBudget(100, 0),
+    check(!reader::withinPictureBudget(0, 100, 32) && !reader::withinPictureBudget(100, 0, 32),
           "нулевая сторона — не картинка");
-    check(reader::withinPictureBudget(1, 1) && reader::withinPictureBudget(268435456, 1) &&
-              !reader::withinPictureBudget(268435457, 1),
-          "полоса в пиксель — до 2²⁸ включительно");
+    check(reader::withinPictureBudget(1, 1, 32) && reader::withinPictureBudget(268435456, 1, 32) &&
+              !reader::withinPictureBudget(268435457, 1, 32),
+          "полоса в пиксель в 32 бита — до 2²⁸ включительно");
 
     const auto same = [](reader::PictureSize size, uint32_t width, uint32_t height) {
         return size.width == width && size.height == height;
@@ -478,6 +489,9 @@ void testPictureBudget() {
     check(same(reader::fittedSize(0xFFFFFFFFu, 0xFFFFFFFEu, 1), 1, 1), "предел в пиксель и огромные стороны — 1×1");
     check(same(reader::fittedSize(0xFFFFFFFFu, 0x7FFFFFFFu, 4096), 4096, 2047),
           "стороны, чьё произведение не влезает в uint32_t, — целочисленно в uint64_t");
+    check(same(reader::fittedSize(100, 50, 4096), 100, 50) && same(reader::fittedSize(4096, 4096, 4096), 4096, 4096) &&
+              same(reader::fittedSize(4096, 1, 4096), 4096, 1),
+          "не больше предела — как есть, без увеличения");
 }
 
 /// Реестр второй версии — листы порознь, по пять точек, — читается в кривые
@@ -1296,6 +1310,9 @@ void testWorkspaceNamesCorrectedSkins() {
                                                     L"правка рук сохранена в копии.") &&
                   !holds(started.notices[0].details, L"исправленными кромками"),
               "только пропущенные — о кромках ни слова, о пропущенных — что исчезнут");
+        check(started.notices.size() == 1 &&
+                  started.notices[0].headline == L"Обложка из skins.xml пропущена при чтении",
+              "только пропущенные — заголовок о пропуске, а не об исправлении");
     }
 
     {
@@ -1879,15 +1896,31 @@ void testWorkspaceFindsLastBook() {
     check(run(ws.lastBookPath(never)).empty(), "guid неизвестен — продолжать нечего");
 }
 
-/// Картинка или нет — по байтам, а не по имени.
+/// Картинка или нет — по байтам, а не по имени; картинка больше бюджета
+/// памяти — свой отказ, с размером из заголовка, до всякого раскодирования.
 void testWorkspaceTellsImages() {
     std::printf("\n=== рабочее место: снимок ===\n");
 
     Sandbox box("image");
     Workspace ws(box.root);
 
-    check(run(ws.isImage(testdata / L"bg_paper2.jpg", never)), "jpeg — картинка");
-    check(!run(ws.isImage(kBook, never)), "книга — не картинка");
+    check(run(ws.probeImage(testdata / L"bg_paper2.jpg", never)).refusal == PictureRefusal::None, "jpeg — картинка");
+    check(run(ws.probeImage(kBook, never)).refusal == PictureRefusal::NotAnImage, "книга — не картинка");
+
+    // PNG в 68 байт: верный заголовок 65535×65535 в 1 бит на пиксель и
+    // начало данных. Бюджет считает его не меньше чем по 4 байта на пиксель —
+    // 17 ГБ, — так что ответ «слишком велик», а не «не картинка».
+    static constexpr char kHugePng[] =
+        "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52"
+        "\x00\x00\xff\xff\x00\x00\xff\xff\x01\x00\x00\x00\x00\x9e\x7e\xe4"
+        "\xfd\x00\x00\x00\x0b\x49\x44\x41\x54\x78\x9c\x63\x60\x40\x05\x00"
+        "\x00\x10\x00\x01\x39\xbd\x8f\x65\x00\x00\x00\x00\x49\x45\x4e\x44"
+        "\xae\x42\x60\x82";
+    putOnDisk(box.root / L"huge.png", std::string_view{kHugePng, sizeof kHugePng - 1});
+    const PictureVerdict hugeVerdict = run(ws.probeImage(box.root / L"huge.png", never));
+    check(hugeVerdict.refusal == PictureRefusal::TooLarge && hugeVerdict.declaredSize.width == 65535 &&
+              hugeVerdict.declaredSize.height == 65535,
+          "PNG 65535×65535 — слишком велик, с размером из заголовка");
     check(run(ws.readBytes(kBook, never)) == onDisk(kBook), "байты файла целиком");
 }
 
@@ -1940,7 +1973,7 @@ void testWorkspaceReadsStopOnRequest() {
 
     check(canceled(ws.readBook(missing, stop)), "книга: не начинается — отмена, а не «файла нет»");
     check(canceled(ws.readBytes(missing, stop)), "байты: не начинается");
-    check(canceled(ws.isImage(missing, stop)), "снимок: не начинается");
+    check(canceled(ws.probeImage(missing, stop)), "снимок: не начинается");
     check(canceled(ws.addFolder(box.root / L"missing", stop)), "каталог: не начинается — отмена, а не «нет каталога»");
     check(canceled(ws.scanFolder(box.root / L"missing", stop)),
           "перепроверка каталога: не начинается — отмена, а не «каталога нет»");
