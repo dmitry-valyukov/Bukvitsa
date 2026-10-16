@@ -29,10 +29,25 @@ Rule ruleOf(IDWriteFontFace* face, float fontSize, bool strikethrough) {
 
 }  // namespace
 
+not_null<ID2D1Brush> TextBrushes::brushFor(TextRole role) const {
+    switch (role) {
+    case TextRole::Body:
+        return body;
+    case TextRole::NoteMark:
+        return noteMark;
+    }
+
+    // Роль вне перечисления — испорченный стиль прогона, а не повод набрать
+    // его чем придётся.
+    wxl::core::abort("TextBrushes::brushFor: роль прогона вне перечисления");
+}
+
 void drawGlyphRun(ID2D1DeviceContext* context, const GlyphRun& run, float x,
-                  float baseline, ID2D1Brush* brush) {
+                  float baseline, const TextBrushes& brushes) {
     if (!run.fontFace || run.glyphIndices.empty())
         return;
+
+    ID2D1Brush* const brush = brushes.brushFor(run.style.role).get();
 
     DWRITE_GLYPH_RUN glyphRun{};
     glyphRun.fontFace = run.fontFace;
@@ -59,9 +74,9 @@ void drawGlyphRun(ID2D1DeviceContext* context, const GlyphRun& run, float x,
 }
 
 void drawLine(ID2D1DeviceContext* context, const Line& line, float x, float baseline,
-              ID2D1Brush* brush) {
+              const TextBrushes& brushes) {
     for (const GlyphRun& run : line.runs)
-        drawGlyphRun(context, run, x + run.originX, baseline, brush);
+        drawGlyphRun(context, run, x + run.originX, baseline, brushes);
 }
 
 }  // namespace bukvitsa::typography
