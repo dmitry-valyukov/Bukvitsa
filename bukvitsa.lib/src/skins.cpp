@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -271,8 +272,8 @@ PageWarp::Point PageWarp::toScreen(Point layout, Size area) const {
     // прямых на целую высоту полосы и столбец растянулся бы без конца или
     // вывернулся. Таких кромок не ставит мастер — перенос точки, выворачивающий
     // столбец, он отвергает (SkinEditor::drag), — а правленный руками реестр
-    // чтение делает ровным (keepsColumns); сюда они не доходят, и дошедшие —
-    // нарушенный инвариант.
+    // чтение делает ровным и называет (keepsColumns, Skins::loadFrom); сюда
+    // они не доходят, и дошедшие — нарушенный инвариант.
     const Column edges = column(layout.x / area.width);
     const float stretch = 1.0f + edges.top - edges.bottom;
     if (!(stretch > 0.0f))
@@ -355,10 +356,12 @@ PageWarp::Point PageWarp::toLayout(Point screen, Size area) const {
     return Point{screen.x, screen.y - shiftHere * area.height};
 }
 
-bool Skins::loadFrom(std::string xml) {
+std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
     skins_.clear();
 
-    if (xml.empty()) return true;
+    std::vector<CorrectedSkin> correctedSkins;
+
+    if (xml.empty()) return correctedSkins;
 
     try {
         wxl::xml::document document;
@@ -387,13 +390,20 @@ bool Skins::loadFrom(std::string xml) {
                                             element.child("bottomRight"), skin.bottom);
             }
 
-            // Корешок стоит на середине, что бы ни было написано в файле: его
-            // могли поправить руками, а страницы режутся по середине всё равно.
+            // Корешок стоит на середине, что бы ни было написано в файле, — и
+            // сдвинутый называется: его могли поправить руками, а страницы
+            // режутся по середине всё равно. Вторая версия корешка не писала —
+            // её кривая собрана с ним на середине, — так что сдвинут он может
+            // быть только рукой.
+            const bool spineMoved =
+                skin.top.x[kSpine] != EdgeCurve::kSpineX || skin.bottom.x[kSpine] != EdgeCurve::kSpineX;
             skin.top.x[kSpine] = EdgeCurve::kSpineX;
             skin.bottom.x[kSpine] = EdgeCurve::kSpineX;
 
             // Кривая, у которой точки не идут слева направо, — не кривая:
             // такая кромка становится начальной прямой, а не роняет полосу.
+            // Порядок — уже с корешком на середине: по нему её и рисуют.
+            const bool unordered = !ascending(skin.top) || !ascending(skin.bottom);
             if (!ascending(skin.top)) skin.top = straight.top;
             if (!ascending(skin.bottom)) skin.bottom = straight.bottom;
 
@@ -401,7 +411,8 @@ bool Skins::loadFrom(std::string xml) {
             // целую высоту полосы, вывернули бы столбец страницы: точку под
             // таким изгибом не перевести. Порознь кривые бывают и ни при чём —
             // выворачивает их пара, — так что ровной становится обложка.
-            if (!PageWarp{skin}.keepsColumns()) {
+            const bool folds = !PageWarp{skin}.keepsColumns();
+            if (folds) {
                 skin.top = straight.top;
                 skin.bottom = straight.bottom;
             }
@@ -409,15 +420,29 @@ bool Skins::loadFrom(std::string xml) {
             // Обложка без имени не выбирается, без снимка не рисуется; такого
             // в файле, который писали мы, не бывает — но файл могли и
             // поправить руками.
-            if (!skin.name.empty() && !skin.image.empty()) skins_.push_back(std::move(skin));
+            if (skin.name.empty() || skin.image.empty()) continue;
+
+            // Исправленная обложка — не молча: читатель видит страницу не
+            // такой, какой правил файл, и должен знать почему. Из двух прямых
+            // причина — та, что решила: выворот ровняет всю обложку.
+            std::vector<SkinFault> faults;
+            if (spineMoved) faults.push_back(SkinFault::SpineMoved);
+            if (folds) {
+                faults.push_back(SkinFault::FoldsColumn);
+            } else if (unordered) {
+                faults.push_back(SkinFault::Unordered);
+            }
+            if (!faults.empty()) correctedSkins.push_back(CorrectedSkin{skin.name, std::move(faults)});
+
+            skins_.push_back(std::move(skin));
         }
     } catch (...) {
         // Битый реестр — пустой список обложек, а не отказ запуститься:
         // встроенные темы никуда не деваются.
         skins_.clear();
-        return false;
+        return std::nullopt;
     }
-    return true;
+    return correctedSkins;
 }
 
 std::string Skins::toXml() const {
