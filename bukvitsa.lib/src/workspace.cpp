@@ -43,6 +43,52 @@ std::wstring unreadLine(const std::filesystem::path& file, const last_error& fai
     return file.wstring() + L" — " + reasonOf(failure);
 }
 
+/// Копия испорченного или исправленного при чтении файла — рядом, под тем же
+/// именем с «.bad».
+std::filesystem::path brokenCopyOf(std::filesystem::path file) {
+    file += L".bad";
+    return file;
+}
+
+/// Что чтение исправило в обложке — словами читателю: что было в файле и что
+/// стало на экране.
+const wchar_t* faultWords(SkinFault fault) {
+    switch (fault) {
+        case SkinFault::SpineMoved:
+            return L"корешок кромки не на середине — поставлен на середину";
+        case SkinFault::Unordered:
+            return L"с корешком на середине точки кромки идут не слева направо — кромка показана ровной";
+        case SkinFault::FoldsColumn:
+            return L"кромки выворачивают столбец — обложка показана ровной";
+    }
+    wxl::core::abort("faultWords: исправление вне перечисления");
+}
+
+/// Обложки, которые чтение реестра исправило, — одним сообщением, строкой на
+/// обложку, как непрочитанные книги обхода (`ScanReport::unread`), — и прямо о
+/// том, что станет с правкой: первая же запись реестра обложек перепишет файл
+/// тем, что показано, и правка рук останется только в копии.
+Notice correctedNotice(const std::vector<CorrectedSkin>& correctedSkins, const std::filesystem::path& registryFile,
+                       const std::filesystem::path& registryCopy) {
+    std::wstring details;
+    for (const CorrectedSkin& correctedSkin : correctedSkins) {
+        details += L"Обложка «" + std::wstring{correctedSkin.name.wchars()} + L"» в skins.xml: ";
+        for (size_t at = 0; at < correctedSkin.faults.size(); ++at) {
+            if (at > 0) details += L"; ";
+            details += faultWords(correctedSkin.faults[at]);
+        }
+        details += L".\n";
+    }
+    details += L"\nФайл: " + registryFile.wstring() + L"\nКопия: " + registryCopy.wstring() +
+               L"\n\nПервое же сохранение обложки в мастере или удаление обложки перепишет skins.xml "
+               L"исправленными кромками; правка рук сохранена в копии.";
+
+    // Заголовок — в числе по обложкам, а не по исправлениям.
+    std::wstring headline = correctedSkins.size() == 1 ? L"Обложка из skins.xml исправлена при чтении"
+                                                       : L"Обложки из skins.xml исправлены при чтении";
+    return Notice{std::move(headline), std::move(details)};
+}
+
 /// Отчёт одного каталога — в общий отчёт перепроверки.
 void addUp(ScanReport& total, ScanReport part) {
     total.listed += part.listed;
@@ -159,13 +205,24 @@ task<Started> Workspace::start(cancellation_token stop) {
     // встроенными и без реестра не существует.
     std::string skinsXmlText = co_await read(skinsPath(), L"Не удалось прочитать реестр обложек");
 
-    if (!skins.loadFrom(skinsXmlText)) {
+    // Обложку, чьи кромки в файле неверны, чтение показывает исправленной, а
+    // читатель узнаёт об этом здесь, одним сообщением. Сам файл не
+    // переписывается, но его заменит первая запись реестра обложек —
+    // сохранение или удаление обложки читателем, — и правка рук пропала бы:
+    // она остаётся копией рядом, как испорченный файл.
+    const std::optional<std::vector<CorrectedSkin>> correctedSkins = skins.loadFrom(skinsXmlText);
+
+    if (!correctedSkins) {
         started.notices.push_back({L"Реестр обложек не прочитан",
                                    skinsPath().wstring() +
                                        L"\n\nФайл испорчен: обложек нет. Копия лежит рядом "
                                        L"(skins.xml.bad), снимки в skins\\ целы, а первая же "
                                        L"запись реестра заменит сам файл."});
         co_await keepBrokenCopy(skinsPath(), std::move(skinsXmlText));
+    } else if (!correctedSkins->empty()) {
+        // Копия — раньше слова о ней: сообщение называет её как лежащую.
+        co_await keepBrokenCopy(skinsPath(), std::move(skinsXmlText));
+        started.notices.push_back(correctedNotice(*correctedSkins, skinsPath(), brokenCopyOf(skinsPath())));
     }
 
     // Реестр читается всегда, а не только когда показывают полку: он
@@ -568,8 +625,7 @@ task<std::string> Workspace::readBytes(std::filesystem::path file, cancellation_
 // ---- общее ----------------------------------------------------------------
 
 task<> Workspace::keepBrokenCopy(std::filesystem::path file, std::string bytes) {
-    file += L".bad";
-    co_await async_file::write_all(poolPath(file), std::move(bytes));
+    co_await async_file::write_all(poolPath(brokenCopyOf(std::move(file))), std::move(bytes));
 }
 
 }  // namespace bukvitsa::reader

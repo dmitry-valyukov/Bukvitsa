@@ -3,6 +3,7 @@
 
 #include <objbase.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -325,6 +326,13 @@ reader::Skin foldedSkin() {
     return folded;
 }
 
+/// Исправило ли чтение реестра обложек ровно одну обложку — эту и вот этим, в
+/// этом порядке.
+bool correctedOne(const std::optional<std::vector<reader::CorrectedSkin>>& read, std::u16string_view name,
+                  std::initializer_list<reader::SkinFault> faults) {
+    return read && read->size() == 1 && (*read)[0].name == name && std::ranges::equal((*read)[0].faults, faults);
+}
+
 /// Точки полосы на одном расстоянии с допуском в тысячную DIP — столько
 /// float и даёт на высоте окна; глазом и мышью не видно и в сотни раз больше.
 bool aboutSamePoint(reader::PageWarp::Point a, reader::PageWarp::Point b) {
@@ -469,8 +477,9 @@ void testSkinsReadSeparateLeaves() {
 )";
 
     reader::Skins skins;
-    skins.loadFrom(old);
+    const std::optional<std::vector<reader::CorrectedSkin>> oldRead = skins.loadFrom(old);
     check(skins.list().size() == 1, "обложка прочитана");
+    check(oldRead && oldRead->empty(), "верный реестр второй версии — ни одной исправленной обложки");
     if (skins.list().size() != 1) return;
 
     const reader::Skin& skin = skins.list()[0];
@@ -513,10 +522,28 @@ void testSkinsReadSeparateLeaves() {
     bent.replace(spineAt, 14, "<point x=\"0.47\"");
 
     reader::Skins repaired;
-    repaired.loadFrom(bent);
+    const std::optional<std::vector<reader::CorrectedSkin>> bentRead = repaired.loadFrom(bent);
     check(repaired.list().size() == 1 &&
               repaired.list()[0].top.x[spine] == reader::EdgeCurve::kSpineX,
           "корешок из файла встаёт на середину");
+    check(correctedOne(bentRead, u"Старая", {reader::SkinFault::SpineMoved}),
+          "и не молча: обложка названа, корешок поставлен на середину");
+
+    // Точки в файле идут слева направо, но корешок сдвинут вправо, и четвёртая
+    // точка стоит между серединой и им: с корешком на середине она за ним.
+    // Названы оба исправления, и «не слева направо» — с корешком на середине.
+    std::string shiftedOrder = written;
+    const size_t shiftedSpineAt = shiftedOrder.find("<point x=\"0.5\"");
+    const size_t shiftedFourthAt = shiftedOrder.find("<point x=\"0.4\"");
+    check(shiftedSpineAt != std::string::npos && shiftedFourthAt != std::string::npos,
+          "корешок и четвёртая точка записаны как были");
+    if (shiftedSpineAt == std::string::npos || shiftedFourthAt == std::string::npos) return;
+    shiftedOrder.replace(shiftedSpineAt, 14, "<point x=\"0.56\"");
+    shiftedOrder.replace(shiftedFourthAt, 14, "<point x=\"0.52\"");
+    reader::Skins reordered;
+    check(correctedOne(reordered.loadFrom(shiftedOrder), u"Старая",
+                       {reader::SkinFault::SpineMoved, reader::SkinFault::Unordered}),
+          "корешок сдвинут, и с ним на середине точки не по порядку — оба исправления по порядку");
 
     // Точку увели за соседку: такая кромка — начальная прямая.
     std::string crossed = written;
@@ -526,10 +553,12 @@ void testSkinsReadSeparateLeaves() {
     crossed.replace(fourthAt, 14, "<point x=\"0.6\"");
 
     reader::Skins straightened;
-    straightened.loadFrom(crossed);
+    const std::optional<std::vector<reader::CorrectedSkin>> crossedRead = straightened.loadFrom(crossed);
     check(straightened.list().size() == 1 && straightened.list()[0].top.x == fresh.top.x &&
               straightened.list()[0].top.y == fresh.top.y,
           "точки не по порядку — кромка становится начальной прямой");
+    check(correctedOne(crossedRead, u"Старая", {reader::SkinFault::Unordered}),
+          "и не молча: обложка названа, причина — точки не слева направо, корешок на месте");
 
     // Кромки, которые между точками разошлись на высоту полосы и вывернули бы
     // столбец: ровной становится вся обложка.
@@ -539,11 +568,13 @@ void testSkinsReadSeparateLeaves() {
     reader::Skins foldingRegistry;
     foldingRegistry.put(namedFold);
     reader::Skins unfolded;
-    unfolded.loadFrom(foldingRegistry.toXml());
+    const std::optional<std::vector<reader::CorrectedSkin>> foldedRead = unfolded.loadFrom(foldingRegistry.toXml());
     check(unfolded.list().size() == 1 && unfolded.list()[0].top.y == fresh.top.y &&
               unfolded.list()[0].bottom.y == fresh.bottom.y &&
               reader::PageWarp{unfolded.list()[0]}.flat(),
           "обложка, выворачивающая столбец, читается ровной");
+    check(correctedOne(foldedRead, u"Вывернутая", {reader::SkinFault::FoldsColumn}),
+          "и не молча: обложка названа, причина — кромки выворачивают столбец");
 
     // Файл поправили руками: первые две точки верхней кромки — на нулевом и на
     // субнормальном иксе. По возрастанию они идут, но шаг между ними сплайн
@@ -560,11 +591,18 @@ void testSkinsReadSeparateLeaves() {
 </skins>
 )";
     reader::Skins broken;
-    broken.loadFrom(subnormal);
+    const std::optional<std::vector<reader::CorrectedSkin>> subnormalRead = broken.loadFrom(subnormal);
     check(broken.list().size() == 1 && broken.list()[0].top.x == fresh.top.x &&
               broken.list()[0].top.y == fresh.top.y &&
               reader::PageWarp{broken.list()[0]}.flat(),
           "кромка на субнормальном шаге читается ровной");
+    // Сплайн, ушедший в бесконечность, столбцы не держит (keepsColumns), и
+    // причина названа та же.
+    check(correctedOne(subnormalRead, u"Сломанная", {reader::SkinFault::FoldsColumn}),
+          "и не молча: обложка с субнормальным шагом названа");
+
+    reader::Skins unparsed;
+    check(!unparsed.loadFrom("<skins><skin name=\"Проба\" x=\"0.14"), "битый реестр — не разобран, а не пустой отчёт");
 }
 
 
@@ -1017,6 +1055,114 @@ void testWorkspaceKeepsBrokenFiles() {
 
         check(onDisk(box.root / L"settings.xml.bad") == brokenAgain, "повторная порча — копия перезаписана");
         check(!std::filesystem::exists(box.root / L"settings.xml.bad.bad"), "копия одна, не множится");
+    }
+}
+
+/// Обложки, чьи кромки в skins.xml неверны, запуск показывает исправленными,
+/// кладёт рядом копию файла и называет их одним сообщением: строкой на
+/// обложку с тем, что исправлено, путями файла и копии и словом о том, что
+/// первое сохранение или удаление перепишет файл. Сам файл не переписывается.
+/// Одна обложка — заголовок в единственном; верный реестр — ни сообщения, ни
+/// копии.
+void testWorkspaceNamesCorrectedSkins() {
+    std::printf("\n=== рабочее место: исправленные обложки ===\n");
+
+    Skin good = defaultSkin();
+    good.name = u16_text{u"Верная"};
+    good.image = u16_text{u"good.png"};
+
+    // Корешок нижней кромки — правее середины, остальные точки по порядку
+    // (верхнюю со сдвинутым корешком проверяет проба реестра обложек).
+    Skin spineMoved = defaultSkin();
+    spineMoved.name = u16_text{u"Сдвинутая"};
+    spineMoved.image = u16_text{u"spine.png"};
+    spineMoved.bottom.x[static_cast<size_t>(reader::EdgeCurve::kSpine)] = 0.55f;
+
+    // Четвёртая точка верхней кромки — за корешком: точки не слева направо.
+    Skin unordered = defaultSkin();
+    unordered.name = u16_text{u"Беспорядочная"};
+    unordered.image = u16_text{u"unordered.png"};
+    unordered.top.x[3] = 0.6f;
+
+    Skin folded = foldedSkin();
+    folded.name = u16_text{u"Вывернутая"};
+    folded.image = u16_text{u"folded.png"};
+
+    Skins handEdited;
+    handEdited.put(good);
+    handEdited.put(spineMoved);
+    handEdited.put(unordered);
+    handEdited.put(folded);
+    const std::string xml = handEdited.toXml();
+
+    {
+        Sandbox box("corrected");
+        Workspace ws(box.root);
+        putOnDisk(ws.skinsPath(), xml);
+
+        const Started started = run(ws.start(never));
+
+        const std::filesystem::path registryCopy = box.root / L"skins.xml.bad";
+        check(std::filesystem::exists(registryCopy) && onDisk(registryCopy) == xml, "копия skins.xml.bad байт в байт");
+        check(onDisk(ws.skinsPath()) == xml, "файл читателя не переписан");
+
+        check(started.notices.size() == 1, "одно сообщение на все исправленные обложки");
+        if (started.notices.size() == 1) {
+            const Notice& notice = started.notices[0];
+            check(notice.headline == L"Обложки из skins.xml исправлены при чтении", "заголовок — во множественном");
+            check(holds(notice.details,
+                        L"Обложка «Сдвинутая» в skins.xml: корешок кромки не на середине — поставлен на середину.\n"),
+                  "строка обложки со сдвинутым корешком");
+            check(holds(notice.details, L"Обложка «Беспорядочная» в skins.xml: с корешком на середине точки кромки "
+                                        L"идут не слева направо — кромка показана ровной.\n"),
+                  "строка обложки с точками не по порядку");
+            check(holds(notice.details, L"Обложка «Вывернутая» в skins.xml: кромки выворачивают столбец — обложка "
+                                        L"показана ровной.\n"),
+                  "строка обложки, выворачивающей столбец");
+            check(!holds(notice.details, L"Верная"), "верная обложка не названа");
+            check(holds(notice.details, L"Файл: " + ws.skinsPath().wstring()) &&
+                      holds(notice.details, L"Копия: " + registryCopy.wstring()),
+                  "сообщение называет файл и копию");
+            check(holds(notice.details, L"Первое же сохранение обложки в мастере или удаление обложки перепишет "
+                                        L"skins.xml исправленными кромками; правка рук сохранена в копии."),
+                  "сообщение говорит, что станет с правкой");
+        }
+
+        const Skin* const shownSpine = ws.skins.find(u"Сдвинутая");
+        const Skin* const shownUnordered = ws.skins.find(u"Беспорядочная");
+        const Skin* const shownFolded = ws.skins.find(u"Вывернутая");
+        check(ws.skins.list().size() == 4 && shownSpine && shownUnordered && shownFolded &&
+                  shownSpine->bottom.x[static_cast<size_t>(reader::EdgeCurve::kSpine)] == reader::EdgeCurve::kSpineX &&
+                  PageWarp{*shownUnordered}.flat() && PageWarp{*shownFolded}.flat(),
+              "все четыре обложки в реестре, корешок на середине, неверные кромки — ровные");
+    }
+
+    {
+        Sandbox box("corrected-one");
+        Skins oneEdited;
+        oneEdited.put(good);
+        oneEdited.put(folded);
+        Workspace ws(box.root);
+        putOnDisk(ws.skinsPath(), oneEdited.toXml());
+
+        const Started started = run(ws.start(never));
+
+        check(started.notices.size() == 1 &&
+                  started.notices[0].headline == L"Обложка из skins.xml исправлена при чтении",
+              "одна исправленная обложка — заголовок в единственном");
+    }
+
+    {
+        Sandbox box("corrected-none");
+        Skins clean;
+        clean.put(good);
+        Workspace ws(box.root);
+        putOnDisk(ws.skinsPath(), clean.toXml());
+
+        const Started started = run(ws.start(never));
+
+        check(started.notices.empty() && ws.skins.list().size() == 1, "верный реестр — ни одного сообщения");
+        check(!std::filesystem::exists(box.root / L"skins.xml.bad"), "верный реестр — и копии нет");
     }
 }
 
@@ -1963,6 +2109,7 @@ int main(int argc, char* argv[]) {
     testLibraryPathTakenByOtherBook();
     testWorkspaceStartsEmpty();
     testWorkspaceKeepsBrokenFiles();
+    testWorkspaceNamesCorrectedSkins();
     testWorkspaceRegistersBook();
     testWorkspaceKeepsLastBookGuid();
     testWorkspaceOpensBook();
