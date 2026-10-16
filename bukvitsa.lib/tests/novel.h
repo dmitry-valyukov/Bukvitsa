@@ -69,7 +69,10 @@ inline intrusive_ptr<Book> openNovel() {
     intrusive_ptr<Book> book;
     try {
         book = make_refcounted<Book>(kNovel, fb3::Document{bytesOf(kNovel)}, dwriteFactory());
-    } catch (const std::exception&) {
+    } catch (const std::exception& failure) {
+        // Почему роман не открылся — в отчёт пробы: без этого «не открыт» не
+        // говорит, где искать.
+        std::printf("  роман не открылся: %s\n", failure.what());
         book = nullptr;
     }
     check(book && book->chapterCount() > 3, "роман открыт, в нём главы");

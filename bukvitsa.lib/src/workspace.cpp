@@ -10,6 +10,8 @@
 #include "bukvitsa/reader/imaging.h"
 #include "bukvitsa/reader/workspace.h"
 
+#include "bukvitsa/typography/system_failure.h"
+
 import wxl.async;
 import wxl.core;
 
@@ -65,10 +67,11 @@ std::filesystem::path standardDataDirectory() {
             return std::filesystem::path{std::move(sandbox)};
     }
 
+    // Без каталога данных читалке негде жить: пустой путь сделал бы рабочим
+    // местом текущий каталог процесса. Отказ системы — остановка.
     PWSTR folder = nullptr;
-    if (FAILED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &folder))) {
-        return {};
-    }
+    typography::stopIfFailed(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &folder),
+                             "standardDataDirectory: нет каталога LocalAppData");
     std::filesystem::path path{folder};
     ::CoTaskMemFree(folder);
     return path / L"Bukvitsa" / L"Reader";

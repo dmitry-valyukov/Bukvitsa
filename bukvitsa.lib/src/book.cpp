@@ -7,6 +7,7 @@
 #include "bukvitsa/reader/book.h"
 
 #include "bukvitsa/typography/block.h"
+#include "bukvitsa/typography/system_failure.h"
 
 namespace bukvitsa::reader {
 
@@ -60,8 +61,12 @@ IDWriteFactory* dwriteFactory() {
     // статиков на выходе нам не подконтролен.
     static IDWriteFactory* factory = nullptr;
     if (!factory) {
-        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-                            reinterpret_cast<IUnknown**>(&factory));
+        // Системная фабрика не создаётся лишь от беды самой системы: без неё нет
+        // ни вёрстки, ни колонцифры, и ответить на это нечем — остановка, а не
+        // пустой указатель и не «книга не открылась».
+        typography::stopIfFailed(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                                     reinterpret_cast<IUnknown**>(&factory)),
+                                 "DirectWrite: не создалась фабрика");
     }
     return factory;
 }
@@ -170,9 +175,11 @@ void Book::decodeImages(fb3::Document& document) {
     if (count == 0)
         return;
 
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&wic_))))
-        return;   // без WIC книга читается, просто без иллюстраций
+    // Системная фабрика — не ответ о книге: не создалась — остановка, а не
+    // книга без иллюстраций.
+    typography::stopIfFailed(
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_)),
+        "Book: не создалась фабрика WIC");
 
     for (uint32_t index = 0; index < count; ++index) {
         ImageAsset& asset = images_[index];

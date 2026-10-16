@@ -10,6 +10,8 @@
 #include "bukvitsa/reader/shelf_text.h"
 #include "bukvitsa/reader/store.h"
 
+#include "bukvitsa/typography/system_failure.h"
+
 // После своих заголовков: document.h тянет import wxl.core, а стандартный
 // заголовок после импорта MSVC уже не принимает.
 import wxl.core;
@@ -75,12 +77,16 @@ void ShelfCard::showState(const BookState& state) {
 }
 
 u16_text newGuid() {
+    // Пустой guid — не guid: по нему запись реестра не найти и не отличить
+    // от другой такой же. Отказ CoCreateGuid — беда системы, остановка.
     GUID guid{};
-    if (FAILED(::CoCreateGuid(&guid))) return {};
+    typography::stopIfFailed(::CoCreateGuid(&guid), "newGuid: CoCreateGuid не выдал guid");
 
+    // Ноль — буфер мал, а 40 знаков guid в скобках хватает всегда: ошибка в
+    // коде, а не ответ.
     wchar_t text[40]{};
     const int written = ::StringFromGUID2(guid, text, static_cast<int>(std::size(text)));
-    if (written == 0) return {};
+    if (written == 0) wxl::core::abort("newGuid: guid не уместился в строку");
 
     // Скобки, шестнадцатеричные цифры и дефисы — ASCII по определению, так
     // что проверять здесь нечего. В `written` считается и завершающий ноль.

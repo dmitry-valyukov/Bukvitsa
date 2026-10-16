@@ -31,6 +31,7 @@
 #include "utils/exceptions.h"
 
 #include "bukvitsa/typography/formula.h"
+#include "bukvitsa/typography/system_failure.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -276,7 +277,11 @@ class Graphics2D_d2d : public Graphics2D {
 public:
     explicit Graphics2D_d2d(ID2D1DeviceContext* context) : context_(context) {
         context_->GetTransform(&base_);
-        context_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &brush_);
+        // Отказ Direct2D при рисовании — остановка (system_failure.h): формула
+        // без кисти не нарисовалась бы молча.
+        bukvitsa::typography::stopIfFailed(
+            context_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &brush_),
+            "Formula: не создалась кисть");
         context_->GetFactory(&factory_);
     }
 
@@ -286,7 +291,7 @@ public:
 
     void setColor(color c) override {
         color_ = c;
-        if (brush_) brush_->SetColor(toColorF(c));
+        brush_->SetColor(toColorF(c));
     }
 
     color getColor() const override { return color_; }
@@ -399,7 +404,8 @@ private:
             properties.startCap = properties.endCap = properties.dashCap = capOf(stroke_.cap);
             properties.lineJoin = joinOf(stroke_.join);
             properties.miterLimit = stroke_.miterLimit > 1.0f ? stroke_.miterLimit : 10.0f;
-            factory_->CreateStrokeStyle(properties, nullptr, 0, &strokeStyle_);
+            bukvitsa::typography::stopIfFailed(factory_->CreateStrokeStyle(properties, nullptr, 0, &strokeStyle_),
+                                               "Formula: не создался стиль линии");
         }
         return strokeStyle_.Get();
     }

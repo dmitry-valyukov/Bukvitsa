@@ -8,6 +8,8 @@
 #include "Bind.h"
 #include "look.h"
 
+#include "bukvitsa/typography/system_failure.h"
+
 namespace bukvitsa::reader {
 
 using namespace wxl;
@@ -320,7 +322,7 @@ bool SkinWizard::resizeSurface() {
     return true;
 }
 
-void SkinWizard::redraw() {
+void SkinWizard::redraw() noexcept {
     if (surface_.empty() || width_ <= 0.0f || height_ <= 0.0f) return;
 
     surface_[0].draw([this](ID2D1DeviceContext* context) {
@@ -338,11 +340,16 @@ void SkinWizard::redraw() {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shade;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fill;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ring;
-        context->CreateSolidColorBrush(kCurveColor, &curveBrush);
-        context->CreateSolidColorBrush(kCurveShade, &shade);
-        context->CreateSolidColorBrush(kGripFill, &fill);
-        context->CreateSolidColorBrush(kGripRing, &ring);
-        if (!curveBrush || !shade || !fill || !ring) return;
+        // Отказ — остановка (system_failure.h): мастер без направляющих
+        // молчал бы о причине.
+        typography::stopIfFailed(context->CreateSolidColorBrush(kCurveColor, &curveBrush),
+                                 "SkinWizard: не создалась кисть направляющих");
+        typography::stopIfFailed(context->CreateSolidColorBrush(kCurveShade, &shade),
+                                 "SkinWizard: не создалась кисть тени направляющих");
+        typography::stopIfFailed(context->CreateSolidColorBrush(kGripFill, &fill),
+                                 "SkinWizard: не создалась заливка точек");
+        typography::stopIfFailed(context->CreateSolidColorBrush(kGripRing, &ring),
+                                 "SkinWizard: не создалась кисть ободка точек");
 
         // Смещение теневых линий — ровно пиксель экрана, какой бы ни был
         // масштаб: рисуем в DIP, а пиксель хотим физический.

@@ -50,7 +50,9 @@ public:
     bool visible() const { return visible_; }
 
 private:
-    void draw(const Theme& theme, float width, float height, float scale);
+    /// Рисует свёрстанную сноску в поверхность. noexcept: вёрстка — в show,
+    /// раньше, а отказу рисования ответа нет — остановка.
+    void draw(const Theme& theme, float width, float height, float scale) noexcept;
 
     wxl::Compositor compositor_;
 
