@@ -29,8 +29,6 @@
 // записи; её дожидается держатель цикла, умирая вместе с приложением.
 
 #include <filesystem>
-#include <utility>
-#include <vector>
 
 #include "CompositionWindow.h"
 #include "Object.h"
@@ -49,7 +47,6 @@
 #include "bukvitsa/reader/book_places.h"
 #include "bukvitsa/reader/book_presenter.h"
 #include "bukvitsa/reader/book_search.h"
-#include "bukvitsa/reader/field_watch.h"
 #include "bukvitsa/reader/key_map.h"
 #include "bukvitsa/reader/library.h"
 #include "bukvitsa/reader/skins.h"
@@ -336,16 +333,23 @@ private:
     std::filesystem::path backdrop_;
 
     // Подписки — последними: на то, что выше, когда всё выше построено.
-    // Держатели снимаются сами, умирая раньше всего, что выше них; остальные
-    // снимает ~App, пока поля живы.
+    // Держатели снимаются сами, умирая раньше всего, что выше них; место окна
+    // держателя не имеет — его снимает ~App, пока окно живо.
 
     /// Место окна; пусто, пока окно не поставлено на место из настроек (start).
     wxl::EventToken geometryWatch_;
-    FieldWatch<uint32_t> positionWatch_;   ///< место чтения
-    FieldWatch<int> themeWatch_;           ///< тема полосы (ведущего)
-    /// Поля настроек; пусто, пока настройки не прочитаны (watchSettings).
-    std::vector<std::pair<observable<double>*, cookie_t>> styleWatches_;
-    std::vector<std::pair<observable<bool>*, cookie_t>> flagWatches_;
+    /// Место чтения (поле ведущего).
+    change_watch<observable<uint32_t const>, &App::positionChanged> positionWatch_;
+    /// Тема полосы (поле ведущего).
+    change_watch<observable<int const>, &App::themeChanged> themeWatch_;
+
+    /// Поля настроек — пустые держатели, пока настройки не прочитаны
+    /// (watchSettings).
+    change_watch<observable<double const>, &App::styleChanged> fontSizeWatch_;
+    change_watch<observable<double const>, &App::styleChanged> lineHeightWatch_;
+    change_watch<observable<double const>, &App::styleChanged> marginWatch_;
+    change_watch<observable<bool const>, &App::flagChanged> continueReadingWatch_;
+    change_watch<observable<bool const>, &App::flagChanged> animateTurnsWatch_;
 };
 
 }  // namespace bukvitsa::reader

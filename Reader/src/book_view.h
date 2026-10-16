@@ -41,7 +41,6 @@
 // ведущего и поток страниц), после чего стандартный заголовок MSVC уже не
 // принимает.
 #include "bukvitsa/reader/book_presenter.h"
-#include "bukvitsa/reader/field_watch.h"
 #include "bukvitsa/reader/page_canvas.h"
 #include "note_popup.h"
 #include "bukvitsa/reader/settings.h"
@@ -297,7 +296,7 @@ private:
     /// Наш слушатель поля «анимация листания»: снимается сам, умирая, —
     /// настройки живут дольше. Стратегию он меняет на ходу, и стоит после неё:
     /// подписывается, когда она уже есть.
-    FieldWatch<bool> animateTurnsWatch_;
+    change_watch<observable<bool const>, &BookView::animateTurnsChanged> animateTurnsWatch_;
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> statusFormat_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> invitationFormat_;

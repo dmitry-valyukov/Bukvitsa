@@ -33,7 +33,6 @@ add_library(bukvitsa_lib STATIC
     include/bukvitsa/reader/book_presenter.h
     include/bukvitsa/reader/book_search.h
     include/bukvitsa/reader/chapter_tail.h
-    include/bukvitsa/reader/field_watch.h
     include/bukvitsa/reader/idle_scheduler.h
     include/bukvitsa/reader/imaging.h
     include/bukvitsa/reader/key_map.h

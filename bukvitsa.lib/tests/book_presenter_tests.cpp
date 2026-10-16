@@ -34,7 +34,6 @@
 #include "bukvitsa/reader/page_flow.h"
 #include "novel.h"
 #include "bukvitsa/reader/book_presenter.h"
-#include "bukvitsa/reader/field_watch.h"
 
 import wxl.async;
 import wxl.core;
@@ -164,10 +163,7 @@ class RecordingCanvas final : public PageCanvas {
 public:
     explicit RecordingCanvas(BookPresenter& presenter)
         : presenter_(presenter),
-          positionWatch_(presenter.position(),
-                         [this](uint32_t) noexcept {
-                             journal.push_back(entryOf(Step::PositionMoved));
-                         }),
+          positionWatch_(presenter.position(), *this),
           canvasAttachment_(presenter.attachCanvas(*this)) {}
 
     void turnStarting(bool forward) override { recordTurn(Step::TurnStarting, forward); }
@@ -230,8 +226,12 @@ private:
         journal.push_back(turnEntry);
     }
 
+    /// Слушатель места чтения ведущего — член noexcept: событию поля некому
+    /// отдать исключение.
+    void positionMoved(uint32_t) noexcept { journal.push_back(entryOf(Step::PositionMoved)); }
+
     BookPresenter& presenter_;
-    FieldWatch<uint32_t> positionWatch_;
+    change_watch<observable<uint32_t const>, &RecordingCanvas::positionMoved> positionWatch_;
 
     /// Последним: под ведущим холст стоит, когда построен весь.
     BookPresenter::CanvasAttachment canvasAttachment_;

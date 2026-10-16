@@ -31,7 +31,6 @@
 #include "bukvitsa/reader/book_presenter.h"
 #include "bukvitsa/reader/book_places.h"
 #include "bukvitsa/reader/book_search.h"
-#include "bukvitsa/reader/field_watch.h"
 #include "bukvitsa/reader/theme_list.h"
 
 // Импорт — последним: намерения панели — корутины `detached_task`.
@@ -93,7 +92,6 @@ public:
     ReaderPanel(const wxl::Compositor& compositor, BookPresenter& presenter,
                 const wxl::UIElement& readingRoot, Settings& settings, BookPlaces& places,
                 ThemeList& themes, BookSearch& search, Actions& actions);
-    ~ReaderPanel();
 
     /// Элемент, который кладут поверх полосы набора.
     const wxl::UIElement& root() const { return root_; }
@@ -170,10 +168,6 @@ private:
     ThemeList& themes_;
     BookSearch& search_;
 
-    /// Наш слушатель в чужом списке — снять за собой: список тем живёт
-    /// дольше панели.
-    cookie_t choicesWatch_;
-
     /// Выбранная строка списка тем — к нему привязан выбор списка. Своё поле,
     /// а не номер темы полосы: собрав строки заново, список снимает выбор и
     /// пишет -1, а тема полосы от этого меняться не должна. Идёт за темой
@@ -198,10 +192,12 @@ private:
     Tab tab_ = Tab::Contents;
     bool open_ = false;
 
-    /// Слушатель темы ведущего — держатель, последним: встаёт, когда выбор
-    /// (chosen_) и всё, что к нему привязано, уже построено, и снимается сам
-    /// раньше них. Ведущий живёт дольше панели.
-    FieldWatch<int> themeWatch_;
+    /// Слушатели темы ведущего и строк списка тем — держатели, последними:
+    /// встают, когда выбор (chosen_) и всё, что к нему привязано, уже
+    /// построено, и снимаются сами раньше них. Ведущий и список тем живут
+    /// дольше панели.
+    change_watch<observable<int const>, &ReaderPanel::themeChanged> themeWatch_;
+    change_watch<observable_list<ThemeChoice const>, &ReaderPanel::choicesChanged> choicesWatch_;
 };
 
 }  // namespace bukvitsa::reader
