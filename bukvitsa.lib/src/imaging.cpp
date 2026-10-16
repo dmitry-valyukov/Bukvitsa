@@ -8,6 +8,9 @@
 
 #include "bukvitsa/typography/system_failure.h"
 
+// Последним: остановка на нарушенном контракте — wxl.core.
+import wxl.core;
+
 namespace bukvitsa::reader {
 
 using Microsoft::WRL::ComPtr;
@@ -37,11 +40,12 @@ ComPtr<IWICBitmapFrameDecode> firstFrameOf(IWICImagingFactory* wic, std::string_
     // данные, а не длина, молча обрезанная приведением.
     if (bytes.size() > std::numeric_limits<DWORD>::max()) return nullptr;
 
-    // Два рода отказов. Своё — поток и конвертер — не создаётся лишь от беды
-    // системы: остановка. Всё, что разбирает сами байты, — ответ о файле:
-    // декодер на битых байтах отвечает и WINCODEC_ERR_*, и E_FAIL, и
-    // E_OUTOFMEMORY на огромном заявленном размере, различить их нельзя, и все
-    // они про файл — «не картинка».
+    // Два рода отказов. Своё — поток, конвертер, уменьшение — не создаётся и
+    // не настраивается лишь от беды системы: остановка. Всё, что разбирает сами
+    // байты, — ответ о файле: декодер на битых байтах отвечает и WINCODEC_ERR_*,
+    // и E_FAIL, различить их нельзя, и все они про файл — «не картинка».
+    // Огромный заявленный размер сюда не доходит: его отсекает бюджет пикселей
+    // по заголовку (frameSizeOf).
     //
     // Поток поверх памяти вызывающего, без копии: WIC обещает в неё не писать,
     // а неконстантный указатель просит по сигнатуре; нужна она только до
@@ -62,14 +66,31 @@ ComPtr<IWICBitmapFrameDecode> firstFrameOf(IWICImagingFactory* wic, std::string_
     return frame;
 }
 
-/// Размер, уменьшенный до предела по большей стороне с сохранением пропорций;
-/// сторона — не меньше пикселя.
-PictureSize fittedSize(UINT width, UINT height, uint32_t limit) {
-    const double fitShare = static_cast<double>(limit) / static_cast<double>(std::max(width, height));
-    const auto fitSide = [&](UINT side) {
-        return std::clamp(static_cast<uint32_t>(std::floor(side * fitShare)), uint32_t{1}, limit);
-    };
-    return PictureSize{fitSide(width), fitSide(height)};
+/// Размер кадра из заголовка, если он годится для раскодирования: стороны не
+/// нулевые и пиксели в бюджете (withinPictureBudget); иначе — пусто, «не
+/// картинка», до всякого раскодирования.
+std::optional<PictureSize> frameSizeOf(IWICBitmapFrameDecode* frame) {
+    UINT width = 0;
+    UINT height = 0;
+    if (FAILED(frame->GetSize(&width, &height)) || !withinPictureBudget(width, height)) return std::nullopt;
+    return PictureSize{width, height};
+}
+
+/// Есть ли у пикселей кадра прозрачность — по формату кадра. Формат — из
+/// чужих байт: незнакомый WIC — пусто, «не картинка»; сведения о знакомом —
+/// своё, отказ — остановка.
+std::optional<bool> frameHasAlpha(IWICImagingFactory* wic, IWICBitmapFrameDecode* frame) {
+    WICPixelFormatGUID format{};
+    if (FAILED(frame->GetPixelFormat(&format))) return std::nullopt;
+
+    ComPtr<IWICComponentInfo> component;
+    if (FAILED(wic->CreateComponentInfo(format, &component))) return std::nullopt;
+
+    ComPtr<IWICPixelFormatInfo2> formatInfo;
+    stopIfFailed(component.As(&formatInfo), "WIC: формат пикселей без сведений о прозрачности");
+    BOOL transparent = FALSE;
+    stopIfFailed(formatInfo->SupportsTransparency(&transparent), "WIC: формат пикселей не ответил о прозрачности");
+    return transparent != FALSE;
 }
 
 }  // namespace
@@ -80,53 +101,78 @@ ComPtr<IWICBitmap> decodeImage(std::string_view bytes, uint32_t maxSide) {
     return decodeImage(newImagingFactory().Get(), bytes, maxSide);
 }
 
+PictureSize fittedSize(uint32_t width, uint32_t height, uint32_t limit) {
+    if (limit == 0) wxl::core::abort("fittedSize: предел в ноль пикселей");
+
+    // Большая сторона — ровно предел, меньшая — пропорционально, целочисленно
+    // в uint64_t (произведение двух сторон в uint32_t переполнилось бы), не
+    // меньше пикселя.
+    const bool wide = width >= height;
+    const uint64_t larger = wide ? width : height;
+    const uint64_t smaller = wide ? height : width;
+    const auto fittedSmaller = static_cast<uint32_t>(std::max<uint64_t>(1, smaller * limit / larger));
+    return wide ? PictureSize{limit, fittedSmaller} : PictureSize{fittedSmaller, limit};
+}
+
 std::optional<PictureSize> pictureSizeOf(IWICImagingFactory* wic, std::string_view bytes) {
     const ComPtr<IWICBitmapFrameDecode> frame = firstFrameOf(wic, bytes);
     if (!frame) return std::nullopt;
 
-    // Размер — из заголовка, то есть тоже из чужих байт; нулевой стороны у
-    // картинки не бывает.
-    UINT width = 0;
-    UINT height = 0;
-    if (FAILED(frame->GetSize(&width, &height)) || width == 0 || height == 0) return std::nullopt;
-
-    return PictureSize{width, height};
+    // Размер — из заголовка, то есть тоже из чужих байт.
+    return frameSizeOf(frame.Get());
 }
 
 ComPtr<IWICBitmap> decodeImage(IWICImagingFactory* wic, std::string_view bytes, uint32_t maxSide) {
     const ComPtr<IWICBitmapFrameDecode> frame = firstFrameOf(wic, bytes);
     if (!frame) return nullptr;
 
-    UINT width = 0;
-    UINT height = 0;
-    if (FAILED(frame->GetSize(&width, &height)) || width == 0 || height == 0) return nullptr;
+    const std::optional<PictureSize> frameSize = frameSizeOf(frame.Get());
+    if (!frameSize) return nullptr;
 
-    // Конвертер и уменьшение — своё: не создались — остановка; их настройка
-    // на кадр и пиксели — разбор чужих байт. Уменьшение — за конвертером: в
-    // 32bppPBGRA Fant работает при любом формате файла. Цепочка ленивая, и
-    // память под пиксели выделяет только CacheOnLoad в конце — уже под
-    // уменьшенный размер, а не под заявленный в заголовке.
-    ComPtr<IWICFormatConverter> converter;
-    stopIfFailed(wic->CreateFormatConverter(&converter), "WIC: не создался конвертер");
-    if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr,
-                                     0.0, WICBitmapPaletteTypeMedianCut)))
-        return nullptr;
+    const std::optional<bool> hasAlpha = frameHasAlpha(wic, frame.Get());
+    if (!hasAlpha) return nullptr;
 
-    ComPtr<IWICBitmapSource> fittedSource = converter;
-    if (width > maxSide || height > maxSide) {
-        const PictureSize fitted = fittedSize(width, height, maxSide);
+    // Уменьшение (Fant) — своё: на известном формате и размере оно чужих
+    // байтов не разбирает, и отказ его создания и настройки — остановка.
+    const bool tooLarge = frameSize->width > maxSide || frameSize->height > maxSide;
+    const auto shrinkSource = [&](IWICBitmapSource* source) {
+        const PictureSize fitted = fittedSize(frameSize->width, frameSize->height, maxSide);
         ComPtr<IWICBitmapScaler> scaler;
         stopIfFailed(wic->CreateBitmapScaler(&scaler), "WIC: не создалось уменьшение снимка");
-        if (FAILED(scaler->Initialize(converter.Get(), fitted.width, fitted.height, WICBitmapInterpolationModeFant)))
-            return nullptr;
-        fittedSource = scaler;
-    }
+        stopIfFailed(scaler->Initialize(source, fitted.width, fitted.height, WICBitmapInterpolationModeFant),
+                     "WIC: уменьшение снимка не настроилось");
+        return ComPtr<IWICBitmapSource>{scaler};
+    };
+
+    // Где стоит уменьшение — зависит от прозрачности. Без неё — прямо за
+    // кадром: так встроенное уменьшение WIC пользуется IWICBitmapSourceTransform
+    // кадра (у JPEG — DCT в 1/2, 1/4, 1/8), и декодер не раскодирует огромный
+    // снимок целиком; за конвертером эта возможность теряется. С альфой —
+    // сперва конвертер в предумноженный PBGRA, потом уменьшение: уменьшать до
+    // предумножения — ореолы по краям прозрачного.
+    ComPtr<IWICBitmapSource> pixelSource = frame;
+    if (tooLarge && !*hasAlpha) pixelSource = shrinkSource(pixelSource.Get());
+
+    // Конвертер — своё: остановка; его настройка на кадр — разбор чужих байт.
+    ComPtr<IWICFormatConverter> converter;
+    stopIfFailed(wic->CreateFormatConverter(&converter), "WIC: не создался конвертер");
+    if (FAILED(converter->Initialize(pixelSource.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr,
+                                     0.0, WICBitmapPaletteTypeMedianCut)))
+        return nullptr;
+    pixelSource = converter;
+
+    if (tooLarge && *hasAlpha) pixelSource = shrinkSource(pixelSource.Get());
 
     // Пиксели — здесь, целиком (WICBitmapCacheOnLoad): битые данные
-    // отказывают сейчас, словом о файле, а не потом, на каждом кадре.
+    // отказывают сейчас, словом о файле, а не потом, на каждом кадре. Битмап
+    // памяти — под уменьшенный размер; сколько держит сам декодер по ходу
+    // (Adam7, прогрессивный JPEG — бывает, что полный буфер), ограничивает
+    // только бюджет пикселей. Нехватка памяти после бюджета — беда системы:
+    // остановка; прочие отказы — о файле.
     ComPtr<IWICBitmap> decodedPicture;
-    if (FAILED(wic->CreateBitmapFromSource(fittedSource.Get(), WICBitmapCacheOnLoad, &decodedPicture)))
-        return nullptr;
+    const HRESULT cacheResult = wic->CreateBitmapFromSource(pixelSource.Get(), WICBitmapCacheOnLoad, &decodedPicture);
+    if (cacheResult == E_OUTOFMEMORY) stopIfFailed(cacheResult, "WIC: не хватило памяти на пиксели снимка в бюджете");
+    if (FAILED(cacheResult)) return nullptr;
 
     return decodedPicture;
 }

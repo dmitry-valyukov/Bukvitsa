@@ -99,9 +99,12 @@ EdgeCurve curveOfHalves(const wxl::xml::node* leftHalf, const wxl::xml::node* ri
     if (leftHalf) readPoints(*leftHalf, curve, 0, kSpine + 1, faults);
 
     if (rightHalf) {
-        // Точки правого листа ложатся с корешка, поэтому читаются в копию —
-        // иначе первая из них затёрла бы точку левого до усреднения.
-        EdgeCurve right = curve;
+        // Точки правого листа ложатся с корешка, поэтому читаются в свою
+        // кривую — иначе первая из них затёрла бы точку левого до усреднения.
+        // Кривая — начальная прямая, а не уже прочитанная левая: первая точка
+        // правого без координаты должна остаться точкой прямой, как обещает
+        // чтение, а не точкой корешка левого листа.
+        EdgeCurve right = fallback;
         readPoints(*rightHalf, right, kSpine, kSpine + 1, faults);
 
         curve.y[kSpine] = 0.5f * (curve.y[kSpine] + right.y[kSpine]);
