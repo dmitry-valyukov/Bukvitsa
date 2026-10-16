@@ -7,22 +7,18 @@
 // таких кадров. Порция — по времени, и сколько их уйдёт на главу, зависит от
 // машины: пробы смотрят на состояние, не на счёт порций.
 
-#include <coroutine>
 #include <cstdio>
-#include <deque>
 #include <exception>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 #include "check.h"
 
-// Последними: поток страниц ведёт к импорту модулей книги и wxl.core, досчёт —
-// к wxl.async.
+// Последними: поток страниц ведёт к импорту модулей книги и wxl.core, роман
+// проб и досчёт — к wxl.async.
 #include "bukvitsa/reader/page_flow.h"
+#include "novel.h"
 #include "bukvitsa/reader/chapter_tail.h"
 
 import wxl.async;
@@ -30,166 +26,25 @@ import wxl.core;
 
 using namespace bukvitsa;
 using namespace bukvitsa::reader;
-using bukvitsa::reader::tests::check;
+using namespace bukvitsa::reader::tests;
 using wxl::async::cancellation_source;
-using wxl::async::cancellation_token;
 using wxl::async::detached_task;
-using wxl::async::operation_canceled_exception;
-using wxl::async::task;
 
 namespace {
 
-const std::filesystem::path kNovel = std::filesystem::path(BUKVITSA_TESTDATA_DIR) /
-                                     L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
-
-/// Полоса проб — та же, что у проб хвоста в потоке страниц.
+/// Ширина полосы проб — та же, что у проб хвоста в потоке страниц.
 constexpr float kWidth = 1400.0f;
-constexpr float kHeight = 900.0f;
 
-/// Вид по умолчанию — тот, что у настроек.
-constexpr float kFontSize = 20.0f;
-constexpr float kLineHeight = 1.45f;
-constexpr float kMargin = 0.075f;
-
-/// Сколько ходов очереди проба делает самое большее: глава романа досчитывается
-/// за единицы порций, а зависшая проба хуже упавшей.
-constexpr int kMaxTurns = 10000;
-
-/// Чем падают получатель и простой в пробах сбоя — по тексту проба узнаёт,
-/// что до обработчика дошёл именно этот сбой.
+/// Чем падает получатель в пробе сбоя — по тексту проба узнаёт, что до
+/// обработчика дошёл именно этот сбой.
 constexpr char kReceiverFailure[] = "получатель упал";
-constexpr char kIdleFailure[] = "простой упал";
-
-std::string bytesOf(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-}
-
-/// Роман, открытый заново для каждой пробы: кэш глав и текущая глава у книги
-/// свои. Пусто — роман не открылся, и проба кончается, не начавшись.
-intrusive_ptr<Book> openNovel() {
-    intrusive_ptr<Book> book;
-    try {
-        book = make_refcounted<Book>(kNovel, fb3::Document{bytesOf(kNovel)}, dwriteFactory());
-    } catch (const std::exception&) {
-        book = nullptr;
-    }
-    check(book && book->chapterCount() > 3, "роман открыт, в нём главы");
-    if (book && book->chapterCount() <= 3) book = nullptr;
-    return book;
-}
-
-/// Длина главы в символах книги.
-uint32_t chapterLength(const Book& book, size_t index) {
-    const uint32_t end = index + 1 < book.chapterCount() ? book.chapterFirstChar(index + 1)
-                                                         : book.characterCount();
-    return end - book.chapterFirstChar(index);
-}
-
-/// Самая длинная глава, кроме этой (номер вне книги — без исключений): хвост
-/// у неё заведомо есть.
-size_t longestChapter(const Book& book, size_t except) {
-    size_t longest = except == 0 ? 1 : 0;
-    for (size_t index = 0; index < book.chapterCount(); ++index)
-        if (index != except && chapterLength(book, index) > chapterLength(book, longest))
-            longest = index;
-    return longest;
-}
 
 /// Поток на начале самой длинной главы, свёрстанный до разворота.
 void setUp(PageFlow& flow, not_null<Book> book) {
-    flow.open(book, book->chapterFirstChar(longestChapter(*book, book->chapterCount())));
+    flow.open(book, book->chapterFirstChar(longestChapter(*book)));
     flow.setStyle(kFontSize, kLineHeight, kMargin);
     flow.resize(kWidth, kHeight);
     flow.relayout();
-}
-
-/// Простой, который будит проба: ожидания стоят в очереди, пока она не
-/// сделает ход (wake), и ход будит первое. Отмена, как у ожидания простоя окна,
-/// никого не будит: под отменённым токеном ожидание не встаёт вовсе, а стоящее
-/// кончается отменой на том ходу, который его будит. Уход очереди (разрушение
-/// планировщика) кончает стоящие ожидания отменой и при живом токене. Ни в
-/// одном из этих исходов ожидание планировщика не трогает.
-class ParkingIdle final : public IdleScheduler {
-public:
-    /// Чем кончается стоящее ожидание: ходом очереди, сбоем на этом ходу или
-    /// уходом очереди.
-    enum class Woken { turn, failure, closing };
-
-    /// Уход очереди: стоящие ожидания кончаются отменой, как у простоя окна на
-    /// выходе, — кадры не остаются стоять на разрушенном планировщике, если
-    /// проба провалилась посреди хвоста.
-    ~ParkingIdle() {
-        while (wake(Woken::closing)) {
-        }
-    }
-
-    task<> idle(cancellation_token stop) override {
-        // Счёт — до всякой проверки: по нему видно, спрашивал ли держатель
-        // простоя вообще.
-        ++idleCalls_;
-        stop.throw_if_canceled();
-        auto const woken = co_await Parking{*this};
-        if (woken == Woken::closing) throw operation_canceled_exception{};
-        stop.throw_if_canceled();
-        if (woken == Woken::failure) throw std::runtime_error(kIdleFailure);
-    }
-
-    /// Ход очереди: будит первое стоящее ожидание; false — будить некого.
-    /// Ожидание уходит из очереди раньше, чем кадр возобновлён: кадр может
-    /// кончиться внутри этого вызова вместе с ожиданием.
-    bool wake(Woken how = Woken::turn) {
-        if (parkedWaits_.empty()) return false;
-        Parking* const parking = parkedWaits_.front();
-        parkedWaits_.pop_front();
-        parking->woken = how;
-        auto const waiter = parking->waiter;
-        waiter.resume();
-        return true;
-    }
-
-    /// Сколько ожиданий стоит.
-    size_t parked() const { return parkedWaits_.size(); }
-
-    /// Сколько раз вставали в ожидание.
-    int parkings() const { return parkings_; }
-
-    /// Сколько раз спрашивали простоя — и под отменённым токеном тоже.
-    int idleCalls() const { return idleCalls_; }
-
-private:
-    /// Ожидание в кадре корутины. Кадр досчёта владеет собой и стоящим не
-    /// разрушается — уходит только через ход, — так что указатель в очереди
-    /// живёт, пока ожидание в ней.
-    struct Parking {
-        ParkingIdle& owner;
-        std::coroutine_handle<> waiter;
-        Woken woken = Woken::turn;
-
-        explicit Parking(ParkingIdle& scheduler) noexcept : owner(scheduler) {}
-        Parking(const Parking&) = delete;
-        Parking& operator=(const Parking&) = delete;
-
-        bool await_ready() const noexcept { return false; }
-
-        void await_suspend(std::coroutine_handle<> here) noexcept {
-            waiter = here;
-            owner.parkedWaits_.push_back(this);
-            ++owner.parkings_;
-        }
-
-        Woken await_resume() const noexcept { return woken; }
-    };
-
-    std::deque<Parking*> parkedWaits_;
-    int parkings_ = 0;
-    int idleCalls_ = 0;
-};
-
-/// Ходы очереди, пока кто-нибудь ждёт простоя.
-void wakeAll(ParkingIdle& idle) {
-    for (int turns = 0; turns < kMaxTurns && idle.wake(); ++turns) {
-    }
 }
 
 /// Сколько кадров detached_task живо сверх того, что было до пробы.
