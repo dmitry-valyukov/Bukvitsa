@@ -471,14 +471,15 @@ std::optional<PageFlow::NoteHit> PageFlow::noteAt(Point point) const {
             if (point.y < baseline - line.ascent || point.y > baseline + line.descent) continue;
 
             // Зона щелчка шире самого знака на треть кегля с каждой стороны —
-            // по той же причине.
+            // по той же причине. У знаков вплотную зоны перекрываются, и
+            // щелчок берёт ближайший (noteUnder), а не первый по строке.
             const float slack = fontSize_ * 0.33f;
+            const float lineLeft = left + placed.x;
 
-            for (const typography::PlacedNote& note : line.notes) {
-                const float x = left + placed.x + note.x;
-                if (point.x < x - slack || point.x > x + note.width + slack) continue;
-
-                return NoteHit{note.body, Point{x + note.width * 0.5f, baseline + line.descent}};
+            if (const typography::PlacedNote* note =
+                    typography::noteUnder(line, point.x - lineLeft, slack)) {
+                const float x = lineLeft + note->x;
+                return NoteHit{note->body, Point{x + note->width * 0.5f, baseline + line.descent}};
             }
         }
     }
