@@ -91,7 +91,7 @@ wxl::async::task<bool> App::checkImage(std::filesystem::path image, cancellation
 
 detached_task App::leaveWizard() {
     wizard_.hide();
-    view_.setPreview(nullptr);
+    presenter_.setPreview(nullptr);
     showBackdrop();
     view_.root().focus(FocusState::Programmatic);
     co_return;
@@ -122,7 +122,7 @@ detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
     //
     // Имя обложки в настройки и их запись — дело слушателя темы
     // (themeChanged): смена темы здесь ничем не отличается от смены клавишей T.
-    applySkins(themes_.afterSave(skinName, view_.theme.get()));
+    applySkins(themes_.afterSave(skinName, presenter_.theme().get()));
 
     leaveWizard();
 }
@@ -183,7 +183,7 @@ detached_task App::deleteSkin(u16_text name) {
 
     // Куда встать — спрашиваем, пока старый список цел: номер текущей темы
     // смотрит в него, а по укоротившемуся списку он уже ничего не значит.
-    const int theme = themes_.afterRemoval(name, view_.theme.get(), ws_.settings.theme);
+    const int theme = themes_.afterRemoval(name, presenter_.theme().get(), ws_.settings.theme);
 
     co_await ws_.deleteSkin(name, stop.token());
 
@@ -209,14 +209,14 @@ void App::applySkins(int theme) {
     // другой, принесёт нужный сам, и showBackdrop ниже второй раз его не
     // читает.
     backdrop_.clear();
-    view_.skinsChanged(theme);
+    presenter_.skinsChanged(theme);
     showBackdrop();
 }
 
 /// Полоса рисуется с правимыми кривыми. Он же — пересчёт после отпускания
 /// точки: мастер объявляет правку, когда она устоялась.
 void App::preview(Skin const& skin) noexcept {
-    view_.setPreview(&skin);
+    presenter_.setPreview(&skin);
     showBackdrop();
 }
 
@@ -224,9 +224,9 @@ void App::preview(Skin const& skin) noexcept {
 /// ничего: снимок у полосы уже есть (или в дороге).
 void App::showBackdrop() {
     std::filesystem::path wanted;
-    if (view_.previewing()) {
+    if (presenter_.previewing()) {
         wanted = wizard_.imagePath();
-    } else if (const Skin* skin = view_.activeSkin()) {
+    } else if (const Skin* skin = presenter_.activeSkin()) {
         wanted = ws_.skinImagePath(*skin);
     }
 
