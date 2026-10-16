@@ -55,15 +55,15 @@ PointerButton buttonOf(PointerPoint const& point) {
 
 }  // namespace
 
-BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeList& themes,
-                   Actions& actions, async::cancellation_token parent)
+BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Settings& settings,
+                   async::cancellation_token parent)
     : window_(window),
+      presenter_(presenter),
       settings_(settings),
-      themes_(themes),
-      actions_(actions),
       compositor_(window.compositor()),
       // Страницы разворота встают на сцену окна сразу, под всем, что на ней
-      // будет; рисует в его растры полоса — то, что показывает поток страниц.
+      // будет; рисует в его растры полоса — то, что показывает поток страниц
+      // ведущего.
       spreadView_(compositor_, window.contentVisual(),
                   [this](ID2D1DeviceContext* context) { paintSpread(context); }),
       // Контейнер листов — сразу, от композитора окна; buildTree() его одевает
@@ -74,78 +74,58 @@ BookView::BookView(const CompositionWindow& window, Settings& settings, ThemeLis
       note_(window.chromeCompositor()),
       stop_(std::move(parent)),
       readingScope_(stop_.token()),
-      chapterTail_(flow_, idleScheduler_, stop_.token(), method(this, &BookView::redraw)),
       // Стратегия переворота — до первой меры: мера доводит до конца всё, что
       // летит, и спрашивает у стратегии, куда рисовать. Всё, что она читает, —
-      // разворот, поток страниц, источники, настройки и тон бумаги (paper()
-      // спрашивает предпросмотр) — объявлено раньше неё.
+      // разворот, источники, настройки, поток страниц и тон бумаги ведущего —
+      // объявлено или построено раньше неё.
       turnAnimation_(makeTurnAnimation()),
       // Анимация листания — настройка читателя, и меняется на ходу: флажок
       // панели привязан к тому же полю. Слушатель меняет стратегию и потому
       // подписывается, когда она уже есть: брось её создание, слушателя с
-      // нашим this в поле, которое живёт дольше полосы, не будет. Снимает его
-      // деструктор.
-      animateTurnsWatch_(
-          settings_.animateTurns.on_change(method(this, &BookView::animateTurnsChanged))) {
+      // нашим this в поле, которое живёт дольше полосы, не будет. Снимается
+      // он сам, умирая.
+      animateTurnsWatch_(settings_.animateTurns, method(this, &BookView::animateTurnsChanged)),
+      // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из
+      // WM_SIZE, раньше вёрстки XAML, и несёт размер в пикселях вместе с
+      // масштабом экрана — тем же числом, которым остров переводит DIP в
+      // пиксели; переезд на монитор с другим DPI (WM_DPICHANGED) приходит сюда
+      // же, новым масштабом. Остров полосы занимает окно целиком, так что это и
+      // его размер, а спрашивать остров (SizeChanged, XamlRoot) не нужно — и
+      // нельзя было до Loaded. Событие приходит из цикла сообщений, то есть не
+      // раньше, чем полоса достроится.
+      sizeWatch_(window_,
+                 [this](Object const&, ClientSize const& client) {
+                     applySize(client.size, client.scale);
+                 }),
+      // Холстом ведущего полоса становится последним членом: всё, о чём
+      // ведущий её попросит, к этой минуте построено.
+      canvasAttachment_(presenter_.attachCanvas(*this)) {
     // Полоса ещё не экран: под источником чтения ждать нечему, пока
-    // setActive(true) не заведёт новый. Серия стратегии, заведённая под ним
+    // activate(true) не заведёт новый. Серия стратегии, заведённая под ним
     // выше, отменяется вместе с ним.
     readingScope_.cancel();
 
     buildTree();
 
-    // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из WM_SIZE,
-    // раньше вёрстки XAML, и несёт размер в пикселях вместе с масштабом экрана
-    // — тем же числом, которым остров переводит DIP в пиксели; переезд на
-    // монитор с другим DPI (WM_DPICHANGED) приходит сюда же, новым масштабом.
-    // Остров полосы занимает окно целиком, так что это и его размер, а
-    // спрашивать остров (SizeChanged, XamlRoot) не нужно — и нельзя было до
-    // Loaded. Первый WM_SIZE окно пережило до нас: текущая мера снимается сразу.
-    sizeToken_ = window_.add_onClientSizeChanged([this](Object const&, ClientSize const& client) {
-        // Гистерезис числа колонок — только здесь: окно тянут мышью, граница
-        // меры проходит под курсором, и без него колонки защёлкают. Знака
-        // хватает — дрожь бывает в доли знака, а не в четыре.
-        if (applySize(client.size, client.scale)) requestRelayout(true);
-    });
-    applySize(window_.clientSize(), window_.rasterizationScale());
-
-    // Настройки вида приходят из модели, а не ставятся снаружи: полоса слушает
-    // поля и перевёрстывается сама; то же поле двигает ползунок панели (Bind),
-    // а колесо и клавиши полосы пишут в него же — и панель узнаёт о них так же.
-    // Интерлиньяж и поля в модели в процентах, здесь — множитель и доля.
-    settingsWatches_.emplace_back(
-        &settings_.fontSize, settings_.fontSize.on_change([this](double size) noexcept {
-            applyFontSize(static_cast<float>(size));
-        }));
-    settingsWatches_.emplace_back(
-        &settings_.lineHeight, settings_.lineHeight.on_change([this](double percent) noexcept {
-            applyLineHeight(static_cast<float>(percent) / 100.0f);
-        }));
-    settingsWatches_.emplace_back(
-        &settings_.margin, settings_.margin.on_change([this](double percent) noexcept {
-            applyMargin(static_cast<float>(percent) / 100.0f);
-        }));
-    flow_.setStyle(static_cast<float>(settings_.fontSize.get()),
-                   static_cast<float>(settings_.lineHeight.get()) / 100.0f,
-                   static_cast<float>(settings_.margin.get()) / 100.0f);
-
-    // Смена темы — своя перекраска; поле своё, его слушатель умрёт вместе с
-    // полосой, снимать нечего.
-    static_cast<void>(theme.on_change(method(this, &BookView::themeChanged)));
-
-    IDWriteFactory* const dwrite = dwriteFactory();
-    if (!dwrite) return;
-
     // Колонцифра — единственный текст в читалке, который рисуется не своей
     // вёрсткой: у него нет ни переносов, ни выключки по формату — одна строка,
-    // выключенная по центру, — и ради неё заводить абзац незачем.
-    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"ru-RU",
-                             &statusFormat_);
-    if (statusFormat_) {
-        statusFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        statusFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    // выключенная по центру, — и ради неё заводить абзац незачем. До первой
+    // меры: та уже рисует разворот.
+    if (IDWriteFactory* const dwrite = dwriteFactory()) {
+        dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f,
+                                 L"ru-RU", &statusFormat_);
+        if (statusFormat_) {
+            statusFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            statusFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
     }
+
+    // Первый WM_SIZE окно пережило до нас: текущая мера снимается сразу. Мера
+    // — уже вёрстка, и ведущий рисует ею через холст, под которым полоса
+    // стоит с конца списка инициализации. Сорвись она — построенные члены
+    // разрушатся, и связь уведёт холст из-под ведущего, а подписки снимутся.
+    applySize(window_.clientSize(), window_.rasterizationScale());
 }
 
 void BookView::buildTree() {
@@ -166,7 +146,7 @@ void BookView::buildTree() {
     // Листы переворотов — на сцене окна над страницами, привешены к
     // contentVisual() (над задником, под островом), а не всунуты в дерево XAML
     // через setElementChildVisual. Пока полоса не стала текущим экраном, её
-    // сцена скрыта — setActive(true) покажет при входе.
+    // сцена скрыта — activate(true) покажет при входе.
     window_.contentVisual().children().insertAtTop(leafLayer_);
     leafLayer_.isVisible(false);
 
@@ -187,7 +167,7 @@ void BookView::buildTree() {
         // сноски, ни до трети страницы. Прозрачная потому, что страница теперь
         // на сцене под этим островом, и сквозь него должна быть видна она.
         // Бумагу вместе с набором несут страницы-визуалы на сцене, а задник
-        // окна в чтении без кисти вовсе (см. setActive).
+        // окна в чтении без кисти вовсе (см. activate).
         background = colors.transparent,
 
         note_.root(),
@@ -195,9 +175,9 @@ void BookView::buildTree() {
         onLoaded = method(this, &BookView::loaded),
 
         // Клавиш здесь нет: их разбирает приложение у этого же корня, на
-        // пути вниз, по карте клавиш, а команды полосы отдаёт в perform.
-        // Колесо и щелчок — полосы: щелчку нужна сноска, которой карта не
-        // знает.
+        // пути вниз, по карте клавиш, а команды полосы отдаёт ведущему
+        // (perform). Колесо и щелчок полоса ловит сама и отдаёт ведущему:
+        // щелчку нужна сноска, которой карта не знает.
         onPointerWheelChanged = method(this, &BookView::wheelTurned),
         onPointerPressed = method(this, &BookView::pressed),
     };
@@ -208,153 +188,69 @@ void BookView::loaded(Grid const& self) {
 }
 
 void BookView::wheelTurned(Object const&, PointerRoutedEventArgs& args) {
-    const int delta = args.getCurrentPoint(root_).properties().mouseWheelDelta();
-    const bool control = (static_cast<uint32_t>(args.keyModifiers()) &
-                          static_cast<uint32_t>(VirtualKeyModifiers::Control)) != 0;
+    const int wheelDelta = args.getCurrentPoint(root_).properties().mouseWheelDelta();
+    const bool controlHeld = (static_cast<uint32_t>(args.keyModifiers()) &
+                              static_cast<uint32_t>(VirtualKeyModifiers::Control)) != 0;
 
-    const Command command = resolveWheel(delta, control, pointerContext());
-    if (command == Command::None) return;
-
-    perform(command);
-    args.handled(true);
+    if (presenter_.wheel(wheelDelta, controlHeld)) args.handled(true);
 }
 
 void BookView::pressed(Object const&, PointerRoutedEventArgs& args) {
-    const PointerPoint touch = args.getCurrentPoint(root_);
-    const Point point = touch.position();
-    const Command command = resolveTap(point.x, flow_.width(), buttonOf(touch), pointerContext());
+    const PointerPoint touchPoint = args.getCurrentPoint(root_);
+    const Point touchPosition = touchPoint.position();
 
-    // Поверх полосы лежит мастер: из всего щелчка полосе остаётся листание по
-    // третям — ни ящика, ни сносок, ни фокуса. Сюда доходят только щелчки мимо
-    // точек сетки: попавшие мастер разобрал сам.
-    if (preview_) {
-        if (command != Command::None) perform(command);
-        return;
+    // Поверх полосы лежит мастер: сюда доходят только щелчки мимо точек
+    // сетки, и полосе из них остаётся листание (его решает ведущий) — ни
+    // фокуса, ни пометки. Без мастера щелчок — полосы: корень берёт фокус —
+    // клавиша начинается у элемента в фокусе, и без него полоса клавиш не
+    // слышит, — а событие дальше не идёт.
+    if (!presenter_.previewing()) {
+        root_.focus(FocusState::Programmatic);
+        args.handled(true);
     }
-    root_.focus(FocusState::Programmatic);
-    args.handled(true);
-
-    // Правая кнопка — единственная дорога к ящику для того, кто держит мышь:
-    // у страницы нет ни полосы меню, ни кнопок, и заводить их ради этого
-    // значило бы завесить книгу обстановкой. Панель полосе не принадлежит —
-    // её открывает владелец.
-    if (command == Command::TogglePanel) {
-        actions_.togglePanel();
-        return;
-    }
-
-    // Знак сноски важнее перелистывания: он мелкий, и промах по нему из-за
-    // того, что страница уже перевернулась, читателя злит.
-    const std::optional<PageFlow::NoteHit> mark = flow_.noteAt(PageFlow::Point{point.x, point.y});
-    if (mark) {
-        note_.show(*flow_.book(), mark->body, Point{mark->anchor.x, mark->anchor.y},
-                   {flow_.width(), flow_.height()}, paper(), flow_.fontSize(), scale_);
-        return;
-    }
-
-    // Щелчок мимо знака закрывает то, что открыто поверх полосы: читатель
-    // прочёл примечание и вернулся к книге.
-    if (note_.visible()) {
-        note_.hide();
-        return;
-    }
-
-    if (command != Command::None) perform(command);
-}
-
-KeyContext BookView::pointerContext() const {
-    return KeyContext {
-        .shown = Screen::Book,
-        .wizardOpen = previewing(),
-        .noteOpen = noteOpen(),
-        .bookOpen = isOpen(),
-    };
-}
-
-void BookView::perform(Command command) {
-    switch (command) {
-        case Command::TurnForward:
-            turnPage(1);
-            return;
-        case Command::TurnBackward:
-            turnPage(-1);
-            return;
-
-        // Начало и конец карта отдаёт только при открытой книге: конец
-        // известен лишь ей, и чистовой набор доводится до самого конца.
-        case Command::GoToStart:
-        case Command::GoToEnd:
-            if (!flow_.isOpen()) core::abort("BookView::perform: начало или конец книги без книги");
-            goToCharOffset(command == Command::GoToStart ? 0u : flow_.book()->characterCount());
-            return;
-
-        // Кегль — в настройки: к полосе перемена вернётся слушателем, как и к
-        // ползунку панели.
-        case Command::FontLarger:
-            nudgeFontSize(kFontSizeStep);
-            return;
-        case Command::FontSmaller:
-            nudgeFontSize(-kFontSizeStep);
-            return;
-        case Command::FontReset:
-            settings_.fontSize.set(kFontSizeDefault);
-            return;
-
-        case Command::NextTheme:
-            setTheme(theme.get() + 1);
-            return;
-        case Command::DismissNote:
-            note_.hide();
-            return;
-
-        default:
-            break;
-    }
-
-    // Экраны, ящики и полный экран — приложения, а `None` исполнять нечего:
-    // дошедшая сюда — ошибка проводки, а не клавиша, которую можно пропустить.
-    core::abort("BookView::perform: команда не полосы");
+    presenter_.tap(PageFlow::Point{touchPosition.x, touchPosition.y}, buttonOf(touchPoint));
 }
 
 BookView::~BookView() {
-    // Ожидания полосы — концы пакетов переворотов, паузы отпускания пула и
-    // простой досчёта главы — ей больше не нужны: отменяет их владелец, то
-    // есть она сама. Корутины кончатся отменой на своём ожидании и ни полосы,
-    // ни стратегии уже не тронут.
+    // Ожидания полосы — концы пакетов переворотов и паузы отпускания пула —
+    // ей больше не нужны: отменяет их владелец, то есть она сама. Корутины
+    // кончатся отменой на своём ожидании и ни полосы, ни стратегии уже не
+    // тронут. Холст уходит из-под ведущего и подписки снимаются сами —
+    // первыми из членов.
     stop_.cancel();
-
-    // Настройки и окно переживают полосу: слушатели с нашим this снимаются,
-    // иначе следующая перемена кегля, анимации или размера позвала бы уже
-    // разрушенную полосу.
-    for (auto& [field, cookie] : settingsWatches_) field->remove_change(cookie);
-    settings_.animateTurns.remove_change(animateTurnsWatch_);
-    window_.remove_onClientSizeChanged(sizeToken_);
 }
 
 void BookView::addOverlay(const UIElement& element) {
     root_.children().append(element);
 }
 
-void BookView::open(not_null<Book> book, uint32_t charOffset) {
-    note_.hide();
-    flow_.open(book, charOffset);
-    requestRelayout();
-    position_.set(flow_.position());
+/* ---------------- холст ведущего ---------------- */
+
+void BookView::turnStarting(bool forward) {
+    turnAnimation_->turnStarting(forward);
 }
 
-void BookView::setActive(bool active) {
+void BookView::turnStarted(bool forward) {
+    turnAnimation_->turnStarted(forward);
+}
+
+void BookView::finishTurns() {
+    turnAnimation_->finishAll();
+}
+
+void BookView::activate(bool entersReading) {
     // Показаны страницы или нет, решается первым: при уходе посадка листа их
     // уже не одевает, при входе их одевает посадка и redraw.
-    spreadView_.show(active);
+    spreadView_.show(entersReading);
 
     // Страница в чтении — две страницы-визуала на сцене окна (spreadView_), а
     // задник окна без кисти: страницы кроют его целиком, и красить под ними
     // нечего. Входя, снимаем кисть и показываем страницы тем же кадром, что
-    // redraw рисует разворот и одевает их. Уходя — наоборот: страницы
-    // прячутся, а задник на промежуток до фона следующего экрана (заставка
-    // приходит асинхронно) берёт осевший разворот сам — иначе окно сквозило
-    // бы на стол.
-    if (active) {
+    // redraw (его зовёт ведущий следом) рисует разворот и одевает их. Уходя —
+    // наоборот: страницы прячутся, а задник на промежуток до фона следующего
+    // экрана (заставка приходит асинхронно) берёт осевший разворот сам — иначе
+    // окно сквозило бы на стол.
+    if (entersReading) {
         // Всё, что летит, — в конечное состояние первым делом, тем же порядком,
         // что и при уходе: сперва посадка, потом источник чтения. Уход уже
         // посадил листы, и здесь это страховка: полоса могла быть экраном и
@@ -368,7 +264,6 @@ void BookView::setActive(bool active) {
         readingScope_ = async::cancellation_source{stop_.token()};
 
         window_.clearBackground();
-        redraw();
     } else {
         // Уход из чтения: всё, что летит, садится сейчас, синхронно — листам
         // незачем лежать на скрытом слое с последними кадрами и выражениями
@@ -394,22 +289,14 @@ void BookView::setActive(bool active) {
     leafLayer_.isVisible(false);
 }
 
-void BookView::setTheme(int index) {
-    // Приводится к списку по кругу и кладётся в поле; всё, что следует за
-    // сменой темы, делает слушатель (themeChanged) — так же, как если бы поле
-    // поменял кто-то другой. Та же тема, что и была, слушателя не зовёт.
-    theme.set(themes_.normalize(index));
-}
+void BookView::restyle() {
+    turnAnimation_->tintShadows(presenter_.paper().shadow);   // тени покрашены прежней бумагой
 
-void BookView::themeChanged(int) noexcept {
-    note_.hide();   // подложка всплывашки покрашена прошлой темой
-    turnAnimation_->tintShadows(paper().shadow);   // тени тоже покрашены прошлой темой
-
-    // Карта держит форму конкретной обложки — новой теме она не годится.
+    // Карта держит форму прежних кривых — новому виду она не годится.
     warpMap_.Reset();
     warpFlat_ = false;
 
-    // Слой изгиба нужен только теме с подложкой, а весит как две полосы —
+    // Слой изгиба нужен только странице со снимком, а весит как две полосы —
     // на ровных темах он отпускается вместе со снимком. Контекст и эффекты
     // мелкие и остаются. Снимок обложки отпускает и приносит владелец: ему
     // видно, тот же это файл или другой (две обложки могут делить снимок).
@@ -418,8 +305,38 @@ void BookView::themeChanged(int) noexcept {
         warpPixels_ = {};
         dropBackdrop();
     }
-    redraw();
 }
+
+bool BookView::showNote(const PageFlow::NoteHit& noteHit) {
+    const PageFlow& flow = presenter_.flow();
+    note_.show(*flow.book(), noteHit.body, Point{noteHit.anchor.x, noteHit.anchor.y},
+               {flow.width(), flow.height()}, presenter_.paper(), flow.fontSize(),
+               presenter_.scale());
+    return note_.visible();
+}
+
+void BookView::hideNote() {
+    note_.hide();
+}
+
+void BookView::redraw() {
+    const PageFlow& flow = presenter_.flow();
+    if (!spreadView_.measured() || flow.width() <= 0.0f || flow.height() <= 0.0f) return;
+
+    // Разворот собран потоком страниц, когда он менялся (перевёрстка, прыжок,
+    // переворот): рисование и попадание по сноске читают уже готовый.
+    //
+    // Посреди книжного переворота нынешний разворот несёт самый новый лист, а
+    // не осевший: рисуем в его растр — перелистываемая страница и приходящий
+    // лист смотрят на него и обновятся сами, — а неперелистываемую не трогаем:
+    // ей до посадки листа положено старое. Иначе глава, досчитанная в полёте
+    // («из …» стало «из M»), одевала бы обе страницы в новое, и летящий лист
+    // пропадал бы на глазах — на тех же точках под ним. Разворот одевает
+    // страницы, только когда рисует в осевший растр (SpreadView::redraw).
+    spreadView_.redraw(turnAnimation_->drawTarget());
+}
+
+/* ---------------- своё ---------------- */
 
 void BookView::animateTurnsChanged(bool) noexcept {
     // Сменить стратегию посреди переворота — значит сперва довести до конца
@@ -436,157 +353,55 @@ void BookView::animateTurnsChanged(bool) noexcept {
 std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     std::unique_ptr<TurnAnimation> chosenAnimation;
     if (settings_.animateTurns.get()) {
-        chosenAnimation =
-            std::make_unique<LeafTurnAnimation>(compositor_, leafLayer_, window_.dispatcherQueue(),
-                                                spreadView_, flow_, readingScope_, stop_.token());
+        chosenAnimation = std::make_unique<LeafTurnAnimation>(
+            compositor_, leafLayer_, window_.dispatcherQueue(), spreadView_, presenter_.flow(),
+            readingScope_, stop_.token());
     } else {
         chosenAnimation = std::make_unique<InstantTurnAnimation>(spreadView_);
     }
 
-    // Тени переворота — тоном нынешней темы.
-    chosenAnimation->tintShadows(paper().shadow);
+    // Тени переворота — тоном нынешней бумаги.
+    chosenAnimation->tintShadows(presenter_.paper().shadow);
     return chosenAnimation;
 }
 
-void BookView::skinsChanged(int index) {
-    // Снимок и карта сделаны из прежней обложки: снимок принесёт владелец
-    // заново, карта соберётся по новым кривым.
-    dropBackdrop();
-    warpMap_.Reset();
-    warpFlat_ = false;
-
-    // Другой номер перекрасит и перерисует слушатель темы (themeChanged). На
-    // тот же номер слушатель молчит, а кривые под ним могли смениться —
-    // перерисовать здесь.
-    if (themes_.normalize(index) != theme.get()) {
-        setTheme(index);
-    } else {
-        redraw();
-    }
-}
-
-void BookView::setPreview(const Skin* skin) {
-    if (skin) {
-        preview_ = *skin;
-    } else {
-        preview_.reset();
-    }
-
-    // Карта держит форму прежних кривых; снимок, если он другой, принесёт
-    // владелец.
-    warpMap_.Reset();
-    warpFlat_ = false;
-    redraw();
-}
-
-void BookView::nudgeFontSize(double by) {
-    settings_.fontSize.set(std::clamp(settings_.fontSize.get() + by, kFontSizeMin, kFontSizeMax));
-}
-
-void BookView::applyFontSize(float size) {
-    if (flow_.setStyle(size, flow_.lineHeight(), flow_.marginFraction())) requestRelayout();
-}
-
-void BookView::applyLineHeight(float multiplier) {
-    if (flow_.setStyle(flow_.fontSize(), multiplier, flow_.marginFraction())) requestRelayout();
-}
-
-void BookView::applyMargin(float fraction) {
-    if (flow_.setStyle(flow_.fontSize(), flow_.lineHeight(), fraction)) requestRelayout();
-}
-
-bool BookView::applySize(SizeInt32 pixels, float scale) {
+void BookView::applySize(SizeInt32 pixels, float scale) {
     if (scale <= 0.0f) scale = 1.0f;
 
     // Пиксели — мера; DIP, в которых верстается и рисуется полоса, — их доля.
+    // Та же мера — ни растров, ни вёрстки: событие приходит и без перемены.
     const float width = static_cast<float>(pixels.width) / scale;
     const float height = static_cast<float>(pixels.height) / scale;
-    if (width == flow_.width() && height == flow_.height() && scale == scale_ &&
+    const PageFlow& flow = presenter_.flow();
+    if (width == flow.width() && height == flow.height() && scale == presenter_.scale() &&
         spreadView_.measured())
-        return false;
-
-    flow_.resize(width, height);
-    scale_ = scale;
-
-    if (pixels.width <= 0 || pixels.height <= 0) return false;
+        return;
 
     // Растры разворота меняют размер, а не пересоздаются: кисти, которые их
     // уже показывают (фон окна, страницы, листы), продолжают показывать их же.
-    // Листы мерит сама стратегия — на каждый переворот.
-    spreadView_.resize(pixels);
-    leafLayer_.size({width, height});
+    // Листы мерит сама стратегия — на каждый переворот. Раньше перевёрстки:
+    // ведущий рисует ею в растры новой меры.
+    if (pixels.width > 0 && pixels.height > 0) {
+        spreadView_.resize(pixels);
+        leafLayer_.size({width, height});
+    }
 
-    // Окна кроя листов заданы в прежних числах и после смены размера
-    // бессмысленны — все идущие перевороты в покой: доигрывать их по новым
-    // размерам значило бы листать вслепую.
-    turnAnimation_->finishAll();
-    return true;
-}
-
-void BookView::requestRelayout(bool windowResize) {
-    // Прямо здесь, в обработчике события: грязная страница стоит единицы
-    // миллисекунд, и откладывать её значило бы показать читателю его же
-    // движение мыши с опозданием на кадр без всякой на то причины.
-    relayoutNow(windowResize);
-}
-
-void BookView::relayoutNow(bool windowResize) {
-    // Всякая новая вёрстка отменяет досчёт, который шёл: считать книгу по
-    // прежней полосе больше незачем. Отменённый кадр уйдёт сам на ходу
-    // очереди, новый заведётся ниже.
-    chapterTail_.restart();
-
-    // Перевёрстка меняет и корешок, и ширину страницы, а листы могли остаться
-    // от прерванных переворотов с окнами кроя, посчитанными по прежним числам.
-    // Все идущие перевороты — в покой: доигрывать их по новым размерам значило
-    // бы листать вслепую.
-    turnAnimation_->finishAll();
-
-    // Глава до видимого разворота — начисто, тем же кадром; место чтения
-    // перевёрстка не двигает (PageFlow::relayout). Без книги или меры вёрстки
-    // нет — рисуется приглашение или ничего.
-    const bool laidOut = flow_.relayout(windowResize);
-    redraw();
-
-    // Остаток главы — порциями в свободное время потока: с него узнаётся общее
-    // число страниц.
-    if (laidOut) chapterTail_.start();
-}
-
-void BookView::showColumn(const PageFlow::Column& target) {
-    turnAnimation_->finishAll();
-    note_.hide();
-
-    flow_.show(target);
-    chapterTail_.start();   // глава могла смениться — её хвост тоже нужен
-
-    redraw();
-    position_.set(flow_.position());
-}
-
-void BookView::redraw() {
-    if (!spreadView_.measured() || flow_.width() <= 0.0f || flow_.height() <= 0.0f) return;
-
-    // Разворот собран потоком страниц, когда он менялся (перевёрстка, прыжок,
-    // переворот): рисование и попадание по сноске читают уже готовый.
-    //
-    // Посреди книжного переворота нынешний разворот несёт самый новый лист, а
-    // не осевший: рисуем в его растр — перелистываемая страница и приходящий
-    // лист смотрят на него и обновятся сами, — а неперелистываемую не трогаем:
-    // ей до посадки листа положено старое. Иначе глава, досчитанная в полёте
-    // («из …» стало «из M»), одевала бы обе страницы в новое, и летящий лист
-    // пропадал бы на глазах — на тех же точках под ним. Разворот одевает
-    // страницы, только когда рисует в осевший растр (SpreadView::redraw).
-    spreadView_.redraw(turnAnimation_->drawTarget());
+    // Размер в DIP и масштаб — ведущему: поток страниц берёт размер, и полоса
+    // перевёрстывается, доведя до конца всё, что летит. Гистерезис колонок —
+    // его, по этой дороге и только по ней.
+    presenter_.resize(width, height, scale);
 }
 
 void BookView::paintSpread(ID2D1DeviceContext* context) {
+    const PageFlow& flow = presenter_.flow();
+    const float scale = presenter_.scale();
+
     // Поверхность в пикселях, а вёрстка в DIP: масштаб домножается к тому
     // смещению атласа, которое wxl уже поставила, — иначе поверхность легла бы
     // поверх чужой.
     D2D1_MATRIX_3X2_F atlas{};
     context->GetTransform(&atlas);
-    context->SetTransform(D2D1::Matrix3x2F::Scale(scale_, scale_) *
+    context->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
                           *D2D1::Matrix3x2F::ReinterpretBaseType(&atlas));
 
     // Классический ClearType здесь не годится: он рассчитан на неподвижный
@@ -596,67 +411,11 @@ void BookView::paintSpread(ID2D1DeviceContext* context) {
     context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     context->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    if (!flow_.spread().pages.empty()) {
-        drawPage(context, flow_.width(), flow_.height());
+    if (!flow.spread().pages.empty()) {
+        drawPage(context, flow.width(), flow.height());
     } else {
-        drawInvitation(context, flow_.width(), flow_.height());
+        drawInvitation(context, flow.width(), flow.height());
     }
-}
-
-void BookView::turnPage(int delta) {
-    if (delta == 0)
-        return;
-    const bool forward = delta > 0;
-
-    // Следующий разворот ленты от нынешнего места. Лента непрерывна, так что
-    // это обычный шаг: границу главы он проходит сам, не прыжком. Место чтения
-    // и страницы двигаются сразу, а лист летит вдогонку — поэтому быстрые
-    // нажатия в одну сторону пускают несколько листов внахлёст, а не ждут в
-    // очереди; встречное сперва доводит летящие до конца (turnStarting).
-    const std::optional<PageFlow::Column> target = flow_.turnTarget(forward);
-    if (!target)
-        return;   // нет книги или край книги — листать некуда
-
-    startTurn(*target, forward);
-}
-
-void BookView::startTurn(const PageFlow::Column& target, bool forward) {
-    note_.hide();   // страница ушла, а сноска на ней осталась бы висеть
-
-    // Порядок держится инвариантом, и он важнее анимации: уходящий разворот
-    // лист берёт, пока книга ещё стоит на нём; книга шагает; новый разворот
-    // рисуется ровно один раз — туда, где он теперь живёт (drawTarget
-    // стратегии), — и только потом что-нибудь начинает двигаться. Как выглядит
-    // переворот, решает стратегия — до шага и после; что он делает, решает
-    // полоса.
-    turnAnimation_->turnStarting(forward);
-
-    // Двигаем книгу на целевой разворот. Целевая колонка может лежать в соседней
-    // главе: поток делает её текущей, не теряя вёрстки (лента разложила её как
-    // соседнюю на стыке), ставит место чтения и собирает новый разворот.
-    flow_.show(target);
-    chapterTail_.start();   // вошли в соседнюю главу — её «из M» тоже надо досчитать
-
-    // Новый разворот — туда, где он теперь живёт: в книге в растр самого
-    // нового листа, иначе в осевший растр, и страницы одеваются в него. Без
-    // анимации на этом переворот и кончается — ровно как прыжок (showColumn).
-    redraw();
-
-    turnAnimation_->turnStarted(forward);
-
-    // Место чтения — при нажатии, а не при посадке листа.
-    position_.set(flow_.position());
-}
-
-void BookView::goToCharOffset(uint32_t charOffset) {
-    if (!flow_.isOpen()) return;
-
-    // Прыжок по закладке, оглавлению или находке поиска — это разрыв ленты, а
-    // не листание: разворот встаёт с колонки, где лежит место, без анимации
-    // перехода. Досчёт нужной главы делает columnOf; фоновые порции прежней
-    // главы, если ушли в другую, устаревают — их отменяет relayout при первом
-    // же движении, а до того они молча пройдут по новой текущей главе.
-    showColumn(flow_.columnOf(charOffset));
 }
 
 void BookView::dropBackdrop() {
@@ -679,8 +438,11 @@ void BookView::setBackdrop(std::string bytes) {
 }
 
 bool BookView::ensureWarp(ID2D1DeviceContext* context) {
-    const D2D1_SIZE_U pixels{static_cast<UINT32>(flow_.width() * scale_ + 0.5f),
-                             static_cast<UINT32>(flow_.height() * scale_ + 0.5f) * 2};
+    const PageFlow& flow = presenter_.flow();
+    const float scale = presenter_.scale();
+
+    const D2D1_SIZE_U pixels{static_cast<UINT32>(flow.width() * scale + 0.5f),
+                             static_cast<UINT32>(flow.height() * scale + 0.5f) * 2};
     if (pixels.width == 0 || pixels.height == 0) return false;
 
     if (!warpLayer_ || warpPixels_.width != pixels.width || warpPixels_.height != pixels.height) {
@@ -735,12 +497,13 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     if (warpFlat_) return false;
 
     if (!warpMap_) {
-        // Чьи кривые гнут полосу: предпросмотр мастера или выбранная обложка.
+        // Чьи кривые гнут полосу: предпросмотр мастера или выбранная обложка
+        // (BookPresenter::pageSkin).
         // Формулы здесь больше нет. Купол синуса, стоявший за «Антиквариат»,
         // был одинаков для любого снимка, а у настоящей фотографии каждая из
         // четырёх границ своя — и «Антиквариат» теперь описан точками, как
         // всякая другая обложка, только описание лежит в коде (skins.h).
-        const Skin* skin = preview_ ? &*preview_ : activeSkin();
+        const Skin* skin = presenter_.pageSkin();
 
         // Выбрана тема, а не обложка: бумаги на экране нет, гнуть нечего.
         if (!skin) {
@@ -805,11 +568,11 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     warpDisplace_->SetInput(0, warpLayer_.Get());
     warpDisplace_->SetInput(1, warpMap_.Get());
     // Размах — в пикселях слоя: наибольшее отклонение краёв в долях высоты —
-    // это warpAmplitude_·высота·scale_ пикселей поверхности и вдвое больше в
+    // это warpAmplitude_·высота·масштаб пикселей поверхности и вдвое больше в
     // слое двойной высоты; ещё двойка — потому что карта отклоняется от
     // середины не дальше половины размаха.
     warpDisplace_->SetValue(D2D1_DISPLACEMENTMAP_PROP_SCALE,
-                            4.0f * warpAmplitude_ * flow_.height() * scale_);
+                            4.0f * warpAmplitude_ * flow.height() * scale);
     return true;
 }
 
@@ -844,11 +607,13 @@ void BookView::drawThemeBackdrop(ID2D1DeviceContext* context, float width, float
 }
 
 void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) {
+    const float scale = presenter_.scale();
+
     // Ровная тема кроет лист бумагой; тема с подложкой начинает лист с самой
     // фотоподложки, а текст ложится поверх неё — всё в одну поверхность, одним
     // битмапом, без отдельного визуала под страницей.
     if (!hasBackdrop()) {
-        context->Clear(paper().background);
+        context->Clear(presenter_.paper().background);
         drawPageContent(context, width, height);
         return;
     }
@@ -859,7 +624,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
         context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
         drawThemeBackdrop(context, width, height);
     } else {
-        context->Clear(paper().background);
+        context->Clear(presenter_.paper().background);
     }
 
     const bool warped = ensureWarp(context);
@@ -868,7 +633,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     // второй план, и направляющие мастера читаются чётче. Ещё не согнутая —
     // плоская — обложка идёт тем же слоем, но мимо смещения: размытию нужен
     // образ страницы, а прямому рисунку в поверхность его не дать.
-    const bool blurred = preview_ && (warped || warpFlat_) && ensureBlur();
+    const bool blurred = presenter_.previewing() && (warped || warpFlat_) && ensureBlur();
 
     if (!warped && !blurred) {
         drawPageContent(context, width, height);
@@ -880,7 +645,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     warpContext_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
     // Вертикальная двойка растит слой, горизонтальный масштаб — тот же, что
     // redraw() даёт поверхности: содержимое рисуется в DIP, слой — в пикселях.
-    warpContext_->SetTransform(D2D1::Matrix3x2F::Scale(scale_, scale_ * 2.0f));
+    warpContext_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale * 2.0f));
     drawPageContent(warpContext_.Get(), width, height);
     if (FAILED(warpContext_->EndDraw())) return;   // фон с фотографией уже есть
 
@@ -895,7 +660,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     ID2D1Effect* tail = warpShrink_.Get();
     if (blurred) {
         warpBlur_->SetInputEffect(0, tail);
-        warpBlur_->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, kPreviewBlur * scale_);
+        warpBlur_->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, kPreviewBlur * scale);
         tail = warpBlur_.Get();
     }
 
@@ -903,7 +668,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     // трансформа на время вынимается: остаётся только смещение атласа.
     D2D1_MATRIX_3X2_F outer{};
     context->GetTransform(&outer);
-    context->SetTransform(D2D1::Matrix3x2F::Scale(1.0f / scale_, 1.0f / scale_) *
+    context->SetTransform(D2D1::Matrix3x2F::Scale(1.0f / scale, 1.0f / scale) *
                           *D2D1::Matrix3x2F::ReinterpretBaseType(&outer));
     Microsoft::WRL::ComPtr<ID2D1Image> page;
     tail->GetOutput(&page);
@@ -912,9 +677,11 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
 }
 
 void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float height) {
-    const Theme& shade = paper();
-    const float margin = flow_.margin();
-    const float top = flow_.verticalMargin();
+    const PageFlow& flow = presenter_.flow();
+
+    const Theme& shade = presenter_.paper();
+    const float margin = flow.margin();
+    const float top = flow.verticalMargin();
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;
@@ -925,13 +692,13 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     // Колонки разворота — готовая лента потока страниц: каждая своя
     // страница, идущие подряд, при нужде со стыка из следующей главы. Разворот
     // стоит по середине окна, остаток ширины уходит в поля поровну.
-    const std::vector<const typography::Page*>& columns = flow_.spread().pages;
+    const std::vector<const typography::Page*>& columns = flow.spread().pages;
     for (size_t column = 0; column < columns.size(); ++column) {
-        const float left = flow_.columnLeft(column);
+        const float left = flow.columnLeft(column);
         const typography::Page& page = *columns[column];
 
         for (const typography::PlacedImage& image : page.images) {
-            if (ID2D1Bitmap1* bitmap = flow_.book()->bitmap(image.imageIndex, context)) {
+            if (ID2D1Bitmap1* bitmap = flow.book()->bitmap(image.imageIndex, context)) {
                 const D2D1_RECT_F target =
                     D2D1::RectF(left + image.x, top + image.y, left + image.x + image.width,
                                 top + image.y + image.height);
@@ -955,10 +722,10 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     //
     // Поверх текста, а не под ним: тень у корешка ложится на страницу целиком,
     // вместе с набором.
-    if (flow_.columns() == 2) {
-        const float centre = flow_.spine();
+    if (flow.columns() == 2) {
+        const float centre = flow.spine();
         const float band = width * kBendOfWindow;
-        const D2D1_COLOR_F& hue = paper().shadow;
+        const D2D1_COLOR_F& hue = presenter_.paper().shadow;
         const D2D1_COLOR_F clear = tintedF(hue, 0.0f);
         const D2D1_COLOR_F dense = tintedF(hue, alphaOf(kBendNear));
         const D2D1_COLOR_F mid = tintedF(hue, alphaOf(kBendMid));
@@ -1003,7 +770,7 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
         // следующей, но «стр. X из M» называет ту главу, где стоит читатель, и
         // не залезает в номера соседней. Числа решает поток страниц (status);
         // здесь они только становятся строкой.
-        const PageFlow::Status status = flow_.status();
+        const PageFlow::Status status = flow.status();
         const size_t first = status.first;
         const size_t own = status.own;
         const u16_text numbers = own <= 1 ? core::format(u"{}", first + 1)
@@ -1025,7 +792,7 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
 }
 
 void BookView::drawInvitation(ID2D1DeviceContext* context, float width, float height) {
-    const Theme& shade = paper();
+    const Theme& shade = presenter_.paper();
     context->Clear(!hasBackdrop() ? shade.background : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
     IDWriteFactory* const dwrite = dwriteFactory();

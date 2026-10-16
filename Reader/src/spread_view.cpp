@@ -31,7 +31,7 @@ SpreadView::SpreadView(const Compositor& compositor, const ContainerVisual& scen
     // просвете быстрой растяжки окно остаётся покрытым без единого нашего
     // вызова (resize их не трогает, своего Size у них нет). Половина ширины
     // — это и есть корешок: поля симметричны (см. PageFlow::spine()). Задник
-    // окна под ними без кисти (BookView::setActive): красить под страницами
+    // окна под ними без кисти (BookView::activate): красить под страницами
     // нечего.
     ExpressionAnimation const sizeOfScene = compositor_.createExpressionAnimation(L"scene.Size");
     sizeOfScene.setReferenceParameter(L"scene", scene);
