@@ -3,6 +3,7 @@
 add_executable(bukvitsa_lib_tests
     lib_tests.cpp
     book_places_tests.cpp
+    book_presenter_tests.cpp
     book_search_tests.cpp
     chapter_tail_tests.cpp
     key_map_tests.cpp
