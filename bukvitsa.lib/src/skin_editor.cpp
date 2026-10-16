@@ -70,6 +70,8 @@ void SkinEditor::drag(Grip grip, Point to, Size area) {
 
     EdgeCurve& edited = grip.edge == Edge::Top ? skin_.top : skin_.bottom;
     const size_t at = grip.point;
+    const float wasX = edited.x[at];
+    const float wasY = edited.y[at];
 
     // Точка ходит в обе оси. По вертикали — от кромки до четверти высоты; по
     // горизонтали — между соседками, крайние — до кромок. Точка корешка по
@@ -87,6 +89,16 @@ void SkinEditor::drag(Grip grip, Point to, Size area) {
         // (он требует лишь возрастания): точке между ними места нет, и по
         // горизонтали она стоит, а не получает перевёрнутые границы clamp.
         if (low <= high) edited.x[at] = std::clamp(to.x / area.width, low, high);
+    }
+
+    // Перенос, после которого кромки где-то между точками разошлись на высоту
+    // полосы и вывернули столбец, не принимается вовсе: точка остаётся, где
+    // была. Прижать её некуда — выворачивает пара кромок, а не одна точка, —
+    // а такой столбец карта смещения не нарисует, и перевести в нём точку
+    // указателя обратно в вёрстку нельзя.
+    if (!PageWarp{skin_}.keepsColumns()) {
+        edited.x[at] = wasX;
+        edited.y[at] = wasY;
     }
 }
 

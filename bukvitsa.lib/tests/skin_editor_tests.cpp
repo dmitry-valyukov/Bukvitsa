@@ -125,6 +125,35 @@ void testDragKeepsOrder() {
           "сетки нет — точка стоит");
 }
 
+/// Перенос, после которого кромки между точками разошлись бы на высоту полосы
+/// и вывернули столбец, не принимается: кривая остаётся прежней. Соседний
+/// допустимый перенос той же точки принимается.
+void testDragKeepsColumns() {
+    std::printf("\n=== правка обложки: столбцы не выворачиваются ===\n");
+
+    // Верхняя кромка с точками мастера, сжатыми у правого края: доли снимка,
+    // зазор не меньше 0,02. Подними здесь шестую точку на всю четверть высоты
+    // — и сплайн перелетит её у края выше верха почти на высоту полосы.
+    Skin start = defaultSkin();
+    start.top.x = {0.156f, 0.194f, 0.371f, 0.465f, 0.5f, 0.877f, 0.905f, 0.927f, 0.948f};
+    start.top.y = {0.0f, 0.0f, 0.0f, 0.0f, 0.039f, 0.0f, 0.0f, 0.0f, 0.0f};
+    check(PageWarp{start}.keepsColumns(), "начальная кромка столбцов не выворачивает");
+
+    SkinEditor editor;
+    editor.openEdit(start, std::filesystem::path{L"start.png"});
+    const float sixthX = start.top.x[6] * kWide.width;
+
+    editor.drag(Grip{Edge::Top, 6}, {sixthX, kEdgeReach * kWide.height}, kWide);
+    check(editor.skin().top.x == start.top.x && editor.skin().top.y == start.top.y,
+          "перенос, выворачивающий столбец, отвергнут — кривая прежняя");
+
+    editor.drag(Grip{Edge::Top, 6}, {sixthX, 0.1f * kWide.height}, kWide);
+    const EdgeCurve& moved = editor.skin().top;
+    check(aboutEqual(moved.y[6], 0.1f) && aboutEqual(moved.x[6], start.top.x[6]) &&
+              PageWarp{editor.skin()}.keepsColumns(),
+          "соседний допустимый перенос той же точки принят");
+}
+
 /// Точка корешка ходит только по вертикали: её X — середина разворота, где
 /// режутся страницы. Она одна у левого и правого листа своей кромки, и кромка
 /// идёт к ней с обеих сторон.
@@ -239,6 +268,7 @@ void testName() {
 void runSkinEditorTests() {
     testGripByReach();
     testDragKeepsOrder();
+    testDragKeepsColumns();
     testSpineMovesVertically();
     testOpen();
     testName();
