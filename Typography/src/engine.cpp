@@ -277,13 +277,13 @@ struct ShapedParagraph::Data {
     sta_vector<ShapedRun> runs;
     sta_vector<DWRITE_LINE_BREAKPOINT> breakpoints;
 
-    /// Места переноса: байт на символ. Ноль — разрыва здесь нет; иначе это
-    /// число букв слова, которые перенос унесёт на следующую строку (не больше
-    /// 255), — по нему разбивка дороже берёт перенос с коротким хвостом, и
-    /// считаются именно буквы: «фер-му»,» уносит две, а не четыре знака до
-    /// пробела. Считается один раз здесь, а не при каждой вёрстке:
-    /// перенос — свойство слова, а не полосы, и переживает и смену окна, и
-    /// смену кегля.
+    /// Места переноса (hyphenPointsOf): байт на символ. Ноль — разрыва здесь
+    /// нет; иначе это число букв части слова, которые перенос унесёт на
+    /// следующую строку, — по нему разбивка дороже берёт перенос с коротким
+    /// хвостом, и считаются именно буквы: «фер-му»,» уносит две, а не четыре
+    /// знака до пробела, и знак ударения буквой не считается. Считается один
+    /// раз здесь, а не при каждой вёрстке: перенос — свойство слова, а не
+    /// полосы, и переживает и смену окна, и смену кегля.
     sta_vector<uint8_t> hyphens;
 
     /// Кегль, на котором посчитаны метрики прогонов.
@@ -702,7 +702,7 @@ struct Engine::Impl {
         check(analyzer->AnalyzeLineBreakpoints(&source, 0, textLength, &analysis));
 
         into.breakpoints = analysis.breakpoints();
-        into.hyphens = hyphenPointsOf(text);
+        into.hyphens = hyphenPointsOf(text, book.notesOf(paragraph));
 
         const sta_vector<FormatRun> formats =
             formatRuns(text, book.spansOf(paragraph), blockStyle, analysis);
@@ -718,40 +718,6 @@ struct Engine::Impl {
         }
 
         hideSoftHyphens(into);
-    }
-
-    /// Места переноса во всём абзаце, слово за словом.
-    ///
-    /// Слово здесь — подряд идущие буквы, которые знают образцы: запятая в
-    /// слово не входит (иначе «слова,» не нашлось бы в образцах вовсе), а
-    /// дефис делит его надвое, и половины размечаются порознь — как они и
-    /// переносятся.
-    ///
-    /// Слово вырезается проверенным `substr`: половина суррогатной пары буквой
-    /// алфавита не бывает, так что граница слова — всегда граница кодовой точки.
-    static sta_vector<uint8_t> hyphenPointsOf(const u16_view text) {
-        const std::u16string_view units = text.plain();
-        sta_vector<uint8_t> hyphens(units.size(), uint8_t{0});
-
-        for (size_t at = 0; at < units.size();) {
-            if (!isHyphenLetter(units[at])) {
-                ++at;
-                continue;
-            }
-
-            size_t end = at;
-            while (end < units.size() && isHyphenLetter(units[end]))
-                ++end;
-
-            const HyphenPoints points = hyphenate(text.substr(at, end - at));
-            for (size_t i = 0; i < end - at; ++i)
-                if ((points >> i) & 1)
-                    hyphens[at + i] = static_cast<uint8_t>(std::min<size_t>(end - at - i, 255));
-
-            at = end;
-        }
-
-        return hyphens;
     }
 
     /// Мягкий перенос, стоящий в самой книге, не виден, пока строка на нём не
@@ -894,6 +860,16 @@ struct Engine::Impl {
         bool pendingStarted = false;
         uint32_t pendingStart = 0;
 
+        // Место переноса по образцам годится, только если здесь начинается и
+        // кластер шейпинга: места стоят на границах букв, а кластер бывает шире
+        // буквы — лигатура «ffi» в «official» одна на три буквы, и место
+        // «of-ficial» внутри неё унесло бы глиф целиком на следующую строку,
+        // оставив на этой «o-». У второй и следующих единиц кластера ширины
+        // нет — её несёт первая.
+        const auto hyphenAt = [&](uint32_t at) {
+            return at < hyphens.size() && hyphens[at] != 0 && metrics.width[at] > 0.0f;
+        };
+
         const auto penalty = [&](uint32_t at, float value, bool flagged = false,
                                  float width = 0.0f) {
             BreakItem item;
@@ -998,7 +974,7 @@ struct Engine::Impl {
 
                 penalty(i, soft || afterHyphen ? kHyphenPenalty : 0.0f, soft || afterHyphen,
                         soft ? metrics.hyphen[i - 1] : 0.0f);
-            } else if (i > 0 && !space && i < hyphens.size() && hyphens[i] != 0) {
+            } else if (i > 0 && !space && hyphenAt(i)) {
                 // Место переноса по образцам. Стоит оно ширины дефиса, и платит
                 // её только та строка, которая здесь и кончится.
                 flush(i);
@@ -1030,7 +1006,7 @@ struct Engine::Impl {
                     for (; at < textLength && points[at].isWhitespace == 0; ++at) {
                         const bool breaksHere =
                             at > i && (points[at].breakConditionBefore == DWRITE_BREAK_CONDITION_CAN_BREAK ||
-                                       (at < hyphens.size() && hyphens[at] != 0));
+                                       hyphenAt(at));
                         if (breaksHere) {
                             widest = std::max(widest, piece + metrics.hyphen[at]);
                             piece = 0.0f;
