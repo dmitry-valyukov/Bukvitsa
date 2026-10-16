@@ -21,7 +21,8 @@ void stopOnFailure(HRESULT result, std::string_view what, std::source_location w
     // вызова много короче буфера. Не уместились — это ошибка в коде, и
     // остановка называет её саму, с тем же HRESULT и тем же местом.
     if (written.size > static_cast<std::ptrdiff_t>(std::size(text)))
-        written = std::format_to_n(text, std::size(text), "stopIfFailed: слова отказа длиннее {} байт, HRESULT 0x{:08X}",
+        written = std::format_to_n(text, std::size(text),
+                                   "stopIfFailed: слова отказа длиннее {} байт, HRESULT 0x{:08X}",
                                    std::size(text), code);
 
     wxl::core::abort(std::string_view(text, static_cast<size_t>(written.out - text)), where);

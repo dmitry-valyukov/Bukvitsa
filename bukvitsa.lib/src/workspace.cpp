@@ -54,12 +54,22 @@ std::filesystem::path brokenCopyOf(std::filesystem::path file) {
 /// стало на экране.
 const wchar_t* faultWords(SkinFault fault) {
     switch (fault) {
+        case SkinFault::OutsidePage:
+            return L"координата точки кромки не в долях страницы — на месте точки точка начальной прямой";
+        case SkinFault::MissingCoordinate:
+            return L"у точки кромки нет координаты — на её месте точка начальной прямой";
+        case SkinFault::ExtraPoints:
+            return L"у кромки лишние точки — отброшены";
         case SkinFault::SpineMoved:
             return L"корешок кромки не на середине — поставлен на середину";
         case SkinFault::Unordered:
             return L"с корешком на середине точки кромки идут не слева направо — кромка показана ровной";
         case SkinFault::FoldsColumn:
             return L"кромки выворачивают столбец — обложка показана ровной";
+        case SkinFault::SkippedNoName:
+            return L"пропущена — у неё нет имени";
+        case SkinFault::SkippedNoImage:
+            return L"пропущена — у неё нет снимка";
     }
     wxl::core::abort("faultWords: исправление вне перечисления");
 }
@@ -72,7 +82,9 @@ Notice correctedNotice(const std::vector<CorrectedSkin>& correctedSkins, const s
                        const std::filesystem::path& registryCopy) {
     std::wstring details;
     for (const CorrectedSkin& correctedSkin : correctedSkins) {
-        details += L"Обложка «" + std::wstring{correctedSkin.name.wchars()} + L"» в skins.xml: ";
+        details += correctedSkin.name.empty() ? std::wstring{L"Обложка без имени"}
+                                              : L"Обложка «" + std::wstring{correctedSkin.name.wchars()} + L"»";
+        details += L" в skins.xml: ";
         for (size_t at = 0; at < correctedSkin.faults.size(); ++at) {
             if (at > 0) details += L"; ";
             details += faultWords(correctedSkin.faults[at]);

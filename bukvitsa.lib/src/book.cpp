@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <iterator>
+#include <optional>
+#include <string>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
@@ -132,31 +134,27 @@ void Book::decodeImages(fb3::Document& document) {
     if (count == 0)
         return;
 
-    // Одна фабрика на все картинки книги. Системная — не ответ о книге: не
-    // создалась — остановка, а не книга без иллюстраций.
-    ComPtr<IWICImagingFactory> wic;
+    // Системная фабрика — не ответ о книге: не создалась — остановка, а не
+    // книга без иллюстраций.
     typography::stopIfFailed(
-        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)),
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_)),
         "Book: не создалась фабрика WIC");
 
     for (uint32_t index = 0; index < count; ++index) {
         ImageAsset& asset = images_[index];
 
-        // Раскодируется сразу и целиком: пиксели — в битмапе памяти, байты
-        // после этого не нужны, и битые данные отказывают здесь, а не на
-        // каждом кадре. Вёрстке нужны размеры всех картинок сразу — без них не
-        // построить страницу, — так что лениться тут не выходит. Не картинка —
+        // При открытии — только размеры из заголовка: вёрстке они нужны сразу —
+        // без них не построить страницу, — а пиксели — лишь при рисунке.
+        // Раскодировать все картинки здесь значило бы держать их пиксели, пока
+        // книга открыта: сотни мегабайт у иллюстрированной. Не картинка —
         // места на странице она не займёт.
-        const std::string imageBytes = document.takeImageBytes(index);
-        asset.decodedPicture = decodeImage(wic.Get(), imageBytes);
-        if (!asset.decodedPicture) continue;
-
-        UINT width = 0;
-        UINT height = 0;
-        typography::stopIfFailed(asset.decodedPicture->GetSize(&width, &height),
-                                 "Book: раскодированная картинка не назвала размер");
-        asset.width = static_cast<float>(width);
-        asset.height = static_cast<float>(height);
+        asset.bytes = document.takeImageBytes(index);
+        if (const std::optional<PictureSize> size = pictureSizeOf(wic_.Get(), asset.bytes)) {
+            asset.width = static_cast<float>(size->width);
+            asset.height = static_cast<float>(size->height);
+        } else {
+            asset.bytes = std::string{};
+        }
     }
 }
 
@@ -165,8 +163,22 @@ ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
         return nullptr;
 
     ImageAsset& asset = images_[index];
-    if (!asset.bitmap && asset.decodedPicture) asset.bitmap = deviceBitmapOf(context, asset.decodedPicture.Get());
+    if (asset.bitmap) return asset.bitmap.Get();
+    if (asset.bytes.empty()) return nullptr;
 
+    // Целиком в одном вызове и не больше, чем держит устройство; пиксели в
+    // памяти отпускаются, как только стали битмапом устройства, а сжатые
+    // байты — сразу после раскодирования: битмап сделан, или они не картинка.
+    // Чужие байты, битые не в заголовке, а в данных, отказывают здесь:
+    // картинка не рисуется, и больше её не пробуют, а место под неё вёрстка
+    // уже отвела — оно остаётся пустым. Отказ Direct2D — остановка
+    // (deviceBitmapOf).
+    const uint32_t deviceSide = std::min<uint32_t>(kMaxPictureSide, context->GetMaximumBitmapSize());
+    const Microsoft::WRL::ComPtr<IWICBitmap> decodedPicture = decodeImage(wic_.Get(), asset.bytes, deviceSide);
+    asset.bytes = std::string{};
+    if (!decodedPicture) return nullptr;
+
+    asset.bitmap = deviceBitmapOf(context, decodedPicture.Get());
     return asset.bitmap.Get();
 }
 
