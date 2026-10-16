@@ -13,6 +13,7 @@
 // одна; картинки книги — при первом рисунке каждой (`Book::bitmap`), а при
 // открытии — только размеры из заголовка (`pictureSizeOf`).
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -34,49 +35,77 @@ namespace bukvitsa::reader {
 /// телефона на 200 Мп иначе стал бы битмапом устройства в сотни мегабайт.
 inline constexpr uint32_t kMaxPictureSide = 4096;
 
-/// Снимок, раскодированный целиком и не больше `maxSide` по большей стороне
-/// (больший уменьшается, Fant, с сохранением пропорций), — или nullptr, если
-/// байты не картинка (и если у неё нулевая сторона). Байты после вызова не
-/// нужны: пиксели уже в битмапе. Фабрика WIC своя и на один вызов: снимки
-/// раскодируются по смене темы и по выбору снимка в мастере, а не в цикле.
-Microsoft::WRL::ComPtr<IWICBitmap> decodeImage(std::string_view bytes, uint32_t maxSide = kMaxPictureSide);
-
-/// То же фабрикой вызывающего — у книги она одна на все её картинки. Есть
-/// контекст — предел `min(kMaxPictureSide, GetMaximumBitmapSize())`.
-Microsoft::WRL::ComPtr<IWICBitmap> decodeImage(IWICImagingFactory* wic, std::string_view bytes,
-                                               uint32_t maxSide = kMaxPictureSide);
-
 /// Размер картинки в пикселях.
 struct PictureSize {
     uint32_t width = 0;
     uint32_t height = 0;
 };
 
-/// Бюджет пикселей картинки по заголовку — до всякого раскодирования.
-/// Уменьшение (Fant) сжимает только выход, а вход декодер отдаёт целиком:
-/// PNG в 1 бит на пиксель 65535×65535 весит около 0,5 МБ, а это 4,3·10⁹
-/// пикселей через конвертер в потоке окна. 2²⁸ (268 Мп) пропускает снимки
-/// телефонов на 200 Мп (16320×12240) и квадрат 16384×16384 — предел
-/// битмапа самых сильных устройств, — а большее — не картинка, которую
-/// читалке стоит раскодировать.
-inline constexpr uint64_t kMaxPicturePixels = uint64_t{1} << 28;
+/// Почему байты не стали снимком.
+enum class PictureRefusal {
+    None,         ///< стали
+    NotAnImage,   ///< не картинка, которую знает WIC (или нулевая сторона)
+    TooLarge,     ///< картинка, но больше бюджета: размер известен (`declaredSize`)
+};
 
-/// Укладывается ли картинка такого размера из заголовка в бюджет: стороны не
-/// нулевые, произведение — не больше `kMaxPicturePixels` (в uint64_t, без
+/// Стали ли байты снимком, а нет — почему.
+struct PictureVerdict {
+    PictureRefusal refusal = PictureRefusal::None;
+    PictureSize declaredSize;   ///< размер из заголовка — у `TooLarge`
+};
+
+/// Ответ раскодирования: снимок — или почему его нет.
+struct DecodedPicture {
+    Microsoft::WRL::ComPtr<IWICBitmap> bitmap;   ///< есть — только при `PictureRefusal::None`
+    PictureVerdict verdict;
+};
+
+/// Снимок, раскодированный целиком и не больше `maxSide` по большей стороне
+/// (больший уменьшается, Fant, с сохранением пропорций), — или почему его
+/// нет. Байты после вызова не нужны: пиксели уже в битмапе. Фабрика WIC своя
+/// и на один вызов: снимки раскодируются по смене темы и по выбору снимка в
+/// мастере, а не в цикле.
+DecodedPicture decodeImage(std::string_view bytes, uint32_t maxSide = kMaxPictureSide);
+
+/// То же фабрикой вызывающего — у книги она одна на все её картинки. Есть
+/// контекст — предел `min(kMaxPictureSide, GetMaximumBitmapSize())`.
+DecodedPicture decodeImage(IWICImagingFactory* wic, std::string_view bytes, uint32_t maxSide = kMaxPictureSide);
+
+/// Бюджет памяти картинки по заголовку — до всякого раскодирования, в байтах:
+/// декодер может держать полный буфер в своём формате (16384² в 16-битном
+/// RGBA, чересстрочный, — 2 ГиБ, в 128bppRGBAFloat — 4 ГиБ), а уменьшение
+/// (Fant) сжимает только выход. Считается w·h·max(бит на пиксель, 32)/8 —
+/// не меньше, чем займёт PBGRA, — и 2³⁰ (1 ГиБ) пропускает снимок телефона на
+/// 200 Мп (16320×12240 в 24 или 32 бита — около 800 МБ) и квадрат 16384² в 32
+/// бита. В бюджете отказ раскодирования по нехватке памяти — уже беда
+/// системы, а не файла.
+inline constexpr uint64_t kMaxPictureBytes = uint64_t{1} << 30;
+
+/// Укладывается ли картинка такого размера и формата из заголовка в бюджет:
+/// стороны не нулевые, байты — не больше `kMaxPictureBytes` (в uint64_t, без
 /// переполнения).
-constexpr bool withinPictureBudget(uint32_t width, uint32_t height) noexcept {
-    return width != 0 && height != 0 && uint64_t{width} * height <= kMaxPicturePixels;
+constexpr bool withinPictureBudget(uint32_t width, uint32_t height, uint32_t bitsPerPixel) noexcept {
+    if (width == 0 || height == 0) return false;
+    const uint64_t bytesPerPixel = (std::max<uint64_t>(bitsPerPixel, 32) + 7) / 8;
+    return uint64_t{width} * height <= kMaxPictureBytes / bytesPerPixel;
 }
 
 /// Размер, уменьшенный до `limit` по большей стороне с сохранением пропорций:
 /// большая сторона — ровно `limit`, меньшая — целочисленно, не меньше
-/// пикселя. Для картинки, которая больше предела; `limit` 0 — остановка.
+/// пикселя. Картинка не больше предела — как есть: увеличивать незачем.
+/// Нулевая сторона или `limit` — остановка.
 PictureSize fittedSize(uint32_t width, uint32_t height, uint32_t limit);
 
-/// Размер по заголовку, без пикселей; пусто — байты не картинка или у неё
-/// нулевая сторона. Отказы — те же, что у `decodeImage`: своё — остановка,
-/// разбор чужих байт — пусто.
-std::optional<PictureSize> pictureSizeOf(IWICImagingFactory* wic, std::string_view bytes);
+/// Заголовок картинки, без пикселей.
+struct PictureHeader {
+    PictureSize size;
+    bool tooLarge = false;   ///< больше бюджета: раскодировать её не станут
+};
+
+/// Размер по заголовку; пусто — байты не картинка или у неё нулевая
+/// сторона. Отказы — те же, что у `decodeImage`: своё — остановка, разбор
+/// чужих байт — пусто.
+std::optional<PictureHeader> pictureSizeOf(IWICImagingFactory* wic, std::string_view bytes);
 
 /// Битмап устройства из раскодированного снимка — не больше, чем устройство
 /// держит одним битмапом (`GetMaximumBitmapSize`). Снимок от `decodeImage`

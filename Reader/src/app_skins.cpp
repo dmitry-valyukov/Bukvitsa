@@ -10,6 +10,7 @@
 // Импорт последним, после всех обычных заголовков.
 import wxl.async;
 import wxl.core;
+import wxl.fmt;
 
 namespace bukvitsa::reader {
 
@@ -76,13 +77,26 @@ detached_task App::chooseAnotherImage() {
 }
 
 /// Читает файл и пробует раскодировать его как картинку. Нет — читателю
-/// говорится, что именно не так. Байты для показа полосе приносит потом
-/// loadBackdrop: второе чтение того же файла дешевле, чем нести байты через
-/// мастер в полосу.
+/// говорится, что именно не так: не картинка или картинка больше бюджета
+/// памяти — с её размером из заголовка, чтобы было видно, во что её
+/// уменьшить. Байты для показа полосе приносит потом loadBackdrop: второе
+/// чтение того же файла дешевле, чем нести байты через мастер в полосу.
 wxl::async::task<bool> App::checkImage(std::filesystem::path image, cancellation_token stop) {
     try {
-        if (co_await ws_.isImage(image, std::move(stop))) co_return true;
-        notices_.post({L"Это не изображение", image.wstring()});
+        const PictureVerdict verdict = co_await ws_.probeImage(image, std::move(stop));
+        switch (verdict.refusal) {
+        case PictureRefusal::None:
+            co_return true;
+        case PictureRefusal::NotAnImage:
+            notices_.post({L"Это не изображение", image.wstring()});
+            break;
+        case PictureRefusal::TooLarge: {
+            const u16_text headline = core::format(u"Снимок слишком велик: {}×{}", verdict.declaredSize.width,
+                                                   verdict.declaredSize.height);
+            notices_.post({std::wstring{headline.wchars()}, image.wstring()});
+            break;
+        }
+        }
     } catch (const last_error& failure) {
         notices_.post(noticeOf(L"Не удалось открыть изображение", image.wstring(), failure));
     }
@@ -244,18 +258,23 @@ void App::showBackdrop() {
 }
 
 /// Байты файла читает операция wxl, раскодирует их полоса у себя. Не
-/// прочитался или не раскодировался — полоса остаётся при бумаге темы, а
-/// читатель узнаёт почему — один раз на путь за запуск: тему с этим снимком
-/// выбирают снова и снова (T, панель), и окно на каждый раз было бы шумом, а
-/// молчание прятало бы сбой. Пока читали, могли захотеть другой — тогда этот
-/// не нужен.
+/// прочитался, не раскодировался или больше бюджета памяти — полоса остаётся
+/// при бумаге темы, а читатель узнаёт почему — один раз на путь за запуск:
+/// тему с этим снимком выбирают снова и снова (T, панель), и окно на каждый
+/// раз было бы шумом, а молчание прятало бы сбой. Пока читали, могли захотеть
+/// другой — тогда этот не нужен.
 detached_task App::loadBackdrop(std::filesystem::path file) {
     auto const stop = cancellation_source{stop_.token()};
 
     try {
         std::string bytes = co_await ws_.readBytes(file, stop.token());
-        if (file == backdrop_ && !view_.setBackdrop(std::move(bytes)) && reportedBackdrops_.insert(file).second)
-            notices_.post({L"Снимок обложки не раскодировался", file.wstring()});
+        if (file != backdrop_) co_return;
+
+        const PictureRefusal refusal = view_.setBackdrop(std::move(bytes));
+        if (refusal == PictureRefusal::None || !reportedBackdrops_.insert(file).second) co_return;
+        notices_.post({refusal == PictureRefusal::TooLarge ? L"Снимок обложки слишком велик"
+                                                           : L"Снимок обложки не раскодировался",
+                       file.wstring()});
     } catch (const last_error& failure) {
         if (reportedBackdrops_.insert(file).second)
             notices_.post(noticeOf(L"Не удалось прочитать снимок обложки", file.wstring(), failure));

@@ -510,17 +510,22 @@ void BookView::dropBackdrop() {
     photoBitmap_.Reset();
 }
 
-bool BookView::setBackdrop(std::string bytes) {
+PictureRefusal BookView::setBackdrop(std::string bytes) {
     // Нечего ни отпускать, ни показывать — и перерисовывать незачем.
-    if (bytes.empty() && !backdropSource_) return true;
+    if (bytes.empty() && !backdropSource_) return PictureRefusal::None;
 
     // Раскодируется сразу и целиком: байты после этого не нужны, а битые
     // данные — бумага темы сейчас, а не отказ на каждом кадре, — и ответ
     // владельцу, который скажет о них читателю.
     dropBackdrop();
-    if (!bytes.empty()) backdropSource_ = decodeImage(bytes);
+    if (bytes.empty()) {
+        redraw();
+        return PictureRefusal::None;
+    }
+    DecodedPicture decodedBackdrop = decodeImage(bytes);
+    backdropSource_ = std::move(decodedBackdrop.bitmap);
     redraw();
-    return bytes.empty() || backdropSource_;
+    return decodedBackdrop.verdict.refusal;
 }
 
 bool BookView::ensureWarp(ID2D1DeviceContext* context) {
