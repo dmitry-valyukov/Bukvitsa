@@ -355,6 +355,8 @@ private:
             data.minWidth = toLength(source.attribute("min-width"));
             data.maxWidth = toLength(source.attribute("max-width"));
 
+            // src без части — битая ссылка: номера у неё нет, как у ссылки на
+            // сноску без тела, и в книге её не будет.
             if (const auto found = doc_.imageIndex.find(data.relationshipId.chars());
                 found != doc_.imageIndex.end())
                 data.partIndex = found->second;

@@ -394,6 +394,29 @@ std::vector<std::pair<wxl::core::u8_text, PackagePart>> OpcPackage::relationship
     return found;
 }
 
+namespace {
+
+/// Больше этого часть не может быть книгой. Позиции символов книги
+/// (Node::charOffset, Measures::codePoints) — uint32_t, а кодовых точек в части
+/// не больше, чем в ней байтов UTF-8. Длин того, что из части развернут потом,
+/// предел не обещает: их стережёт тот, кто разворачивает. Тот же предел и
+/// картинке: длину её байтов декодеры берут 32-битной.
+constexpr std::uint64_t kMaxPartBytes = std::numeric_limits<std::uint32_t>::max();
+
+/// Сколько памяти часть получает сразу, по слову заголовка: тело большого
+/// романа — единицы мегабайт и в резерв ложится целиком, а больше — растёт
+/// удвоением, за те же байты, что разжаты на деле.
+constexpr std::uint64_t kMaxPartReserve = 64ull * 1024 * 1024;
+
+/// Отказ тем же путём, что и прочие отказы разбора: исключение с причиной.
+[[noreturn]] void refuseTooLarge(const PackagePart& part) {
+    throw std::runtime_error(
+        std::format("FB3: часть {} разжимается в 4 ГиБ и больше — книгой она быть не может",
+                    wxl::core::unicode::repaired(part.name).to_utf8().chars()));
+}
+
+}  // namespace
+
 std::string OpcPackage::readPart(const PackagePart& part) const {
     ComPtr<IOpcPartUri> uri;
     check(impl_->factory->CreatePartUri(part.name.c_str(), uri.put()), "OPC: неверное имя части");
@@ -407,10 +430,18 @@ std::string OpcPackage::readPart(const PackagePart& part) const {
     std::string content;
 
     // Размер известен заранее, но полагаться на него нельзя: часть в пакете
-    // сжата, и Read всё равно отдаёт столько, сколько распаковал за раз.
+    // сжата, и Read всё равно отдаёт столько, сколько распаковал за раз. Да и
+    // пишет его заголовок архива — тот же файл: больше предела — отказ сразу,
+    // но предел стережёт то, что разжато на деле, а не то, что обещано. Ради
+    // памяти заголовку тоже не верим: резерв — не больше kMaxPartReserve, а
+    // дальше строка растёт сама, удвоением, — и часть, что обещает 4 ГиБ, а
+    // разжимается в десять байт, 4 ГиБ не стоит.
     STATSTG stat{};
-    if (SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME)) && stat.cbSize.QuadPart > 0)
-        content.reserve(static_cast<std::size_t>(stat.cbSize.QuadPart));
+    if (SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME)) && stat.cbSize.QuadPart > 0) {
+        if (stat.cbSize.QuadPart > kMaxPartBytes) refuseTooLarge(part);
+        content.reserve(
+            static_cast<std::size_t>(std::min<std::uint64_t>(stat.cbSize.QuadPart, kMaxPartReserve)));
+    }
 
     char buffer[64 * 1024];
     for (;;) {
@@ -420,6 +451,7 @@ std::string OpcPackage::readPart(const PackagePart& part) const {
             check(hr, "OPC: часть не дочитана");
         if (read == 0)
             break;
+        if (read > kMaxPartBytes - content.size()) refuseTooLarge(part);
         content.append(buffer, read);
     }
 

@@ -125,7 +125,11 @@ struct ImageData {
     wxl::core::u8_view relationshipId; ///< src= указывает на Id связи, не на файл
     wxl::core::u8_view alt;
     Length width, minWidth, maxWidth;
-    std::uint32_t partIndex = 0;     ///< индекс части в Document::images()
+
+    /// Индекс части в Document::images(). Пусто у битой ссылки — src, за
+    /// которым нет связи или нет части: показать по ней нечего, и подставлять
+    /// другую картинку нельзя.
+    std::optional<std::uint32_t> partIndex;
 };
 
 struct NoteRefData {
