@@ -55,6 +55,20 @@ NotePopup::NotePopup(const Compositor& compositor)
         CornerRadius{kCorner},
         BorderThickness{1},
         Padding{kPadding},
+
+        // Сноска — не страница: нажатие и колесо по ней здесь и кончаются, как
+        // у ящиков панели. Всплыв к полосе, нажатие ушло бы ведущему щелчком
+        // по странице под сноской — открыло бы знак, который она закрывает,
+        // или спрятало бы её саму, а правой кнопкой открыло бы ящики. Колесо
+        // сюда доходит, только когда прокрутке листать нечего — сноска
+        // короткая или докручена, — и у полосы оно перелистнуло бы страницу,
+        // спрятав сноску, а с Ctrl сменило бы кегль.
+        onPointerPressed = [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
+        onPointerReleased = [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
+        onPointerWheelChanged = [](Object const&, PointerRoutedEventArgs& args) {
+            args.handled(true);
+        },
+
         ScrollViewer {
             horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
             verticalScrollBarVisibility = ScrollBarVisibility::Auto,
@@ -97,6 +111,8 @@ void NotePopup::draw(const Theme& theme, float width, float height, float scale)
         context->CreateSolidColorBrush(theme.text, &ink);
         if (!ink) return;
 
+        // Знак сноски внутри сноски — цветом текста, а не ссылки: всплывашка
+        // знаков не ловит, и цвет ссылки обещал бы щелчок, которого нет.
         auto const noteBrushes = typography::TextBrushes{not_null<ID2D1Brush>{ink.Get()},
                                                          not_null<ID2D1Brush>{ink.Get()}};
         for (const typography::NoteLine& placed : body_.lines) {
@@ -123,8 +139,11 @@ void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const T
     const float height =
         std::min(noteHeight + kPadding * 2.0f, std::max(area.height * kMaxHeightShare, 120.0f));
 
-    // Встать под знаком сноски, а если внизу не помещается — над ним. Так
-    // всплывашка не закрывает того места, ради которого её открыли.
+    // Встать под знаком сноски, а если внизу не помещается — над ним: так
+    // всплывашка не закрывает того места, ради которого её открыли. Не
+    // помещается и над ним — прижимается к верху полосы в 8 DIP от края и
+    // тогда встаёт на знак: высота у неё уже ограничена долей полосы, и
+    // показать сноску целиком важнее, чем не заслонить знак.
     float x = std::clamp(anchor.x - width * 0.5f, 8.0f, std::max(area.width - width - 8.0f, 8.0f));
     float y = anchor.y + kGapFromAnchor;
     if (y + height > area.height - 8.0f) {
