@@ -1,6 +1,8 @@
 #include <shlobj.h>
 
+#include <algorithm>
 #include <exception>
+#include <iterator>
 #include <optional>
 
 // Свои заголовки — после системных: они несут импорт, а заголовок после
@@ -34,9 +36,20 @@ bool absent(const last_error& failure) {
     return failure.code().value() == ERROR_FILE_NOT_FOUND || failure.code().value() == ERROR_PATH_NOT_FOUND;
 }
 
-/// Имя и причина для списка «не прочитались» обхода каталога.
-std::wstring unreadLine(const std::wstring& name, const last_error& failure) {
-    return name + L" — " + reasonOf(failure);
+/// Путь и причина для списка «не прочитались» обхода каталога.
+std::wstring unreadLine(const std::filesystem::path& file, const last_error& failure) {
+    return file.wstring() + L" — " + reasonOf(failure);
+}
+
+/// Отчёт одного каталога — в общий отчёт перепроверки.
+void addUp(ScanReport& total, ScanReport part) {
+    total.listed += part.listed;
+    total.parsed += part.parsed;
+    total.added += part.added;
+    total.marked += part.marked;
+    total.restored += part.restored;
+    total.unread.insert(total.unread.end(), std::make_move_iterator(part.unread.begin()),
+                        std::make_move_iterator(part.unread.end()));
 }
 
 }  // namespace
@@ -205,25 +218,44 @@ task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_to
 }
 
 task<Registered> Workspace::registerBook(const fb3::Description& description, uint32_t characterCount,
-                                         const std::optional<BookCover>& cover, std::filesystem::path path,
-                                         uint64_t fileSize) {
+                                         const std::optional<BookCover>& cover, BookFile file) {
     // Guid, под которым настройки помнят этот файл: реестр мог книгу потерять
     // (битый library.xml), а её место чтения в books\{guid}.xml цело, и
     // «Продолжить чтение» не должно открывать книгу с начала. Другой файл —
     // пусто, и guid будет новым.
-    const u16_view remembered = settings.lastBookPath == path ? u16_view{settings.lastBookGuid} : u16_view{};
+    const u16_view remembered = settings.lastBookPath == file.path ? u16_view{settings.lastBookGuid} : u16_view{};
 
-    const size_t knownBefore = library.cards().size();
+    // Обложка — раньше записи в реестре. Карточка, встав в реестр, тут же
+    // встаёт и на полку, а полка сразу берёт картинку из файла обложки: файл,
+    // записанный после, опоздал бы, и картинка, не нашедшая его, осталась бы
+    // пустой — сама она файла не ждёт. Потому сперва запись, какой она станет
+    // (имя файлу обложки даёт её guid), затем обложка и лишь потом перемена
+    // реестра.
+    //
+    // Обложку пишет только новая или изменённая запись: у той же записи в кэше
+    // тот же файл, и переписывать его незачем. Это снимает столкновение
+    // перепроверки каталога и открытия той же неизменной книги — две записи
+    // одной обложки разом через один временный файл. Одновременные регистрации
+    // изменённой или новой книги этим не упорядочены и сталкиваются по-прежнему
+    // (ограничение — в шапке workspace.h).
+    const BookEntry planned = library.entryFor(description, characterCount, cover, file, remembered);
 
-    // Копией, а не ссылкой: между co_await реестр может дополниться, и вектор
-    // переедет вместе со всеми ссылками в него.
-    Registered registered{library.add(description, characterCount, cover, path, fileSize, remembered),
-                          library.cards().size() != knownBefore};
+    if (const BookEntry* stored = library.find(planned.guid); !stored || *stored != planned) {
+        if (const CoverBytes cached = coverOf(cover, planned.guid); !cached.name.empty())
+            co_await async_file::write_all(poolPath(coverDirectory() / cached.name.wchars()), std::string(cached.bytes));
+    }
 
-    if (const CoverBytes cached = coverOf(cover, registered.entry.guid); !cached.name.empty())
-        co_await async_file::write_all(poolPath(coverDirectory() / cached.name.wchars()), std::string(cached.bytes));
+    // Пока обложка писалась, реестр мог перемениться: ту же книгу могла
+    // поставить в него другая регистрация. Добавление решает заново, а guid
+    // задуманной записи просит, как guid из настроек: книге, которой в реестре
+    // так и нет, достаётся он — и обложка под ним уже лежит; книга, которая
+    // успела в него встать, остаётся под своим guid и при своей обложке, а
+    // обложка под задуманным guid остаётся в кэше лишней.
+    const AddedBook added = library.add(description, characterCount, cover, file, planned.guid);
 
-    co_return registered;
+    // Запись — копией, а не ссылкой: между co_await реестр может дополниться,
+    // и вектор переедет вместе со всеми ссылками в него.
+    co_return Registered{added.entry, added.isNew, added.restored};
 }
 
 task<Opened> Workspace::openBook(const LoadedBook& loaded, cancellation_token stop) {
@@ -238,8 +270,12 @@ task<Opened> Workspace::openBook(const LoadedBook& loaded, cancellation_token st
     // памяти, и лишь потом её состояние. Файлы реестра и настроек пишут циклы
     // приложения, по одному на файл: запись отсюда шла бы разом с их записью
     // того же файла.
-    const Registered registered = co_await registerBook(loaded.description, loaded.book->characterCount(),
-                                                        loaded.cover, loaded.book->path(), loaded.fileSize);
+    //
+    // Ни времени правки, ни каталога открытие не знает: у книги, которая уже в
+    // реестре, они остаются от обхода каталога (`Library::entryFor`).
+    auto const file = BookFile{.path = loaded.book->path(), .size = loaded.fileSize};
+    const Registered registered =
+        co_await registerBook(loaded.description, loaded.book->characterCount(), loaded.cover, file);
 
     settings.lastBookGuid = registered.entry.guid;
     settings.lastBookPath = registered.entry.path;
@@ -254,39 +290,136 @@ task<Opened> Workspace::openBook(const LoadedBook& loaded, cancellation_token st
     co_return opened;
 }
 
-task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellation_token stop) {
-    FolderAdded result;
+task<ScanReport> Workspace::scanFolder(std::filesystem::path folder, cancellation_token stop) {
+    std::vector<async_directory::listed_entry> listing;
 
-    const std::vector<async_directory::listed_entry> found =
+    try {
+        listing = co_await async_directory::list(poolPath(folder / L"*.fb3"), stop);
+    } catch (const last_error& failure) {
+        // Каталога нет — нет и его книг: съёмный диск не вставлен, каталог
+        // унесли или переименовали. Пустой листинг помечает все его записи, а
+        // вернётся каталог — пометки снимет следующая перепроверка. Прочие
+        // сбои — не ответ «пусто», о записях они ничего не говорят и идут
+        // вызывающему.
+        if (!absent(failure)) throw;
+    }
+
+    co_return co_await scanListing(std::move(folder), std::move(listing), std::move(stop));
+}
+
+task<ScanReport> Workspace::addFolder(std::filesystem::path folder, cancellation_token stop) {
+    std::vector<async_directory::listed_entry> listing =
         co_await async_directory::list(poolPath(folder / L"*.fb3"), stop);
+
+    // Наблюдаемым каталог становится, когда перечислился: каталог, которого не
+    // прочесть, реестр не запоминает — каждый запуск спотыкался бы о него
+    // снова.
+    library.addFolder(folder);
+
+    co_return co_await scanListing(std::move(folder), std::move(listing), std::move(stop));
+}
+
+task<ScanReport> Workspace::rescanFolders(cancellation_token stop) {
+    // Под отменённым токеном перепроверка не начинается — и без каталогов,
+    // где ждать нечего.
+    stop.throw_if_canceled();
+
+    ScanReport total;
+
+    // Копией: пока идёт перепроверка, читатель может добавить каталог, и
+    // список вырастет под руками. Добавленный обходит его собственный
+    // сценарий.
+    const std::vector<std::filesystem::path> folders = library.folders();
+
+    for (const std::filesystem::path& folder : folders) {
+        try {
+            ScanReport part = co_await scanFolder(folder, stop);
+            addUp(total, std::move(part));
+        } catch (const last_error& failure) {
+            // Каталог есть, но не перечислился: сеть не отвечает, доступа нет.
+            // Его записи не тронуты — о них ничего не известно; читателю —
+            // строкой, остальные каталоги перепроверяются.
+            total.unread.push_back(unreadLine(folder, failure));
+        }
+    }
+
+    co_return total;
+}
+
+task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
+                                        std::vector<async_directory::listed_entry> listing,
+                                        cancellation_token stop) {
+    ScanReport report;
+
+    // Книги каталога — путями, с размером и временем правки: путь сводит
+    // листинг с записями реестра, размер и время говорят, тот ли это файл.
+    std::vector<BookFile> books;
+    for (const async_directory::listed_entry& entry : listing) {
+        if (entry.is_directory) continue;
+        books.push_back(BookFile{folder / entry.name, entry.size, entry.last_write, folder});
+    }
+    report.listed = static_cast<uint32_t>(books.size());
+
+    // Пометки — одним ходом, до первого чтения: реестр сверяется с листингом
+    // целиком, пока ни одна регистрация его не тронула. Запись этого каталога,
+    // чьего файла нет, — «не найдена»; чей есть — найдена, даже если файл
+    // потом не прочитается: он на месте.
+    for (const intrusive_ptr<ShelfCard>& card : library.cards()) {
+        const BookEntry& known = card->entry;
+        if (!samePath(known.folder, folder)) continue;
+
+        const bool listed =
+            std::ranges::any_of(books, [&known](const BookFile& book) { return samePath(book.path, known.path); });
+
+        if (!library.setMissing(known.guid, !listed)) continue;
+
+        if (listed)
+            ++report.restored;
+        else
+            ++report.marked;
+    }
 
     // Отмена кончает обход на чтении следующей книги. Книги, зарегистрированные
     // до неё, полка уже показала, и реестр в памяти их знает; файл реестра
     // отсюда не пишется — его пишет вызывающий, и после отмены тоже.
-    for (const async_directory::listed_entry& entry : found) {
-        if (entry.is_directory) continue;
-
-        const std::filesystem::path path = folder / entry.name;
+    for (const BookFile& book : books) {
+        // Тот же файл не читается вовсе: запись этого каталога с тем же
+        // размером и тем же временем правки — тот же файл, и ни чтение, ни
+        // разбор, ни обложка ему не нужны. Время неизвестно (запись первой
+        // версии реестра, открытая файлом с другим размером, а то и файловая
+        // система, которая времени не отдаёт и листинг называет нулём) — не
+        // тот же: такой файл читается заново. Запись чужого каталога или без
+        // каталога — тоже не та: файл перечитывается, и запись переходит к
+        // этому каталогу, — иначе пометки ей ставил бы и снимал другой обход.
+        if (const BookEntry* known = library.findFile(book.path);
+            known && samePath(known->folder, folder) && known->fileSize == book.size &&
+            known->modified != kUnknownTime && known->modified == book.modified)
+            continue;
 
         std::string bytes;
 
         try {
-            bytes = co_await async_file::read_all(poolPath(path), stop);
+            bytes = co_await async_file::read_all(poolPath(book.path), stop);
         } catch (const last_error& failure) {
             // Файлы, которые не прочитались, называются вызывающему разом в
             // конце: каталог с сотней книг не должен спотыкаться об один файл,
             // но и молчать о нём нельзя.
-            result.unread.push_back(unreadLine(entry.name, failure));
+            report.unread.push_back(unreadLine(book.path, failure));
             continue;
         }
 
         // Чтение, успевшее кончиться, отвечает байтами и под отменой, пришедшей
-        // на обратном пути; её обход спрашивает сам. Книга, зарегистрированная
-        // после отмены, легла бы в реестр в памяти мимо его последней записи —
-        // ту вызывающий делает, когда отменяет.
+        // на обратном пути; её обход спрашивает сам: разбор дорогой, а книгу,
+        // начатую после отмены, регистрация положила бы в реестр в памяти мимо
+        // его последней записи — ту вызывающий делает, когда отменяет.
         stop.throw_if_canceled();
 
-        const uint64_t fileSize = bytes.size();
+        // Размер — прочитанных байт: запись описывает то, что разобрано. Время
+        // — из листинга, то есть не позже чтения: файл, сменившийся между ними,
+        // в записи окажется старше себя, и следующая перепроверка прочтёт его
+        // снова.
+        BookFile file = book;
+        file.size = bytes.size();
 
         // Разбор ловится вокруг разбора, а не вокруг всего шага: не книга, битая
         // книга, книга от будущего формата — не повод бросать обход.
@@ -309,12 +442,21 @@ task<FolderAdded> Workspace::addFolder(std::filesystem::path folder, cancellatio
         // Полка растёт на каждой книге, а не в конце: в этом и смысл — читатель
         // видит, как она наполняется. Новая книга встаёт карточкой реестра
         // прямо в регистрации, и полка, привязанная к карточкам, слышит её сама.
-        co_await registerBook(description, characterCount, cover, path, fileSize);
+        try {
+            const Registered registered = co_await registerBook(description, characterCount, cover, std::move(file));
 
-        result.added = true;
+            ++report.parsed;
+            if (registered.isNew) ++report.added;
+            if (registered.restored) ++report.restored;
+        } catch (const last_error& failure) {
+            // Обложка не записалась — и книга в реестр не встала: запись без
+            // файла обложки показала бы пустую картинку, а та же запись потом
+            // обложку не переписывает. Следующая перепроверка попробует снова.
+            report.unread.push_back(unreadLine(book.path, failure));
+        }
     }
 
-    co_return result;
+    co_return report;
 }
 
 task<std::filesystem::path> Workspace::lastBookPath(cancellation_token stop) {
