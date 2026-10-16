@@ -34,7 +34,6 @@
 #include "bukvitsa/reader/page_flow.h"
 #include "bukvitsa/reader/page_canvas.h"
 #include "bukvitsa/reader/chapter_tail.h"
-#include "bukvitsa/reader/field_watch.h"
 #include "bukvitsa/reader/idle_scheduler.h"
 #include "bukvitsa/reader/key_map.h"
 #include "bukvitsa/reader/settings.h"
@@ -279,10 +278,12 @@ private:
 
     /// Настройки вида, пришедшие из модели: уходят в поток страниц (он
     /// приводит их к пределам) и, если что-то изменилось, ведут к
-    /// перевёрстке. Зовутся слушателями полей настроек, не снаружи.
-    void applyFontSize(float size);
-    void applyLineHeight(float multiplier);
-    void applyMargin(float fraction);
+    /// перевёрстке. Слушатели полей настроек — члены noexcept: событию поля
+    /// некому отдать исключение; значение — как оно лежит в поле, в единицах
+    /// модели.
+    void fontSizeChanged(double fontSize) noexcept;
+    void lineHeightChanged(double leadingPercent) noexcept;
+    void marginChanged(double marginPercent) noexcept;
 
     /// Тема сменилась: сноска и вид страницы носят цвета прошлой. Слушатель
     /// поля темы — член noexcept: событию поля некому отдать исключение;
@@ -344,9 +345,9 @@ private:
     /// Наши слушатели полей вида в настройках — последними: их перемена
     /// перевёрстывает, а вёрстке нужно всё, что выше; умирают первыми и
     /// снимаются сами — настройки живут дольше.
-    FieldWatch<double> fontSizeWatch_;
-    FieldWatch<double> lineHeightWatch_;
-    FieldWatch<double> marginWatch_;
+    change_watch<observable<double const>, &BookPresenter::fontSizeChanged> fontSizeWatch_;
+    change_watch<observable<double const>, &BookPresenter::lineHeightChanged> lineHeightWatch_;
+    change_watch<observable<double const>, &BookPresenter::marginChanged> marginWatch_;
 };
 
 }  // namespace bukvitsa::reader

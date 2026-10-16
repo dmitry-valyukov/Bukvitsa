@@ -148,8 +148,8 @@ Visibility shownIfNone(uint32_t count) {
 // Выбор в списке тем идёт за темой ведущего полосы, а не за нажатием строки:
 // тему меняют и клавишей T мимо панели. Списки вкладок привязаны к спискам
 // моделей — оглавлению и закладкам открытой книги, находкам поиска: их меняет
-// не панель. Слушатели чужих полей ставятся в списке инициализации: ни
-// cookie_t, ни держатель не присваиваются, а срабатывают слушатели только на
+// не панель. Слушатели чужих полей — держатели, последние члены: встают в
+// списке инициализации, когда всё выше них построено, а срабатывают только на
 // смену поля — не раньше, чем дерево панели собрано.
 //
 // Контролы панели — поля, построенные вместе с ней; buildTree() их одевает и
@@ -166,19 +166,15 @@ ReaderPanel::ReaderPanel(const Compositor& compositor, BookPresenter& presenter,
       places_(places),
       themes_(themes),
       search_(search),
-      choicesWatch_(themes.choices().on_change(method(this, &ReaderPanel::choicesChanged))),
       chosen_{selectionOf(presenter.theme().get())},
       navigationVisual_(slidingVisual(navigation_, -static_cast<float>(kWidth))),
       settingsVisual_(slidingVisual(settings_, static_cast<float>(kWidth))),
       linear_(compositor_.createLinearEasingFunction()),
-      themeWatch_(presenter.theme(), method(this, &ReaderPanel::themeChanged)) {
+      themeWatch_(presenter.theme(), *this),
+      choicesWatch_(themes.choices(), *this) {
     // Своё поле — свой слушатель: уходит вместе с полем.
     static_cast<void>(chosen_.on_change(method(this, &ReaderPanel::themeChosen)));
     buildTree();
-}
-
-ReaderPanel::~ReaderPanel() {
-    themes_.choices().remove_change(choicesWatch_);
 }
 
 void ReaderPanel::buildTree() {

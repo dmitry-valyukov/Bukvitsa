@@ -29,18 +29,9 @@ BookPresenter::BookPresenter(Settings& settings, ThemeList& themes, IdleSchedule
       actions_(actions),
       stop_(std::move(ownerToken)),
       chapterTail_(flow_, idleScheduler, stop_.token(), [this] { canvas().redraw(); }),
-      fontSizeWatch_(settings_.fontSize,
-                     [this](double fontSize) noexcept {
-                         applyFontSize(static_cast<float>(fontSize));
-                     }),
-      lineHeightWatch_(settings_.lineHeight,
-                       [this](double leadingPercent) noexcept {
-                           applyLineHeight(static_cast<float>(leadingPercent) / 100.0f);
-                       }),
-      marginWatch_(settings_.margin,
-                   [this](double marginPercent) noexcept {
-                       applyMargin(static_cast<float>(marginPercent) / 100.0f);
-                   }) {
+      fontSizeWatch_(settings_.fontSize, *this),
+      lineHeightWatch_(settings_.lineHeight, *this),
+      marginWatch_(settings_.margin, *this) {
     flow_.setStyle(static_cast<float>(settings_.fontSize.get()),
                    static_cast<float>(settings_.lineHeight.get()) / 100.0f,
                    static_cast<float>(settings_.margin.get()) / 100.0f);
@@ -348,16 +339,21 @@ void BookPresenter::nudgeFontSize(double sizeStep) {
         std::clamp(settings_.fontSize.get() + sizeStep, kFontSizeMin, kFontSizeMax));
 }
 
-void BookPresenter::applyFontSize(float size) {
-    if (flow_.setStyle(size, flow_.lineHeight(), flow_.marginFraction())) relayout(false);
+void BookPresenter::fontSizeChanged(double fontSize) noexcept {
+    if (flow_.setStyle(static_cast<float>(fontSize), flow_.lineHeight(), flow_.marginFraction()))
+        relayout(false);
 }
 
-void BookPresenter::applyLineHeight(float multiplier) {
-    if (flow_.setStyle(flow_.fontSize(), multiplier, flow_.marginFraction())) relayout(false);
+void BookPresenter::lineHeightChanged(double leadingPercent) noexcept {
+    if (flow_.setStyle(flow_.fontSize(), static_cast<float>(leadingPercent) / 100.0f,
+                       flow_.marginFraction()))
+        relayout(false);
 }
 
-void BookPresenter::applyMargin(float fraction) {
-    if (flow_.setStyle(flow_.fontSize(), flow_.lineHeight(), fraction)) relayout(false);
+void BookPresenter::marginChanged(double marginPercent) noexcept {
+    if (flow_.setStyle(flow_.fontSize(), flow_.lineHeight(),
+                       static_cast<float>(marginPercent) / 100.0f))
+        relayout(false);
 }
 
 /* ---------------- тема и предпросмотр ---------------- */
