@@ -24,6 +24,24 @@ using wxl::async::operation_canceled_exception;
 using wxl::async::last_error;
 using wxl::async::task;
 
+namespace {
+
+/// Файлы, которые обход каталога не прочитал, — одним сообщением в конце:
+/// каталог с сотней книг не должен спотыкаться об один файл, но и молчать о
+/// нём нельзя.
+void postUnread(Notices& notices, const std::vector<std::wstring>& unread) {
+    if (unread.empty()) return;
+
+    std::wstring text;
+    for (const std::wstring& line : unread) {
+        if (!text.empty()) text += L"\n";
+        text += line;
+    }
+    notices.post({L"Не удалось прочитать", std::move(text)});
+}
+
+}  // namespace
+
 /// Путь в настройках — копия того, что в реестре, и она там ради быстрого
 /// пути. Протух — спрашиваем реестр по guid; нет и там — читателю нечего
 /// продолжать, и он хотел открыть книгу.
@@ -82,6 +100,12 @@ detached_task App::chooseBook() {
     co_return;
 }
 
+/// Книга с пометкой «не найдена» открывается той же дорогой, что и всякая:
+/// чтение файла и есть проверка, на месте ли он. Вернулся — регистрация при
+/// открытии снимает пометку (`Library::add`), и карточка на полке перестаёт
+/// быть приглушённой; нет — чтение кончается тем же словом читателю, что и
+/// всякий сбой чтения файла. Отдельный вопрос диску «есть ли файл» перед
+/// чтением ничего бы к этому не добавил.
 detached_task App::openBook(u16_text guid) {
     if (const BookEntry* known = ws_.library.find(guid)) open(known->path);
     co_return;
@@ -97,7 +121,8 @@ detached_task App::openBook(u16_text guid) {
 ///
 /// Разбирается при этом документ, а не `Book`: реестру нужны метаданные и
 /// обложка, а движок вёрстки с пагинатором книге, которую никто не открывал,
-/// ни к чему (`Workspace::addFolder`).
+/// ни к чему (`Workspace::addFolder`). Каталог с этих пор наблюдаемый: каждый
+/// запуск перепроверяет его (`rescanFolders`).
 detached_task App::chooseFolder() {
     auto const stop = cancellation_source{stop_.token()};
 
@@ -109,35 +134,49 @@ detached_task App::chooseFolder() {
     // происходит.
     show(Screen::Library);
 
-    FolderAdded result;
+    ScanReport report;
 
     try {
         // Карточка — на каждую новую книгу сразу, пока обход идёт: реестр
         // ставит её в конец своих карточек, и полка, привязанная к ним,
         // встаёт одной карточкой больше, а не пересобирается — прогресс,
         // который уже проступил на соседях, остаётся.
-        result = co_await ws_.addFolder(folder, stop.token());
+        report = co_await ws_.addFolder(folder, stop.token());
     } catch (const last_error& failure) {
-        // Книги до сбоя полка уже показала, и реестр в памяти их знает: на
-        // диск его — и при сбое.
-        libraryWrite_.signal();
+        // Каталог не перечислился: ни он, ни его книги в реестр не встали, и
+        // писать нечего. Файл, который не прочитался или не записал обложку,
+        // сюда не приходит — он в отчёте.
         notices_.post(noticeOf(L"Не удалось добавить каталог", folder.wstring(), failure));
         co_return;
     }
 
-    // Реестр обход изменил только в памяти; файл пишет его цикл. Отмена
-    // кончает сценарий ещё на ожидании, мимо этой строки: её приносит
+    // Каталог теперь наблюдаемый, а книги его — в реестре; и то и другое пока
+    // в памяти, файл пишет цикл реестра. Пишется всегда, а не по
+    // `report.changed()`: отчёт считает книги, а новый каталог в реестре —
+    // перемена и без них (пустой каталог, каталог из одних известных книг).
+    // Отмена кончает сценарий ещё на ожидании, мимо этой строки: её приносит
     // закрытие окна, а оно будит цикл реестра само.
-    if (result.added) libraryWrite_.signal();
+    libraryWrite_.signal();
 
-    if (!result.unread.empty()) {
-        std::wstring text;
-        for (const std::wstring& line : result.unread) {
-            if (!text.empty()) text += L"\n";
-            text += line;
-        }
-        notices_.post({L"Не удалось прочитать", std::move(text)});
-    }
+    postUnread(notices_, report.unread);
+}
+
+/// Перепроверка идёт в фоне, пока читатель смотрит на заставку или уже
+/// читает: каталоги — один за другим, книги — по одной, между двумя
+/// `co_await`. Неизменная книга стоит сверки с листингом, новая встаёт на
+/// полку, пропавшая приглушается — карточки слышат это сами.
+detached_task App::rescanFolders() {
+    auto const stop = cancellation_source{stop_.token()};
+
+    const ScanReport report = co_await ws_.rescanFolders(stop.token());
+
+    // Реестр перепроверка изменила только в памяти; файл пишет его цикл. Не
+    // изменила — и писать нечего: тот же реестр лёг бы на диск заново. Отмена
+    // кончает сценарий ещё на ожидании, мимо этой строки: её приносит закрытие
+    // окна, а оно будит цикл реестра само.
+    if (report.changed()) libraryWrite_.signal();
+
+    postUnread(notices_, report.unread);
 }
 
 /// Читает книгу заранее, пока читатель смотрит на заставку и решает, чего он

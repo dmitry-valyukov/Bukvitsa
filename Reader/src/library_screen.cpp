@@ -63,11 +63,26 @@ Visibility shownWhenEmpty(uint32_t count) {
     return count == 0 ? Visibility::Visible : Visibility::Collapsed;
 }
 
+/// Карточка книги, чей файл не нашёлся, — приглушённая: книга на полке есть,
+/// место её чтения цело, а открыть её сейчас нечем. Наполовину: обложку и
+/// название видно, а что книги нет на месте — видно сразу.
+constexpr double kMissingOpacity = 0.5;
+
+double cardOpacity(bool missing) {
+    return missing ? kMissingOpacity : 1.0;
+}
+
+/// Подпись «не найдена» — только у такой карточки.
+Visibility shownWhenMissing(bool missing) {
+    return missing ? Visibility::Visible : Visibility::Collapsed;
+}
+
 }  // namespace
 
 // Полка — список карточек реестра. Карточка строится, когда книга попадает на
-// экран, и тогда же получает обложку; строка прогресса привязана к полю
-// карточки и уходит вместе с ней, когда список отдаёт строку обратно.
+// экран, и тогда же получает обложку; строка прогресса и пометка «не
+// найдена» привязаны к полям карточки и уходят вместе с ней, когда список
+// отдаёт строку обратно.
 LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& cards,
                              observable<bool>& continueReading, std::filesystem::path covers,
                              Actions& actions)
@@ -144,6 +159,10 @@ LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& ca
                     columnDefinitions = u"auto,*",
                     columnSpacing = 16,
                     Margin{12},
+                    // Пометка «не найдена» — поле карточки, как и прогресс:
+                    // перепроверка ставит и снимает её, а карточка не
+                    // перестраивается и обложку не раскодирует заново.
+                    opacity = BindOutput{card->missing(), cardOpacity},
 
                     Image {
                         column = 0,
@@ -163,6 +182,13 @@ LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& ca
                             FontWeight{600},
                             foreground = kInk,
                             twoLinesLook,
+                        },
+                        TextBlock {
+                            u"не найдена",
+                            fontSize = 13,
+                            foreground = kDimInk,
+                            Margin{0, 2, 0, 0},
+                            visibility = BindOutput{card->missing(), shownWhenMissing},
                         },
                         TextBlock {
                             book.authors,
