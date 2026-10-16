@@ -28,9 +28,10 @@
 
 // Последними: они ведут к модели книги и реестру, а те импортируют wxl.core,
 // после чего стандартный заголовок MSVC уже не принимает.
-#include "book_view.h"
+#include "bukvitsa/reader/book_presenter.h"
 #include "bukvitsa/reader/book_places.h"
 #include "bukvitsa/reader/book_search.h"
+#include "bukvitsa/reader/field_watch.h"
 #include "bukvitsa/reader/theme_list.h"
 
 // Импорт — последним: намерения панели — корутины `detached_task`.
@@ -38,9 +39,9 @@ import wxl.async;
 
 namespace bukvitsa::reader {
 
-/// Два ящика поверх полосы. Владеет своим деревом и анимацией выезда; полоса,
-/// настройки, места книги, список тем, поиск и исполнитель намерений —
-/// владельца, живут дольше панели.
+/// Два ящика поверх полосы. Владеет своим деревом и анимацией выезда; ведущий
+/// полосы, корень полосы, настройки, места книги, список тем, поиск и
+/// исполнитель намерений — владельца, живут дольше панели.
 class ReaderPanel : private noncopyable {
 public:
     /// Вкладки левого ящика. Вид — не вкладка, а правый ящик целиком.
@@ -76,9 +77,12 @@ public:
         ~Actions() = default;
     };
 
-    /// @param view полоса набора: у неё панель и спрашивает книгу, и ей же
-    ///        отдаёт переходы. Панель без книги бессмысленна, поэтому связь
-    ///        прямая, а не через десяток обработчиков.
+    /// @param presenter ведущий полосы набора: у него панель спрашивает книгу и
+    ///        тему, ему отдаёт переходы и выбор темы. Панель без книги
+    ///        бессмысленна, поэтому связь прямая, а не через десяток
+    ///        обработчиков.
+    /// @param readingRoot корень полосы: ему панель, закрываясь, возвращает
+    ///        фокус — уехавший ящик клавиш не получает.
     /// @param settings настройки вида: ползунки и флажок листания привязаны к
     ///        их полям (`Bind`); поля ползунков двигают ещё колесо и клавиши
     ///        полосы — панель узнаёт о них привязкой, а не флагом «это мы сами».
@@ -86,8 +90,9 @@ public:
     ///        подписи над ними привязаны к ним.
     /// @param themes темы и обложки одним списком — строки правого ящика.
     /// @param search модель поиска: поле, подпись и находки привязаны к ней.
-    ReaderPanel(const wxl::Compositor& compositor, BookView& view, Settings& settings,
-                BookPlaces& places, ThemeList& themes, BookSearch& search, Actions& actions);
+    ReaderPanel(const wxl::Compositor& compositor, BookPresenter& presenter,
+                const wxl::UIElement& readingRoot, Settings& settings, BookPlaces& places,
+                ThemeList& themes, BookSearch& search, Actions& actions);
     ~ReaderPanel();
 
     /// Элемент, который кладут поверх полосы набора.
@@ -131,7 +136,7 @@ private:
     // исключение.
 
     /// Тема полосы сменилась — выбор в списке тем идёт за ней: тему меняют и
-    /// клавишей T мимо панели. Слушатель поля `BookView::theme`.
+    /// клавишей T мимо панели. Слушатель темы ведущего (`BookPresenter::theme()`).
     void themeChanged(int index) noexcept;
 
     /// Строки тем собраны заново (сохранили или удалили обложку): список снял
@@ -158,15 +163,15 @@ private:
 
     Actions& actions_;
     wxl::Compositor compositor_;
-    BookView& view_;
+    BookPresenter& presenter_;
+    wxl::UIElement readingRoot_;   ///< корень полосы — ему возвращается фокус
     Settings& prefs_;   ///< настройки вида; settings_ ниже — правый ящик
     BookPlaces& places_;
     ThemeList& themes_;
     BookSearch& search_;
 
-    /// Наши слушатели в чужих полях — снять за собой: полоса и список тем
-    /// живут дольше панели.
-    cookie_t themeWatch_;
+    /// Наш слушатель в чужом списке — снять за собой: список тем живёт
+    /// дольше панели.
     cookie_t choicesWatch_;
 
     /// Выбранная строка списка тем — к нему привязан выбор списка. Своё поле,
@@ -192,6 +197,11 @@ private:
 
     Tab tab_ = Tab::Contents;
     bool open_ = false;
+
+    /// Слушатель темы ведущего — держатель, последним: встаёт, когда выбор
+    /// (chosen_) и всё, что к нему привязано, уже построено, и снимается сам
+    /// раньше них. Ведущий живёт дольше панели.
+    FieldWatch<int> themeWatch_;
 };
 
 }  // namespace bukvitsa::reader

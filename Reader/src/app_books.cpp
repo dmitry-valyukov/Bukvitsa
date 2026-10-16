@@ -180,7 +180,7 @@ detached_task App::open(std::filesystem::path path) {
     // экрана или с полки. Ни читать, ни разбирать заново нечего: полоса держит
     // её со всей вёрсткой и местом чтения, а реестр и настройки давно на неё
     // указывают. Остаётся показать.
-    if (view_.isOpen() && view_.book()->path() == path) {
+    if (presenter_.isOpen() && presenter_.book()->path() == path) {
         show(Screen::Book);
         co_return;
     }
@@ -259,9 +259,9 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
     places_.open(std::move(opened.entry.guid), loaded.book->text(), std::move(opened.state.bookmarks));
     search_.clear();
 
-    // Полоса добавляет свою ссылку на книгу; ссылка прочитанной уходит с
-    // кадром этого шага.
-    view_.open(loaded.book.get(), opened.state.charOffset);
+    // Ведущий полосы добавляет свою ссылку на книгу; ссылка прочитанной уходит
+    // с кадром этого шага.
+    presenter_.open(loaded.book.get(), opened.state.charOffset);
 
     show(Screen::Book);
 }
@@ -271,10 +271,10 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
 /// диск закладка уходит сразу — вместе с местом чтения, паузы не ждёт:
 /// записать сейчас — то же ожидание цикла, разбуженное владельцем.
 detached_task App::toggleBookmark() {
-    if (!view_.isOpen()) co_return;
+    if (!presenter_.isOpen()) co_return;
 
-    const uint32_t here = view_.position().get();
-    places_.toggleBookmark(here, hintAt(view_.book()->text(), here));
+    const uint32_t here = presenter_.position().get();
+    places_.toggleBookmark(here, hintAt(presenter_.book()->text(), here));
 
     stateWrite_.signal();
 }

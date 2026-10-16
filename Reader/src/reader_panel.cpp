@@ -145,32 +145,33 @@ Visibility shownIfNone(uint32_t count) {
 
 }  // namespace
 
-// Выбор в списке тем идёт за полем полосы, а не за нажатием здешней строки:
+// Выбор в списке тем идёт за темой ведущего полосы, а не за нажатием строки:
 // тему меняют и клавишей T мимо панели. Списки вкладок привязаны к спискам
 // моделей — оглавлению и закладкам открытой книги, находкам поиска: их меняет
-// не панель. Слушатели чужих полей ставятся в списке инициализации: cookie_t
-// не присваивается, а срабатывают они только на смену поля — не раньше, чем
-// дерево панели собрано.
+// не панель. Слушатели чужих полей ставятся в списке инициализации: ни
+// cookie_t, ни держатель не присваиваются, а срабатывают слушатели только на
+// смену поля — не раньше, чем дерево панели собрано.
 //
 // Контролы панели — поля, построенные вместе с ней; buildTree() их одевает и
 // складывает в дерево. Визуалы ящиков — здесь же, от самих ящиков: элемент
 // отдаёт свой визуал и пустым.
-ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings& settings,
-                         BookPlaces& places, ThemeList& themes, BookSearch& search,
-                         Actions& actions)
+ReaderPanel::ReaderPanel(const Compositor& compositor, BookPresenter& presenter,
+                         const UIElement& readingRoot, Settings& settings, BookPlaces& places,
+                         ThemeList& themes, BookSearch& search, Actions& actions)
     : actions_(actions),
       compositor_(compositor),
-      view_(view),
+      presenter_(presenter),
+      readingRoot_(readingRoot),
       prefs_(settings),
       places_(places),
       themes_(themes),
       search_(search),
-      themeWatch_(view.theme.on_change(method(this, &ReaderPanel::themeChanged))),
       choicesWatch_(themes.choices().on_change(method(this, &ReaderPanel::choicesChanged))),
-      chosen_{selectionOf(view.theme.get())},
+      chosen_{selectionOf(presenter.theme().get())},
       navigationVisual_(slidingVisual(navigation_, -static_cast<float>(kWidth))),
       settingsVisual_(slidingVisual(settings_, static_cast<float>(kWidth))),
-      linear_(compositor_.createLinearEasingFunction()) {
+      linear_(compositor_.createLinearEasingFunction()),
+      themeWatch_(presenter.theme(), method(this, &ReaderPanel::themeChanged)) {
     // Своё поле — свой слушатель: уходит вместе с полем.
     static_cast<void>(chosen_.on_change(method(this, &ReaderPanel::themeChosen)));
     buildTree();
@@ -178,7 +179,6 @@ ReaderPanel::ReaderPanel(const Compositor& compositor, BookView& view, Settings&
 
 ReaderPanel::~ReaderPanel() {
     themes_.choices().remove_change(choicesWatch_);
-    view_.theme.remove_change(themeWatch_);
 }
 
 void ReaderPanel::buildTree() {
@@ -566,7 +566,7 @@ void ReaderPanel::close() {
 
     // Фокус — обратно полосе: он мог остаться на ползунке или кнопке ящика, а
     // уехавший и спрятанный элемент клавиш не получает — полоса бы оглохла.
-    view_.root().focus(FocusState::Programmatic);
+    readingRoot_.focus(FocusState::Programmatic);
 }
 
 /* ---------------- списки ---------------- */
@@ -574,25 +574,25 @@ void ReaderPanel::close() {
 void ReaderPanel::searchKeyDown(TextBox const&, KeyRoutedEventArgs& args) {
     if (args.key() != VirtualKey::Enter) return;
     // Без книги искать негде: под панелью пустая полоса, и поле молчит.
-    if (const Book* book = view_.book()) search_.run(book->text());
+    if (const Book* book = presenter_.book()) search_.run(book->text());
     args.handled(true);
 }
 
 void ReaderPanel::headingClicked(ListView const&, ItemClickEventArgs& args) {
     if (ContentsEntry const* heading = boundItem(places_.contents(), args.clickedItem())) {
-        view_.goToCharOffset(heading->charOffset);
+        presenter_.goToCharOffset(heading->charOffset);
     }
 }
 
 void ReaderPanel::hitClicked(ListView const&, ItemClickEventArgs& args) {
     if (SearchHit const* hit = boundItem(search_.hits(), args.clickedItem())) {
-        view_.goToCharOffset(hit->charOffset);
+        presenter_.goToCharOffset(hit->charOffset);
     }
 }
 
 void ReaderPanel::bookmarkClicked(ListView const&, ItemClickEventArgs& args) {
     if (Bookmark const* mark = boundItem(places_.bookmarks(), args.clickedItem())) {
-        view_.goToCharOffset(mark->charOffset);
+        presenter_.goToCharOffset(mark->charOffset);
     }
 }
 
@@ -613,12 +613,12 @@ void ReaderPanel::choicesChanged(list_change const&) noexcept {
     // Строки уже новые, и список, собрав их, снял выбор — и, может быть,
     // записал -1 в chosen_ (themeChosen его отбросил). Выбор возвращается из
     // темы полосы. Сам список здесь не трогают: это его же уведомление.
-    chosen_.set(selectionOf(view_.theme.get()));
+    chosen_.set(selectionOf(presenter_.theme().get()));
 }
 
 void ReaderPanel::themeChosen(int index) noexcept {
     if (index < 0) return;   // список снял выбор сам — тема та же
-    view_.setTheme(index);
+    presenter_.setTheme(index);
 }
 
 }  // namespace bukvitsa::reader
