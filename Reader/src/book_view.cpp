@@ -84,7 +84,7 @@ BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Se
       // подписывается, когда она уже есть: брось её создание, слушателя с
       // нашим this в поле, которое живёт дольше полосы, не будет. Снимается
       // он сам, умирая.
-      animateTurnsWatch_(settings_.animateTurns, method(this, &BookView::animateTurnsChanged)),
+      animateTurnsWatch_(settings_.animateTurns, *this),
       // Мера полосы — у окна, не у острова. ClientSizeChanged приходит из
       // WM_SIZE, раньше вёрстки XAML, и несёт размер в пикселях вместе с
       // масштабом экрана — тем же числом, которым остров переводит DIP в

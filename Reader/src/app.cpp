@@ -125,11 +125,11 @@ App::App()
       // Место чтения — отложенно, как и место окна: перелистывание — самое
       // частое действие в читалке, а файл состояния книги переписывается
       // целиком.
-      positionWatch_{presenter_.position(), method(this, &App::positionChanged)},
+      positionWatch_{presenter_.position(), *this},
       // Тема — с самого начала: за ней идёт подложка полосы, а имена в
       // настройках слушатель пишет, только если они изменились, — до чтения
       // настроек тему никто не меняет.
-      themeWatch_{presenter_.theme(), method(this, &App::themeChanged)} {
+      themeWatch_{presenter_.theme(), *this} {
     // Рамка окна тёмная, как и остров: системный светлый заголовок над тёмными
     // ящиками, мастером и полкой смотрелся бы чужим. Тега для неё в wxl пока
     // нет.
@@ -177,14 +177,12 @@ App::App()
     splash_.add_onTick(method(this, &App::revealStart));
 }
 
-// Подписки без держателя снимаются в теле деструктора — оно идёт раньше, чем
-// умирают поля; держатели места и темы — среди последних полей и умирают
-// раньше всего, что выше них. Слушатели будят циклы записи, а держатели
-// циклов умирают раньше окна, полосы и настроек: перемена, пришедшая после
-// них, будила бы мёртвое.
+// Место окна — подписка без держателя: снимается в теле деструктора, а оно
+// идёт раньше, чем умирают поля. Держатели места чтения, темы и полей
+// настроек — последние поля и умирают раньше всего, что выше них. Слушатели
+// будят циклы записи, а держатели циклов умирают раньше окна, полосы и
+// настроек: перемена, пришедшая после них, будила бы мёртвое.
 App::~App() {
-    for (auto& [field, cookie] : flagWatches_) field->remove_change(cookie);
-    for (auto& [field, cookie] : styleWatches_) field->remove_change(cookie);
     if (geometryWatch_) window_.remove_onGeometryChanged(geometryWatch_);
 }
 
@@ -462,12 +460,11 @@ task<> App::writeLibrary(WaitableTimer& timer, cancellation_token stop) {
 /// сдвиг, а файл переписывается целиком.
 void App::watchSettings() {
     Settings& settings = ws_.settings;
-    for (observable<double>* field : {&settings.fontSize, &settings.lineHeight, &settings.margin}) {
-        styleWatches_.emplace_back(field, field->on_change(method(this, &App::styleChanged)));
-    }
-    for (observable<bool>* field : {&settings.continueReading, &settings.animateTurns}) {
-        flagWatches_.emplace_back(field, field->on_change(method(this, &App::flagChanged)));
-    }
+    fontSizeWatch_.attach(settings.fontSize, *this);
+    lineHeightWatch_.attach(settings.lineHeight, *this);
+    marginWatch_.attach(settings.margin, *this);
+    continueReadingWatch_.attach(settings.continueReading, *this);
+    animateTurnsWatch_.attach(settings.animateTurns, *this);
 }
 
 /// Место отдаётся строкой WinRT; к нам она приходит чужим текстом и
