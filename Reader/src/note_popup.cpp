@@ -97,8 +97,10 @@ void NotePopup::draw(const Theme& theme, float width, float height, float scale)
         context->CreateSolidColorBrush(theme.text, &ink);
         if (!ink) return;
 
+        auto const noteBrushes = typography::TextBrushes{not_null<ID2D1Brush>{ink.Get()},
+                                                         not_null<ID2D1Brush>{ink.Get()}};
         for (const typography::NoteLine& placed : body_.lines) {
-            typography::drawLine(context, placed.line, 0.0f, placed.baseline, ink.Get());
+            typography::drawLine(context, placed.line, 0.0f, placed.baseline, noteBrushes);
         }
     });
 }

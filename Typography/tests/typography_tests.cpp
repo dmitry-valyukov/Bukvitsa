@@ -1563,6 +1563,11 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
     context->CreateSolidColorBrush(rgb(216, 208, 192), &rule);
     context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
+    // Знаки сносок — той же кистью, что текст: снимок о переносах, а не о
+    // цвете знаков.
+    auto const brushes = typography::TextBrushes{not_null<ID2D1Brush>{ink.Get()},
+                                                 not_null<ID2D1Brush>{ink.Get()}};
+
     context->BeginDraw();
     context->Clear(rgb(251, 248, 241));
     for (int side = 0; side < 2; ++side) {
@@ -1577,7 +1582,7 @@ void shootHyphenation(typography::Engine& engine, const std::filesystem::path& t
         float y = kMargin;
         for (const auto& lines : columns[side].paragraphs)
             for (const typography::Line& line : lines) {
-                typography::drawLine(context.Get(), line, left, y + line.ascent, ink.Get());
+                typography::drawLine(context.Get(), line, left, y + line.ascent, brushes);
                 y += line.height;
             }
     }
@@ -1784,6 +1789,231 @@ void testCharOffsets() {
           "тело сноски — один блок сразу за потоком");
 }
 
+/// Роль прогона — знак сноски или текст книги — от разметки до прогона
+/// глифов: по ней вывод красит знак. Знак с якорем начинает свой прогон
+/// стиля, каким бы ни было начертание перед ним, и место на строке у каждого
+/// знака своё; роль — только у знака с живым якорем.
+void testNoteMarkRole(typography::Engine& engine) {
+    std::printf("\n=== роль знака сноски ===\n");
+
+    const std::string body = R"(<?xml version="1.0" encoding="UTF-8"?>
+<fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" xmlns:xlink="http://www.w3.org/1999/xlink" id="00000000-0000-0000-0000-000000000005">
+<section id="s1">
+<p>слово<note href="n1" xlink:role="footnote">1</note> дальше</p>
+<p>x<sup>2</sup><note href="n1" xlink:role="footnote">3</note>y</p>
+<p>z<note href="n1" xlink:role="footnote">4</note><note href="n2" xlink:role="footnote">5</note>w</p>
+<p>q<a xlink:href="#s1">ссылка</a>r</p>
+<p>u<note href="nowhere" xlink:role="footnote">6</note>v</p>
+<p>e<note href="n1" xlink:role="footnote">f<img src="nowhere"/>g</note>h</p>
+<p>a<note href="n1" xlink:role="footnote"/>b</p>
+<p>c<note href="n1" xlink:role="footnote"/><note href="n2" xlink:role="footnote"/>d</p>
+<p>e<note href="n1" xlink:role="footnote"/><note href="n2" xlink:role="footnote">9</note>f</p>
+<p>j<note href="nowhere" xlink:role="footnote"/><note href="n2" xlink:role="footnote">9</note>k</p>
+<p>h<note href="n1" xlink:role="footnote"><em>4</em>2</note>i</p>
+<p>g<note href="n1" xlink:role="footnote"/></p>
+<p>t<note href="n1" xlink:role="footnote"><note href="n2" xlink:role="footnote">8</note>7</note>u</p>
+</section>
+<notes show="0">
+<notebody id="n1"><p>первая</p></notebody>
+<notebody id="n2"><p>вторая</p></notebody>
+</notes>
+</fb3-body>)";
+    auto const document = fb3::Document{fb3Of(body)};
+    const typography::BookText book = typography::flatten(document);
+    const std::span<const typography::Block> blocks = book.flow();
+
+    // Шестой абзац картинка внутри знака делит на три блока.
+    check(blocks.size() == 15, "тринадцать абзацев и картинка — пятнадцать блоков потока");
+    if (blocks.size() != 15) return;
+
+    using typography::TextRole;
+    const auto spansOf = [&](size_t block) { return book.spansOf(blocks[block].paragraph); };
+    const auto isSpan = [](const typography::StyleSpan& span, uint32_t start, uint32_t length,
+                           TextRole role, int8_t script) {
+        return span.start == start && span.length == length && span.style.role == role &&
+               span.style.script == script;
+    };
+
+    // Знак — свой прогон стиля: надстрочный, с ролью знака; текст вокруг — с
+    // ролью текста.
+    const std::span<const typography::StyleSpan> plain = spansOf(0);
+    check(book.textOf(blocks[0].paragraph) == L"слово1 дальше" && plain.size() == 3 &&
+              isSpan(plain[0], 0, 5, TextRole::Body, 0) &&
+              isSpan(plain[1], 5, 1, TextRole::NoteMark, 1) &&
+              isSpan(plain[2], 6, 7, TextRole::Body, 0),
+          "знак сноски — свой прогон стиля: надстрочный, роль знака");
+
+    // `<sup>` вплотную к знаку набран так же, но значит другое: прогоны два,
+    // и роль знака — только у знака.
+    const std::span<const typography::StyleSpan> raised = spansOf(1);
+    check(book.textOf(blocks[1].paragraph) == L"x23y" && raised.size() == 4 &&
+              isSpan(raised[1], 1, 1, TextRole::Body, 1) &&
+              isSpan(raised[2], 2, 1, TextRole::NoteMark, 1),
+          "<sup> вплотную к знаку — отдельный прогон с ролью текста");
+
+    // Два знака вплотную — начертание одно, но прогонов два: знак с якорем
+    // начинает свой. Якорей тоже два, каждый на свою цифру.
+    const std::span<const typography::StyleSpan> paired = spansOf(2);
+    const std::span<const typography::NoteAnchor> pairedMarks =
+        book.notesOf(blocks[2].paragraph);
+    check(book.textOf(blocks[2].paragraph) == L"z45w" && paired.size() == 4 &&
+              isSpan(paired[1], 1, 1, TextRole::NoteMark, 1) &&
+              isSpan(paired[2], 2, 1, TextRole::NoteMark, 1) && pairedMarks.size() == 2 &&
+              pairedMarks[0].position == 1 && pairedMarks[0].length == 1 &&
+              pairedMarks[1].position == 2 && pairedMarks[1].length == 1 &&
+              pairedMarks[0].body != pairedMarks[1].body,
+          "два знака вплотную — по прогону стиля на якорь");
+
+    // Ссылка роли не получает: перехода по ней нет, и цвет ссылки обманывал бы.
+    bool linkIsText = !spansOf(3).empty();
+    for (const typography::StyleSpan& span : spansOf(3))
+        if (span.style.role != TextRole::Body) linkIsText = false;
+    check(linkIsText, "<a> — роль текста");
+
+    // Битый знак щелчка не держит: якоря нет, и роли знака тоже — он просто
+    // надстрочный.
+    const std::span<const typography::StyleSpan> broken = spansOf(4);
+    check(book.textOf(blocks[4].paragraph) == L"u6v" && broken.size() == 3 &&
+              isSpan(broken[1], 1, 1, TextRole::Body, 1) &&
+              book.notesOf(blocks[4].paragraph).empty(),
+          "знак без тела — надстрочный с ролью текста, без якоря");
+
+    // До прогона глифов роль доходит без потерь: роль знака — ровно у тех
+    // прогонов, что лежат в знаке.
+    typography::ParagraphStyle ragged;
+    ragged.alignment = typography::Alignment::Left;
+    const auto rolesFollowMarks = [&](size_t block) {
+        const typography::Paragraph& paragraph = blocks[block].paragraph;
+        const auto lines = engine.layout(book, paragraph, 1000.0f, ragged);
+        bool follows = lines.size() == 1;
+        for (const typography::Line& line : lines) {
+            for (const typography::GlyphRun& run : line.runs) {
+                bool inMark = false;
+                for (const typography::NoteAnchor& note : book.notesOf(paragraph))
+                    if (run.textStart < note.position + note.length &&
+                        note.position < run.textStart + run.textLength)
+                        inMark = true;
+                if (inMark != (run.style.role == TextRole::NoteMark)) follows = false;
+            }
+        }
+        return follows;
+    };
+    check(rolesFollowMarks(0) && rolesFollowMarks(1) && rolesFollowMarks(2) &&
+              rolesFollowMarks(3) && rolesFollowMarks(4) && rolesFollowMarks(5) &&
+              rolesFollowMarks(7) && rolesFollowMarks(8) && rolesFollowMarks(9) &&
+              rolesFollowMarks(10) && rolesFollowMarks(11) && rolesFollowMarks(12) &&
+              rolesFollowMarks(13) && rolesFollowMarks(14),
+          "роль знака — ровно у прогонов глифов, лежащих в знаке с телом");
+
+    const auto raisedLines = engine.layout(book, blocks[1].paragraph, 1000.0f, ragged);
+    bool supApart = false;
+    for (const typography::Line& line : raisedLines)
+        for (const typography::GlyphRun& run : line.runs)
+            if (run.textStart == 1 && run.textLength == 1 && run.style.role == TextRole::Body &&
+                run.style.script == 1)
+                supApart = true;
+    check(supApart, "<sup> вплотную к знаку — свой прогон глифов с ролью текста");
+
+    // Свои прогоны — свои места на строке: знаки стоят рядом, не налезая друг
+    // на друга, и щелчок в середину каждого берёт его, хотя зоны щелчка у них
+    // перекрываются.
+    const auto pairedLines = engine.layout(book, blocks[2].paragraph, 1000.0f, ragged);
+    bool apart = pairedLines.size() == 1 && pairedLines[0].notes.size() == 2;
+    if (apart) {
+        const typography::Line& line = pairedLines[0];
+        const typography::PlacedNote& first = line.notes[0];
+        const typography::PlacedNote& second = line.notes[1];
+        const float reach = ragged.fontSize * 0.33f;
+        apart = first.width > 0.0f && second.width > 0.0f && first.body != second.body &&
+                first.x + first.width <= second.x + 1e-3f &&
+                typography::noteUnder(line, first.x + first.width * 0.5f, reach) == &first &&
+                typography::noteUnder(line, second.x + second.width * 0.5f, reach) == &second &&
+                typography::noteUnder(line, second.x + second.width + 2.0f * reach, reach) ==
+                    nullptr;
+    }
+    check(apart, "два знака вплотную — два места на строке, и щелчок различает их");
+
+    // Картинка внутри знака сменила блок, пока знак набирался: якорь выброшен,
+    // и роли знака не достаётся ни тексту до картинки, ни тексту после.
+    bool orphanIsText = blocks[6].kind == typography::BlockKind::Image &&
+                        book.textOf(blocks[5].paragraph) == L"ef" &&
+                        book.textOf(blocks[7].paragraph) == L"gh";
+    for (const size_t block : {size_t{5}, size_t{7}}) {
+        if (!book.notesOf(blocks[block].paragraph).empty()) orphanIsText = false;
+        for (const typography::StyleSpan& span : spansOf(block))
+            if (span.style.role != TextRole::Body) orphanIsText = false;
+    }
+    check(orphanIsText, "знак с картинкой внутри — ни якоря, ни прогона с ролью знака");
+
+    // Знаки, которые ставит вёрстка (пустой `<note/>`): цифры по порядку
+    // книги, у каждого с якорем — свой прогон с ролью знака.
+    const auto anchorIs = [&](size_t block, size_t index, uint32_t position, uint32_t length) {
+        const std::span<const typography::NoteAnchor> anchors =
+            book.notesOf(blocks[block].paragraph);
+        return index < anchors.size() && anchors[index].position == position &&
+               anchors[index].length == length;
+    };
+    const std::span<const typography::StyleSpan> placedMark = spansOf(8);
+    check(book.textOf(blocks[8].paragraph) == L"a1b" && placedMark.size() == 3 &&
+              isSpan(placedMark[1], 1, 1, TextRole::NoteMark, 1) && anchorIs(8, 0, 1, 1),
+          "знак вёрстки — свой прогон с ролью знака и якорь на нём");
+
+    const std::span<const typography::StyleSpan> placedPair = spansOf(9);
+    check(book.textOf(blocks[9].paragraph) == L"c23d" && placedPair.size() == 4 &&
+              isSpan(placedPair[1], 1, 1, TextRole::NoteMark, 1) &&
+              isSpan(placedPair[2], 2, 1, TextRole::NoteMark, 1) && anchorIs(9, 0, 1, 1) &&
+              anchorIs(9, 1, 2, 1),
+          "два знака вёрстки подряд — по прогону и по якорю на каждый");
+
+    // Знак вёрстки встаёт перед первой буквой знака с текстом за ним — уже
+    // после входа в этот `<note>`. Якорь второго знака отсчитывается от его
+    // собственной первой буквы, за знаком вёрстки: якоря не перекрываются, и
+    // каждый накрывает ровно свой текст. Разрез зовущего после знаков вёрстки
+    // возвращается, и текст второго знака начинает свой прогон.
+    const std::span<const typography::StyleSpan> beforeText = spansOf(10);
+    check(book.textOf(blocks[10].paragraph) == L"e49f" && beforeText.size() == 4 &&
+              isSpan(beforeText[1], 1, 1, TextRole::NoteMark, 1) &&
+              isSpan(beforeText[2], 2, 1, TextRole::NoteMark, 1) &&
+              book.notesOf(blocks[10].paragraph).size() == 2 && anchorIs(10, 0, 1, 1) &&
+              anchorIs(10, 1, 2, 1),
+          "знак вёрстки перед знаком с текстом — свои прогоны и якоря встык, без перекрытия");
+
+    // Перед знаком с текстом — битый пустой `<note/>`: его цифра — без якоря и
+    // без роли знака, а у второго знака якорь — только на своём тексте. Без
+    // возвращённого разреза текст второго знака слился бы с цифрой битого.
+    const std::span<const typography::StyleSpan> afterBroken = spansOf(11);
+    check(book.textOf(blocks[11].paragraph) == L"j59k" && afterBroken.size() == 4 &&
+              isSpan(afterBroken[1], 1, 1, TextRole::Body, 1) &&
+              isSpan(afterBroken[2], 2, 1, TextRole::NoteMark, 1) &&
+              book.notesOf(blocks[11].paragraph).size() == 1 && anchorIs(11, 0, 2, 1),
+          "битый знак вёрстки перед знаком с текстом — его цифра без роли, якорь только у текста");
+
+    // Знак с разметкой внутри — несколько прогонов, и роль у каждого.
+    const std::span<const typography::StyleSpan> styledMark = spansOf(12);
+    check(book.textOf(blocks[12].paragraph) == L"h42i" && styledMark.size() == 4 &&
+              isSpan(styledMark[1], 1, 1, TextRole::NoteMark, 1) && styledMark[1].style.italic &&
+              isSpan(styledMark[2], 2, 1, TextRole::NoteMark, 1) && !styledMark[2].style.italic &&
+              anchorIs(12, 0, 1, 2),
+          "<em> внутри знака — роль у обоих его прогонов");
+
+    // Знак в конце абзаца ставит закрытие блока: буквы за ним уже не будет.
+    const std::span<const typography::StyleSpan> closing = spansOf(13);
+    check(book.textOf(blocks[13].paragraph) == L"g6" && closing.size() == 2 &&
+              isSpan(closing[1], 1, 1, TextRole::NoteMark, 1) && anchorIs(13, 0, 1, 1),
+          "знак вёрстки в конце абзаца — прогон с ролью знака и якорь");
+
+    // Знак внутри знака до первой буквы внешнего: буква внутреннего внешнему
+    // не своя, и внешний начинается со своей первой буквы, за внутренним, —
+    // якоря не перекрываются. Якоря идут в порядке ссылок: внешний первым.
+    const std::span<const typography::StyleSpan> nested = spansOf(14);
+    check(book.textOf(blocks[14].paragraph) == L"t87u" && nested.size() == 4 &&
+              isSpan(nested[1], 1, 1, TextRole::NoteMark, 1) &&
+              isSpan(nested[2], 2, 1, TextRole::NoteMark, 1) &&
+              book.notesOf(blocks[14].paragraph).size() == 2 && anchorIs(14, 0, 2, 1) &&
+              anchorIs(14, 1, 1, 1),
+          "знак внутри знака до его первой буквы — внешний со своей буквы, без перекрытия");
+}
+
 /// Пробел в конце абзаца, который свёртка не тронула (так бывает в
 /// преформате), — место разрыва, и разбивка берёт его, когда строка с ним
 /// вылезает за поле, а без него помещается. Разрыв пробел съедает, но строки
@@ -1896,6 +2126,7 @@ int main() {
     testSeparatorAtPageBottom(engine);
     testClustersStayWhole(engine);
     testCharOffsets();
+    testNoteMarkRole(engine);
     testHyphenation();
     testHyphenationInLayout(engine);
     testTrailingSpace(engine);

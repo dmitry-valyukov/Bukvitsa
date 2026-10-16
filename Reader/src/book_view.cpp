@@ -689,6 +689,9 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     context->CreateSolidColorBrush(shade.dim, &dimBrush);
     if (!textBrush || !dimBrush) return;
 
+    auto const lineBrushes = typography::TextBrushes{not_null<ID2D1Brush>{textBrush.Get()},
+                                                     not_null<ID2D1Brush>{textBrush.Get()}};
+
     // Колонки разворота — готовая лента потока страниц: каждая своя
     // страница, идущие подряд, при нужде со стыка из следующей главы. Разворот
     // стоит по середине окна, остаток ширины уходит в поля поровну.
@@ -708,7 +711,7 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
 
         for (const typography::PlacedLine& placed : page.lines) {
             typography::drawLine(context, *placed.line, left + placed.x, top + placed.baseline,
-                                 textBrush.Get());
+                                 lineBrushes);
         }
     }
 
