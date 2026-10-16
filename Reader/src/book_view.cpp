@@ -504,21 +504,20 @@ void BookView::paintSpread(ID2D1DeviceContext* context) {
 }
 
 void BookView::dropBackdrop() {
-    // Сначала снимок, потом байты: он читает из них. Кэш битмапа устройства
-    // заведёт заново drawThemeBackdrop, вкомпоновывая фото прямо в
-    // поверхность страницы.
+    // Кэш битмапа устройства заведёт заново drawThemeBackdrop, вкомпоновывая
+    // фото прямо в поверхность страницы.
     backdropSource_.Reset();
-    backdropBytes_.clear();
     photoBitmap_.Reset();
 }
 
 void BookView::setBackdrop(std::string bytes) {
     // Нечего ни отпускать, ни показывать — и перерисовывать незачем.
-    if (bytes.empty() && backdropBytes_.empty()) return;
+    if (bytes.empty() && !backdropSource_) return;
 
+    // Раскодируется сразу и целиком: байты после этого не нужны, а битые
+    // данные — бумага темы сейчас, а не отказ на каждом кадре.
     dropBackdrop();
-    backdropBytes_ = std::move(bytes);
-    if (!backdropBytes_.empty()) backdropSource_ = decodeImage(backdropBytes_);
+    if (!bytes.empty()) backdropSource_ = decodeImage(bytes);
     redraw();
 }
 
@@ -529,6 +528,19 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     const D2D1_SIZE_U pixels{static_cast<UINT32>(flow.width() * scale + 0.5f),
                              static_cast<UINT32>(flow.height() * scale + 0.5f) * 2};
     if (pixels.width == 0 || pixels.height == 0) return false;
+
+    // Слой двойной высоты, которого устройство не держит одним битмапом, —
+    // предел устройства, известный заранее, а не сбой: на Windows 10 бывают
+    // устройства уровня 9.x с пределом 2048–4096 пикселей. Страница тогда
+    // рисуется без изгиба; прежний слой — другой меры — отпускается, чтобы
+    // ни изгиб, ни предпросмотр под конфигуратором на нём не рисовали.
+    if (const UINT32 deviceLimit = context->GetMaximumBitmapSize();
+        pixels.width > deviceLimit || pixels.height > deviceLimit) {
+        warpLayer_.Reset();
+        warpMap_.Reset();
+        warpFlat_ = false;
+        return false;
+    }
 
     if (!warpLayer_ || warpPixels_.width != pixels.width || warpPixels_.height != pixels.height) {
         if (!warpContext_) {
@@ -682,11 +694,10 @@ void BookView::drawThemeBackdrop(ID2D1DeviceContext* context, float width, float
 
     // Битмап устройства заводится раз на снимок и держится: CreateBitmapFromWicBitmap
     // на каждый кадр стоил бы дорого, а перерисовка бывает лишь на листании и
-    // растяжке. Устройство поверхности стабильно, пока не потеряно.
-    if (!photoBitmap_) {
-        if (FAILED(context->CreateBitmapFromWicBitmap(backdropSource_.Get(), nullptr, &photoBitmap_)))
-            return;
-    }
+    // растяжке. Устройство поверхности стабильно, пока не потеряно. Снимок
+    // больше предела устройства уменьшается до него, а отказ Direct2D —
+    // остановка (deviceBitmapOf).
+    if (!photoBitmap_) photoBitmap_ = deviceBitmapOf(context, backdropSource_.Get());
 
     // На всю полосу, без сохранения пропорций (как прежняя кисть Fill): снимок
     // скомпонован под полосу — книга по центру, стол по краям.

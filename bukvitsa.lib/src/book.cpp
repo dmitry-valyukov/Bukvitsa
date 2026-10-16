@@ -5,6 +5,7 @@
 // а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
 // он единственный тянет за собой стандартные заголовки, которых нет здесь.
 #include "bukvitsa/reader/book.h"
+#include "bukvitsa/reader/imaging.h"
 
 #include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/system_failure.h"
@@ -12,48 +13,6 @@
 namespace bukvitsa::reader {
 
 using Microsoft::WRL::ComPtr;
-
-namespace {
-
-/// Раскодирует картинку до конвертера в 32bppPBGRA и снимает её размеры: они
-/// нужны пагинатору до всякой отрисовки. На видеокарту она не идёт — битмап
-/// создаётся позже, на том устройстве, которое будет рисовать. Поток WIC —
-/// поверх байтов самой картинки, без копии.
-/// @return false — байтов нет или это не картинка, которую WIC знает.
-bool decodeInto(IWICImagingFactory* wic, ImageAsset& asset) {
-    if (asset.bytes.empty()) return false;
-
-    ComPtr<IWICStream> stream;
-    if (FAILED(wic->CreateStream(&stream))) return false;
-    if (FAILED(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(asset.bytes.data()),
-                                            static_cast<DWORD>(asset.bytes.size()))))
-        return false;
-
-    ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad,
-                                            &decoder)))
-        return false;
-
-    ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(decoder->GetFrame(0, &frame))) return false;
-
-    ComPtr<IWICFormatConverter> converter;
-    if (FAILED(wic->CreateFormatConverter(&converter))) return false;
-    if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
-                                     WICBitmapDitherTypeNone, nullptr, 0.0,
-                                     WICBitmapPaletteTypeMedianCut)))
-        return false;
-
-    UINT width = 0, height = 0;
-    if (FAILED(frame->GetSize(&width, &height))) return false;
-
-    asset.width = static_cast<float>(width);
-    asset.height = static_cast<float>(height);
-    asset.source = std::move(converter);
-    return true;
-}
-
-}  // namespace
 
 IDWriteFactory* dwriteFactory() {
     // Живёт до конца процесса и намеренно не освобождается: разделяемую
@@ -167,32 +126,37 @@ void Book::trimChapters(size_t keepRadius) {
 }
 
 void Book::decodeImages(fb3::Document& document) {
-    // Размер — один раз и до первых байтов: поток WIC смотрит в байты
-    // элемента, и после этого элементам переезжать нельзя.
     const size_t count = document.images().size();
     images_.resize(count);
 
     if (count == 0)
         return;
 
-    // Системная фабрика — не ответ о книге: не создалась — остановка, а не
-    // книга без иллюстраций.
+    // Одна фабрика на все картинки книги. Системная — не ответ о книге: не
+    // создалась — остановка, а не книга без иллюстраций.
+    ComPtr<IWICImagingFactory> wic;
     typography::stopIfFailed(
-        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_)),
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)),
         "Book: не создалась фабрика WIC");
 
     for (uint32_t index = 0; index < count; ++index) {
         ImageAsset& asset = images_[index];
 
-        // Байты переезжают в книгу до декодирования, и поток WIC встаёт уже на
-        // них: он читает свою память, пока жив конвертер, а конвертер книга
-        // держит до конца — битмап из него делается при отрисовке, — документ
-        // же столько не живёт. Вёрстке нужны размеры всех картинок сразу — без
-        // них не построить страницу, — так что лениться тут не выходит.
-        asset.bytes = document.takeImageBytes(index);
+        // Раскодируется сразу и целиком: пиксели — в битмапе памяти, байты
+        // после этого не нужны, и битые данные отказывают здесь, а не на
+        // каждом кадре. Вёрстке нужны размеры всех картинок сразу — без них не
+        // построить страницу, — так что лениться тут не выходит. Не картинка —
+        // места на странице она не займёт.
+        const std::string imageBytes = document.takeImageBytes(index);
+        asset.decodedPicture = decodeImage(wic.Get(), imageBytes);
+        if (!asset.decodedPicture) continue;
 
-        if (!decodeInto(wic_.Get(), asset))
-            asset.bytes = std::string{};   // не картинка — рисовать нечего, и байты ни к чему
+        UINT width = 0;
+        UINT height = 0;
+        typography::stopIfFailed(asset.decodedPicture->GetSize(&width, &height),
+                                 "Book: раскодированная картинка не назвала размер");
+        asset.width = static_cast<float>(width);
+        asset.height = static_cast<float>(height);
     }
 }
 
@@ -201,13 +165,7 @@ ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
         return nullptr;
 
     ImageAsset& asset = images_[index];
-    if (asset.bitmap)
-        return asset.bitmap.Get();
-    if (!asset.source)
-        return nullptr;
-
-    if (FAILED(context->CreateBitmapFromWicBitmap(asset.source.Get(), nullptr, &asset.bitmap)))
-        asset.source.Reset();   // не вышло — больше не пытаемся
+    if (!asset.bitmap && asset.decodedPicture) asset.bitmap = deviceBitmapOf(context, asset.decodedPicture.Get());
 
     return asset.bitmap.Get();
 }
