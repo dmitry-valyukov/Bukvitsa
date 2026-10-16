@@ -2,8 +2,8 @@
 // гистерезис растяжки, место чтения сквозь перевёрстку, лента колонок через
 // стык глав и у краёв книги, прыжок в далёкую главу, начало главы сквозь
 // перевёрстку и прыжок, переворот назад с начала главы, хвост главы и «из M»,
-// попадание в знак сноски и вёрстка её тела. Окна нет: DirectWrite и вёрстка
-// работают и так.
+// попадание в знак сноски — первый и каждый знак романа на четырёх мерах — и
+// вёрстка её тела. Окна нет: DirectWrite и вёрстка работают и так.
 
 #include <algorithm>
 #include <chrono>
@@ -690,6 +690,143 @@ void testNoteMarkIsHit() {
     check(!body.lines.empty() && body.height > 0.0f, "тело сноски по номеру из щелчка верстается");
 }
 
+/// Мера полосы, на которой обходятся знаки сносок.
+struct StripMeasure {
+    float width;
+    float height;
+};
+
+/// Сколько промахов печатать подробно: остальные только считаются.
+constexpr size_t kReportedMisses = 12;
+
+/// Держит ли строка первую единицу знака: строка того же абзаца — её первая
+/// буква та же буква книги, что у абзаца на её месте, — и знак начинается в
+/// ней. Строки не знают своего абзаца, а буква книги у каждой своя.
+bool lineHoldsMark(const typography::BookText& text, const typography::Paragraph& paragraph,
+                   const typography::Line& line, const typography::NoteAnchor& note) {
+    if (line.textStart >= paragraph.text.count) return false;
+    if (text.charOffsetAt(paragraph, line.textStart) != line.charOffset) return false;
+    return note.position >= line.textStart && note.position - line.textStart < line.textLength;
+}
+
+/// Каждый знак сноски романа ловится щелчком в свою середину — на развороте
+/// 1400, в одной колонке 700, на полосе окна первого запуска и на его
+/// клиентской части. Знак ищется на своей строке — той, где начинается его
+/// текст, — так что провалом выходит и знак, которого вёрстка не положила на
+/// строку (нет PlacedNote с его телом), и знак, чья зона щелчка разошлась с
+/// его местом (noteAt в середине знака — пусто или чужое тело).
+void testEveryNoteMarkIsHit() {
+    std::printf("\n=== поток страниц: каждый знак сноски ловится ===\n");
+    const intrusive_ptr<Book> novel = openNovel();
+    if (!novel) return;
+
+    const typography::BookText& text = novel->text();
+
+    // Последняя мера — клиентская часть окна 1280 × 860: окну задают внешний
+    // размер, а полоса берёт клиентскую область (BookView::applySize). Рамка
+    // WS_OVERLAPPEDWINDOW при 96 DPI — по 8 пикселей по бокам и снизу и 31
+    // сверху, с заголовком.
+    constexpr StripMeasure kMeasures[] = {
+        {1400.0f, kHeight},
+        {700.0f, kHeight},
+        {kStripWidth, kStripHeight},
+        {kStripWidth - 16.0f, kStripHeight - 39.0f},
+    };
+
+    for (const StripMeasure& measure : kMeasures) {
+        const auto started = std::chrono::steady_clock::now();
+        PageFlow flow;
+        setUp(flow, as_not_null(novel.get()), 0, measure.width, measure.height);
+
+        size_t marks = 0;
+        size_t missed = 0;
+        for (const typography::Block& block : text.flow()) {
+            const typography::Paragraph& paragraph = block.paragraph;
+            for (const typography::NoteAnchor& note : text.notesOf(paragraph)) {
+                ++marks;
+                flow.show(flow.columnOf(text.charOffsetAt(paragraph, note.position)));
+
+                // Своя строка знака — на развороте, куда прыгнули.
+                const PageFlow::Spread& spread = flow.spread();
+                const typography::PlacedLine* markLine = nullptr;
+                size_t markColumn = 0;
+                for (size_t column = 0; column < spread.pages.size() && !markLine; ++column) {
+                    for (const typography::PlacedLine& placed : spread.pages[column]->lines) {
+                        if (!lineHoldsMark(text, paragraph, *placed.line, note)) continue;
+                        markLine = &placed;
+                        markColumn = column;
+                        break;
+                    }
+                }
+
+                const typography::PlacedNote* placedMark = nullptr;
+                if (markLine) {
+                    for (const typography::PlacedNote& placedNote : markLine->line->notes) {
+                        if (placedNote.body != note.body) continue;
+                        placedMark = &placedNote;
+                        break;
+                    }
+                }
+
+                // Щелчок — в середину знака на высоте строки, как в
+                // testNoteMarkIsHit.
+                std::optional<PageFlow::NoteHit> hit;
+                float middle = 0.0f;
+                if (placedMark) {
+                    const float baseline = flow.verticalMargin() + markLine->baseline;
+                    middle = flow.columnLeft(markColumn) + markLine->x + placedMark->x +
+                             placedMark->width * 0.5f;
+                    hit = flow.noteAt(
+                        PageFlow::Point{middle, baseline - markLine->line->ascent * 0.5f});
+                }
+                if (hit && hit->body == note.body) continue;
+
+                if (++missed > kReportedMisses) continue;
+
+                const u8_text markText =
+                    text.textOf(paragraph).substr(note.position, note.length).to_utf8();
+                std::printf("        знак %zu «%.*s» (тело %u), мера %.0f × %.0f: глава %zu, ",
+                            marks, static_cast<int>(markText.chars().size()),
+                            markText.chars().data(), note.body, measure.width, measure.height,
+                            flow.anchor().chapter + 1);
+                if (!markLine) {
+                    std::printf("своей строки на развороте нет\n");
+                    continue;
+                }
+
+                const typography::Line& line = *markLine->line;
+                std::printf("колонка %zu, строка [%u, %u) шириной %.1f, знак [%u, %u)\n",
+                            markColumn, line.textStart, line.textStart + line.textLength,
+                            line.width, note.position, note.position + note.length);
+                if (!placedMark) {
+                    std::printf("          PlacedNote с этим телом нет; прогоны строки:");
+                    for (const typography::GlyphRun& run : line.runs)
+                        std::printf(" [%u, %u) x %.1f ш %.1f", run.textStart,
+                                    run.textStart + run.textLength, run.originX, run.width);
+                    std::printf("\n");
+                    continue;
+                }
+                std::printf("          x %.1f, ширина %.1f, середина %.1f; noteAt — %s %u\n",
+                            flow.columnLeft(markColumn) + markLine->x + placedMark->x,
+                            placedMark->width, middle, hit ? "тело" : "пусто",
+                            hit ? hit->body : 0u);
+            }
+        }
+
+        // Время — чтобы видеть цену пробы: обход прыгает к каждому знаку романа
+        // и верстает главы заново на каждой мере.
+        const auto elapsed = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - started).count();
+        std::printf("  мера %.0f × %.0f: знаков %zu, мимо %zu, %.0f мс\n", measure.width,
+                    measure.height, marks, missed, elapsed);
+        char what[160];
+        std::snprintf(what, sizeof(what),
+                      "каждый знак сноски ловится щелчком в свою середину — мера %.0f × %.0f",
+                      measure.width, measure.height);
+        check(marks > 0 && missed == 0, what);
+    }
+}
+
 }  // namespace
 
 void runPageFlowTests() {
@@ -705,4 +842,5 @@ void runPageFlowTests() {
     testTurnBackFromChapterStart();
     testTailCompletesChapter();
     testNoteMarkIsHit();
+    testEveryNoteMarkIsHit();
 }
