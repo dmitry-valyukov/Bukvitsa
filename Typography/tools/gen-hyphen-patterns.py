@@ -25,10 +25,20 @@
 выделения памяти. Одинаковые поддеревья склеиваются, отчего бор становится
 ациклическим графом и втрое меньше.
 
-Кодовая точка вне алфавита (цифра, дефис, надстрочный знак, эмодзи) номера не
-получает, и слово с ней не переносится вовсе. Это не упущение, а то, отчего
-закон цельности буквы соблюдается сам: разрыв возможен только внутри слова из
-одних букв алфавита, а там нет ни составных знаков, ни суррогатных пар.
+Номер символа есть у букв латиницы и кириллицы и у двух знаков, которыми
+образцы пишут край слова и составное слово, — точки и дефиса. Кодовая точка
+вне алфавита (цифра, надстрочный знак, эмодзи, буква другой письменности)
+номера не получает, и слово с ней образцы не размечают вовсе. Это не
+упущение, а то, отчего закон цельности буквы соблюдается сам: разрыв возможен
+только внутри слова из букв алфавита, а там нет ни составных знаков, ни
+суррогатных пар. Знак ударения снимает со слова до образцов вёрстка
+(hyphenPointsOf), и найденное место она же ставит на границу буквы.
+
+Рядом с номерами — признаки кодовых точек до TABLE_END: у букв алфавита —
+заглавная, гласная и язык, у прочих — буква это или знак, по общей категории
+Юникода из unicodedata того Python, которым скрипт запущен; его версия
+пишется в таблицу. Вёрстка берёт их отсюда же, чтобы свойство буквы было
+записано в одном месте.
 """
 
 import argparse
@@ -36,6 +46,7 @@ import hashlib
 import pathlib
 import re
 import sys
+import unicodedata
 import urllib.request
 
 BASE = ("https://raw.githubusercontent.com/hyphenation/tex-hyphen/master/"
@@ -53,10 +64,25 @@ LANGUAGES = [
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CACHE = pathlib.Path.home() / ".cache" / "bukvitsa-hyphen"
 
-# Диапазоны кодовых точек, которые таблица алфавита покрывает: латиница с
-# цифрами и знаками (их номера нулевые, но таблица сплошная) и кириллица
-# вместе с «ё» из дополнения. Всё остальное алфавиту не принадлежит.
-RANGES = [(0x0020, 0x007F), (0x0400, 0x0460)]
+# Таблица символов покрывает кодовые точки до этой границы: латиницу с
+# дополнением и расширениями, комбинируемые знаки, греческий и кириллицу с
+# дополнением — письменности, чьи буквы встают в слово рядом с буквами
+# алфавита образцов. Буквы алфавита все здесь; про прочие таблица знает, что
+# это буква или знак, и только: вёрстке этого хватает, чтобы не размечать
+# слово, в котором есть буква, образцам незнакомая. Дальше границы — ни букв
+# алфавита, ни признаков.
+TABLE_END = 0x0530
+
+# Признаки кодовой точки (hyphenTraits): заглавная и гласная — только у букв
+# алфавита образцов, буква и знак — по общей категории Юникода. Номер языка
+# буквы алфавита (с единицы, в порядке LANGUAGES) — в старших битах: по нему
+# и выбираются образцы слова.
+CAPITAL, VOWEL, LETTER, MARK = 0x01, 0x02, 0x04, 0x08
+LANGUAGE_SHIFT = 4
+
+# Гласные обоих алфавитов: часть слова без них вёрстка не отрывает. «y» в
+# английском — гласная: иначе «rhythm» было бы словом без гласных вовсе.
+VOWELS = set("аеёиоуыэюяaeiouy")
 
 
 def source(name: str, digest: str) -> str:
@@ -278,17 +304,56 @@ def main() -> int:
     out.append(f"\ninline constexpr std::uint8_t hyphenBoundarySymbol = {symbol['.']};")
     out.append(f"inline constexpr std::uint8_t hyphenSymbolCount = {len(symbol)};\n")
 
-    for first, last in RANGES:
-        name = "hyphenSymbolAscii" if first < 0x100 else "hyphenSymbolCyrillic"
-        table = []
-        for code_point in range(first, last):
-            character = chr(code_point).lower()
-            # «Ё» отдельной строкой: lower() её складывает, а в таблицу она
-            # попадает тем же номером, что и строчная.
-            table.append(str(symbol.get(character, 0)))
-        out.append(f"inline constexpr std::uint8_t {name}[{last - first}] = {{")
-        out.append(rows(table, 24))
-        out.append("};\n")
+    # Буквы каждого языка — те, что встречаются в его образцах и исключениях.
+    language_letters = [{character
+                         for pattern in patterns + exceptions
+                         for character in pattern if character.isalpha()}
+                        for _, _, patterns, exceptions, _, _ in languages]
+
+    # Номер символа и признаки каждой кодовой точки до TABLE_END. Регистр
+    # складывается здесь же: прописной букве стоит номер строчной, «Ё» —
+    # номер «ё», а не «е».
+    symbols_table, traits_table = [], []
+    for code_point in range(TABLE_END):
+        character = chr(code_point)
+        lower = character.lower()
+        number = symbol.get(lower, 0) if len(lower) == 1 else 0
+        category = unicodedata.category(character)
+
+        traits = LETTER if category.startswith("L") else MARK if category.startswith("M") else 0
+        owners = [index for index, letters in enumerate(language_letters) if lower in letters]
+        if number and owners:
+            if len(owners) != 1:
+                sys.exit(f"U+{code_point:04X}: буква двух языков сразу")
+            traits |= (owners[0] + 1) << LANGUAGE_SHIFT
+            if character != lower:
+                traits |= CAPITAL
+            if lower in VOWELS:
+                traits |= VOWEL
+        symbols_table.append(str(number))
+        traits_table.append(f"0x{traits:02X}")
+
+    # Номер символа, но не язык — только у точки и дефиса: они знаки образцов,
+    # а не буквы. Всё прочее с номером — буква ровно одного языка.
+    numbered = {chr(code_point) for code_point in range(TABLE_END)
+                if symbols_table[code_point] != "0"}
+    if {character for character in numbered
+        if not int(traits_table[ord(character)], 16) >> LANGUAGE_SHIFT} != {".", "-"}:
+        sys.exit("номер символа без языка есть не только у точки и дефиса")
+
+    out.append(f"// Свойства букв — по unicodedata {unicodedata.unidata_version}.")
+    out.append(f"inline constexpr std::uint32_t hyphenTableEnd = 0x{TABLE_END:04X};")
+    out.append(f"inline constexpr std::uint8_t hyphenCapital = 0x{CAPITAL:02X};")
+    out.append(f"inline constexpr std::uint8_t hyphenVowel = 0x{VOWEL:02X};")
+    out.append(f"inline constexpr std::uint8_t hyphenLetter = 0x{LETTER:02X};")
+    out.append(f"inline constexpr std::uint8_t hyphenMark = 0x{MARK:02X};")
+    out.append(f"inline constexpr std::uint8_t hyphenLanguageShift = {LANGUAGE_SHIFT};\n")
+    out.append(f"inline constexpr std::uint8_t hyphenSymbol[{TABLE_END}] = {{")
+    out.append(rows(symbols_table, 24))
+    out.append("};\n")
+    out.append(f"inline constexpr std::uint8_t hyphenTraits[{TABLE_END}] = {{")
+    out.append(rows(traits_table, 16))
+    out.append("};\n")
 
     out.append(f"inline constexpr std::uint8_t hyphenTrie[{len(data)}] = {{")
     out.append(rows([f"0x{byte:02X}" for byte in data], 16))

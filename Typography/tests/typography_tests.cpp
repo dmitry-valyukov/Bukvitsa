@@ -126,6 +126,7 @@ void testChapterFirstPage(typography::Engine& engine, const typography::BookText
 void testSeparatorAtPageBottom(typography::Engine& engine);
 void testClustersStayWhole(typography::Engine& engine);
 void testHyphenation();
+void testHyphenationRules();
 void testHyphenationInLayout(typography::Engine& engine);
 
 /// Формулы: MicroTeX с бэкендом Direct2D/DirectWrite. Стек проверяется
@@ -1301,8 +1302,10 @@ void testHyphenation() {
     check(typography::hyphenate(u"оса") == 0, "одну букву не отрывают");
     check(typography::hyphenate(u"под") == 0, "трёх букв мало");
 
-    // Слово, где есть хоть что-то помимо букв алфавита, не переносится вовсе —
-    // и это то, отчего перенос не может попасть внутрь буквы.
+    // Слово, где есть хоть что-то помимо букв алфавита, образцы не размечают
+    // вовсе — и это то, отчего их место не может попасть внутрь буквы. Знаки
+    // над буквами снимает со слова hyphenPointsOf (testHyphenationRules), и
+    // сюда оно приходит уже из одних основ.
     check(typography::hyphenate(u"досто\x0301примечательность") == 0, "слово со знаком ударения");
     check(typography::hyphenate(u"страница5") == 0, "слово с цифрой");
     check(typography::hyphenate(u"привет\xD83D\xDC4D") == 0, "слово с эмодзи");
@@ -1353,6 +1356,185 @@ void testHyphenation() {
     std::printf("  корпус: %zu слов\n", words);
     check(words > 1000, "корпус не пуст");
     check(wrong == 0, "каждое слово корпуса размечено как эталон");
+}
+
+/// Абзац, размеченный так, как места переноса получит разбивка: «до|сто|при».
+/// Черта, а не дефис: дефисы бывают в самом тексте, и место переноса рядом с
+/// ними не должно с ними путаться.
+u8_text markedParagraph(u16_view text, std::span<const typography::NoteAnchor> notes) {
+    const sta_vector<uint8_t> hyphens = typography::hyphenPointsOf(text, notes);
+
+    u8_text marked;
+    size_t at = 0;
+    for (const char32_t code : unicode::code_points(text)) {
+        if (hyphens[at] != 0) marked.push_back(U'|');
+        marked.push_back(code);
+        at += static_cast<size_t>(unicode::utf16_size(code));
+    }
+    return marked;
+}
+
+bool markedIs(u16_view text, u8_view expected,
+              std::span<const typography::NoteAnchor> notes = {}) {
+    const u8_text marked = markedParagraph(text, notes);
+    if (marked.chars() == expected.chars()) return true;
+
+    reportHyphenation(text.to_utf8(), expected, marked);
+    return false;
+}
+
+/// Сколько мест переноса в абзаце — там, где важно не какие они, а есть ли.
+size_t hyphenCount(u16_view text) {
+    const sta_vector<uint8_t> hyphens = typography::hyphenPointsOf(text, {});
+    return static_cast<size_t>(std::count_if(hyphens.begin(), hyphens.end(),
+                                             [](uint8_t value) { return value != 0; }));
+}
+
+/// Правила набора поверх образцов. Проверяются там, откуда места переноса
+/// берёт разбивка, — в hyphenPointsOf: hyphenate() о правилах не знает и
+/// знать не должен, его сверяют с эталоном, который считает одни образцы.
+void testHyphenationRules() {
+    std::printf("\n=== правила переносов ===\n");
+
+    // Слово с цифрой или с точкой внутри не переносится вовсе; точка на краю
+    // слова — пунктуация.
+    check(markedIs(u"страница5", u8"страница5"), "слово с цифрой не переносится");
+    check(markedIs(u"страница.", u8"стра|ни|ца."), "точка в конце слова — пунктуация");
+    check(markedIs(u".страница", u8".стра|ни|ца"), "точка в начале слова — пунктуация");
+    check(markedIs(u"т.е.", u8"т.е."), "сокращение с точкой внутри");
+    check(markedIs(u"см.страницу", u8"см.страницу"), "точка внутри отменяет перенос всего слова");
+
+    // Дефис и апостроф — внутри слова: цифра за ними отменяет перенос и до них.
+    check(markedIs(u"Москвич-412", u8"Москвич-412"), "цифра за дефисом-минусом");
+    check(markedIs(u"Москвич\x2010" u"412", u8"Москвич\u2010412"), "цифра за дефисом U+2010");
+    check(markedIs(u"Москвич\x2011" u"412", u8"Москвич\u2011412"), "цифра за неразрывным дефисом");
+    check(markedIs(u"Москвич\x2019" u"412", u8"Москвич\u2019412"), "цифра за апострофом U+2019");
+
+    // Буква, которой образцы не знают, — слово другого языка: перенос его
+    // отменяется целиком, а не по куски вокруг неё.
+    check(markedIs(u"\x040E" u"збекистон", u8"\u040Eзбекистон"), "«Ў» в начале слова");
+    check(markedIs(u"\x00DC" u"bersetzung", u8"\u00DCbersetzung"), "«Ü» одной кодовой точкой");
+    check(markedIs(u"M\x00E4" u"dchenhandelsschule", u8"M\u00E4dchenhandelsschule"),
+          "«ä» одной кодовой точкой посреди слова");
+    check(markedIs(u"Ma\x0308" u"dchenhandelsschule", u8"Ma\u0308dchenhandelsschule"),
+          "«a» с диерезисом — буква, образцам незнакомая");
+
+    // Разложенные «й» и «ё» — «и» с краткой и «е» с диерезисом. Свести их к
+    // одной кодовой точке нечем, и видеть в «й» гласную «и» образцам нельзя:
+    // «во-йна» — неверное место. Такое слово не переносится вовсе.
+    check(markedIs(u"вои\x0306на", u8"вои\u0306на"), "«война» с разложенной «й»");
+    check(markedIs(u"леи\x0306тенант", u8"леи\u0306тенант"), "«лейтенант» с разложенной «й»");
+    check(markedIs(u"е\x0308лочка", u8"е\u0308лочка"), "«ёлочка» с разложенной «ё»");
+    check(markedIs(u"лейтенант", u8"лей|те|нант"), "та же «й» одной кодовой точкой переносится");
+
+    // Заглавная не первой буквой — аббревиатура или имя, которого образцы не
+    // видели. Первой буквой — норма, и у части после дефиса тоже.
+    check(markedIs(u"юнеско", u8"юне|ско"), "строчными слово переносится");
+    check(markedIs(u"ЮНЕСКО", u8"ЮНЕСКО"), "прописными — нет");
+    check(markedIs(u"МосКва", u8"МосКва"), "заглавная посреди слова");
+    check(markedIs(u"ПетерБург", u8"ПетерБург"), "заглавная посреди слова, где образцы рвали бы");
+    check(markedIs(u"самолЁт", u8"самолЁт"), "«Ё» посреди слова — тоже заглавная");
+    check(markedIs(u"самолёт", u8"са|мо|лёт"), "«самолёт» строчными переносится");
+    check(markedIs(u"McDonald", u8"McDonald"), "латинская заглавная посреди слова");
+    check(markedIs(u"mcdonald", u8"mcdon|ald"), "то же строчными переносится");
+    check(markedIs(u"Петербург", u8"Пе|тер|бург"), "заглавная первой буквой");
+    check(typography::hyphenPointsOf(u"Москва", {}) == typography::hyphenPointsOf(u"москва", {}),
+          "«Москва» размечена как «москва»");
+    check(markedIs(u"Санкт-Петербург", u8"Санкт-Пе|тер|бург"),
+          "части через дефис размечаются порознь, и у второй заглавная — первая буква");
+    check(markedIs(u"Петропавловск-Камчатский", u8"Пет|ро|пав|ловск-Кам|чат|ский"),
+          "места в обеих частях");
+
+    // Латиница и кириллица в одной части — образцы одного языка к буквам
+    // другого не применяются.
+    check(markedIs(u"мет\x0070ового", u8"метpового"), "латинская «p» среди кириллицы");
+    check(markedIs(u"метрового", u8"мет|ро|во|го"), "то же слово кириллицей переносится");
+
+    // Часть без гласной — не слог, а обрубок. Образцы такие места дают сами,
+    // и отбрасывает их не hyphenate(), а правило.
+    check(hyphenatedIs(u"чкнуть", u8"чк-нуть"), "образцы рвут «чк-нуть»");
+    check(markedIs(u"чкнуть", u8"чкнуть"), "«чк» без гласной не остаётся на строке");
+    check(markedIs(u"чкнувши", u8"чкнув|ши"),
+          "из двух мест остаётся то, где гласные по обе стороны");
+    check(markedIs(u"ссьма", u8"ссьма"), "«ссь» без гласной не остаётся на строке");
+    check(markedIs(u"флэнжер", u8"флэн|жер"), "«фл» без гласной, хотя гласная сразу за местом");
+    check(markedIs(u"англ.", u8"англ."), "«гл» без гласной не уходит на следующую");
+    check(markedIs(u"поэт", u8"по|эт"), "гласная справа — сразу за местом");
+    check(markedIs(u"стклянку", u8"стклян|ку"), "место с гласными по обе стороны остаётся");
+    check(markedIs(u"тёмный", u8"тём|ный"), "«ё» — гласная");
+    check(markedIs(u"crystal", u8"crys|tal"), "«y» в английском — гласная");
+
+    // Знак ударения прозрачен: образцы видят основы букв, а место встаёт на
+    // границу буквы — за знаком, а не между ним и основой.
+    check(markedIs(u"досто\x0301примечательность", u8"до|сто\u0301|при|ме|ча|тель|ность"),
+          "знак ударения не отменяет перенос, и место встаёт за ним");
+    check(markedIs(u"досто\x0300примечательность", u8"до|сто\u0300|при|ме|ча|тель|ность"),
+          "и знак тупого ударения");
+    check(markedIs(u"\x0301достопримечательность", u8"\u0301до|сто|при|ме|ча|тель|ность"),
+          "знак без основы в начале абзаца слову не мешает");
+
+    // Хвост переноса считается буквами, без знаков: в «доро́га» место перед
+    // «ро́га» уносит четыре буквы, а не пять единиц, место перед «га» — две,
+    // и такой перенос разбивка берёт дороже.
+    const sta_vector<uint8_t> stressed = typography::hyphenPointsOf(u"доро\x0301га", {});
+    check(stressed.size() == 7 && stressed[2] == 4 && stressed[5] == 2,
+          "знак ударения не считается буквой хвоста");
+
+    // Длиннее предела часть не размечается вовсе — и считаются в ней буквы, а
+    // не знаки над ними.
+    u16_text longest;
+    for (int at = 0; at < 3; ++at) longest += u"достопримечательность";
+    check(longest.size() == typography::kMaxHyphenatedWord + 1 && hyphenCount(longest) == 0,
+          "часть длиннее предела не переносится вовсе");
+    check(hyphenCount(u16_view(longest).substr(0, longest.size() - 1)) > 0,
+          "часть ровно в предел переносится");
+    u16_text stressedLongest;
+    for (int at = 0; at < 3; ++at) stressedLongest += u"досто\x0301примечательность";
+    check(hyphenCount(u16_view(stressedLongest).substr(0, stressedLongest.size() - 1)) > 0,
+          "знаки ударения в длину части не входят");
+
+    // Мягкий перенос из книги отменяет места по образцам в своей части: их
+    // ставит автор, и места оттуда отдаёт разбивке DirectWrite.
+    check(markedIs(u"достопри\x00ADмечательность", u8"достопри\u00ADмечательность"),
+          "в слове с мягким переносом мест по образцам нет");
+    check(markedIs(u"достопри\x00AD\x0301мечательность", u8"достопри\u00AD\u0301мечательность"),
+          "и знак без основы за мягким переносом часть не делит");
+    check(markedIs(u"северо-за\x00ADпадный", u8"се|ве|ро-за\u00ADпадный"),
+          "мягкий перенос отменяет места только своей части");
+    check(markedIs(u"за\x00ADпадно-сибирский", u8"за\u00ADпадно-си|бир|ский"),
+          "мягкий перенос в первой части не трогает вторую");
+    check(markedIs(u"\x00ADдостопримечательность", u8"\u00ADдо|сто|при|ме|ча|тель|ность"),
+          "мягкий перенос в начале слова мест не отменяет");
+    check(markedIs(u"северо-\x00ADзападный", u8"се|ве|ро-\u00ADза|пад|ный"),
+          "мягкий перенос в начале части мест не отменяет");
+
+    // Знак сноски — слово сам по себе: цифра вплотную к слову слово не
+    // продолжает, а текст знака размечается как всякий другой.
+    auto const digitMark = typography::NoteAnchor{7, 1, 0};
+    check(markedIs(u"маркизу5", u8"мар|ки|зу5", std::span(&digitMark, 1)),
+          "знак сноски после слова не отменяет его переносов");
+    auto const leadingMark = typography::NoteAnchor{0, 1, 0};
+    check(markedIs(u"5маркизу", u8"5мар|ки|зу", std::span(&leadingMark, 1)),
+          "и знак сноски перед словом");
+    auto const wordMark = typography::NoteAnchor{0, 21, 0};
+    check(markedIs(u"достопримечательность", u8"до|сто|при|ме|ча|тель|ность",
+                   std::span(&wordMark, 1)),
+          "текст знака сноски переносится");
+
+    // Место переноса — всегда между буквами, из скольких бы кодовых точек
+    // буква ни состояла.
+    for (const CorpusLetter& letter : kLetters) {
+        u16_text word;
+        word += u"досто";
+        word += letter.text;
+        word += u"примечательность";
+
+        const sta_vector<uint8_t> hyphens = typography::hyphenPointsOf(word, {});
+        bool whole = true;
+        for (uint32_t at = 0; at < hyphens.size(); ++at)
+            if (hyphens[at] != 0 && !isLetterStart(word, at)) whole = false;
+        check(whole, std::string("места переноса между буквами: ") + letter.name);
+    }
 }
 
 /// Кончается ли строка дефисом переноса. Глиф спрашивается у того же шрифта,
@@ -2362,6 +2544,7 @@ int main() {
     testBrokenImageRefs();
     testRomanMarkers();
     testHyphenation();
+    testHyphenationRules();
     testHyphenationInLayout(engine);
     testTrailingSpace(engine);
 
