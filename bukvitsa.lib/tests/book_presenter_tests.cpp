@@ -169,7 +169,7 @@ public:
     void turnStarting(bool forward) override { recordTurn(Step::TurnStarting, forward); }
     void turnStarted(bool forward) override { recordTurn(Step::TurnStarted, forward); }
     void finishTurns() override { journal.push_back(entryOf(Step::FinishTurns)); }
-    void redraw() override { journal.push_back(entryOf(Step::Redraw)); }
+    void redraw() noexcept override { journal.push_back(entryOf(Step::Redraw)); }
     void restyle() override { journal.push_back(entryOf(Step::Restyle)); }
 
     bool showNote(const PageFlow::NoteHit& noteHit) override {

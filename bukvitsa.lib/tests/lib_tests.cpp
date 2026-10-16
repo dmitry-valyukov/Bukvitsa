@@ -545,6 +545,29 @@ void testSkinsReadSeparateLeaves() {
                        {reader::SkinFault::SpineMoved, reader::SkinFault::Unordered}),
           "корешок сдвинут, и с ним на середине точки не по порядку — оба исправления по порядку");
 
+    // Точку увели за край страницы: на её месте — точка начальной прямой, и
+    // чтение это называет.
+    std::string offPage = written;
+    constexpr std::string_view firstHeight = " y=\"0.01\"";
+    const size_t firstHeightAt = offPage.find(firstHeight);
+    check(firstHeightAt != std::string::npos, "первая точка записана как была");
+    if (firstHeightAt == std::string::npos) return;
+    offPage.replace(firstHeightAt, firstHeight.size(), " y=\"1.7\"");
+    reader::Skins offPageRead;
+    const std::optional<std::vector<reader::CorrectedSkin>> offPageCorrected = offPageRead.loadFrom(offPage);
+    check(correctedOne(offPageCorrected, u"Старая", {reader::SkinFault::OutsidePage}) &&
+              offPageRead.list()[0].top.y[0] == fresh.top.y[0],
+          "точка вне страницы — названа, на её месте точка начальной прямой");
+
+    // Высоты у точки нет вовсе — это не правка в долях, а пропуск: молча, как
+    // и недостающие точки.
+    std::string heightless = written;
+    heightless.replace(firstHeightAt, firstHeight.size(), "");
+    reader::Skins heightlessRead;
+    const std::optional<std::vector<reader::CorrectedSkin>> heightlessCorrected = heightlessRead.loadFrom(heightless);
+    check(heightlessCorrected && heightlessCorrected->empty() && heightlessRead.list().size() == 1,
+          "точка без высоты — без исправлений: точки в файле может и не быть");
+
     // Точку увели за соседку: такая кромка — начальная прямая.
     std::string crossed = written;
     const size_t fourthAt = crossed.find("<point x=\"0.4\"");
@@ -1088,11 +1111,18 @@ void testWorkspaceNamesCorrectedSkins() {
     folded.name = u16_text{u"Вывернутая"};
     folded.image = u16_text{u"folded.png"};
 
+    // Третья точка верхней кромки ниже страницы.
+    Skin offPage = defaultSkin();
+    offPage.name = u16_text{u"Вне страницы"};
+    offPage.image = u16_text{u"offpage.png"};
+    offPage.top.y[2] = 1.5f;
+
     Skins handEdited;
     handEdited.put(good);
     handEdited.put(spineMoved);
     handEdited.put(unordered);
     handEdited.put(folded);
+    handEdited.put(offPage);
     const std::string xml = handEdited.toXml();
 
     {
@@ -1119,6 +1149,9 @@ void testWorkspaceNamesCorrectedSkins() {
             check(holds(notice.details, L"Обложка «Вывернутая» в skins.xml: кромки выворачивают столбец — обложка "
                                         L"показана ровной.\n"),
                   "строка обложки, выворачивающей столбец");
+            check(holds(notice.details, L"Обложка «Вне страницы» в skins.xml: точки кромки не в долях страницы — "
+                                        L"заменены точками начальной прямой.\n"),
+                  "строка обложки с точкой вне страницы");
             check(!holds(notice.details, L"Верная"), "верная обложка не названа");
             check(holds(notice.details, L"Файл: " + ws.skinsPath().wstring()) &&
                       holds(notice.details, L"Копия: " + registryCopy.wstring()),
@@ -1131,10 +1164,10 @@ void testWorkspaceNamesCorrectedSkins() {
         const Skin* const shownSpine = ws.skins.find(u"Сдвинутая");
         const Skin* const shownUnordered = ws.skins.find(u"Беспорядочная");
         const Skin* const shownFolded = ws.skins.find(u"Вывернутая");
-        check(ws.skins.list().size() == 4 && shownSpine && shownUnordered && shownFolded &&
+        check(ws.skins.list().size() == 5 && shownSpine && shownUnordered && shownFolded &&
                   shownSpine->bottom.x[static_cast<size_t>(reader::EdgeCurve::kSpine)] == reader::EdgeCurve::kSpineX &&
                   PageWarp{*shownUnordered}.flat() && PageWarp{*shownFolded}.flat(),
-              "все четыре обложки в реестре, корешок на середине, неверные кромки — ровные");
+              "все пять обложек в реестре, корешок на середине, неверные кромки — ровные");
     }
 
     {

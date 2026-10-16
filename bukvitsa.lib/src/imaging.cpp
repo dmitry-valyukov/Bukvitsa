@@ -30,7 +30,11 @@ ComPtr<IWICBitmap> decodeImage(std::string_view bytes) {
     return decodeImage(newImagingFactory().Get(), bytes);
 }
 
-ComPtr<IWICBitmap> decodeImage(IWICImagingFactory* wic, std::string_view bytes) {
+namespace {
+
+/// Первый кадр картинки — заголовок разобран, пикселей ещё нет; nullptr —
+/// байты не картинка.
+ComPtr<IWICBitmapFrameDecode> firstFrameOf(IWICImagingFactory* wic, std::string_view bytes) {
     if (bytes.empty()) return nullptr;
 
     // Два рода отказов. Своё — поток и конвертер — не создаётся лишь от беды
@@ -55,6 +59,29 @@ ComPtr<IWICBitmap> decodeImage(IWICImagingFactory* wic, std::string_view bytes) 
     ComPtr<IWICBitmapFrameDecode> frame;
     if (FAILED(decoder->GetFrame(0, &frame))) return nullptr;
 
+    return frame;
+}
+
+}  // namespace
+
+std::optional<PictureSize> pictureSizeOf(IWICImagingFactory* wic, std::string_view bytes) {
+    const ComPtr<IWICBitmapFrameDecode> frame = firstFrameOf(wic, bytes);
+    if (!frame) return std::nullopt;
+
+    // Размер — из заголовка, то есть тоже из чужих байт.
+    UINT width = 0;
+    UINT height = 0;
+    if (FAILED(frame->GetSize(&width, &height))) return std::nullopt;
+
+    return PictureSize{width, height};
+}
+
+ComPtr<IWICBitmap> decodeImage(IWICImagingFactory* wic, std::string_view bytes) {
+    const ComPtr<IWICBitmapFrameDecode> frame = firstFrameOf(wic, bytes);
+    if (!frame) return nullptr;
+
+    // Конвертер — своё: остановка; его настройка на кадр и пиксели — разбор
+    // чужих байт.
     ComPtr<IWICFormatConverter> converter;
     stopIfFailed(wic->CreateFormatConverter(&converter), "WIC: не создался конвертер");
     if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr,

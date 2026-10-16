@@ -54,6 +54,8 @@ std::filesystem::path brokenCopyOf(std::filesystem::path file) {
 /// стало на экране.
 const wchar_t* faultWords(SkinFault fault) {
     switch (fault) {
+        case SkinFault::OutsidePage:
+            return L"точки кромки не в долях страницы — заменены точками начальной прямой";
         case SkinFault::SpineMoved:
             return L"корешок кромки не на середине — поставлен на середину";
         case SkinFault::Unordered:
