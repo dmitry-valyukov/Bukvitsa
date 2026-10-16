@@ -290,8 +290,8 @@ void BookPresenter::tap(PageFlow::Point tapPoint, PointerButton pressedButton) {
     const Command command = resolveTap(tapPoint.x, flow_.width(), pressedButton, pointerContext());
 
     // Поверх полосы лежит мастер: из всего щелчка остаётся листание по
-    // третям — ни ящика, ни сносок. Сюда доходят только щелчки мимо точек
-    // сетки: попавшие мастер разобрал сам.
+    // третям — ни ящика, ни сносок, ни прятанья открытой. Сюда доходят только
+    // щелчки мимо точек сетки: попавшие мастер разобрал сам.
     if (preview_) {
         if (command != Command::None) perform(command);
         return;
@@ -307,8 +307,9 @@ void BookPresenter::tap(PageFlow::Point tapPoint, PointerButton pressedButton) {
     }
 
     // Знак сноски важнее перелистывания: он мелкий, и промах по нему из-за
-    // того, что страница уже перевернулась, читателя злит.
-    if (const std::optional<PageFlow::NoteHit> noteMark = flow_.noteAt(tapPoint)) {
+    // того, что страница уже перевернулась, читателя злит. Знак под точкой —
+    // тот же, над которым указатель становится рукой (pointsAtNoteMark).
+    if (const std::optional<PageFlow::NoteHit> noteMark = noteMarkAt(tapPoint)) {
         noteOpen_ = canvas().showNote(*noteMark);
         return;
     }
@@ -321,6 +322,17 @@ void BookPresenter::tap(PageFlow::Point tapPoint, PointerButton pressedButton) {
     }
 
     if (command != Command::None) perform(command);
+}
+
+bool BookPresenter::pointsAtNoteMark(PageFlow::Point hoverPoint) const {
+    return noteMarkAt(hoverPoint).has_value();
+}
+
+std::optional<PageFlow::NoteHit> BookPresenter::noteMarkAt(PageFlow::Point point) const {
+    // Под мастером сносок нет: поверх страницы лежит он, и щелчок по ней —
+    // только листание. Без книги поток отвечает пусто сам.
+    if (preview_) return std::nullopt;
+    return flow_.noteAt(point);
 }
 
 void BookPresenter::hideNote() {
