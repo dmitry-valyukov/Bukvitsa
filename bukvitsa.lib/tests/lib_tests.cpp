@@ -1126,8 +1126,18 @@ void runSettingsTests();
 // Пробы слоёв модели — каждая в своём файле.
 void runPageFlowTests();
 void runChapterTailTests();
+void runBookPresenterTests();
+// Проба остановки ведущего на нарушенной проводке — в дочернем запуске этого
+// же исполняемого файла (book_presenter_tests.cpp, флаг `--stop-probe=<имя>`).
+// Пусто — запуск обычный; иначе — код выхода дочернего.
+std::optional<int> stopProbeExitCode(int argc, char* argv[]);
 
-int main() {
+int main(int argc, char* argv[]) {
+    // Дочерний запуск — одна проба остановки, и ничего больше: остальные пробы
+    // идут у родителя, а он смотрит на код выхода и отчёт об остановке.
+    if (const std::optional<int> probeExitCode = stopProbeExitCode(argc, argv))
+        return *probeExitCode;
+
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     testHintKeepsLetters();
@@ -1174,6 +1184,8 @@ int main() {
     runPageFlowTests();
     // Досчёт главы — на том же романе, с поддельным простоем вместо окна.
     runChapterTailTests();
+    // Ведущий полосы — на том же романе, с поддельными холстом и простоем.
+    runBookPresenterTests();
 
     sta_loop::stop();
     ::CoUninitialize();
