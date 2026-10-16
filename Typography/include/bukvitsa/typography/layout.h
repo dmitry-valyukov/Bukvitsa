@@ -57,7 +57,7 @@ struct GlyphRun {
     IDWriteFontFace* fontFace = nullptr;   ///< живёт в Engine
     float fontSize = 0.0f;
     uint8_t bidiLevel = 0;
-    FontStyle style;                       ///< подчёркивание и зачёркивание рисует читалка
+    FontStyle style;                       ///< подчёркивание, зачёркивание и роль — для вывода
 
     sta_vector<uint16_t> glyphIndices;
     sta_vector<float> advances;
@@ -95,6 +95,12 @@ struct Line {
     uint32_t textLength = 0;
     uint32_t charOffset = 0;          ///< позиция первого символа строки в книге
 };
+
+/// Знак сноски на строке под этим местом, или nullptr. x — от левого края
+/// полосы, как у PlacedNote; reach — на сколько зона щелчка шире самого знака
+/// с каждой стороны: попасть мышью в знак шириной в цифру трудно. Знаки
+/// вплотную делят зону, и берётся ближайший — внутри знака он сам.
+const PlacedNote* noteUnder(const Line& line, float x, float reach);
 
 /// Абзац, прошедший анализ и шейпинг, — то, что не надо делать заново.
 ///
