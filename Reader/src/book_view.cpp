@@ -93,10 +93,7 @@ BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Se
       // его размер, а спрашивать остров (SizeChanged, XamlRoot) не нужно — и
       // нельзя было до Loaded. Событие приходит из цикла сообщений, то есть не
       // раньше, чем полоса достроится.
-      sizeWatch_(window_,
-                 [this](Object const&, ClientSize const& client) {
-                     applySize(client.size, client.scale);
-                 }),
+      sizeWatch_(window_, *this),
       // Холстом ведущего полоса становится последним членом: всё, о чём
       // ведущий её попросит, к этой минуте построено.
       canvasAttachment_(presenter_.attachCanvas(*this)) {
@@ -123,9 +120,9 @@ BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Se
 
     // Первый WM_SIZE окно пережило до нас: текущая мера снимается сразу. Мера
     // — уже вёрстка, и ведущий рисует ею через холст, под которым полоса
-    // стоит с конца списка инициализации. Сорвись она — построенные члены
-    // разрушатся, и связь уведёт холст из-под ведущего, а подписки снимутся.
-    applySize(window_.clientSize(), window_.rasterizationScale());
+    // стоит с конца списка инициализации. Сбой в ней — остановка, как и в
+    // мере, пришедшей событием: applySize — noexcept.
+    applySize({window_.clientSize(), window_.rasterizationScale()});
 }
 
 void BookView::buildTree() {
@@ -445,8 +442,9 @@ std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     return chosenAnimation;
 }
 
-void BookView::applySize(SizeInt32 pixels, float scale) {
-    if (scale <= 0.0f) scale = 1.0f;
+void BookView::applySize(const ClientSize& client) noexcept {
+    const SizeInt32 pixels = client.size;
+    const float scale = client.scale > 0.0f ? client.scale : 1.0f;
 
     // Пиксели — мера; DIP, в которых верстается и рисуется полоса, — их доля.
     // Та же мера — ни растров, ни вёрстки: событие приходит и без перемены.
