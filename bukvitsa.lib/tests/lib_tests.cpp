@@ -27,6 +27,7 @@
 
 #include "bukvitsa/reader/book_index.h"
 #include "bukvitsa/reader/book_places.h"
+#include "bukvitsa/reader/imaging.h"
 #include "bukvitsa/reader/shelf_text.h"
 #include "bukvitsa/reader/workspace.h"
 
@@ -447,6 +448,52 @@ void testPageWarp() {
           "кромка, перелетевшая полосу между точками, выворачивает столбец");
 }
 
+/// Бюджет памяти из заголовка — в байтах, по формату кадра, — и уменьшение
+/// до предела — на краях: квадрат 16384² в 32 бита ровно в бюджете, на
+/// пиксель шире — нет; снимок на 200 Мп в 24 и 32 бита — в бюджете, в 48 —
+/// нет; формат уже 32 бит считается за 32; 16384² в 64 и 128 бит, 65535² и
+/// стороны в предел uint32_t — нет, без переполнения; нулевая сторона — нет.
+/// Большая сторона уменьшенного — ровно предел, меньшая — целочисленно и не
+/// меньше пикселя, и при сторонах, чьё произведение не влезает в uint32_t;
+/// не больше предела — как есть, без увеличения.
+void testPictureBudget() {
+    std::printf("\n=== бюджет картинки ===\n");
+
+    check(reader::withinPictureBudget(16384, 16384, 32), "16384×16384 в 32 бита — ровно в бюджете");
+    check(!reader::withinPictureBudget(16385, 16384, 32) && !reader::withinPictureBudget(16384, 16385, 32),
+          "на пиксель больше — за бюджетом");
+    check(reader::withinPictureBudget(16320, 12240, 24) && reader::withinPictureBudget(16320, 12240, 32),
+          "снимок на 200 Мп в 24 и 32 бита — в бюджете");
+    check(!reader::withinPictureBudget(16320, 12240, 48), "снимок на 200 Мп в 48 бит — за бюджетом");
+    check(reader::withinPictureBudget(16384, 16384, 1) && !reader::withinPictureBudget(16385, 16384, 1),
+          "1 бит на пиксель считается за 32: декодер отдаёт PBGRA");
+    check(!reader::withinPictureBudget(16384, 16384, 64) && !reader::withinPictureBudget(16384, 16384, 128) &&
+              reader::withinPictureBudget(8192, 8192, 128),
+          "16384² в 64 и 128 бит — за бюджетом, 8192² в 128 — ровно в нём");
+    check(!reader::withinPictureBudget(65535, 65535, 1) &&
+              !reader::withinPictureBudget(0xFFFFFFFFu, 0xFFFFFFFFu, 128),
+          "65535×65535 и стороны в предел uint32_t — за бюджетом, без переполнения");
+    check(!reader::withinPictureBudget(0, 100, 32) && !reader::withinPictureBudget(100, 0, 32),
+          "нулевая сторона — не картинка");
+    check(reader::withinPictureBudget(1, 1, 32) && reader::withinPictureBudget(268435456, 1, 32) &&
+              !reader::withinPictureBudget(268435457, 1, 32),
+          "полоса в пиксель в 32 бита — до 2²⁸ включительно");
+
+    const auto same = [](reader::PictureSize size, uint32_t width, uint32_t height) {
+        return size.width == width && size.height == height;
+    };
+    check(same(reader::fittedSize(16320, 12240, 4096), 4096, 3072), "200 Мп до 4096 — 4096×3072");
+    check(same(reader::fittedSize(12240, 16320, 4096), 3072, 4096), "стоя — так же, большая сторона — предел");
+    check(same(reader::fittedSize(4097, 4097, 4096), 4096, 4096), "квадрат на пиксель больше — ровно предел");
+    check(same(reader::fittedSize(100000, 1, 4096), 4096, 1), "полоса — меньшая сторона не меньше пикселя");
+    check(same(reader::fittedSize(0xFFFFFFFFu, 0xFFFFFFFEu, 1), 1, 1), "предел в пиксель и огромные стороны — 1×1");
+    check(same(reader::fittedSize(0xFFFFFFFFu, 0x7FFFFFFFu, 4096), 4096, 2047),
+          "стороны, чьё произведение не влезает в uint32_t, — целочисленно в uint64_t");
+    check(same(reader::fittedSize(100, 50, 4096), 100, 50) && same(reader::fittedSize(4096, 4096, 4096), 4096, 4096) &&
+              same(reader::fittedSize(4096, 1, 4096), 4096, 1),
+          "не больше предела — как есть, без увеличения");
+}
+
 /// Реестр второй версии — листы порознь, по пять точек, — читается в кривые
 /// из девяти: две точки у корешка становятся одной, на середине и высотой
 /// посередине между ними. Записывается уже третья версия, и она читается
@@ -495,6 +542,21 @@ void testSkinsReadSeparateLeaves() {
     const reader::Skin fresh = reader::defaultSkin();
     check(skin.bottom.x == fresh.bottom.x && skin.bottom.y == fresh.bottom.y,
           "чего в файле нет — начальная прямая");
+
+    // У первой точки правого листа нет высоты: на её месте — точка начальной
+    // прямой, а не точка корешка левого листа, так что корешок — посередине
+    // между точкой левого и прямой.
+    std::string rightWithoutHeight = old;
+    constexpr std::string_view rightFirstPoint = "<point x=\"0.51\" y=\"0.04\"/>";
+    const size_t rightFirstAt = rightWithoutHeight.find(rightFirstPoint);
+    check(rightFirstAt != std::string::npos, "первая точка правого листа записана как была");
+    if (rightFirstAt == std::string::npos) return;
+    rightWithoutHeight.replace(rightFirstAt, rightFirstPoint.size(), "<point x=\"0.51\"/>");
+    reader::Skins halvesRead;
+    const std::optional<std::vector<reader::CorrectedSkin>> halvesCorrected = halvesRead.loadFrom(rightWithoutHeight);
+    check(correctedOne(halvesCorrected, u"Старая", {reader::SkinFault::MissingCoordinate}) &&
+              aboutEqual(halvesRead.list()[0].top.y[spine], 0.5f * (0.02f + fresh.top.y[spine])),
+          "правый лист второй версии без высоты у первой точки — точка начальной прямой, а не корешок левого");
 
     const std::string written = skins.toXml();
     check(written.find("<skins version=\"3\">") != std::string::npos &&
@@ -1199,8 +1261,9 @@ void testWorkspaceNamesCorrectedSkins() {
                       holds(notice.details, L"Копия: " + registryCopy.wstring()),
                   "сообщение называет файл и копию");
             check(holds(notice.details, L"Первое же сохранение обложки в мастере или удаление обложки перепишет "
-                                        L"skins.xml исправленными кромками; правка рук сохранена в копии."),
-                  "сообщение говорит, что станет с правкой");
+                                        L"skins.xml исправленными кромками, а пропущенные обложки из него исчезнут; "
+                                        L"правка рук сохранена в копии."),
+                  "сообщение говорит, что станет с правкой и с пропущенными");
         }
 
         const Skin* const shownSpine = ws.skins.find(u"Сдвинутая");
@@ -1225,6 +1288,31 @@ void testWorkspaceNamesCorrectedSkins() {
         check(started.notices.size() == 1 &&
                   started.notices[0].headline == L"Обложка из skins.xml исправлена при чтении",
               "одна исправленная обложка — заголовок в единственном");
+        check(started.notices.size() == 1 &&
+                  holds(started.notices[0].details, L"перепишет skins.xml исправленными кромками; правка рук "
+                                                    L"сохранена в копии.") &&
+                  !holds(started.notices[0].details, L"пропущенные"),
+              "без пропущенных — о них ни слова");
+    }
+
+    {
+        Sandbox box("corrected-skipped");
+        Skins onlySkipped;
+        onlySkipped.put(good);
+        onlySkipped.put(imageless);
+        Workspace ws(box.root);
+        putOnDisk(ws.skinsPath(), onlySkipped.toXml());
+
+        const Started started = run(ws.start(never));
+
+        check(started.notices.size() == 1 &&
+                  holds(started.notices[0].details, L"перепишет skins.xml, и пропущенные обложки из него исчезнут; "
+                                                    L"правка рук сохранена в копии.") &&
+                  !holds(started.notices[0].details, L"исправленными кромками"),
+              "только пропущенные — о кромках ни слова, о пропущенных — что исчезнут");
+        check(started.notices.size() == 1 &&
+                  started.notices[0].headline == L"Обложка из skins.xml пропущена при чтении",
+              "только пропущенные — заголовок о пропуске, а не об исправлении");
     }
 
     {
@@ -1808,15 +1896,31 @@ void testWorkspaceFindsLastBook() {
     check(run(ws.lastBookPath(never)).empty(), "guid неизвестен — продолжать нечего");
 }
 
-/// Картинка или нет — по байтам, а не по имени.
+/// Картинка или нет — по байтам, а не по имени; картинка больше бюджета
+/// памяти — свой отказ, с размером из заголовка, до всякого раскодирования.
 void testWorkspaceTellsImages() {
     std::printf("\n=== рабочее место: снимок ===\n");
 
     Sandbox box("image");
     Workspace ws(box.root);
 
-    check(run(ws.isImage(testdata / L"bg_paper2.jpg", never)), "jpeg — картинка");
-    check(!run(ws.isImage(kBook, never)), "книга — не картинка");
+    check(run(ws.probeImage(testdata / L"bg_paper2.jpg", never)).refusal == PictureRefusal::None, "jpeg — картинка");
+    check(run(ws.probeImage(kBook, never)).refusal == PictureRefusal::NotAnImage, "книга — не картинка");
+
+    // PNG в 68 байт: верный заголовок 65535×65535 в 1 бит на пиксель и
+    // начало данных. Бюджет считает его не меньше чем по 4 байта на пиксель —
+    // 17 ГБ, — так что ответ «слишком велик», а не «не картинка».
+    static constexpr char kHugePng[] =
+        "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52"
+        "\x00\x00\xff\xff\x00\x00\xff\xff\x01\x00\x00\x00\x00\x9e\x7e\xe4"
+        "\xfd\x00\x00\x00\x0b\x49\x44\x41\x54\x78\x9c\x63\x60\x40\x05\x00"
+        "\x00\x10\x00\x01\x39\xbd\x8f\x65\x00\x00\x00\x00\x49\x45\x4e\x44"
+        "\xae\x42\x60\x82";
+    putOnDisk(box.root / L"huge.png", std::string_view{kHugePng, sizeof kHugePng - 1});
+    const PictureVerdict hugeVerdict = run(ws.probeImage(box.root / L"huge.png", never));
+    check(hugeVerdict.refusal == PictureRefusal::TooLarge && hugeVerdict.declaredSize.width == 65535 &&
+              hugeVerdict.declaredSize.height == 65535,
+          "PNG 65535×65535 — слишком велик, с размером из заголовка");
     check(run(ws.readBytes(kBook, never)) == onDisk(kBook), "байты файла целиком");
 }
 
@@ -1869,7 +1973,7 @@ void testWorkspaceReadsStopOnRequest() {
 
     check(canceled(ws.readBook(missing, stop)), "книга: не начинается — отмена, а не «файла нет»");
     check(canceled(ws.readBytes(missing, stop)), "байты: не начинается");
-    check(canceled(ws.isImage(missing, stop)), "снимок: не начинается");
+    check(canceled(ws.probeImage(missing, stop)), "снимок: не начинается");
     check(canceled(ws.addFolder(box.root / L"missing", stop)), "каталог: не начинается — отмена, а не «нет каталога»");
     check(canceled(ws.scanFolder(box.root / L"missing", stop)),
           "перепроверка каталога: не начинается — отмена, а не «каталога нет»");
@@ -2165,6 +2269,7 @@ int main(int argc, char* argv[]) {
     testSearchMatchesWhatTheReaderMeans();
     testEdgeThroughPoints();
     testPageWarp();
+    testPictureBudget();
     testSkinsReadSeparateLeaves();
     runSkinEditorTests();
     runKeyMapTests();

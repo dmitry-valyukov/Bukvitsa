@@ -54,6 +54,7 @@
 
 // Заголовки модели — последними: они несут импорт.
 #include "book.h"
+#include "imaging.h"
 #include "library.h"
 #include "notice.h"
 #include "settings.h"
@@ -293,10 +294,11 @@ public:
     /// тронут, — а начатое доходит до записи реестра.
     wxl::async::task<> deleteSkin(u16_view name, wxl::async::cancellation_token stop);
 
-    /// Читается ли файл как картинка: байты операцией, проба — раскодированием
-    /// целиком (`decodeImage`), так что снимок, битый в данных, а не в
-    /// заголовке, — тоже не картинка.
-    wxl::async::task<bool> isImage(std::filesystem::path image, wxl::async::cancellation_token stop);
+    /// Читается ли файл как картинка, а нет — почему: байты операцией, проба —
+    /// раскодированием целиком (`decodeImage`), так что снимок, битый в данных,
+    /// а не в заголовке, — тоже не картинка; больше бюджета памяти — свой
+    /// отказ, с размером из заголовка. Пикселей ответ не держит.
+    wxl::async::task<PictureVerdict> probeImage(std::filesystem::path image, wxl::async::cancellation_token stop);
 
     /// Байты файла целиком — для снимка подложки, который раскодирует полоса
     /// у себя: второе чтение того же файла дешевле, чем нести байты через

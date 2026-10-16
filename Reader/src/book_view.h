@@ -34,6 +34,7 @@
 #include "Object.h"
 #include "pch.h"
 
+#include "bukvitsa/reader/imaging.h"
 #include "spread_view.h"
 #include "turn_animation.h"
 
@@ -87,9 +88,10 @@ public:
     /// рабочее место, а полоса диска не касается. Пусто — снимка нет (ещё не
     /// прочитан или тема без него), и страница рисуется бумагой темы; байты,
     /// которые не раскодировались, — тоже.
-    /// @return раскодировался ли снимок: false — только у непустых байт,
-    ///         которые не картинка; сказать о них читателю — владельцу.
-    bool setBackdrop(std::string bytes);
+    /// @return почему снимка нет (`PictureRefusal::None` — показан или байт
+    ///         нет): не картинка или больше бюджета памяти; сказать о нём
+    ///         читателю — владельцу.
+    PictureRefusal setBackdrop(std::string bytes);
 
 private:
     // ---- холст ведущего (PageCanvas) ----
