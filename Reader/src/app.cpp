@@ -101,12 +101,14 @@ App::App()
           dsl::onClosed = method(this, &App::close),
       }},
       ws_{standardDataDirectory()},
+      presenter_{ws_.settings, themes_, idleScheduler_, *this, stop_.token()},
       notices_{window_, screenTheme_},
       start_{window_.chromeCompositor(), *this},
-      view_{window_, ws_.settings, themes_, *this, stop_.token()},
+      view_{window_, presenter_, ws_.settings, stop_.token()},
       shelf_{ws_.library.cards(), ws_.settings.continueReading, ws_.coverDirectory(), *this},
       wizard_{window_.chromeCompositor(), *this},
-      panel_{window_.chromeCompositor(), view_, ws_.settings, places_, themes_, search_, *this},
+      panel_{window_.chromeCompositor(), presenter_, view_.root(), ws_.settings, places_, themes_,
+             search_, *this},
       stateWrite_{window_.dispatcherQueue(), kPositionQuiet, stop_.token(),
                   [this](WaitableTimer& timer, cancellation_token stop) {
                       return writeState(timer, std::move(stop));
@@ -123,11 +125,11 @@ App::App()
       // Место чтения — отложенно, как и место окна: перелистывание — самое
       // частое действие в читалке, а файл состояния книги переписывается
       // целиком.
-      positionWatch_{view_.position().on_change(method(this, &App::positionChanged))},
+      positionWatch_{presenter_.position(), method(this, &App::positionChanged)},
       // Тема — с самого начала: за ней идёт подложка полосы, а имена в
       // настройках слушатель пишет, только если они изменились, — до чтения
       // настроек тему никто не меняет.
-      themeWatch_{view_.theme.on_change(method(this, &App::themeChanged))} {
+      themeWatch_{presenter_.theme(), method(this, &App::themeChanged)} {
     // Рамка окна тёмная, как и остров: системный светлый заголовок над тёмными
     // ящиками, мастером и полкой смотрелся бы чужим. Тега для неё в wxl пока
     // нет.
@@ -175,14 +177,14 @@ App::App()
     splash_.add_onTick(method(this, &App::revealStart));
 }
 
-// Подписки снимаются в теле деструктора — оно идёт раньше, чем умирают поля.
-// Слушатели будят циклы записи, а держатели циклов умирают раньше окна,
-// полосы и настроек: перемена, пришедшая после них, будила бы мёртвое.
+// Подписки без держателя снимаются в теле деструктора — оно идёт раньше, чем
+// умирают поля; держатели места и темы — среди последних полей и умирают
+// раньше всего, что выше них. Слушатели будят циклы записи, а держатели
+// циклов умирают раньше окна, полосы и настроек: перемена, пришедшая после
+// них, будила бы мёртвое.
 App::~App() {
     for (auto& [field, cookie] : flagWatches_) field->remove_change(cookie);
     for (auto& [field, cookie] : styleWatches_) field->remove_change(cookie);
-    view_.theme.remove_change(themeWatch_);
-    view_.position().remove_change(positionWatch_);
     if (geometryWatch_) window_.remove_onGeometryChanged(geometryWatch_);
 }
 
@@ -289,7 +291,7 @@ void App::show(Screen next) {
         // Полоса становится текущим экраном: показать её страницу на сцене и
         // увести задник окна с заставки на бумагу темы. Только потом — остров
         // ввода поверх.
-        view_.setActive(true);
+        presenter_.setActive(true);
         window_.content(view_.root());
         notices_.flush();
         return;
@@ -304,7 +306,7 @@ void App::show(Screen next) {
 
     // Полоса перестаёт быть текущим экраном: её страница уходит со сцены, а
     // задником окна снова заставка.
-    view_.setActive(false);
+    presenter_.setActive(false);
     window_.backgroundAsync(splashImage());
 
     if (next == Screen::Start) {
@@ -397,13 +399,14 @@ task<> App::writeState(WaitableTimer& timer, cancellation_token stop) {
         // приостанавливается.
         bool const last = stop.is_canceled();
 
-        if (view_.isOpen()) {
+        if (presenter_.isOpen()) {
             // Путь — для слов читателю, и снят до записи: пока она идёт, на
             // полосу может встать другая книга.
-            std::filesystem::path const book = view_.book()->path();
+            std::filesystem::path const book = presenter_.book()->path();
 
             try {
-                co_await ws_.saveState(places_.guid(), places_.stateAt(view_.position().get()));
+                co_await ws_.saveState(places_.guid(),
+                                       places_.stateAt(presenter_.position().get()));
             } catch (const last_error& failure) {
                 notices_.post(noticeOf(L"Не удалось сохранить место чтения", book.wstring(), failure));
             }
@@ -497,8 +500,8 @@ void App::flagChanged(bool) noexcept {
 /// Что значит клавиша, решает карта клавиш (`resolve`, bukvitsa.lib): там вся
 /// матрица — полоса, мастер, ползунок и поле ввода, приоритет Escape. Здесь —
 /// только контекст для неё и исполнение ответа. Над книгой это единственный
-/// обработчик клавиш у корня: листание, кегль, тему и сноску исполняет полоса
-/// (perform), тем же методом, что её колесо и щелчок.
+/// обработчик клавиш у корня: листание, кегль, тему и сноску исполняет ведущий
+/// полосы (perform), тем же методом, что колесо и щелчок по полосе.
 ///
 /// Флага «мы в полном экране» нет намеренно: он был бы вторым местом, где это
 /// записано, — а состояние знает само окно (window_.fullScreen()). Так же и
@@ -511,10 +514,10 @@ void App::onKey(Object const&, KeyRoutedEventArgs& args) {
         .cameFrom = cameFrom_.get(),
         .wizardOpen = wizard_.isOpen(),
         .panelOpen = panel_.isOpen(),
-        .noteOpen = view_.noteOpen(),
+        .noteOpen = presenter_.noteOpen(),
         .fullScreen = window_.fullScreen(),
         .origin = focusOriginOf(args.originalSource()),
-        .bookOpen = view_.isOpen(),
+        .bookOpen = presenter_.isOpen(),
     };
 
     const Command command = resolve(keyPressOf(args.key()), context);
@@ -548,7 +551,8 @@ void App::onKey(Object const&, KeyRoutedEventArgs& args) {
             window_.fullScreen(false);
             break;
 
-        // Полосы: листание, начало и конец книги, кегль, тема, сноска.
+        // Полосы — её ведущему: листание, начало и конец книги, кегль, тема,
+        // сноска.
         case Command::TurnForward:
         case Command::TurnBackward:
         case Command::GoToStart:
@@ -558,7 +562,7 @@ void App::onKey(Object const&, KeyRoutedEventArgs& args) {
         case Command::FontReset:
         case Command::NextTheme:
         case Command::DismissNote:
-            view_.perform(command);
+            presenter_.perform(command);
             break;
 
         case Command::None:
