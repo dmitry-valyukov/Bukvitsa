@@ -89,14 +89,16 @@ wxl::async::task<bool> App::checkImage(std::filesystem::path image, cancellation
             co_return true;
         case PictureRefusal::NotAnImage:
             notices_.post({L"Это не изображение", image.wstring()});
-            break;
+            co_return false;
         case PictureRefusal::TooLarge: {
             const u16_text headline = core::format(u"Снимок слишком велик: {}×{}", verdict.declaredSize.width,
                                                    verdict.declaredSize.height);
             notices_.post({std::wstring{headline.wchars()}, image.wstring()});
-            break;
+            co_return false;
         }
         }
+        // Новая причина отказа без своих слов молча отказала бы в снимке.
+        core::abort("checkImage: отказ раскодирования вне перечисления");
     } catch (const last_error& failure) {
         notices_.post(noticeOf(L"Не удалось открыть изображение", image.wstring(), failure));
     }
