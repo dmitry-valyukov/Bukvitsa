@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -37,22 +38,31 @@ EdgeCurve straightCurve(float from, float to, float level) {
     return curve;
 }
 
-/// Доля из атрибута; чего нет или что вылезло из долей — `fallback`. Сравнение
-/// написано так, чтобы и NaN (from_chars его разбирает) ушёл в `fallback`.
-float shareOf(const wxl::xml::node& point, const char* name, float fallback) {
-    const auto value = static_cast<float>(realOf(point, name, fallback));
-    return value >= 0.0f && value <= 1.0f ? value : fallback;
+/// Доля из атрибута. Чего нет — `fallback`, молча: точки в файле может и не
+/// быть. Что есть, но не доля страницы — вне [0, 1], NaN (from_chars его
+/// разбирает), не число, — тоже `fallback`, но с отметкой `outsidePage`: это
+/// правка рук, и чтение её называет. Сравнение написано так, чтобы и NaN ушёл
+/// в `fallback`.
+float shareOf(const wxl::xml::node& point, const char* name, float fallback, bool& outsidePage) {
+    if (!point.attribute(name)) return fallback;
+
+    const auto value = static_cast<float>(realOf(point, name, std::numeric_limits<double>::quiet_NaN()));
+    if (value >= 0.0f && value <= 1.0f) return value;
+
+    outsidePage = true;
+    return fallback;
 }
 
 /// Читает до `count` дочерних `<point>` в точки кривой, начиная с `first`.
-/// Чего в файле нет или что вылезло из долей — остаётся как было: файл могли
-/// поправить руками, и это не повод ронять обложку.
-void readPoints(const wxl::xml::node& element, EdgeCurve& curve, size_t first, size_t count) {
+/// Чего в файле нет или что не доля страницы — остаётся как было (у чтения
+/// реестра — точка начальной прямой): файл могли поправить руками, и это не
+/// повод ронять обложку; второе отмечается в `outsidePage`.
+void readPoints(const wxl::xml::node& element, EdgeCurve& curve, size_t first, size_t count, bool& outsidePage) {
     size_t index = first;
     for (const wxl::xml::node& point : element.children_named("point")) {
         if (index >= first + count) break;
-        curve.x[index] = shareOf(point, "x", curve.x[index]);
-        curve.y[index] = shareOf(point, "y", curve.y[index]);
+        curve.x[index] = shareOf(point, "x", curve.x[index], outsidePage);
+        curve.y[index] = shareOf(point, "y", curve.y[index], outsidePage);
         ++index;
     }
 }
@@ -72,15 +82,15 @@ bool ascending(const EdgeCurve& curve) {
 /// корешка обе — теперь там одна точка: на середине, высотой посередине
 /// между ними.
 EdgeCurve curveOfHalves(const wxl::xml::node* leftHalf, const wxl::xml::node* rightHalf,
-                        EdgeCurve fallback) {
+                        EdgeCurve fallback, bool& outsidePage) {
     EdgeCurve curve = fallback;
-    if (leftHalf) readPoints(*leftHalf, curve, 0, kSpine + 1);
+    if (leftHalf) readPoints(*leftHalf, curve, 0, kSpine + 1, outsidePage);
 
     if (rightHalf) {
         // Точки правого листа ложатся с корешка, поэтому читаются в копию —
         // иначе первая из них затёрла бы точку левого до усреднения.
         EdgeCurve right = curve;
-        readPoints(*rightHalf, right, kSpine, kSpine + 1);
+        readPoints(*rightHalf, right, kSpine, kSpine + 1, outsidePage);
 
         curve.y[kSpine] = 0.5f * (curve.y[kSpine] + right.y[kSpine]);
         for (size_t index = kSpine + 1; index < kPoints; ++index) {
@@ -377,17 +387,18 @@ std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
             // Вторая версия писала листы порознь — topLeft и topRight; её
             // кривая собирается из обеих половин. Различаются они по именам
             // элементов, а не по версии файла: элемент сам говорит, что в нём.
+            bool outsidePage = false;
             if (const wxl::xml::node* curve = element.child("top")) {
-                readPoints(*curve, skin.top, 0, kPoints);
+                readPoints(*curve, skin.top, 0, kPoints, outsidePage);
             } else {
                 skin.top = curveOfHalves(element.child("topLeft"), element.child("topRight"),
-                                         skin.top);
+                                         skin.top, outsidePage);
             }
             if (const wxl::xml::node* curve = element.child("bottom")) {
-                readPoints(*curve, skin.bottom, 0, kPoints);
+                readPoints(*curve, skin.bottom, 0, kPoints, outsidePage);
             } else {
                 skin.bottom = curveOfHalves(element.child("bottomLeft"),
-                                            element.child("bottomRight"), skin.bottom);
+                                            element.child("bottomRight"), skin.bottom, outsidePage);
             }
 
             // Корешок стоит на середине, что бы ни было написано в файле, — и
@@ -426,6 +437,7 @@ std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
             // такой, какой правил файл, и должен знать почему. Из двух прямых
             // причина — та, что решила: выворот ровняет всю обложку.
             std::vector<SkinFault> faults;
+            if (outsidePage) faults.push_back(SkinFault::OutsidePage);
             if (spineMoved) faults.push_back(SkinFault::SpineMoved);
             if (folds) {
                 faults.push_back(SkinFault::FoldsColumn);

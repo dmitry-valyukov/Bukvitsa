@@ -109,7 +109,9 @@ std::vector<UINT32> codepoints(std::wstring_view text) {
 std::vector<UINT16> glyphIndices(IDWriteFontFace* face, const std::vector<UINT32>& points) {
     std::vector<UINT16> indices(points.size());
     if (!points.empty()) {
-        face->GetGlyphIndices(points.data(), static_cast<UINT32>(points.size()), indices.data());
+        bukvitsa::typography::stopIfFailed(
+            face->GetGlyphIndices(points.data(), static_cast<UINT32>(points.size()), indices.data()),
+            "Formula: не нашлись глифы");
     }
     return indices;
 }
@@ -125,24 +127,27 @@ FontPtr createFileFont(const std::string& file, float size) {
     const std::optional<u8_view> fileUtf8 = unicode::checked(file);
     if (!fileUtf8) wxl::core::abort("Formula: путь файла шрифта от MicroTeX не UTF-8");
     const u16_text path = fileUtf8->to_utf16();
+
+    // Файлы шрифтов — свои, из res рядом с программой: отказ DirectWrite на
+    // них — отказ системы или битая установка, а не формула из книги, и
+    // шрифт без грани молча мерил бы ноль. Остановка (system_failure.h).
     ComPtr<IDWriteFontFile> fontFile;
-    if (FAILED(backend().factory->CreateFontFileReference(path.c_str(), nullptr, &fontFile))) {
-        return font;
-    }
+    bukvitsa::typography::stopIfFailed(backend().factory->CreateFontFileReference(path.c_str(), nullptr, &fontFile),
+                                       "Formula: не открылся файл шрифта MicroTeX");
 
     BOOL supported = FALSE;
     DWRITE_FONT_FILE_TYPE fileType{};
     DWRITE_FONT_FACE_TYPE faceType{};
     UINT32 faces = 0;
-    if (FAILED(fontFile->Analyze(&supported, &fileType, &faceType, &faces)) || !supported) {
-        return font;
-    }
+    bukvitsa::typography::stopIfFailed(fontFile->Analyze(&supported, &fileType, &faceType, &faces),
+                                       "Formula: файл шрифта MicroTeX не разобран");
+    if (!supported) wxl::core::abort("Formula: файл шрифта MicroTeX — не шрифт, который знает DirectWrite");
 
     IDWriteFontFile* files[] = {fontFile.Get()};
-    if (SUCCEEDED(backend().factory->CreateFontFace(faceType, 1, files, 0,
-                                                    DWRITE_FONT_SIMULATIONS_NONE, &font->face))) {
-        font->face->GetMetrics(&font->metrics);
-    }
+    bukvitsa::typography::stopIfFailed(backend().factory->CreateFontFace(faceType, 1, files, 0,
+                                                                         DWRITE_FONT_SIMULATIONS_NONE, &font->face),
+                                       "Formula: не создалась грань шрифта MicroTeX");
+    font->face->GetMetrics(&font->metrics);
     return font;
 }
 
@@ -152,30 +157,37 @@ FontPtr createNamedFont(std::wstring family, int style, float size) {
     font->style = style;
     font->family = std::move(family);
 
+    // Отказ вызова DirectWrite — остановка (system_failure.h): шрифт без
+    // грани молча мерил бы ноль, и формула рассыпалась бы без причины.
     ComPtr<IDWriteFontCollection> collection;
-    if (FAILED(backend().factory->GetSystemFontCollection(&collection, FALSE))) return font;
+    bukvitsa::typography::stopIfFailed(backend().factory->GetSystemFontCollection(&collection, FALSE),
+                                       "Formula: нет системной коллекции шрифтов");
 
     UINT32 index = 0;
     BOOL exists = FALSE;
-    collection->FindFamilyName(font->family.c_str(), &index, &exists);
+    bukvitsa::typography::stopIfFailed(collection->FindFamilyName(font->family.c_str(), &index, &exists),
+                                       "Formula: семейство шрифта не искалось");
+    // Семейства нет в системе — законная замена, не отказ: на чужой машине
+    // Georgia или Segoe UI может не оказаться, и текст формулы набирается
+    // первым семейством коллекции.
     if (!exists) index = 0;
 
     ComPtr<IDWriteFontFamily> fontFamily;
-    if (FAILED(collection->GetFontFamily(index, &fontFamily))) return font;
+    bukvitsa::typography::stopIfFailed(collection->GetFontFamily(index, &fontFamily),
+                                       "Formula: не открылось семейство шрифта");
 
     ComPtr<IDWriteFont> matched;
     const DWRITE_FONT_WEIGHT weight =
         (style & TypefaceStyle::BOLD) != 0 ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
     const DWRITE_FONT_STYLE slant =
         (style & TypefaceStyle::ITALIC) != 0 ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
-    if (FAILED(fontFamily->GetFirstMatchingFont(weight, DWRITE_FONT_STRETCH_NORMAL, slant,
-                                                &matched))) {
-        return font;
-    }
+    bukvitsa::typography::stopIfFailed(fontFamily->GetFirstMatchingFont(weight, DWRITE_FONT_STRETCH_NORMAL, slant,
+                                                                         &matched),
+                                       "Formula: в семействе не нашлось начертания");
 
-    if (SUCCEEDED(matched->CreateFontFace(&font->face))) {
-        font->face->GetMetrics(&font->metrics);
-    }
+    bukvitsa::typography::stopIfFailed(matched->CreateFontFace(&font->face),
+                                       "Formula: не создалась грань шрифта");
+    font->face->GetMetrics(&font->metrics);
     return font;
 }
 
@@ -199,11 +211,10 @@ float Font_dw::measure(std::wstring_view text) const {
     const std::vector<UINT32> points = codepoints(text);
     const std::vector<UINT16> indices = glyphIndices(face.Get(), points);
     std::vector<DWRITE_GLYPH_METRICS> glyphMetrics(indices.size());
-    if (indices.empty() ||
-        FAILED(face->GetDesignGlyphMetrics(indices.data(), static_cast<UINT32>(indices.size()),
-                                           glyphMetrics.data(), FALSE))) {
-        return 0.0f;
-    }
+    if (indices.empty()) return 0.0f;   // мерить нечего
+    bukvitsa::typography::stopIfFailed(face->GetDesignGlyphMetrics(indices.data(), static_cast<UINT32>(indices.size()),
+                                                                   glyphMetrics.data(), FALSE),
+                                       "Formula: не измерились глифы");
     int64_t design = 0;
     for (const DWRITE_GLYPH_METRICS& glyph : glyphMetrics) design += glyph.advanceWidth;
     return static_cast<float>(design) * size / static_cast<float>(metrics.designUnitsPerEm);
