@@ -13,12 +13,11 @@
 // разворачиваются не по месту знака, а отдельной фазой после потока чтения.
 
 #include <algorithm>
+#include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
-
-// ensure — макрос: с импортом он не приходит.
-#include "abi.h"
 
 // Свой заголовок после всех стандартных: он ведёт к импорту модуля книги, а
 // стандартный заголовок после импорта MSVC уже не принимает.
@@ -55,6 +54,12 @@ std::wstring noteMarker(fb3::NoteNumbering numbering, uint32_t number) {
         break;
 
     case fb3::NoteNumbering::Roman: {
+        // Дальше 3999 у римских записи нет, а без потолка знак из тысяч «m» —
+        // строка длиной number/1000 на каждую сноску — раздувал бы текст
+        // книги квадратично числу сносок. Дальше — арабские.
+        if (number > 3999)
+            break;
+
         static constexpr std::pair<uint32_t, const wchar_t*> kRoman[] = {
             {1000, L"m"}, {900, L"cm"}, {500, L"d"}, {400, L"cd"}, {100, L"c"}, {90, L"xc"},
             {50, L"l"},   {40, L"xl"},  {10, L"x"},  {9, L"ix"},   {5, L"v"},   {4, L"iv"},
@@ -91,9 +96,21 @@ bool hasBlockChild(const fb3::Node& node) {
 }
 
 /// Размер массива хранилища как индекс в нём: диапазоны и позиции — uint32_t.
+///
+/// Помещаться в них размеру никто не обещает: массивы растят данные книги, и не
+/// только тем, что в ней лежит, — знаки сносок вёрстка набирает сама, тело
+/// сноски вне `<notes>` или внутри другого тела разворачивается не раз. Так
+/// что это не инвариант, а отказ открыть книгу — исключением, как отказывает
+/// разбор.
+uint32_t storageIndex(size_t size) {
+    if (size > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("Вёрстка: книга больше, чем читалка может разметить");
+    return static_cast<uint32_t>(size);
+}
+
 template <typename Array>
 uint32_t sizeOf(const Array& array) {
-    return static_cast<uint32_t>(array.size());
+    return storageIndex(array.size());
 }
 
 class Flattener {
@@ -684,11 +701,16 @@ private:
     }
 
     void emitImage(const fb3::Node& node) {
+        // Картинка без части — битая ссылка, и, как знак сноски без тела, она
+        // остаётся без цели: блока нет вовсе, места на странице она не
+        // занимает и абзац, в котором стоит, не режет.
+        const fb3::ImageData* data = node.image();
+        if (!data || !data->partIndex) return;
+
         Block image;
         image.kind = BlockKind::Image;
         image.charOffset = node.charOffset();
-        if (const fb3::ImageData* data = node.image())
-            image.imageIndex = data->partIndex;
+        image.imageIndex = *data->partIndex;
 
         // finishBlock() выбрасывает пустой абзац, поэтому картинка между двумя
         // кусками текста не оставляет за собой пустой строки. Продолжению
