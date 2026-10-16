@@ -3,11 +3,14 @@
 
 #include <objbase.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <string>
@@ -577,6 +580,7 @@ void testSkinsReadSeparateLeaves() {
 
 using wxl::async::cancellation_source;
 using wxl::async::cancellation_token;
+using wxl::async::last_error;
 using wxl::async::operation_canceled_exception;
 using wxl::async::sta_loop;
 using wxl::async::task;
@@ -646,15 +650,50 @@ bool holds(const std::wstring& text, std::wstring_view piece) {
     return text.find(piece) != std::wstring::npos;
 }
 
+/// Сколько раз кусок встречается в тексте файла.
+size_t occurrences(std::string_view text, std::string_view piece) {
+    size_t count = 0;
+    for (size_t at = text.find(piece); at != std::string_view::npos; at = text.find(piece, at + piece.size())) ++count;
+    return count;
+}
+
 const std::filesystem::path kBook = testdata / L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3";
 const std::filesystem::path kOtherBook = testdata / L"nightmare_example.fb3";
+/// Третья книга — для «новый файл в каталоге»: у неё свой UUID.
+const std::filesystem::path kThirdBook = testdata / L"anathomy_tutorial_example.fb3";
+
+/// Наблюдаемый каталог пробы — копии книг в `shelf` песочницы.
+std::filesystem::path shelfOf(const Sandbox& box, std::initializer_list<std::filesystem::path> books) {
+    const std::filesystem::path folder = box.root / L"shelf";
+    std::filesystem::create_directories(folder);
+    for (const std::filesystem::path& book : books) std::filesystem::copy_file(book, folder / book.filename());
+    return folder;
+}
+
+/// Карточка книги, чей файл лежит по этому пути; нет такой — nullptr.
+ShelfCard* cardAt(Library& library, const std::filesystem::path& path) {
+    for (const intrusive_ptr<ShelfCard>& card : library.cards())
+        if (samePath(card->entry.path, path)) return card.get();
+    return nullptr;
+}
+
+/// Время правки файла сдвигается вперёд: для перепроверки это уже другой файл,
+/// хотя байты те же.
+std::filesystem::file_time_type touch(const std::filesystem::path& file) {
+    const std::filesystem::file_time_type later = std::filesystem::last_write_time(file) + std::chrono::seconds(1);
+    std::filesystem::last_write_time(file, later);
+    return later;
+}
 
 /// Книга в реестр тем, что регистрация берёт из документа: описанием, числом
 /// знаков и копией обложки. Описание читается, а не забирается: документ
 /// теста живёт до конца пробы.
 const BookEntry& addTo(Library& library, const fb3::Document& document, const std::filesystem::path& path,
                        uint64_t fileSize) {
-    return library.add(document.description(), document.characterCount(), copyCover(document), path, fileSize);
+    return library
+        .add(document.description(), document.characterCount(), copyCover(document),
+             BookFile{.path = path, .size = fileSize})
+        .entry;
 }
 
 /// Регистрация книги в рабочем месте — тем же, что снимает с документа
@@ -663,7 +702,8 @@ const BookEntry& addTo(Library& library, const fb3::Document& document, const st
 Registered registerFrom(Workspace& ws, const fb3::Document& document, const std::filesystem::path& path,
                         uint64_t fileSize) {
     const std::optional<BookCover> cover = copyCover(document);
-    return run(ws.registerBook(document.description(), document.characterCount(), cover, path, fileSize));
+    return run(ws.registerBook(document.description(), document.characterCount(), cover,
+                               BookFile{.path = path, .size = fileSize}));
 }
 
 /// Реестр — карточками полки: новая книга — одна карточка в конце, та же книга
@@ -730,6 +770,184 @@ void testLibraryCards() {
     check(!library.loadFrom("<library><book authors=\"Фрэнк"), "битый реестр — не разобран");
     check(heard.size() == 1 && heard[0] == list_change{list_change::reset, 0, 0} && library.cards().empty(),
           "битый реестр — пустая полка одним сбросом");
+}
+
+/// Реестр второй версии: наблюдаемые каталоги без дублей; пометка «не
+/// найдена» — поле карточки, которое слышит она, а не полка, и которое реестр
+/// пишет и читает; прочитанный файл снимает пометку, а открытие файлом не
+/// отрывает книгу от каталога и времени; убранная книга уходит своей
+/// карточкой; первая версия читается без новых полей.
+void testLibraryFolders() {
+    std::printf("\n=== реестр: каталоги и пометка «не найдена» ===\n");
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document{std::string(bytes)};
+    const std::string otherBytes = onDisk(kOtherBook);
+    const fb3::Document other{std::string(otherBytes)};
+
+    const std::filesystem::path folder = kBook.parent_path();
+    const std::filesystem::file_time_type modified = std::filesystem::last_write_time(kBook);
+    auto const file = BookFile{.path = kBook, .size = bytes.size(), .modified = modified, .folder = folder};
+
+    // Слышанное — раньше реестра: слушатели уходят вместе с ним и с карточкой.
+    std::vector<list_change> heard;
+    std::vector<bool> shown;
+
+    Library library;
+
+    check(library.addFolder(folder) && library.folders().size() == 1, "каталог — наблюдаемый");
+    std::wstring shouted = folder.wstring();
+    for (wchar_t& unit : shouted) unit = static_cast<wchar_t>(std::towupper(unit));
+    check(!library.addFolder(std::filesystem::path{shouted}) && library.folders().size() == 1,
+          "тот же каталог в другом регистре — не второй");
+
+    const u16_text guid =
+        library.add(document.description(), document.characterCount(), copyCover(document), file).entry.guid;
+    addTo(library, other, kOtherBook, otherBytes.size());   // файлом: без каталога и времени
+
+    static_cast<void>(library.cards().on_change(
+        [&heard](const list_change& change) noexcept { heard.push_back(change); }));
+    ShelfCard* const card = library.cards()[0].get();
+    static_cast<void>(card->missing().on_change([&shown](bool missing) noexcept { shown.push_back(missing); }));
+
+    check(!card->missing().get(), "новая книга — на месте");
+    check(library.setMissing(guid, true) && card->missing().get(), "пометка ставится");
+    check(!library.setMissing(guid, true), "поставленная снова — не перемена");
+    check(shown.size() == 1 && shown[0] && heard.empty(), "пометку слышит карточка, а не полка");
+    check(!library.setMissing(newGuid(), true), "чужой guid — ничего");
+
+    const std::string xml = library.toXml();
+    check(occurrences(xml, "<library version=\"2\">") == 1, "реестр — второй версии");
+    check(occurrences(xml, "<folders>") == 1 && occurrences(xml, "<folder path=") == 1, "каталоги — разделом");
+    check(occurrences(xml, " missing=\"true\"") == 1, "пометка — у одной книги");
+    check(occurrences(xml, " folder=") == 1 && occurrences(xml, " modified=") == 1,
+          "каталог и время — у книги из каталога; у добавленной файлом их нет");
+
+    Library reread;
+    check(reread.loadFrom(xml), "вторая версия читается");
+    const BookEntry* back = reread.find(guid);
+    check(reread.folders().size() == 1 && reread.folders()[0] == folder, "каталог — из файла");
+    check(back && back->folder == folder && back->modified == modified && back->fileSize == bytes.size(),
+          "каталог, время и размер книги — из файла");
+    check(reread.cards().size() == 2 && reread.cards()[0]->missing().get() && !reread.cards()[1]->missing().get(),
+          "пометка — из файла, у своей книги");
+    check(reread.toXml() == xml, "прочитанный и записанный снова — тот же текст");
+
+    // Пометка — только «true»: вписанное руками «false» книгу не помечает.
+    std::string unmarked = xml;
+    if (const size_t at = unmarked.find(" missing=\"true\""); at != std::string::npos)
+        unmarked.replace(at, 15, " missing=\"false\"");
+    Library handEdited;
+    check(occurrences(unmarked, " missing=\"false\"") == 1 && handEdited.loadFrom(unmarked) &&
+              handEdited.cards().size() == 2 && !handEdited.cards()[0]->missing().get(),
+          "missing=\"false\" — не пометка");
+
+    // Файл прочитан — значит, он на месте: та же запись, та же карточка, и
+    // снята пометка.
+    const AddedBook again =
+        library.add(document.description(), document.characterCount(), copyCover(document), file);
+    check(!again.isNew && !again.isChanged && again.restored, "тот же файл прочитан — запись та же, пометка снята");
+    check(library.cards()[0].get() == card && !card->missing().get() && heard.empty(),
+          "карточка та же, полка не слышит");
+
+    // Открытие файлом не знает ни каталога, ни времени: у того же файла они
+    // остаются от записи, и запись не меняется.
+    const AddedBook opened = library.add(document.description(), document.characterCount(), copyCover(document),
+                                         BookFile{.path = kBook, .size = bytes.size()});
+    check(!opened.isChanged && opened.entry.folder == folder && opened.entry.modified == modified,
+          "открытие файлом не отрывает книгу ни от каталога, ни от времени");
+
+    check(library.erase(guid) && library.cards().size() == 1 && heard.size() == 1 &&
+              heard[0] == list_change{list_change::erased, 0, 1},
+          "убранная книга — её карточка ушла с полки");
+    check(!library.erase(guid) && !library.find(guid), "убранной в реестре нет");
+
+    // Файл первой версии — как его писали до каталогов.
+    const std::string v1 =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<library version=\"1\">\n"
+        "  <book guid=\"{3F2504E0-4F89-11D3-9A0C-0305E82C3301}\" title=\"Рудин\" authors=\"Иван Тургенев\" "
+        "bookId=\"\" cover=\"\" path=\"C:\\Книги\\Рудин.fb3\" size=\"10\" characters=\"5\"/>\n"
+        "</library>\n";
+    Library first;
+    check(first.loadFrom(v1) && first.cards().size() == 1 && first.folders().empty(), "первая версия читается");
+    if (first.cards().size() == 1) {
+        const BookEntry& old = first.cards()[0]->entry;
+        check(old.modified == kUnknownTime && old.folder.empty() && old.fileSize == 10 &&
+                  !first.cards()[0]->missing().get(),
+              "у записи первой версии время неизвестно, каталога и пометки нет");
+    }
+}
+
+/// Путь сводит запись с книгой, только если UUID этого не опровергает: запись
+/// без UUID по своему пути узнаёт книгу; другая книга с другим UUID по тому же
+/// пути — новая запись с новым guid, а прежняя уходит с полки. И guid, который
+/// настройки помнят за этим путём, ей не достаётся: он прежней книги.
+void testLibraryPathTakenByOtherBook() {
+    std::printf("\n=== реестр: путь и UUID ===\n");
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document{std::string(bytes)};
+    const std::string otherBytes = onDisk(kOtherBook);
+    const fb3::Document other{std::string(otherBytes)};
+
+    std::vector<list_change> heard;
+
+    // Запись без UUID — по этому пути: файл правили руками или книга его не
+    // знает. Тот же путь узнаёт её.
+    Library unnamed;
+    const std::string xml = "<library version=\"2\"><book guid=\"{3F2504E0-4F89-11D3-9A0C-0305E82C3301}\" "
+                            "title=\"x\" authors=\"\" bookId=\"\" cover=\"\" path=\"" +
+                            xmlValue(kBook.native()) + "\" size=\"1\" characters=\"1\"/></library>";
+    check(unnamed.loadFrom(xml) && unnamed.cards().size() == 1, "запись без UUID прочитана");
+    const AddedBook named = unnamed.add(document.description(), document.characterCount(), copyCover(document),
+                                        BookFile{.path = kBook, .size = bytes.size()});
+    check(!named.isNew && named.entry.guid == u16_text{u"{3F2504E0-4F89-11D3-9A0C-0305E82C3301}"} &&
+              unnamed.cards().size() == 1,
+          "запись без UUID по своему пути — та же книга, guid прежний");
+
+    Library library;
+    static_cast<void>(library.cards().on_change(
+        [&heard](const list_change& change) noexcept { heard.push_back(change); }));
+
+    const u16_text former = addTo(library, document, kBook, bytes.size()).guid;
+    heard.clear();
+
+    const AddedBook replaced = library.add(other.description(), other.characterCount(), copyCover(other),
+                                           BookFile{.path = kBook, .size = otherBytes.size()}, former);
+    check(replaced.isNew && replaced.isChanged && replaced.entry.guid != former,
+          "другой UUID по тому же пути — новая книга под новым guid, и guid из настроек ей не достаётся");
+    check(!library.find(former) && library.cards().size() == 1 && heard.size() == 2 &&
+              heard[0] == list_change{list_change::erased, 0, 1} &&
+              heard[1] == list_change{list_change::inserted, 0, 1},
+          "прежняя запись ушла с полки, новая встала");
+
+    // Книгу с UUID переложили поверх файла книги без UUID: реестр узнаёт её по
+    // UUID, а запись той, чей файл перезаписан, уходит — у пути одна запись.
+    std::vector<list_change> moved;
+    const std::filesystem::path taken = kBook.parent_path() / L"без-UUID.fb3";
+    Library overwritten;
+    const std::string unnamedThere =
+        "<library version=\"2\"><book guid=\"{3F2504E0-4F89-11D3-9A0C-0305E82C3301}\" title=\"x\" "
+        "authors=\"\" bookId=\"\" cover=\"\" path=\"" +
+        xmlValue(taken.native()) + "\" size=\"1\" characters=\"1\"/></library>";
+    check(overwritten.loadFrom(unnamedThere) && overwritten.cards().size() == 1, "запись без UUID по своему пути");
+
+    const u16_text movedGuid = addTo(overwritten, document, kBook, bytes.size()).guid;
+    static_cast<void>(overwritten.cards().on_change(
+        [&moved](const list_change& change) noexcept { moved.push_back(change); }));
+
+    const AddedBook landed = overwritten.add(document.description(), document.characterCount(), copyCover(document),
+                                             BookFile{.path = taken, .size = bytes.size()});
+    check(!landed.isNew && landed.entry.guid == movedGuid && landed.entry.path == taken,
+          "переложенная книга — узнана по UUID, guid прежний, путь новый");
+    check(overwritten.cards().size() == 1 && overwritten.findFile(taken) &&
+              overwritten.findFile(taken)->guid == movedGuid &&
+              !overwritten.find(u16_text{u"{3F2504E0-4F89-11D3-9A0C-0305E82C3301}"}),
+          "у пути одна запись — переложенной книги");
+    check(moved.size() == 2 && moved[0] == list_change{list_change::erased, 0, 1} &&
+              moved[1] == list_change{list_change::replaced, 0, 1},
+          "запись перезаписанной ушла с полки, переложенная — заменой своей карточки");
 }
 
 /// Пустой каталог — первый запуск: умолчания, ни одного слова читателю.
@@ -946,11 +1164,13 @@ void testWorkspaceAddsFolder() {
     const cookie_t watch = ws.library.cards().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); });
 
-    const FolderAdded first = run(ws.addFolder(folder, never));
+    const ScanReport first = run(ws.addFolder(folder, never));
 
-    check(first.added, "каталог с книгами — реестр изменён");
+    check(first.listed == 3 && first.parsed == 2 && first.added == 2 && first.changed(),
+          "каталог с книгами: три файла *.fb3, две книги прочитаны и добавлены");
     check(first.unread.empty(), "все файлы прочитались");
     check(ws.library.cards().size() == 2, "две книги, мусор пропущен");
+    check(ws.library.folders().size() == 1 && ws.library.folders()[0] == folder, "каталог — наблюдаемый");
     check(heard.size() == 2 && heard[0] == list_change{list_change::inserted, 0, 1} &&
               heard[1] == list_change{list_change::inserted, 1, 1},
           "полка растёт по одной карточке в конец");
@@ -963,12 +1183,386 @@ void testWorkspaceAddsFolder() {
     check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 2,
           "записанный реестр — две книги");
 
-    const FolderAdded second = run(ws.addFolder(folder, never));
+    const ScanReport second = run(ws.addFolder(folder, never));
 
-    check(second.unread.empty() && ws.library.cards().size() == 2, "повторный обход не множит записи");
+    check(second.unread.empty() && second.parsed == 0 && ws.library.cards().size() == 2,
+          "повторный обход не множит записи и неизменного не читает");
     check(heard.size() == 2, "повторный обход — ни одной новой карточки, полка не тронута");
+    check(ws.library.folders().size() == 1, "каталог, добавленный снова, — тот же");
 
     ws.library.cards().remove_change(watch);
+
+    bool refused = false;
+    try {
+        run(ws.addFolder(box.root / L"nowhere", never));
+    } catch (const last_error&) {
+        refused = true;
+    }
+    check(refused && ws.library.folders().size() == 1, "каталог, которого нет, — сбой, и реестр его не запоминает");
+}
+
+/// Наблюдаемый каталог: у книг добавленного — каталог и время правки из
+/// листинга, и они переживают запись реестра; перепроверка неизменного не
+/// читает и обложек не пишет, как и открытие той же книги; файл с другим
+/// временем перечитывается и обновляет запись и обложку; пропавший
+/// помечается, вернувшийся — снимает пометку не читая, новый встаёт в конец;
+/// пропавший каталог помечает все свои книги.
+void testWorkspaceRescansFolders() {
+    std::printf("\n=== рабочее место: перепроверка каталога ===\n");
+
+    Sandbox box("watched");
+    const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
+    const std::filesystem::path book = folder / kBook.filename();
+    const std::filesystem::path otherBook = folder / kOtherBook.filename();
+
+    {
+        Workspace ws(box.root);
+
+        const ScanReport added = run(ws.addFolder(folder, never));
+        check(added.listed == 2 && added.parsed == 2 && added.added == 2 && added.marked == 0 && added.unread.empty(),
+              "добавленный каталог: обе книги прочитаны и добавлены");
+
+        const BookEntry* entry = ws.library.findFile(book);
+        check(entry && entry->folder == folder && entry->modified == std::filesystem::last_write_time(book),
+              "у книги — её каталог и время правки из листинга");
+
+        run(ws.saveLibrary());
+        const std::string xml = onDisk(ws.libraryPath());
+        check(occurrences(xml, "<folder path=") == 1 && occurrences(xml, " folder=") == 2 &&
+                  occurrences(xml, " modified=") == 2,
+              "в файле реестра — каталог, а у книг их каталог и время");
+    }
+
+    // Новый запуск — по файлу реестра: каталог, время и место книг пережили
+    // запись.
+    Workspace ws(box.root);
+    const Started started = run(ws.start(never));
+    check(started.notices.empty() && ws.library.folders().size() == 1 && ws.library.cards().size() == 2,
+          "запуск: каталог и книги — из файла");
+
+    const u16_text guid = ws.library.findFile(book)->guid;
+
+    // Обложка состарена: её перезапись видна наверняка, без надежды на часы.
+    const std::filesystem::path cover = ws.coverDirectory() / ws.library.findFile(book)->cover.wchars();
+    const std::filesystem::file_time_type aged = std::filesystem::last_write_time(cover) - std::chrono::hours(24);
+    std::filesystem::last_write_time(cover, aged);
+
+    std::vector<list_change> heard;
+    const cookie_t watch = ws.library.cards().on_change(
+        [&heard](const list_change& change) noexcept { heard.push_back(change); });
+
+    const ScanReport same = run(ws.rescanFolders(never));
+    check(same.listed == 2 && same.parsed == 0 && same.added == 0 && same.marked == 0 && same.restored == 0 &&
+              !same.changed(),
+          "без перемен: обе книги в листинге, ни одна не прочитана");
+    check(heard.empty() && std::filesystem::last_write_time(cover) == aged,
+          "без перемен: полка не тронута, обложка не переписана");
+
+    // Та же книга, открытая с полки, — та же запись: каталог и время остаются,
+    // обложку открытие не переписывает.
+    {
+        const LoadedBook loaded = run(ws.readBook(book, never));
+        const Opened opened = run(ws.openBook(loaded, never));
+        check(opened.entry.guid == guid && opened.entry.folder == folder &&
+                  opened.entry.modified == std::filesystem::last_write_time(book),
+              "открытая книга — та же запись, при своём каталоге и времени");
+        check(heard.empty() && std::filesystem::last_write_time(cover) == aged,
+              "открытие той же книги: полка не тронута, обложка не переписана");
+    }
+
+    // Другое время правки при тех же байтах — для перепроверки другой файл.
+    const std::filesystem::file_time_type touched = touch(book);
+    const ScanReport retouched = run(ws.rescanFolders(never));
+    check(retouched.parsed == 1 && retouched.added == 0 && retouched.changed(), "время правки сменилось — книга перечитана");
+    check(ws.library.findFile(book)->guid == guid && ws.library.findFile(book)->modified == touched &&
+              heard.size() == 1 && heard[0].kind == list_change::replaced,
+          "запись — с новым временем, под прежним guid: замена своей карточки");
+    check(std::filesystem::last_write_time(cover) != aged, "у изменённой записи обложка записана заново");
+
+    // Файла нет — «не найдена»: и в карточке, и в файле реестра.
+    const std::filesystem::path away = box.root / L"away.fb3";
+    std::filesystem::rename(otherBook, away);
+    heard.clear();
+
+    const ScanReport gone = run(ws.rescanFolders(never));
+    ShelfCard* const otherCard = cardAt(ws.library, otherBook);
+    check(gone.listed == 1 && gone.marked == 1 && gone.parsed == 0 && gone.changed(),
+          "файла нет — запись помечена, ничего не прочитано");
+    check(otherCard && otherCard->missing().get() && heard.empty(), "помеченная карточка остаётся на полке");
+
+    run(ws.saveLibrary());
+    Library onDiskLibrary;
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && cardAt(onDiskLibrary, otherBook) &&
+              cardAt(onDiskLibrary, otherBook)->missing().get() && !cardAt(onDiskLibrary, book)->missing().get(),
+          "пометка пережила запись реестра — у своей книги");
+
+    // Вернулся тот же файл (переименование время правки хранит) — пометка
+    // снята, читать нечего.
+    std::filesystem::rename(away, otherBook);
+
+    const ScanReport back = run(ws.rescanFolders(never));
+    check(back.restored == 1 && back.marked == 0 && back.parsed == 0 && back.changed() && otherCard &&
+              !otherCard->missing().get() && heard.empty(),
+          "файл вернулся — пометка снята, книга не прочитана");
+
+    // Новый файл — новая книга в конце полки.
+    std::filesystem::copy_file(kThirdBook, folder / kThirdBook.filename());
+
+    const ScanReport fresh = run(ws.rescanFolders(never));
+    check(fresh.listed == 3 && fresh.parsed == 1 && fresh.added == 1 && heard.size() == 1 &&
+              heard[0] == list_change{list_change::inserted, 2, 1},
+          "новый файл — новая карточка в конце");
+
+    ws.library.cards().remove_change(watch);
+
+    // Каталога нет вовсе — нет и его книг: все помечены, а вернулся — пометки
+    // сняты, и ничего не прочитано.
+    const std::filesystem::path hidden = box.root / L"hidden";
+    std::filesystem::rename(folder, hidden);
+
+    const ScanReport vanished = run(ws.rescanFolders(never));
+    check(vanished.listed == 0 && vanished.marked == 3 && vanished.unread.empty(),
+          "каталога нет — все три книги помечены, сбоя нет");
+
+    std::filesystem::rename(hidden, folder);
+
+    const ScanReport returned = run(ws.rescanFolders(never));
+    check(returned.listed == 3 && returned.restored == 3 && returned.parsed == 0,
+          "каталог вернулся — пометки сняты, ничего не прочитано");
+}
+
+/// Обложка — раньше карточки: в миг, когда полка слышит новую или
+/// обновлённую книгу, файл её обложки уже в кэше. Картинка карточки берёт его
+/// сразу и сама его не ждёт.
+void testWorkspaceCoverBeforeCard() {
+    std::printf("\n=== рабочее место: обложка раньше карточки ===\n");
+
+    Sandbox box("cover-first");
+    const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
+    Workspace ws(box.root);
+
+    uint32_t heard = 0;
+    uint32_t ready = 0;
+    const cookie_t watch = ws.library.cards().on_change([&](const list_change& change) noexcept {
+        if (change.kind != list_change::inserted && change.kind != list_change::replaced) return;
+
+        const BookEntry& entry = ws.library.cards()[change.at]->entry;
+        ++heard;
+
+        std::error_code ignored;
+        if (!entry.cover.empty() && std::filesystem::exists(ws.coverDirectory() / entry.cover.wchars(), ignored))
+            ++ready;
+    });
+
+    run(ws.addFolder(folder, never));
+    check(heard == 2 && ready == 2, "новые книги: обложка в кэше раньше карточки");
+
+    // Изменённая — так же. Прежний файл обложки убран: иначе он остался бы от
+    // первой регистрации и доказывал бы не то.
+    const std::filesystem::path book = folder / kBook.filename();
+    std::filesystem::remove(ws.coverDirectory() / ws.library.findFile(book)->cover.wchars());
+    touch(book);
+    heard = 0;
+    ready = 0;
+
+    run(ws.rescanFolders(never));
+    check(heard == 1 && ready == 1, "изменённая книга: обложка в кэше раньше замены карточки");
+
+    ws.library.cards().remove_change(watch);
+}
+
+/// Реестр первой версии — без каталогов и времени правки: читается как есть, а
+/// первый обход каталога его книг перечитывает их — под прежними guid, то
+/// есть с прежним местом чтения, — и узнаёт время; дальше они не читаются.
+void testWorkspaceReadsLibraryV1() {
+    std::printf("\n=== рабочее место: реестр первой версии ===\n");
+
+    Sandbox box("library-v1");
+    const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
+    const std::filesystem::path book = folder / kBook.filename();
+    const std::filesystem::path otherBook = folder / kOtherBook.filename();
+
+    // Файл первой версии — тот, что писали до каталогов: книги добавлены по
+    // одной, без каталога и времени, а заголовок называет первую версию.
+    std::string v1;
+    u16_text guid;
+    {
+        Workspace ws(box.root);
+        const std::string bytes = onDisk(book);
+        const fb3::Document document{std::string(bytes)};
+        guid = registerFrom(ws, document, book, bytes.size()).entry.guid;
+        const std::string otherBytes = onDisk(otherBook);
+        const fb3::Document other{std::string(otherBytes)};
+        registerFrom(ws, other, otherBook, otherBytes.size());
+
+        v1 = ws.library.toXml();
+        const size_t version = v1.find("version=\"2\"");
+        if (version != std::string::npos) v1.replace(version, 11, "version=\"1\"");
+    }
+    check(occurrences(v1, "<library version=\"1\">") == 1 && occurrences(v1, " modified=") == 0 &&
+              occurrences(v1, " folder=") == 0 && occurrences(v1, "<folders>") == 0,
+          "файл первой версии: ни каталогов, ни времени");
+
+    Workspace ws(box.root);
+    putOnDisk(ws.libraryPath(), v1);
+
+    const Started started = run(ws.start(never));
+    check(started.notices.empty() && ws.library.cards().size() == 2 && ws.library.folders().empty(),
+          "первая версия прочитана без слова читателю");
+    check(ws.library.find(guid) && ws.library.find(guid)->modified == kUnknownTime &&
+              ws.library.find(guid)->folder.empty(),
+          "у записи первой версии время неизвестно и каталога нет");
+
+    const ScanReport first = run(ws.addFolder(folder, never));
+    check(first.listed == 2 && first.parsed == 2 && first.added == 0,
+          "первый обход перечитывает книги первой версии и новых не заводит");
+    check(ws.library.cards().size() == 2 && ws.library.find(guid) &&
+              ws.library.find(guid)->modified == std::filesystem::last_write_time(book) &&
+              ws.library.find(guid)->folder == folder,
+          "под прежним guid — уже со временем правки и каталогом");
+
+    const ScanReport second = run(ws.rescanFolders(never));
+    check(second.listed == 2 && second.parsed == 0, "дальше — по времени, без чтения");
+}
+
+/// Байты книги с комментарием архива в конце: тот же контейнер и та же книга,
+/// а файл длиннее. Комментарий — законный хвост ZIP: его длина — последнее
+/// поле записи конца каталога архива, два байта, младший первым. Нет такой
+/// записи — пусто, и проба скажет об этом сама.
+std::string withArchiveComment(std::string bytes, std::string_view comment) {
+    const size_t record = bytes.rfind(std::string_view("PK\x05\x06", 4));
+    if (record == std::string::npos || record + 22 > bytes.size()) return {};
+
+    const size_t length = static_cast<unsigned char>(bytes[record + 20]) |
+                          static_cast<size_t>(static_cast<unsigned char>(bytes[record + 21])) << 8;
+    const size_t grown = length + comment.size();
+    bytes[record + 20] = static_cast<char>(grown & 0xFF);
+    bytes[record + 21] = static_cast<char>(grown >> 8);
+    bytes += comment;
+    return bytes;
+}
+
+/// Перемену выдаёт и один размер: та же книга (тот же UUID) стала на байт
+/// длиннее, а время правки ей возвращено прежнее, — перепроверка её
+/// перечитывает, запись остаётся под прежним guid, соседняя книга не
+/// читается.
+void testWorkspaceRescanSeesSize() {
+    std::printf("\n=== рабочее место: другой размер при том же времени ===\n");
+
+    Sandbox box("size-only");
+    const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
+    const std::filesystem::path book = folder / kBook.filename();
+
+    Workspace ws(box.root);
+    run(ws.addFolder(folder, never));
+
+    const u16_text guid = ws.library.findFile(book)->guid;
+    const u16_text bookId = ws.library.findFile(book)->bookId;
+
+    // Байт — комментарием архива, а не просто в конец: хвост за концом архива
+    // читает не всякий разбор контейнера, а комментарий — часть формата.
+    const std::string original = onDisk(book);
+    const std::string grown = withArchiveComment(original, " ");
+    check(grown.size() == original.size() + 1, "копия с комментарием архива — на байт длиннее");
+
+    const std::filesystem::file_time_type kept = std::filesystem::last_write_time(book);
+    putOnDisk(book, grown);
+    std::filesystem::last_write_time(book, kept);
+    check(std::filesystem::last_write_time(book) == ws.library.findFile(book)->modified,
+          "время правки — прежнее, другой только размер");
+
+    bool sameBook = false;
+    try {
+        sameBook = run(ws.readBook(book, never)).description.id.to_utf16() == bookId;
+    } catch (const std::exception&) {
+    }
+    check(sameBook, "копия с комментарием архива читается той же книгой — с тем же UUID");
+
+    const ScanReport report = run(ws.rescanFolders(never));
+    check(report.listed == 2 && report.parsed == 1 && report.added == 0,
+          "другой размер — книга перечитана, соседняя — нет");
+    check(ws.library.cards().size() == 2 && ws.library.findFile(book)->guid == guid &&
+              ws.library.findFile(book)->fileSize == grown.size(),
+          "запись — с новым размером, под прежним guid");
+}
+
+/// Другая книга легла на место прежней: тот же путь, другой UUID. Перепроверка
+/// её читает и заводит новой — с новым guid и с чистого листа, — а запись
+/// прежней убирает вместе с местом чтения: её файла больше нет.
+void testWorkspaceRescanTellsReplacedBook() {
+    std::printf("\n=== рабочее место: на месте книги — другая ===\n");
+
+    Sandbox box("replaced");
+    const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
+    const std::filesystem::path book = folder / kBook.filename();
+
+    Workspace ws(box.root);
+    run(ws.addFolder(folder, never));
+
+    // У прежней книги — место чтения и строка прогресса на карточке.
+    const u16_text formerGuid = ws.library.findFile(book)->guid;
+    BookState read;
+    read.charOffset = ws.library.findFile(book)->characterCount / 2;
+    run(ws.saveState(formerGuid, read));
+    cardAt(ws.library, book)->showState(read);
+
+    std::vector<list_change> heard;
+    const cookie_t watch = ws.library.cards().on_change(
+        [&heard](const list_change& change) noexcept { heard.push_back(change); });
+
+    std::filesystem::copy_file(kThirdBook, book, std::filesystem::copy_options::overwrite_existing);
+
+    const ScanReport report = run(ws.rescanFolders(never));
+    check(report.listed == 2 && report.parsed == 1 && report.added == 1 && report.marked == 0,
+          "другая книга по тому же пути — прочитана и добавлена новой");
+    check(!ws.library.find(formerGuid) && ws.library.cards().size() == 2, "записи прежней книги нет, книг на полке две");
+    check(heard.size() == 2 && heard[0].kind == list_change::erased && heard[1].kind == list_change::inserted,
+          "полка: карточка прежней ушла, новая встала в конец");
+
+    const ShelfCard* const card = cardAt(ws.library, book);
+    check(card && card->entry.guid != formerGuid && card->entry.fileSize == std::filesystem::file_size(book) &&
+              card->entry.folder == folder,
+          "новая запись — под новым guid, со своим размером и в своём каталоге");
+    check(card && card->progress.get().empty() && run(ws.readState(card->entry.guid, never)).charOffset == 0,
+          "новая книга — с чистого листа: ни строки прогресса, ни места чтения");
+
+    ws.library.cards().remove_change(watch);
+}
+
+/// Запись с чужим каталогом при тех же размере и времени — не запись этого
+/// каталога: перепроверка перечитывает её файл, и запись переходит к своему
+/// каталогу под прежним guid; остальные книги не читаются.
+void testWorkspaceRescanAdoptsStrayEntry() {
+    std::printf("\n=== рабочее место: запись чужого каталога ===\n");
+
+    Sandbox box("stray-entry");
+    const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
+
+    // Реестр поправлен руками: у первой книги каталог чужой, а размер и время
+    // — настоящие.
+    std::string xml;
+    {
+        Workspace ws(box.root);
+        run(ws.addFolder(folder, never));
+        xml = ws.library.toXml();
+    }
+    const std::string own = " folder=\"" + xmlValue(folder.native()) + "\"";
+    const std::string stray = " folder=\"" + xmlValue((box.root / L"elsewhere").native()) + "\"";
+    if (const size_t at = xml.find(own); at != std::string::npos) xml.replace(at, own.size(), stray);
+    check(occurrences(xml, own) == 1 && occurrences(xml, stray) == 1, "у одной книги каталог чужой");
+
+    Workspace ws(box.root);
+    putOnDisk(ws.libraryPath(), xml);
+    run(ws.start(never));
+
+    const u16_text guid = ws.library.cards()[0]->entry.guid;
+
+    const ScanReport report = run(ws.rescanFolders(never));
+    check(report.listed == 2 && report.parsed == 1 && report.added == 0 && report.marked == 0,
+          "запись чужого каталога перечитана, своя — нет");
+    check(ws.library.cards().size() == 2 && ws.library.cards()[0]->entry.guid == guid &&
+              ws.library.cards()[0]->entry.folder == folder,
+          "запись перешла к своему каталогу под прежним guid");
 }
 
 /// Последняя книга: путь из настроек протух — по guid из реестра; нет и там —
@@ -1056,6 +1650,9 @@ void testWorkspaceReadsStopOnRequest() {
     check(canceled(ws.readBytes(missing, stop)), "байты: не начинается");
     check(canceled(ws.isImage(missing, stop)), "снимок: не начинается");
     check(canceled(ws.addFolder(box.root / L"missing", stop)), "каталог: не начинается — отмена, а не «нет каталога»");
+    check(canceled(ws.scanFolder(box.root / L"missing", stop)),
+          "перепроверка каталога: не начинается — отмена, а не «каталога нет»");
+    check(canceled(ws.rescanFolders(stop)), "перепроверка всех каталогов: не начинается — и когда их нет");
 
     const u16_text guid = newGuid();
     check(canceled(ws.readState(guid, stop)), "состояние: не начинается — отмена, а не чистый лист");
@@ -1270,6 +1867,45 @@ void testWorkspaceFolderKeepsWhatShelfShowed() {
           "записанный реестр — с той книгой, что полка показала");
 }
 
+/// Перепроверка, которой сказали кончиться на первой перечитанной книге:
+/// дальше она не читает и кончается отменой, а реестр в памяти цел — первая
+/// книга обновлена, вторая прежняя, обе на полке, — и записанный вызывающим,
+/// он читается с обеими и с каталогом.
+void testWorkspaceRescanKeepsWhatShelfShowed() {
+    std::printf("\n=== отмена: перепроверка каталогов ===\n");
+
+    Sandbox box("stop-rescan");
+    const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
+    Workspace ws(box.root);
+    run(ws.addFolder(folder, never));
+
+    // Обе изменились — обе пошли бы на чтение.
+    touch(folder / kBook.filename());
+    touch(folder / kOtherBook.filename());
+
+    // Просьба — в тот миг, когда полка слышит первую обновлённую книгу:
+    // перепроверка стоит между её регистрацией и чтением следующей.
+    cancellation_source source;
+    const cookie_t watch =
+        ws.library.cards().on_change([&source](const list_change&) noexcept { source.cancel(); });
+
+    check(canceled(ws.rescanFolders(source.token())), "перепроверка кончилась отменой");
+
+    ws.library.cards().remove_change(watch);
+
+    uint32_t updated = 0;
+    for (const intrusive_ptr<ShelfCard>& card : ws.library.cards())
+        if (card->entry.modified == std::filesystem::last_write_time(card->entry.path)) ++updated;
+    check(ws.library.cards().size() == 2 && updated == 1, "одна книга обновлена, вторую не читали, обе на полке");
+
+    run(ws.saveLibrary());
+
+    Library onDiskLibrary;
+    check(onDiskLibrary.loadFrom(onDisk(ws.libraryPath())) && onDiskLibrary.cards().size() == 2 &&
+              onDiskLibrary.folders().size() == 1,
+          "записанный реестр цел: обе книги и каталог");
+}
+
 }  // namespace
 
 // Тесты других слоёв модели — каждый в своём файле.
@@ -1323,12 +1959,20 @@ int main(int argc, char* argv[]) {
     sta_loop::start("bukvitsa.lib tests: I/O");
 
     testLibraryCards();
+    testLibraryFolders();
+    testLibraryPathTakenByOtherBook();
     testWorkspaceStartsEmpty();
     testWorkspaceKeepsBrokenFiles();
     testWorkspaceRegistersBook();
     testWorkspaceKeepsLastBookGuid();
     testWorkspaceOpensBook();
     testWorkspaceAddsFolder();
+    testWorkspaceRescansFolders();
+    testWorkspaceCoverBeforeCard();
+    testWorkspaceReadsLibraryV1();
+    testWorkspaceRescanSeesSize();
+    testWorkspaceRescanTellsReplacedBook();
+    testWorkspaceRescanAdoptsStrayEntry();
     testWorkspaceFindsLastBook();
     testWorkspaceTellsImages();
     testStateGoesUnderPlacesGuid();
@@ -1339,6 +1983,7 @@ int main(int argc, char* argv[]) {
     testWorkspaceDeleteSkinStopsBeforeChange();
     testWorkspaceReadsStopWithParent();
     testWorkspaceFolderKeepsWhatShelfShowed();
+    testWorkspaceRescanKeepsWhatShelfShowed();
 
     runPiecesTests();
     // Поток страниц верстает настоящую книгу: DirectWrite и WIC — после COM.
