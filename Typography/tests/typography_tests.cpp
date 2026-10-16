@@ -2106,6 +2106,104 @@ void testNoteBodies(typography::Engine& engine, const std::filesystem::path& tes
     checkBook("nightmare_example.fb3", 6);
 }
 
+/// Ссылки на сноски из испорченного файла. Номер тела ставит разбор FB3 по id
+/// из файла, и ссылка на id, которого среди тел нет, — на секцию, на пустой
+/// id, без href вовсе — остаётся без номера: книга открывается, а знак такой
+/// ссылки — надстрочный текст без якоря. Два тела с одним id — ссылка ведёт к
+/// первому, второе остаётся в списке тел. Номер, который дошёл до якоря, —
+/// всегда тело из списка, и оно верстается.
+void testBrokenNoteRefs(typography::Engine& engine) {
+    std::printf("\n=== битые ссылки на сноски ===\n");
+
+    const std::string body = R"(<?xml version="1.0" encoding="UTF-8"?>
+<fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" xmlns:xlink="http://www.w3.org/1999/xlink" id="00000000-0000-0000-0000-000000000006">
+<section id="s1">
+<p>a<note href="#nowhere" xlink:role="footnote">1</note>b</p>
+<p>c<note xlink:role="footnote">2</note>d</p>
+<p>e<note href="#" xlink:role="footnote">3</note>f</p>
+<p>g<note href="#s1" xlink:role="footnote">4</note>h</p>
+<p>i<note href="#twice" xlink:role="footnote">5</note>j</p>
+<p>k<note href="#n2" xlink:role="footnote"/>l</p>
+</section>
+<notes show="0">
+<notebody id="twice"><p>первое</p></notebody>
+<notebody id="twice"><p>второе</p></notebody>
+<notebody><p>без id</p></notebody>
+<notebody id="n2"><p>тело с битой ссылкой<note href="#gone" xlink:role="footnote">6</note> внутри</p></notebody>
+</notes>
+</fb3-body>)";
+    auto const document = fb3::Document{fb3Of(body)};
+
+    // Разбор: у каждой ссылки номер либо пуст, либо — тело из списка; пуст он
+    // ровно у тех, чьего id среди тел нет.
+    size_t refs = 0;
+    size_t numbered = 0;
+    bool inList = true;
+    const auto walk = [&](const fb3::Node& node, auto& self) -> void {
+        if (const fb3::NoteRefData* data = node.noteRef()) {
+            ++refs;
+            if (data->body) {
+                ++numbered;
+                if (*data->body >= document.noteBodies().size()) inList = false;
+            }
+        }
+        for (const fb3::Node& child : node.children()) self(child, self);
+    };
+    // Тела сносок — тоже в дереве тела книги, так что обход одного корня
+    // видит и ссылку внутри тела.
+    walk(document.body(), walk);
+
+    check(document.noteBodies().size() == 4, "тела все четыре: и с одним id на двоих, и без id");
+    check(refs == 7 && numbered == 2 && inList,
+          "номер — у двух ссылок с телом, у пяти битых его нет, номер — тело из списка");
+
+    // Вёрстка: битый знак — текст, якорь — только у ссылки с телом.
+    const typography::BookText book = typography::flatten(document);
+    const std::span<const typography::Block> blocks = book.flow();
+    check(blocks.size() == 6 && book.noteBodies.size() == 4,
+          "шесть абзацев потока и четыре тела за ним");
+    if (blocks.size() != 6 || book.noteBodies.size() != 4) return;
+
+    bool brokenAreText = true;
+    const wchar_t* const brokenTexts[] = {L"a1b", L"c2d", L"e3f", L"g4h"};
+    for (size_t i = 0; i < std::size(brokenTexts); ++i) {
+        const typography::Paragraph& paragraph = blocks[i].paragraph;
+        if (book.textOf(paragraph) != brokenTexts[i] || !book.notesOf(paragraph).empty())
+            brokenAreText = false;
+        for (const typography::StyleSpan& span : book.spansOf(paragraph))
+            if (span.style.role != typography::TextRole::Body) brokenAreText = false;
+    }
+    check(brokenAreText, "знак ссылки без тела — текст: ни якоря, ни роли знака");
+
+    const std::span<const typography::NoteAnchor> twice = book.notesOf(blocks[4].paragraph);
+    check(book.textOf(blocks[4].paragraph) == L"i5j" && twice.size() == 1 && twice[0].body == 0,
+          "id у двух тел — ссылка ведёт к первому");
+
+    const std::span<const typography::NoteAnchor> marked = book.notesOf(blocks[5].paragraph);
+    check(book.textOf(blocks[5].paragraph) == L"k1l" && marked.size() == 1 && marked[0].body == 3,
+          "пустой знак с телом — знак вёрстки и якорь к своему телу");
+
+    const typography::Range last = book.noteBodies[3];
+    check(last.count == 1 &&
+              book.textOf(book.blocks[last.first].paragraph) == L"тело с битой ссылкой6 внутри" &&
+              book.notesOf(book.blocks[last.first].paragraph).empty(),
+          "битая ссылка внутри тела — тоже текст без якоря");
+
+    // Каждый якорь книги ведёт к телу из списка, и тело верстается.
+    bool anchorsLayOut = true;
+    for (const typography::Block& block : book.blocks)
+        for (const typography::NoteAnchor& anchor : book.notesOf(block.paragraph)) {
+            if (anchor.body >= book.noteBodies.size()) {
+                anchorsLayOut = false;
+                continue;
+            }
+            const typography::NoteLayout note =
+                typography::layoutNote(engine, book, book.noteBodies[anchor.body], 300.0f, 20.0f);
+            if (note.lines.empty()) anchorsLayOut = false;
+        }
+    check(anchorsLayOut, "каждый якорь — тело из списка, и оно верстается");
+}
+
 }  // namespace
 
 int main() {
@@ -2127,6 +2225,7 @@ int main() {
     testClustersStayWhole(engine);
     testCharOffsets();
     testNoteMarkRole(engine);
+    testBrokenNoteRefs(engine);
     testHyphenation();
     testHyphenationInLayout(engine);
     testTrailingSpace(engine);
