@@ -8,6 +8,15 @@
 		},
 		{
 			"path": "../besedka"
+		},
+		{
+			"path": "../wxl.claude"
+		},
+		{
+			"path": "../Bukvitsa.claude"
+		},
+		{
+			"path": "../Besedka.claude"
 		}
 	],
 	"settings": {
