@@ -150,6 +150,31 @@ void BookView::buildTree() {
     window_.contentVisual().children().insertAtTop(leafLayer_);
     leafLayer_.isVisible(false);
 
+    // Слой страницы — прозрачный, во всю полосу, первым ребёнком корня, под
+    // сноской и оверлеями: указатель над ним — над самой страницей. Наведение и
+    // курсор — у него, а не у корня: курсор предка WinUI показывает над всеми
+    // потомками без своего, и рука корня легла бы на панель, мастер и поля
+    // ввода в них, где нужен их собственный. Над сноской, панелью и мастером
+    // указатель не над слоем — они лежат выше него, а не в нём, — так что
+    // спрашивать, откуда пришло движение, не нужно: оно приходит только со
+    // страницы. Щелчок и колесо со слоя всплывают к корню, как и прежде.
+    Apply {
+        pageLayer_,
+        // Кисть прозрачная, но она есть: без кисти Grid в проверке попадания
+        // не участвует, и движения над страницей не было бы вовсе.
+        background = colors.transparent,
+
+        // Стрелка с самого начала, а не пустой курсор («без перемены»): форма
+        // слоя всегда одна из двух известных, а меняется только при смене
+        // (updateCursor).
+        cursor = InputSystemCursorShape::Arrow,
+
+        // Указатель над знаком сноски — рукой, как над ссылкой: щелчок по
+        // знаку откроет сноску, и это видно до щелчка.
+        onPointerMoved = method(this, &BookView::pointerMoved),
+        onPointerExited = method(this, &BookView::pointerExited),
+    };
+
     Apply {
         root_,
         // Корень берёт фокус на себя: событие клавиши начинается у того, на
@@ -162,14 +187,15 @@ void BookView::buildTree() {
         // красит только полосу.
         requestedTheme = ElementTheme::Dark,
 
-        // Кисть прозрачная, но она есть: без кисти Grid не участвует в проверке
-        // попадания вовсе, и щелчок по полосе не доходил бы никуда — ни до знака
-        // сноски, ни до трети страницы. Прозрачная потому, что страница теперь
-        // на сцене под этим островом, и сквозь него должна быть видна она.
-        // Бумагу вместе с набором несут страницы-визуалы на сцене, а задник
-        // окна в чтении без кисти вовсе (см. activate).
+        // Кисть прозрачная: страница на сцене под этим островом, и сквозь него
+        // должна быть видна она — бумагу вместе с набором несут
+        // страницы-визуалы на сцене, а задник окна в чтении без кисти вовсе
+        // (см. activate). Попадание по странице ловит слой страницы во всю
+        // полосу, а щелчок и колесо с него всплывают сюда; самому корню кисть
+        // для этого уже не нужна.
         background = colors.transparent,
 
+        pageLayer_,
         note_.root(),
 
         onLoaded = method(this, &BookView::loaded),
@@ -209,6 +235,31 @@ void BookView::pressed(Object const&, PointerRoutedEventArgs& args) {
         args.handled(true);
     }
     presenter_.tap(PageFlow::Point{touchPosition.x, touchPosition.y}, buttonOf(touchPoint));
+}
+
+void BookView::pointerMoved(Object const&, PointerRoutedEventArgs& args) {
+    // Слой во всю полосу, так что его точка — та же, что у корня и у потока
+    // страниц.
+    const Point hoverPosition = args.getCurrentPoint(pageLayer_).position();
+    hoverPoint_ = PageFlow::Point{hoverPosition.x, hoverPosition.y};
+    updateCursor();
+}
+
+void BookView::pointerExited(Object const&, PointerRoutedEventArgs&) {
+    // Указатель ушёл со страницы — за край полосы или на сноску, панель,
+    // мастер: точки над страницей больше нет.
+    hoverPoint_.reset();
+    updateCursor();
+}
+
+void BookView::updateCursor() {
+    const InputSystemCursorShape hoverShape =
+        hoverPoint_ && presenter_.pointsAtNoteMark(*hoverPoint_) ? InputSystemCursorShape::Hand
+                                                                  : InputSystemCursorShape::Arrow;
+    if (hoverShape == cursorShape_) return;
+
+    cursorShape_ = hoverShape;
+    pageLayer_.cursor(hoverShape);
 }
 
 BookView::~BookView() {
@@ -281,6 +332,11 @@ void BookView::activate(bool entersReading) {
         // в нём.
         if (spreadView_.measured())
             window_.background(spreadView_.raster(turnAnimation_->drawTarget()));
+
+        // Страницы под указателем больше нет; вернувшись в чтение, полоса
+        // узнает его точку с первым движением.
+        hoverPoint_.reset();
+        updateCursor();
     }
 
     // Листы в покое не нужны: разворот видно страницами. Они выходят на сцену
@@ -334,6 +390,10 @@ void BookView::redraw() {
     // пропадал бы на глазах — на тех же точках под ним. Разворот одевает
     // страницы, только когда рисует в осевший растр (SpreadView::redraw).
     spreadView_.redraw(turnAnimation_->drawTarget());
+
+    // Разворот мог смениться под неподвижной мышью — переворот с клавиш,
+    // прыжок, перевёрстка, мастер поверх: указатель — по новому.
+    updateCursor();
 }
 
 /* ---------------- своё ---------------- */
@@ -684,10 +744,17 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
     const float top = flow.verticalMargin();
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> linkBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dimBrush;
     context->CreateSolidColorBrush(shade.text, &textBrush);
+    context->CreateSolidColorBrush(shade.link, &linkBrush);
     context->CreateSolidColorBrush(shade.dim, &dimBrush);
-    if (!textBrush || !dimBrush) return;
+    if (!textBrush || !linkBrush || !dimBrush) return;
+
+    // Знак сноски — цветом ссылки: по нему щёлкают, и видно это должно быть
+    // без мыши.
+    auto const lineBrushes = typography::TextBrushes{not_null<ID2D1Brush>{textBrush.Get()},
+                                                     not_null<ID2D1Brush>{linkBrush.Get()}};
 
     // Колонки разворота — готовая лента потока страниц: каждая своя
     // страница, идущие подряд, при нужде со стыка из следующей главы. Разворот
@@ -708,7 +775,7 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
 
         for (const typography::PlacedLine& placed : page.lines) {
             typography::drawLine(context, *placed.line, left + placed.x, top + placed.baseline,
-                                 textBrush.Get());
+                                 lineBrushes);
         }
     }
 

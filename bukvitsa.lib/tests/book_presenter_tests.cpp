@@ -1141,6 +1141,62 @@ void testNote() {
 
 /* ---------------- книга, досчёт, тема ---------------- */
 
+/// Знак под указателем — тот же ответ, что дал бы щелчок: над знаком — да, и
+/// щелчок там открывает сноску; в поле — нет; под мастером — нет, и щелчок
+/// там сноски не открывает; без книги — нет. Вопрос к потоку страниц: холста
+/// он не зовёт и без холста отвечает.
+void testPointsAtNoteMark() {
+    std::printf("\n=== ведущий: знак сноски под указателем ===\n");
+    const intrusive_ptr<Book> novel = openNovel();
+    if (!novel) return;
+
+    const std::optional<NoteMark> noteMark = firstNoteMark(*novel);
+    check(noteMark.has_value(), "в романе есть сноски");
+    if (!noteMark) return;
+
+    Bench bench;
+    bench.openAt(as_not_null(novel.get()), noteMark->markLetter, kTwoColumnWidth);
+    const std::optional<PageFlow::Point> markPoint = markPointOf(bench.flow(), noteMark->noteBody);
+    check(markPoint.has_value(), "знак сноски — на развороте, где его буква");
+    if (!markPoint) return;
+
+    check(bench.presenter.pointsAtNoteMark(*markPoint), "над знаком — да");
+    check(!bench.presenter.pointsAtNoteMark(marginPoint(bench.flow(), 0.5f)), "в поле — нет");
+    checkSteps(bench.canvas, {}, "вопрос холста не зовёт");
+
+    bench.presenter.tap(*markPoint, PointerButton::Left);
+    checkSteps(bench.canvas, {Step::ShowNote}, "где «да», щелчок открывает сноску");
+    bench.presenter.perform(Command::DismissNote);
+
+    const Skin previewSkin = defaultSkin();
+    bench.presenter.setPreview(&previewSkin);
+    bench.canvas.journal.clear();
+    check(!bench.presenter.pointsAtNoteMark(*markPoint), "под мастером над знаком — нет");
+
+    // Щелчок под мастером — последним: он может перелистнуть, и знак уйдёт с
+    // разворота.
+    bench.presenter.tap(*markPoint, PointerButton::Left);
+    check(!bench.canvas.first(Step::ShowNote) && !bench.presenter.noteOpen(),
+          "и щелчок под мастером по знаку сноски не открывает");
+
+    // Без книги — нет: с холстом он не зовётся, без холста не нужен.
+    Bench emptyBench;
+    emptyBench.presenter.resize(kTwoColumnWidth, kHeight, 1.0f);
+    emptyBench.canvas.journal.clear();
+    check(!emptyBench.presenter.pointsAtNoteMark(*markPoint), "без книги — нет");
+    checkSteps(emptyBench.canvas, {}, "и холста не зовёт");
+
+    ParkingIdle loneIdle;
+    Settings loneSettings;
+    auto loneThemes = ThemeList{std::vector<Skin>{}};
+    CountingActions loneActions;
+    cancellation_source loneSource;
+    auto const canvaslessPresenter =
+        BookPresenter{loneSettings, loneThemes, loneIdle, loneActions, loneSource.token()};
+    check(!canvaslessPresenter.pointsAtNoteMark(*markPoint),
+          "без холста и без книги — нет, и без остановки");
+}
+
 /// Открытие ставит место на ту букву, с которой открыли, и верстает: досчёт
 /// заводится, холст — в конечное состояние до вёрстки, рисунок — после.
 void testOpenPlacesAndLaysOut() {
@@ -1545,6 +1601,7 @@ void runBookPresenterTests() {
     testTapThirds();
     testTapUnderWizard();
     testNote();
+    testPointsAtNoteMark();
     testOpenPlacesAndLaysOut();
     testTailRedrawsOnce();
     testThemeAndPreview();

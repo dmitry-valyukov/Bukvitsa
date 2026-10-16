@@ -1511,10 +1511,12 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         }
         line.width = total;
 
-        // Знаки сносок, попавшие на эту строку. Надстрочное начертание всегда
-        // отрезает знак в отдельные прогоны, поэтому его место на строке — это
-        // просто объединение прогонов, лежащих внутри него; отдельно измерять
-        // ничего не нужно.
+        // Знаки сносок, попавшие на эту строку. Знак с якорем всегда начинает
+        // свой прогон стиля (flatten), а на его конце кончается и прогон
+        // формата: стиль за знаком уже другой. Поэтому его место на строке —
+        // это просто объединение прогонов, пересекающих его, без чужого текста
+        // — ни `<sup>` вплотную, ни соседнего знака; отдельно измерять ничего
+        // не нужно.
         for (const NoteAnchor& note : book.notesOf(paragraph)) {
             if (note.position + note.length <= from || note.position >= to)
                 continue;
@@ -1556,6 +1558,22 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
     }
 
     return lines;
+}
+
+const PlacedNote* noteUnder(const Line& line, float x, float reach) {
+    // Ближайший, а не первый по строке: зона знака шире его самого, и у двух
+    // знаков вплотную зоны перекрываются — первый по строке забрал бы щелчок
+    // по второму.
+    const PlacedNote* nearest = nullptr;
+    float nearestDistance = 0.0f;
+    for (const PlacedNote& note : line.notes) {
+        const float distance = std::max({note.x - x, x - (note.x + note.width), 0.0f});
+        if (distance > reach || (nearest && distance >= nearestDistance)) continue;
+
+        nearest = &note;
+        nearestDistance = distance;
+    }
+    return nearest;
 }
 
 }  // namespace bukvitsa::typography
