@@ -38,31 +38,43 @@ EdgeCurve straightCurve(float from, float to, float level) {
     return curve;
 }
 
-/// Доля из атрибута. Чего нет — `fallback`, молча: точки в файле может и не
-/// быть. Что есть, но не доля страницы — вне [0, 1], NaN (from_chars его
-/// разбирает), не число, — тоже `fallback`, но с отметкой `outsidePage`: это
-/// правка рук, и чтение её называет. Сравнение написано так, чтобы и NaN ушёл
-/// в `fallback`.
-float shareOf(const wxl::xml::node& point, const char* name, float fallback, bool& outsidePage) {
-    if (!point.attribute(name)) return fallback;
+/// Что чтение точек кромки нашло в файле не таким, как пишет мастер.
+struct PointFaults {
+    bool outsidePage = false;         ///< координата есть, но не доля страницы
+    bool missingCoordinate = false;   ///< у точки нет x или y
+    bool extraPoints = false;         ///< точек больше, чем у кромки бывает
+};
 
+/// Доля из атрибута, который есть: вне [0, 1], NaN (from_chars его
+/// разбирает), не число — пусто. Сравнение написано так, чтобы и NaN ушёл в
+/// пусто.
+std::optional<float> shareOf(const wxl::xml::node& point, const char* name) {
     const auto value = static_cast<float>(realOf(point, name, std::numeric_limits<double>::quiet_NaN()));
     if (value >= 0.0f && value <= 1.0f) return value;
-
-    outsidePage = true;
-    return fallback;
+    return std::nullopt;
 }
 
 /// Читает до `count` дочерних `<point>` в точки кривой, начиная с `first`.
-/// Чего в файле нет или что не доля страницы — остаётся как было (у чтения
-/// реестра — точка начальной прямой): файл могли поправить руками, и это не
-/// повод ронять обложку; второе отмечается в `outsidePage`.
-void readPoints(const wxl::xml::node& element, EdgeCurve& curve, size_t first, size_t count, bool& outsidePage) {
+/// Точка, у которой нет координаты или координата не доля страницы, остаётся
+/// прежней целиком (у чтения реестра — точкой начальной прямой), а не смесью
+/// координат из файла и прямой; точки сверх `count` отбрасываются. Файл могли
+/// поправить руками, и это не повод ронять обложку, но и не повод молчать: всё
+/// это отмечается в `faults`. Недостающие точки в конце — прежние, молча.
+void readPoints(const wxl::xml::node& element, EdgeCurve& curve, size_t first, size_t count, PointFaults& faults) {
     size_t index = first;
     for (const wxl::xml::node& point : element.children_named("point")) {
-        if (index >= first + count) break;
-        curve.x[index] = shareOf(point, "x", curve.x[index], outsidePage);
-        curve.y[index] = shareOf(point, "y", curve.y[index], outsidePage);
+        if (index >= first + count) {
+            faults.extraPoints = true;
+            break;
+        }
+        if (!point.attribute("x") || !point.attribute("y")) {
+            faults.missingCoordinate = true;
+        } else if (const std::optional<float> x = shareOf(point, "x"), y = shareOf(point, "y"); x && y) {
+            curve.x[index] = *x;
+            curve.y[index] = *y;
+        } else {
+            faults.outsidePage = true;
+        }
         ++index;
     }
 }
@@ -82,15 +94,15 @@ bool ascending(const EdgeCurve& curve) {
 /// корешка обе — теперь там одна точка: на середине, высотой посередине
 /// между ними.
 EdgeCurve curveOfHalves(const wxl::xml::node* leftHalf, const wxl::xml::node* rightHalf,
-                        EdgeCurve fallback, bool& outsidePage) {
+                        EdgeCurve fallback, PointFaults& faults) {
     EdgeCurve curve = fallback;
-    if (leftHalf) readPoints(*leftHalf, curve, 0, kSpine + 1, outsidePage);
+    if (leftHalf) readPoints(*leftHalf, curve, 0, kSpine + 1, faults);
 
     if (rightHalf) {
         // Точки правого листа ложатся с корешка, поэтому читаются в копию —
         // иначе первая из них затёрла бы точку левого до усреднения.
         EdgeCurve right = curve;
-        readPoints(*rightHalf, right, kSpine, kSpine + 1, outsidePage);
+        readPoints(*rightHalf, right, kSpine, kSpine + 1, faults);
 
         curve.y[kSpine] = 0.5f * (curve.y[kSpine] + right.y[kSpine]);
         for (size_t index = kSpine + 1; index < kPoints; ++index) {
@@ -387,18 +399,18 @@ std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
             // Вторая версия писала листы порознь — topLeft и topRight; её
             // кривая собирается из обеих половин. Различаются они по именам
             // элементов, а не по версии файла: элемент сам говорит, что в нём.
-            bool outsidePage = false;
+            PointFaults pointFaults;
             if (const wxl::xml::node* curve = element.child("top")) {
-                readPoints(*curve, skin.top, 0, kPoints, outsidePage);
+                readPoints(*curve, skin.top, 0, kPoints, pointFaults);
             } else {
                 skin.top = curveOfHalves(element.child("topLeft"), element.child("topRight"),
-                                         skin.top, outsidePage);
+                                         skin.top, pointFaults);
             }
             if (const wxl::xml::node* curve = element.child("bottom")) {
-                readPoints(*curve, skin.bottom, 0, kPoints, outsidePage);
+                readPoints(*curve, skin.bottom, 0, kPoints, pointFaults);
             } else {
                 skin.bottom = curveOfHalves(element.child("bottomLeft"),
-                                            element.child("bottomRight"), skin.bottom, outsidePage);
+                                            element.child("bottomRight"), skin.bottom, pointFaults);
             }
 
             // Корешок стоит на середине, что бы ни было написано в файле, — и
@@ -430,14 +442,23 @@ std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
 
             // Обложка без имени не выбирается, без снимка не рисуется; такого
             // в файле, который писали мы, не бывает — но файл могли и
-            // поправить руками.
-            if (skin.name.empty() || skin.image.empty()) continue;
+            // поправить руками. Она пропускается, и тоже не молча; что ещё в
+            // ней было не так, неважно — её нет.
+            if (skin.name.empty() || skin.image.empty()) {
+                std::vector<SkinFault> skipReasons;
+                if (skin.name.empty()) skipReasons.push_back(SkinFault::SkippedNoName);
+                if (skin.image.empty()) skipReasons.push_back(SkinFault::SkippedNoImage);
+                correctedSkins.push_back(CorrectedSkin{skin.name, std::move(skipReasons)});
+                continue;
+            }
 
             // Исправленная обложка — не молча: читатель видит страницу не
             // такой, какой правил файл, и должен знать почему. Из двух прямых
             // причина — та, что решила: выворот ровняет всю обложку.
             std::vector<SkinFault> faults;
-            if (outsidePage) faults.push_back(SkinFault::OutsidePage);
+            if (pointFaults.outsidePage) faults.push_back(SkinFault::OutsidePage);
+            if (pointFaults.missingCoordinate) faults.push_back(SkinFault::MissingCoordinate);
+            if (pointFaults.extraPoints) faults.push_back(SkinFault::ExtraPoints);
             if (spineMoved) faults.push_back(SkinFault::SpineMoved);
             if (folds) {
                 faults.push_back(SkinFault::FoldsColumn);
@@ -448,9 +469,11 @@ std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
 
             skins_.push_back(std::move(skin));
         }
-    } catch (...) {
+    } catch (const wxl::xml::exception&) {
         // Битый реестр — пустой список обложек, а не отказ запуститься:
-        // встроенные темы никуда не деваются.
+        // встроенные темы никуда не деваются. Ловится только отказ чтения
+        // XML: нехватка памяти и прочие беды программы — не «файл испорчен»,
+        // они идут наверх.
         skins_.clear();
         return std::nullopt;
     }

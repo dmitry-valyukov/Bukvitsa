@@ -166,16 +166,18 @@ ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
     if (asset.bitmap) return asset.bitmap.Get();
     if (asset.bytes.empty()) return nullptr;
 
-    // Целиком в одном вызове, и пиксели отпускаются, как только стали битмапом
-    // устройства. Чужие байты, битые не в заголовке, а в данных, отказывают
-    // здесь: картинка не рисуется, и больше её не пробуют, а место под неё
-    // вёрстка уже отвела — оно остаётся пустым. Отказ Direct2D — остановка
+    // Целиком в одном вызове и не больше, чем держит устройство; пиксели в
+    // памяти отпускаются, как только стали битмапом устройства, а сжатые
+    // байты — сразу после раскодирования: битмап сделан, или они не картинка.
+    // Чужие байты, битые не в заголовке, а в данных, отказывают здесь:
+    // картинка не рисуется, и больше её не пробуют, а место под неё вёрстка
+    // уже отвела — оно остаётся пустым. Отказ Direct2D — остановка
     // (deviceBitmapOf).
-    const Microsoft::WRL::ComPtr<IWICBitmap> decodedPicture = decodeImage(wic_.Get(), asset.bytes);
-    if (!decodedPicture) {
-        asset.bytes = std::string{};
-        return nullptr;
-    }
+    const uint32_t deviceSide = std::min<uint32_t>(kMaxPictureSide, context->GetMaximumBitmapSize());
+    const Microsoft::WRL::ComPtr<IWICBitmap> decodedPicture = decodeImage(wic_.Get(), asset.bytes, deviceSide);
+    asset.bytes = std::string{};
+    if (!decodedPicture) return nullptr;
+
     asset.bitmap = deviceBitmapOf(context, decodedPicture.Get());
     return asset.bitmap.Get();
 }
