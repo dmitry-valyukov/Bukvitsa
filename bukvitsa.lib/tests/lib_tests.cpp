@@ -556,17 +556,47 @@ void testSkinsReadSeparateLeaves() {
     reader::Skins offPageRead;
     const std::optional<std::vector<reader::CorrectedSkin>> offPageCorrected = offPageRead.loadFrom(offPage);
     check(correctedOne(offPageCorrected, u"Старая", {reader::SkinFault::OutsidePage}) &&
-              offPageRead.list()[0].top.y[0] == fresh.top.y[0],
-          "точка вне страницы — названа, на её месте точка начальной прямой");
+              offPageRead.list()[0].top.x[0] == fresh.top.x[0] && offPageRead.list()[0].top.y[0] == fresh.top.y[0],
+          "точка вне страницы — названа, на её месте точка начальной прямой целиком");
 
-    // Высоты у точки нет вовсе — это не правка в долях, а пропуск: молча, как
-    // и недостающие точки.
+    // Высоты у точки нет вовсе: на её месте — тоже точка начальной прямой
+    // целиком, а не x из файла с y из прямой, и чтение это называет.
     std::string heightless = written;
     heightless.replace(firstHeightAt, firstHeight.size(), "");
     reader::Skins heightlessRead;
     const std::optional<std::vector<reader::CorrectedSkin>> heightlessCorrected = heightlessRead.loadFrom(heightless);
-    check(heightlessCorrected && heightlessCorrected->empty() && heightlessRead.list().size() == 1,
-          "точка без высоты — без исправлений: точки в файле может и не быть");
+    check(correctedOne(heightlessCorrected, u"Старая", {reader::SkinFault::MissingCoordinate}) &&
+              heightlessRead.list()[0].top.x[0] == fresh.top.x[0] &&
+              heightlessRead.list()[0].top.y[0] == fresh.top.y[0],
+          "точка без высоты — названа, на её месте точка начальной прямой целиком");
+
+    // Десятая точка у кромки: лишняя отбрасывается, и это названо.
+    std::string overfull = written;
+    const size_t topEndAt = overfull.find("</top>");
+    check(topEndAt != std::string::npos, "верхняя кромка записана");
+    if (topEndAt == std::string::npos) return;
+    overfull.insert(topEndAt, "  <point x=\"0.99\" y=\"0.5\"/>\n    ");
+    reader::Skins overfullRead;
+    check(correctedOne(overfullRead.loadFrom(overfull), u"Старая", {reader::SkinFault::ExtraPoints}),
+          "лишняя точка кромки — отброшена и названа");
+
+    // Обложки без снимка и без имени не встают, и об этом сказано.
+    const std::string incomplete = R"(<?xml version="1.0" encoding="utf-8"?>
+<skins version="3">
+  <skin name="Без снимка" image=""/>
+  <skin image="noname.png"/>
+</skins>
+)";
+    reader::Skins incompleteRead;
+    const std::optional<std::vector<reader::CorrectedSkin>> incompleteCorrected = incompleteRead.loadFrom(incomplete);
+    check(incompleteCorrected && incompleteCorrected->size() == 2 && incompleteRead.list().empty() &&
+              (*incompleteCorrected)[0].name == std::u16string_view{u"Без снимка"} &&
+              std::ranges::equal((*incompleteCorrected)[0].faults,
+                                 std::initializer_list<reader::SkinFault>{reader::SkinFault::SkippedNoImage}) &&
+              (*incompleteCorrected)[1].name.empty() &&
+              std::ranges::equal((*incompleteCorrected)[1].faults,
+                                 std::initializer_list<reader::SkinFault>{reader::SkinFault::SkippedNoName}),
+          "обложки без снимка и без имени пропущены и названы");
 
     // Точку увели за соседку: такая кромка — начальная прямая.
     std::string crossed = written;
@@ -1117,12 +1147,20 @@ void testWorkspaceNamesCorrectedSkins() {
     offPage.image = u16_text{u"offpage.png"};
     offPage.top.y[2] = 1.5f;
 
+    // Снимка нет, имени нет — такие обложки не встанут.
+    Skin imageless = defaultSkin();
+    imageless.name = u16_text{u"Без снимка"};
+    Skin nameless = defaultSkin();
+    nameless.image = u16_text{u"nameless.png"};
+
     Skins handEdited;
     handEdited.put(good);
     handEdited.put(spineMoved);
     handEdited.put(unordered);
     handEdited.put(folded);
     handEdited.put(offPage);
+    handEdited.put(imageless);
+    handEdited.put(nameless);
     const std::string xml = handEdited.toXml();
 
     {
@@ -1149,9 +1187,13 @@ void testWorkspaceNamesCorrectedSkins() {
             check(holds(notice.details, L"Обложка «Вывернутая» в skins.xml: кромки выворачивают столбец — обложка "
                                         L"показана ровной.\n"),
                   "строка обложки, выворачивающей столбец");
-            check(holds(notice.details, L"Обложка «Вне страницы» в skins.xml: точки кромки не в долях страницы — "
-                                        L"заменены точками начальной прямой.\n"),
+            check(holds(notice.details, L"Обложка «Вне страницы» в skins.xml: координата точки кромки не в долях "
+                                        L"страницы — на месте точки точка начальной прямой.\n"),
                   "строка обложки с точкой вне страницы");
+            check(holds(notice.details, L"Обложка «Без снимка» в skins.xml: пропущена — у неё нет снимка.\n"),
+                  "строка пропущенной обложки");
+            check(holds(notice.details, L"Обложка без имени в skins.xml: пропущена — у неё нет имени.\n"),
+                  "строка обложки без имени");
             check(!holds(notice.details, L"Верная"), "верная обложка не названа");
             check(holds(notice.details, L"Файл: " + ws.skinsPath().wstring()) &&
                       holds(notice.details, L"Копия: " + registryCopy.wstring()),
