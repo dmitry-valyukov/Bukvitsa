@@ -57,7 +57,8 @@ private:
 /// поток, который делает вид, что умеет писать, хуже того, который не умеет.
 ///
 /// Байтами он не владеет: они принадлежат книге и живут дольше пакета,
-/// потому что пакет читает части по требованию (`OPC_CACHE_ON_ACCESS`).
+/// потому что пакет читает части по требованию — так Packaging API читает и
+/// по умолчанию (`OPC_READ_DEFAULT`).
 class MemoryStream final : public IStream {
 public:
     explicit MemoryStream(std::span<const std::byte> bytes) noexcept : bytes_(bytes) {}
@@ -191,9 +192,24 @@ private:
     T* p_ = nullptr;
 };
 
+/// Отказ Packaging API — исключение с причиной: разбор книги несёт его наверх,
+/// до «Не удалось открыть книгу». Испорченный пакет и сбой системы (памяти нет,
+/// фабрики) идут одним путём, как и в конструкторах: пакет, открытый без
+/// OPC_VALIDATE_ON_LOAD, проверяется при обращении, ошибку в связях или имени
+/// части отдаёт тот вызов, что первым к ним прикоснулся, и разбор, прерванный
+/// тем или другим, продолжить нечем.
 void check(HRESULT hr, const char* what) {
     if (FAILED(hr))
         throw std::system_error(hr, std::system_category(), what);
+}
+
+/// Отказ, который значит «такой части или связи в пакете нет», — ответ о
+/// файле, а не сбой: связь вправе вести к части, которой нет, а Id — не
+/// найтись. Тогда false и пустой ответ вызывающему; всякий иной отказ — check.
+bool present(HRESULT hr, const char* what) {
+    if (hr == OPC_E_NO_SUCH_PART || hr == OPC_E_NO_SUCH_RELATIONSHIP) return false;
+    check(hr, what);
+    return true;
 }
 
 /// COM нужен потоку, а не пакету: приложение обычно уже его подняло
@@ -216,21 +232,23 @@ struct OpcPackage::Impl {
     ComPtr<IOpcPackage> package;
     ComPtr<IOpcPartSet> parts;
 
-    /// Часть по её адресу: общий хвост всех разрешений связей.
+    /// Часть по её адресу: общий хвост всех разрешений связей. Пусто — части
+    /// с таким именем в пакете нет.
     std::optional<PackagePart> partAt(IOpcPartUri* uri) const {
         BOOL exists = FALSE;
-        if (FAILED(parts->PartExists(uri, &exists)) || !exists)
-            return std::nullopt;
+        check(parts->PartExists(uri, &exists), "OPC: не узнать, есть ли часть");
+        if (!exists) return std::nullopt;
 
+        // Часть есть — так ответил PartExists, и отказ GetPart после этого уже
+        // не «нет», а сбой, даже с кодом OPC_E_NO_SUCH_PART.
         ComPtr<IOpcPart> part;
-        if (FAILED(parts->GetPart(uri, part.put())))
-            return std::nullopt;
+        check(parts->GetPart(uri, part.put()), "OPC: часть не открывается");
 
         CoString contentType;
-        part->GetContentType(contentType.put());
+        check(part->GetContentType(contentType.put()), "OPC: у части не узнать тип содержимого");
 
         BStr name;
-        uri->GetRawUri(name.put());
+        check(uri->GetRawUri(name.put()), "OPC: у части не узнать имя");
 
         // Пакет пишет Windows, а не мы, и обещать за неё правильный UTF-16
         // нечего: repaired() ставит U+FFFD там, где обещать было бы нельзя.
@@ -240,45 +258,58 @@ struct OpcPackage::Impl {
 
     /// Часть, на которую ведёт связь: цель связи задана относительно её
     /// источника, поэтому адрес всегда собирается от источника, а не от корня.
+    /// Пусто — связь ведёт за пределы пакета или к части, которой в нём нет.
     std::optional<PackagePart> resolve(IOpcRelationship* relationship) const {
+        // Внешняя цель (адрес в сети, файл рядом) — законная связь OPC, но не
+        // часть пакета. Отличить её надо до CombinePartUri: на абсолютном
+        // адресе тот отказывает так же, как на испорченной цели.
+        OPC_URI_TARGET_MODE mode = OPC_URI_TARGET_MODE_INTERNAL;
+        check(relationship->GetTargetMode(&mode), "OPC: у связи не узнать, внутрь ли пакета она ведёт");
+        if (mode != OPC_URI_TARGET_MODE_INTERNAL) return std::nullopt;
+
         ComPtr<IOpcUri> source;
-        if (FAILED(relationship->GetSourceUri(source.put())))
-            return std::nullopt;
+        check(relationship->GetSourceUri(source.put()), "OPC: у связи не узнать источник");
 
         ComPtr<IUri> target;
-        if (FAILED(relationship->GetTargetUri(target.put())))
-            return std::nullopt;
+        check(relationship->GetTargetUri(target.put()), "OPC: у связи не узнать цель");
 
+        // Цель внутренней связи обязана быть именем части: не собралась в
+        // имя — испорчен файл связей, а не «части нет».
         ComPtr<IOpcPartUri> combined;
-        if (FAILED(source->CombinePartUri(target.get(), combined.put())))
-            return std::nullopt;
+        check(source->CombinePartUri(target.get(), combined.put()), "OPC: цель связи — не имя части");
 
         return partAt(combined.get());
     }
 
-    /// Набор связей части либо самого пакета, когда part пуст.
+    /// Набор связей части либо самого пакета, когда part пуст. Пусто — такой
+    /// части в пакете нет, а значит, нет и её связей.
     ComPtr<IOpcRelationshipSet> relationshipsOf(const PackagePart* part) const {
         ComPtr<IOpcRelationshipSet> set;
 
+        // Файл связей разбирается при первом обращении, и испорченный — не
+        // XML, повтор Id, негодная цель — отказывает здесь, в перечислении или
+        // в разрешении связи, а не при открытии пакета. Пустой набор вместо
+        // отказа выдал бы такую книгу за книгу без картинок или без связи Book.
         if (part == nullptr) {
-            package->GetRelationshipSet(set.put());
+            check(package->GetRelationshipSet(set.put()), "OPC: связи пакета не читаются");
             return set;
         }
 
+        // Имя части — то, что отдал сам Packaging API (partAt), и отказ
+        // принять его обратно — не ответ о файле.
         ComPtr<IOpcPartUri> uri;
-        if (FAILED(factory->CreatePartUri(part->name.c_str(), uri.put())))
-            return set;
+        check(factory->CreatePartUri(part->name.c_str(), uri.put()), "OPC: имя части не принято");
 
         ComPtr<IOpcPart> opcPart;
-        if (FAILED(parts->GetPart(uri.get(), opcPart.put())))
+        if (!present(parts->GetPart(uri.get(), opcPart.put()), "OPC: часть не открывается"))
             return set;
 
-        opcPart->GetRelationshipSet(set.put());
+        check(opcPart->GetRelationshipSet(set.put()), "OPC: связи части не читаются");
         return set;
     }
 };
 
-OpcPackage::OpcPackage(const std::filesystem::path& path) : impl_(new Impl) {
+OpcPackage::OpcPackage(const std::filesystem::path& path) : impl_(std::make_unique<Impl>()) {
     ensureComInitialized();
 
     check(CoCreateInstance(__uuidof(OpcFactory), nullptr, CLSCTX_INPROC_SERVER,
@@ -289,14 +320,16 @@ OpcPackage::OpcPackage(const std::filesystem::path& path) : impl_(new Impl) {
     check(impl_->factory->CreateStreamOnFile(path.c_str(), OPC_STREAM_IO_READ, nullptr, 0, stream.put()),
           "OPC: файл не открывается");
 
-    check(impl_->factory->ReadPackageFromStream(stream.get(), OPC_CACHE_ON_ACCESS,
-                                                impl_->package.put()),
+    // Умолчание, а не OPC_CACHE_ON_ACCESS: тот при первом чтении части пишет
+    // её разжатой во временный файл, а разбор идёт в потоке окна — диск там,
+    // где его быть не должно, — и выгоды нет: часть читается один раз.
+    check(impl_->factory->ReadPackageFromStream(stream.get(), OPC_READ_DEFAULT, impl_->package.put()),
           "OPC: это не пакет OPC");
 
     check(impl_->package->GetPartSet(impl_->parts.put()), "OPC: у пакета нет частей");
 }
 
-OpcPackage::OpcPackage(std::span<const std::byte> bytes) : impl_(new Impl) {
+OpcPackage::OpcPackage(std::span<const std::byte> bytes) : impl_(std::make_unique<Impl>()) {
     ensureComInitialized();
 
     check(CoCreateInstance(__uuidof(OpcFactory), nullptr, CLSCTX_INPROC_SERVER,
@@ -309,25 +342,18 @@ OpcPackage::OpcPackage(std::span<const std::byte> bytes) : impl_(new Impl) {
     ComPtr<IStream> stream;
     *stream.put() = new MemoryStream(bytes);
 
-    check(impl_->factory->ReadPackageFromStream(stream.get(), OPC_CACHE_ON_ACCESS,
-                                                impl_->package.put()),
+    // Умолчание, а не OPC_CACHE_ON_ACCESS, — как у конструктора из пути.
+    check(impl_->factory->ReadPackageFromStream(stream.get(), OPC_READ_DEFAULT, impl_->package.put()),
           "OPC: это не пакет OPC");
 
     check(impl_->package->GetPartSet(impl_->parts.put()), "OPC: у пакета нет частей");
 }
 
-OpcPackage::~OpcPackage() { delete impl_; }
+OpcPackage::~OpcPackage() = default;
 
-OpcPackage::OpcPackage(OpcPackage&& other) noexcept : impl_(other.impl_) { other.impl_ = nullptr; }
+OpcPackage::OpcPackage(OpcPackage&&) noexcept = default;
 
-OpcPackage& OpcPackage::operator=(OpcPackage&& other) noexcept {
-    if (this != &other) {
-        delete impl_;
-        impl_ = other.impl_;
-        other.impl_ = nullptr;
-    }
-    return *this;
-}
+OpcPackage& OpcPackage::operator=(OpcPackage&&) noexcept = default;
 
 std::optional<PackagePart> OpcPackage::partByPackageRelationship(std::wstring_view relationshipType) const {
     return partByRelationship(PackagePart{}, relationshipType);
@@ -339,14 +365,16 @@ std::optional<PackagePart> OpcPackage::partByRelationship(const PackagePart& sou
     if (!set) return std::nullopt;
 
     ComPtr<IOpcRelationshipEnumerator> enumerator;
-    if (FAILED(set->GetEnumeratorForType(std::wstring(relationshipType).c_str(), enumerator.put())))
-        return std::nullopt;
+    check(set->GetEnumeratorForType(std::wstring(relationshipType).c_str(), enumerator.put()),
+          "OPC: связи не перечисляются");
 
-    BOOL has = FALSE;
-    while (SUCCEEDED(enumerator->MoveNext(&has)) && has) {
+    for (;;) {
+        BOOL has = FALSE;
+        check(enumerator->MoveNext(&has), "OPC: связи не перечисляются");
+        if (!has) break;
+
         ComPtr<IOpcRelationship> relationship;
-        if (FAILED(enumerator->GetCurrent(relationship.put())))
-            break;
+        check(enumerator->GetCurrent(relationship.put()), "OPC: связь не читается");
 
         if (auto part = impl_->resolve(relationship.get()))
             return part;
@@ -361,7 +389,8 @@ std::optional<PackagePart> OpcPackage::partByRelationshipId(const PackagePart& s
     if (!set) return std::nullopt;
 
     ComPtr<IOpcRelationship> relationship;
-    if (FAILED(set->GetRelationship(relationshipId.to_utf16().c_str(), relationship.put())))
+    if (!present(set->GetRelationship(relationshipId.to_utf16().c_str(), relationship.put()),
+               "OPC: связь не читается"))
         return std::nullopt;
 
     return impl_->resolve(relationship.get());
@@ -375,17 +404,19 @@ std::vector<std::pair<wxl::core::u8_text, PackagePart>> OpcPackage::relationship
     if (!set) return found;
 
     ComPtr<IOpcRelationshipEnumerator> enumerator;
-    if (FAILED(set->GetEnumeratorForType(std::wstring(relationshipType).c_str(), enumerator.put())))
-        return found;
+    check(set->GetEnumeratorForType(std::wstring(relationshipType).c_str(), enumerator.put()),
+          "OPC: связи не перечисляются");
 
-    BOOL has = FALSE;
-    while (SUCCEEDED(enumerator->MoveNext(&has)) && has) {
+    for (;;) {
+        BOOL has = FALSE;
+        check(enumerator->MoveNext(&has), "OPC: связи не перечисляются");
+        if (!has) break;
+
         ComPtr<IOpcRelationship> relationship;
-        if (FAILED(enumerator->GetCurrent(relationship.put())))
-            break;
+        check(enumerator->GetCurrent(relationship.put()), "OPC: связь не читается");
 
         CoString id;
-        relationship->GetId(id.put());
+        check(relationship->GetId(id.put()), "OPC: у связи не узнать Id");
 
         if (auto part = impl_->resolve(relationship.get()))
             found.emplace_back(wxl::core::unicode::repaired(id.view()).to_utf8(), std::move(*part));
@@ -450,11 +481,9 @@ std::string OpcPackage::readPart(const PackagePart& part) const {
     // дальше строка растёт сама, удвоением, — и часть, что обещает 4 ГиБ, а
     // разжимается в десять байт, 4 ГиБ не стоит.
     STATSTG stat{};
-    if (SUCCEEDED(stream->Stat(&stat, STATFLAG_NONAME)) && stat.cbSize.QuadPart > 0) {
-        if (stat.cbSize.QuadPart > kMaxPartBytes) refuseTooLarge(part);
-        content.reserve(
-            static_cast<std::size_t>(std::min<std::uint64_t>(stat.cbSize.QuadPart, kMaxPartReserve)));
-    }
+    check(stream->Stat(&stat, STATFLAG_NONAME), "OPC: у части не узнать размер");
+    if (stat.cbSize.QuadPart > kMaxPartBytes) refuseTooLarge(part);
+    content.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(stat.cbSize.QuadPart, kMaxPartReserve)));
 
     char buffer[64 * 1024];
     for (;;) {

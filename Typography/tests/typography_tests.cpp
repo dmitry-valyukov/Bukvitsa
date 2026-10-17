@@ -20,6 +20,10 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+// Пакет FB3 пробы — у слоя FB3: формат его, и описан он там один раз. Он
+// тянет только стандартные заголовки и потому стоит до заголовков вёрстки.
+#include "test_package.h"
+
 // Заголовки вёрстки после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает.
 #include "bukvitsa/typography/block.h"
@@ -904,110 +908,20 @@ void testSeparatorAtPageBottom(typography::Engine& engine) {
     check(paginator.pageCount() >= 1, "разделитель у низа полосы не зацикливает набор");
 }
 
-/// ZIP без сжатия: пакету OPC этого хватает, а тест держит разметку книги у
-/// себя в тексте, а не в двоичном файле рядом.
-std::string storedZip(std::span<const std::pair<std::string_view, std::string_view>> parts) {
-    const auto crc32 = [](std::string_view data) {
-        uint32_t crc = 0xFFFFFFFFu;
-        for (const char byte : data) {
-            crc ^= static_cast<unsigned char>(byte);
-            for (int bit = 0; bit < 8; ++bit)
-                crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-        }
-        return ~crc;
-    };
-    const auto put16 = [](std::string& out, uint32_t value) {
-        out.push_back(static_cast<char>(value & 0xFF));
-        out.push_back(static_cast<char>((value >> 8) & 0xFF));
-    };
-    const auto put32 = [&](std::string& out, uint32_t value) {
-        put16(out, value & 0xFFFF);
-        put16(out, value >> 16);
-    };
-    // Сигнатура, версия, флаги, метод 0, время, дата 1980-01-01, CRC, размеры.
-    const auto header = [&](std::string& out, uint32_t signature, bool central,
-                            std::string_view name, std::string_view data) {
-        put32(out, signature);
-        if (central) put16(out, 20);
-        put16(out, 20);
-        put16(out, 0);
-        put16(out, 0);
-        put16(out, 0);
-        put16(out, 0x21);
-        put32(out, crc32(data));
-        put32(out, static_cast<uint32_t>(data.size()));
-        put32(out, static_cast<uint32_t>(data.size()));
-        put16(out, static_cast<uint32_t>(name.size()));
-        put16(out, 0);
-    };
-
-    std::string zip;
-    std::string directory;
-    for (const auto& [name, data] : parts) {
-        const auto offset = static_cast<uint32_t>(zip.size());
-        header(zip, 0x04034B50u, false, name, data);
-        zip += name;
-        zip += data;
-
-        header(directory, 0x02014B50u, true, name, data);
-        put16(directory, 0);      // комментарий
-        put16(directory, 0);      // диск
-        put16(directory, 0);      // внутренние атрибуты
-        put32(directory, 0);      // внешние атрибуты
-        put32(directory, offset);
-        directory += name;
-    }
-
-    const auto directoryOffset = static_cast<uint32_t>(zip.size());
-    zip += directory;
-    put32(zip, 0x06054B50u);
-    put16(zip, 0);
-    put16(zip, 0);
-    put16(zip, static_cast<uint32_t>(parts.size()));
-    put16(zip, static_cast<uint32_t>(parts.size()));
-    put32(zip, static_cast<uint32_t>(directory.size()));
-    put32(zip, directoryOffset);
-    put16(zip, 0);
-    return zip;
-}
-
 /// Книга FB3 из одного тела: остальные части пакета — минимум, который
 /// требует формат.
-std::string fb3Of(std::string_view body) {
-    const std::pair<std::string_view, std::string_view> parts[] = {
-        {"[Content_Types].xml",
-         R"(<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/fb3/description.xml" ContentType="application/fb3-description+xml"/><Override PartName="/fb3/body.xml" ContentType="application/fb3-body+xml"/></Types>)"},
-        {"_rels/.rels",
-         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/Book" Target="fb3/description.xml"/></Relationships>)"},
-        {"fb3/description.xml",
-         R"(<?xml version="1.0" encoding="UTF-8"?><fb3-description xmlns="http://www.fictionbook.org/FictionBook3/description" id="00000000-0000-0000-0000-000000000001" version="1.0"><title><main>Буквы</main></title></fb3-description>)"},
-        {"fb3/_rels/description.xml.rels",
-         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/body" Target="body.xml"/></Relationships>)"},
-        {"fb3/body.xml", body},
-    };
-    return storedZip(parts);
-}
+std::string fb3Of(std::string_view body) { return fb3::tests::fb3Package({.body = body}); }
 
 /// Книга FB3 из одного тела и двух картинок: связи rIdA и rIdB ведут к своим
 /// частям, а rIdLost — к части, которой в пакете нет. Байты картинок — не
 /// картинки: вёрстке они не нужны, ей нужен номер части.
 std::string fb3WithImages(std::string_view body) {
-    const std::pair<std::string_view, std::string_view> parts[] = {
-        {"[Content_Types].xml",
-         R"(<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/fb3/description.xml" ContentType="application/fb3-description+xml"/><Override PartName="/fb3/body.xml" ContentType="application/fb3-body+xml"/></Types>)"},
-        {"_rels/.rels",
-         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/Book" Target="fb3/description.xml"/></Relationships>)"},
-        {"fb3/description.xml",
-         R"(<?xml version="1.0" encoding="UTF-8"?><fb3-description xmlns="http://www.fictionbook.org/FictionBook3/description" id="00000000-0000-0000-0000-000000000007" version="1.0"><title><main>Картинки</main></title></fb3-description>)"},
-        {"fb3/_rels/description.xml.rels",
-         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/body" Target="body.xml"/></Relationships>)"},
-        {"fb3/_rels/body.xml.rels",
-         R"(<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/a.png"/><Relationship Id="rIdB" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/b.png"/><Relationship Id="rIdLost" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/lost.png"/></Relationships>)"},
-        {"fb3/body.xml", body},
-        {"fb3/img/a.png", "картинка A"},
-        {"fb3/img/b.png", "картинка B"},
-    };
-    return storedZip(parts);
+    static const std::string bodyRelationships = fb3::tests::relationships(
+        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/a.png"/>)"
+        R"(<Relationship Id="rIdB" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/b.png"/>)"
+        R"(<Relationship Id="rIdLost" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/lost.png"/>)");
+    static constexpr fb3::tests::PartBytes images[] = {{"fb3/img/a.png", "картинка A"}, {"fb3/img/b.png", "картинка B"}};
+    return fb3::tests::fb3Package({.body = body, .bodyRelationships = bodyRelationships, .otherParts = images});
 }
 
 /// Буквы из нескольких кодовых точек — то, на чём проверяется всякое место,
