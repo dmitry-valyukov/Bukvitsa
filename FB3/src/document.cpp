@@ -468,7 +468,17 @@ void Document::parse() {
     auto imageRelationships = impl_->package.relationshipsOfType(impl_->bodyPart, kRelImage);
     impl_->images.reserve(imageRelationships.size());
 
+    // Миниатюра пакета (связь metadata/thumbnail от корня) — часть, а обложка
+    // книги — номер картинки тела. Картинка, чья связь ведёт к той же части,
+    // ищется здесь, пока у картинок есть их части: имени части ImagePart не
+    // держит. Связей к одной части бывает несколько — берётся первая.
+    const std::optional<PackagePart> thumbnail = impl_->package.partByPackageRelationship(kRelThumbnail);
+    std::optional<std::uint32_t> thumbnailImage;
+
     for (auto& [id, part] : imageRelationships) {
+        if (thumbnail && !thumbnailImage && impl_->package.samePart(part, *thumbnail))
+            thumbnailImage = static_cast<std::uint32_t>(impl_->images.size());
+
         ImagePart image;
         image.relationshipId = std::move(id);
         image.contentType = part.contentType;
@@ -497,14 +507,12 @@ void Document::parse() {
 
     DocumentBuilder(*impl_).build(bodyRoot);
 
-    // 5. Обложка: сначала штатная связь-миниатюра пакета, затем — картинка,
-    //    названная обложкой. Второе эвристика, но именно так её кладёт
-    //    редактор ЛитРес, а карточка книги без обложки заметно хуже.
-    if (auto cover = impl_->package.partByPackageRelationship(kRelThumbnail)) {
-        for (std::uint32_t i = 0; i < impl_->images.size(); ++i)
-            if (impl_->images[i].contentType == cover->contentType)
-                impl_->description->coverImageIndex = i;
-    }
+    // 5. Обложка: сначала картинка тела, которая и есть миниатюра пакета
+    //    (шаг 2), затем — картинка, названная обложкой. Второе эвристика, но
+    //    именно так её кладёт редактор ЛитРес, а карточка книги без обложки
+    //    заметно хуже; к ней же приходит и книга, чья миниатюра в тело не
+    //    входит: номера у такой части нет.
+    impl_->description->coverImageIndex = thumbnailImage;
 
     if (!impl_->description->coverImageIndex) {
         for (std::uint32_t i = 0; i < impl_->images.size(); ++i) {
