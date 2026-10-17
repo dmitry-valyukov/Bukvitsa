@@ -1,7 +1,7 @@
 // Тесты модели правки обложки: попадание в кружочек, перенос точки между
-// соседками, точка корешка, начало правки, имя, то, что полоса показывает под
-// мастером, и сохранение одно за раз. Всё, что мастер решает, не глядя на
-// экран, — без окна и указателя.
+// соседками, точка корешка, начало правки, имя и диалог имени, то, что полоса
+// показывает под мастером, и сохранение одно за раз. Всё, что мастер решает, не
+// глядя на экран, — без окна и указателя.
 
 #include <cmath>
 #include <cstdio>
@@ -490,6 +490,63 @@ void testSaveOneAtATime() {
           "позднее сохранение своей после другого снимка — не нынешней правки");
 }
 
+/// Диалог имени — часть правки: другой снимок, правка другой обложки и
+/// закрытие закрывают диалог прежней правки, и набранное в нём уходит с ней;
+/// «Отмена» и начатое сохранение закрывают его тоже. Так диалог прежней правки
+/// поверх новой не остаётся, а слушатель видимости — панель диалога — узнаёт о
+/// каждом закрытии.
+void testNameDialogBelongsToEdit() {
+    std::printf("\n=== правка обложки: диалог имени — у правки ===\n");
+
+    SkinEditor editor;
+    std::vector<bool> shown;
+    static_cast<void>(
+        editor.naming().on_change([&shown](bool naming) noexcept { shown.push_back(naming); }));
+    auto const firstPhoto = std::filesystem::path{L"a.jpg"};
+    auto const secondPhoto = std::filesystem::path{L"b.jpg"};
+
+    editor.openNew(firstPhoto);
+    check(!editor.naming().get(), "открыта — диалога нет");
+    editor.askName();
+    check(editor.naming().get() && editor.name.get().empty(), "новая: диалог открыт, поле пустое");
+    editor.name.set(u16_text{u"Осень"});
+
+    editor.openNew(secondPhoto);
+    check(!editor.naming().get() && editor.name.get().empty() &&
+              shown == std::vector<bool>{true, false},
+          "другой снимок закрывает диалог прежней правки, и набранное уходит с ней");
+    editor.askName();
+    check(editor.naming().get() && editor.name.get().empty(),
+          "у новой правки — свой диалог, с пустым полем");
+
+    Skin own = defaultSkin();
+    own.name = u16_text{u"Alpha"};
+    own.image = u16_text{u"alpha.png"};
+    editor.openEdit(own, std::filesystem::path{L"skins/alpha.png"});
+    check(!editor.naming().get() && editor.name.get().plain() == u"Alpha",
+          "правка своей закрывает диалог; в поле — её имя");
+
+    editor.openEdit(systemSkins()[0], std::filesystem::path{L"Assets/book-1.png"});
+    editor.askName();
+    editor.close();
+    check(!editor.naming().get(), "закрытие закрывает диалог");
+
+    editor.openNew(firstPhoto);
+    editor.askName();
+    editor.name.set(u16_text{u"Зима"});
+    editor.cancelName();
+    check(!editor.naming().get(), "«Отмена» закрывает диалог");
+    editor.askName();
+    check(editor.naming().get() && editor.name.get().empty(),
+          "открытый снова — с именем правки, набранное в отменённом забыто");
+
+    editor.name.set(u16_text{u"Весна"});
+    const SkinSave save = editor.beginSave();
+    check(!editor.naming().get() && save.skin.name.plain() == u"Весна",
+          "начатое сохранение закрывает диалог: имя взято");
+    check(editor.saveEnded(save.ticket), "и кончается своим номером");
+}
+
 }  // namespace
 
 void runSkinEditorTests() {
@@ -504,4 +561,5 @@ void runSkinEditorTests() {
     testPreviewReopensEdit();
     testPreviewTellsDrop();
     testSaveOneAtATime();
+    testNameDialogBelongsToEdit();
 }
