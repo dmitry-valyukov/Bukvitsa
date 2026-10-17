@@ -68,10 +68,11 @@ SkinWizard::SkinWizard(const Compositor& compositor, Actions& actions)
     : actions_(actions),
       compositor_(compositor),
       visual_(compositor_.createSpriteVisual()),
+      namingWatch_(editor_.naming(), *this),
       deviceWatch_(compositor_, *this) {
     // Поле имени просит фокус, когда диалог открылся, и отпускает просьбу,
     // когда закрылся; встал ли фокус, поле узнаёт само.
-    nameFocused_.follow(naming_, std::identity{});
+    nameFocused_.follow(editor_.naming(), std::identity{});
 
     buildTree();
 }
@@ -108,11 +109,12 @@ void SkinWizard::buildTree() {
     };
 
     // Диалог имени — в цветах обстановки, общих с панелью читалки (look.h):
-    // он не бумага, а инструмент. Виден, пока имя спрашивают (naming_).
+    // он не бумага, а инструмент. Виден, пока правка спрашивает имя
+    // (SkinEditor::naming): другая правка или скрытие мастера его закрывают.
     auto const namePanel = Border {
         hAlign.center,
         vAlign.center,
-        visibility = BindOutput{naming_, shownWhen},
+        visibility = BindOutput{editor_.naming(), shownWhen},
         background = kChrome,
         borderBrush = kChromeEdge,
         BorderThickness{1},
@@ -180,14 +182,10 @@ void SkinWizard::keyDown(Object const&, KeyRoutedEventArgs& args) {
     // его «Отмена».
     switch (args.key()) {
         case VirtualKey::Enter:
-            if (naming_.get()) {
-                confirmName();
-            } else {
-                saveRequested();
-            }
+            saveRequested();   // в открытом диалоге — его «ОК»: это решает saveRequested
             break;
         case VirtualKey::Escape:
-            if (naming_.get()) {
+            if (editor_.naming().get()) {
                 cancelName();
             } else {
                 actions_.leaveWizard();
@@ -258,7 +256,6 @@ void SkinWizard::pointerReleased(Object const&, PointerRoutedEventArgs& args) {
 void SkinWizard::openNew(std::filesystem::path image) {
     editor_.openNew(std::move(image));
     dragged_.reset();
-    naming_.set(false);
 
     redraw();
 }
@@ -267,7 +264,6 @@ void SkinWizard::openEdit(const Skin& skin, std::filesystem::path image) {
     // Системная становится новой обложкой — это решает модель правки.
     editor_.openEdit(skin, std::move(image));
     dragged_.reset();
-    naming_.set(false);
 
     redraw();
 }
@@ -283,11 +279,11 @@ void SkinWizard::hide() {
     if (!open_) return;
     open_ = false;
     dragged_.reset();
-    naming_.set(false);
     root_.visibility(Visibility::Collapsed);
 
     // Пустое значение — перемена и после открытия той же обложки с тем же
-    // снимком, так что следующее такое открытие тоже скажется полосе.
+    // снимком, так что следующее такое открытие тоже скажется полосе. Диалог
+    // имени закрывается вместе с правкой.
     editor_.close();
 }
 
@@ -411,6 +407,14 @@ void SkinWizard::redraw() noexcept {
 }
 
 void SkinWizard::saveRequested() {
+    // Диалог имени открыт — «Сохранить» значит его «ОК», как Enter: панель
+    // диалога не модальна, и кнопка мастера доступна и над ней, а спросить имя
+    // заново значило бы стереть набранное.
+    if (editor_.naming().get()) {
+        confirmName();
+        return;
+    }
+
     // Сохранение уже идёт — второе не начинается и диалог имени не открывается:
     // Enter, нажатый дважды, записал бы обложку дважды. Первое, кончившись,
     // вернёт «Сохранить» (saveEnded).
@@ -422,29 +426,26 @@ void SkinWizard::saveRequested() {
         actions_.saveSkin(editor_.beginSave());
         return;
     }
-    beginNaming();
-}
-
-void SkinWizard::beginNaming() {
-    editor_.name.set(editor_.skin().name);   // у правки — прежнее имя, у новой пусто
-    naming_.set(true);   // фокус поле имени возьмёт само — по nameFocused_
+    editor_.askName();   // фокус поле имени возьмёт само — по nameFocused_
 }
 
 void SkinWizard::confirmName() {
     // Имя — в модели правки: поле положило его туда само, проверенным. Идущего
-    // сохранения здесь не бывает: диалог открывает только saveRequested, а он
-    // при идущем сохранении молчит.
+    // сохранения здесь не бывает: при нём диалог не открывается (askName), а
+    // начатое сохранение его закрывает (beginSave).
     if (!editor_.nameOk()) return;   // безымянную сохранять некуда
 
-    naming_.set(false);
     actions_.saveSkin(editor_.beginSave());
 }
 
 void SkinWizard::cancelName() {
     // «Отмена» — остаёмся в мастере, ничего не потеряв: точки как стояли,
-    // так и стоят.
-    naming_.set(false);
-    root_.focus(FocusState::Programmatic);
+    // так и стоят. Фокус корню вернёт namingChanged.
+    editor_.cancelName();
+}
+
+void SkinWizard::namingChanged(bool naming) noexcept {
+    if (!naming && open_) root_.focus(FocusState::Programmatic);
 }
 
 }  // namespace bukvitsa::reader

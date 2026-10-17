@@ -21,6 +21,7 @@ void SkinEditor::openNew(std::filesystem::path image) {
     skin_ = defaultSkin();
     pendingTicket_ = 0;
     name.set({});
+    naming_.set(false);
     shownPreview_.set(SkinPreview{skin_, image_});
 }
 
@@ -40,6 +41,7 @@ void SkinEditor::openEdit(const Skin& skin, std::filesystem::path image) {
         skin_.name = {};
     }
     name.set(skin_.name);
+    naming_.set(false);
     shownPreview_.set(SkinPreview{skin_, image_});
 }
 
@@ -53,6 +55,7 @@ void SkinEditor::drop() {
 
 void SkinEditor::close() {
     pendingTicket_ = 0;
+    naming_.set(false);
     shownPreview_.set(std::nullopt);
 }
 
@@ -135,6 +138,22 @@ std::optional<Skin> SkinEditor::result() const {
     return saved;
 }
 
+void SkinEditor::askName() {
+    // Каждое — сбой того, кто просит: закрытый мастер имени не спрашивает,
+    // «Сохранить» при идущем сохранении молчит (saving()), а при открытом
+    // диалоге значит его «ОК» (naming()).
+    if (!shownPreview_.get()) wxl::core::abort("SkinEditor::askName: правка закрыта");
+    if (saving()) wxl::core::abort("SkinEditor::askName: сохранение уже идёт");
+    if (naming_.get()) wxl::core::abort("SkinEditor::askName: диалог имени уже открыт");
+
+    name.set(skin_.name);
+    naming_.set(true);
+}
+
+void SkinEditor::cancelName() {
+    naming_.set(false);
+}
+
 SkinSave SkinEditor::beginSave() {
     // Каждое из трёх — сбой того, кто просит: мастер спрашивает saving() и
     // nameOk() раньше, а закрытый мастер сохранить не просит. Начать всё равно
@@ -145,6 +164,7 @@ SkinSave SkinEditor::beginSave() {
     if (!savedSkin) wxl::core::abort("SkinEditor::beginSave: имя не годится");
 
     pendingTicket_ = ++lastTicket_;
+    naming_.set(false);
     return SkinSave{std::move(*savedSkin), image_, pendingTicket_};
 }
 
