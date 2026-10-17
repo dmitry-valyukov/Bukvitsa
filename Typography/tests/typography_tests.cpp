@@ -1016,6 +1016,7 @@ struct CorpusLetter {
     const char* name;
     u16_view text;
     char32_t filler;   ///< буква той же письменности: прогон длиннее ёмкости должен быть одним
+    bool symbol = false;   ///< символ, а не буква письменности: слово он кончает
 };
 
 constexpr CorpusLetter kLetters[] = {
@@ -1024,9 +1025,9 @@ constexpr CorpusLetter kLetters[] = {
     {"иероглиф вне BMP", u"\xD842\xDFB7", U'\x4E2D'},
     {"деванагари кша", u"\x0915\x094D\x0937", U'\x0915'},
     {"хангыль L V T", u"\x1100\x1161\x11A8", U'\xAC00'},
-    {"флаг", u"\xD83C\xDDEF\xD83C\xDDF5", 0},
-    {"эмодзи с цветом кожи", u"\xD83D\xDC4D\xD83C\xDFFD", 0},
-    {"семья через ZWJ", u"\xD83D\xDC68\x200D\xD83D\xDC69\x200D\xD83D\xDC67", 0},
+    {"флаг", u"\xD83C\xDDEF\xD83C\xDDF5", 0, true},
+    {"эмодзи с цветом кожи", u"\xD83D\xDC4D\xD83C\xDFFD", 0, true},
+    {"семья через ZWJ", u"\xD83D\xDC68\x200D\xD83D\xDC69\x200D\xD83D\xDC67", 0, true},
 };
 
 bool isLetterStart(u16_view text, uint32_t at) {
@@ -1409,6 +1410,16 @@ void testHyphenationRules() {
     check(markedIs(u"Москвич\x2010" u"412", u8"Москвич\u2010412"), "цифра за дефисом U+2010");
     check(markedIs(u"Москвич\x2011" u"412", u8"Москвич\u2011412"), "цифра за неразрывным дефисом");
     check(markedIs(u"Москвич\x2019" u"412", u8"Москвич\u2019412"), "цифра за апострофом U+2019");
+    check(markedIs(u"Москвич'412", u8"Москвич'412"), "цифра за апострофом U+0027");
+    check(markedIs(u"достопримечательность'переносимость",
+                   u8"до|сто|при|ме|ча|тель|ность'пе|ре|но|си|мость"),
+          "апостроф U+0027 делит слово на части");
+    check(markedIs(u"достопримечательность\x2019" u"переносимость",
+                   u8"до|сто|при|ме|ча|тель|ность\u2019пе|ре|но|си|мость"),
+          "апостроф U+2019 делит слово на части");
+    check(markedIs(u"достопримечательность\x02BC" u"переносимость",
+                   u8"до|сто|при|ме|ча|тель|ность\u02BCпе|ре|но|си|мость"),
+          "апостроф-буква U+02BC делит слово на части, а не отменяет его перенос");
 
     // Буква, которой образцы не знают, — слово другого языка: перенос его
     // отменяется целиком, а не по куски вокруг неё.
@@ -1418,6 +1429,77 @@ void testHyphenationRules() {
           "«ä» одной кодовой точкой посреди слова");
     check(markedIs(u"Ma\x0308" u"dchenhandelsschule", u8"Ma\u0308dchenhandelsschule"),
           "«a» с диерезисом — буква, образцам незнакомая");
+
+    // Чужая буква — буква любой письменности, и за пределом таблицы признаков
+    // тоже: расширенная латиница, вьетнамская буква, буква вне BMP отменяют
+    // перенос всего слова, а не режут его на куски. Знак за буквой — откуда
+    // бы он ни был — делает её чужой, как и ZWJ, приставший к ней.
+    check(markedIs(u"Mu\x1E25" u"ammad", u8"Mu\u1E25ammad"), "«ḥ» из расширенной латиницы");
+    check(markedIs(u"Nguy\x1EC5" u"n-переносимость", u8"Nguy\u1EC5n-переносимость"),
+          "вьетнамская «ễ» отменяет перенос и за дефисом");
+    check(markedIs(u"п\xD835\xDD1E" u"ереносимость", u8"п\U0001D51Eереносимость"),
+          "буква вне BMP");
+    check(markedIs(u"достопри\x1DC4" u"мечательность", u8"достопри\u1DC4мечательность"),
+          "знак выше таблицы за буквой алфавита");
+    check(markedIs(u"достопри\x200D" u"мечательность", u8"достопри\u200Dмечательность"),
+          "ZWJ внутри слова — не знак ударения");
+
+    // Пробелы, пунктуация и символы за пределом таблицы слово кончают:
+    // перенос по обе стороны от них остаётся.
+    check(markedIs(u"переносимость\x2014" u"переносимость\x2E3A" u"переносимость\x3001"
+                   u"переносимость\xFEFF" u"переносимость\xFFFC" u"переносимость\x2026",
+                   u8"пе|ре|но|си|мость\u2014пе|ре|но|си|мость\u2E3Aпе|ре|но|си|мость\u3001"
+                   u8"пе|ре|но|си|мость\uFEFFпе|ре|но|си|мость\uFFFCпе|ре|но|си|мость\u2026"),
+          "тире, двойное тире, запятая CJK, ZWNBSP, знак объекта и многоточие кончают слово");
+    check(markedIs(u"переносимость\xD83D\xDE00" u"переносимость",
+                   u8"пе|ре|но|си|мость\U0001F600пе|ре|но|си|мость"),
+          "эмодзи кончает слово");
+
+    // Символы, что стоят в книгах вплотную к слову, — граница, а не буква:
+    // слово по обе стороны от них переносится.
+    struct BookSymbol {
+        const char* name;
+        char32_t code;
+    };
+    constexpr BookSymbol kBookSymbols[] = {
+        {"№", U'\x2116'}, {"₽", U'\x20BD'}, {"≤", U'\x2264'}, {"→", U'\x2192'},
+        {"♦", U'\x2666'}, {"✓", U'\x2713'}, {"…", U'\x2026'}, {"—", U'\x2014'},
+    };
+    for (const BookSymbol& symbol : kBookSymbols) {
+        u16_text text;
+        text += u"переносимость";
+        text.push_back(symbol.code);
+        text += u"переносимость";
+        check(hyphenCount(text) == 8, std::string("слово рядом с «") + symbol.name + "» переносится");
+    }
+
+    // Края блоков пробелов, пунктуации и символов: первая и последняя кодовая
+    // точка блока кончают слово, соседняя за краем — буква чужой письменности,
+    // и слово, к которому она приставлена, не переносится. Стоит она в начале
+    // слова: знак за буквой ушёл бы в её графему и решала бы буква.
+    struct BlockEdge {
+        char32_t code;
+        bool separator;
+    };
+    constexpr BlockEdge kBlockEdges[] = {
+        {U'\x1FFF', false},  {U'\x2000', true},   {U'\x2BFF', true},   {U'\x2C00', false},
+        {U'\x2DFF', false},  {U'\x2E00', true},   {U'\x2E7F', true},   {U'\x2E80', false},
+        {U'\x2FFF', false},  {U'\x3000', true},   {U'\x303F', true},   {U'\x3040', false},
+        {U'\xFEFE', false},  {U'\xFEFF', true},   {U'\xFF00', false},
+        {U'\xFFEF', false},  {U'\xFFF0', true},   {U'\xFFFF', true},   {U'\x10000', false},
+        {U'\x1EFFF', false}, {U'\x1F000', true},  {U'\x1FBFF', true},  {U'\x1FC00', true},
+        {U'\x1FFFD', true},  {U'\x1FFFE', false},
+    };
+    for (const BlockEdge& edge : kBlockEdges) {
+        u16_text text;
+        text.push_back(edge.code);
+        text += u"переносимость";
+
+        char what[96];
+        std::snprintf(what, sizeof what, "U+%04X перед словом — %s", static_cast<unsigned>(edge.code),
+                      edge.separator ? "граница" : "чужая буква");
+        check(hyphenCount(text) == (edge.separator ? 4u : 0u), what);
+    }
 
     // Разложенные «й» и «ё» — «и» с краткой и «е» с диерезисом. Свести их к
     // одной кодовой точке нечем, и видеть в «й» гласную «и» образцам нельзя:
@@ -1521,8 +1603,11 @@ void testHyphenationRules() {
                    std::span(&wordMark, 1)),
           "текст знака сноски переносится");
 
-    // Место переноса — всегда между буквами, из скольких бы кодовых точек
-    // буква ни состояла.
+    // Буква из нескольких кодовых точек — разложенные «й» и «ё», иероглиф,
+    // конъюнкт, слог хангыля — для образцов чужая, и слово с ней не
+    // переносится вовсе. Символ — флаг, эмодзи — слово кончает, и места по
+    // обе стороны от него есть — всегда между буквами, из скольких бы кодовых
+    // точек буква ни состояла.
     for (const CorpusLetter& letter : kLetters) {
         u16_text word;
         word += u"досто";
@@ -1530,10 +1615,17 @@ void testHyphenationRules() {
         word += u"примечательность";
 
         const sta_vector<uint8_t> hyphens = typography::hyphenPointsOf(word, {});
+        size_t points = 0;
         bool whole = true;
-        for (uint32_t at = 0; at < hyphens.size(); ++at)
-            if (hyphens[at] != 0 && !isLetterStart(word, at)) whole = false;
-        check(whole, std::string("места переноса между буквами: ") + letter.name);
+        for (uint32_t at = 0; at < hyphens.size(); ++at) {
+            if (hyphens[at] == 0) continue;
+            ++points;
+            if (!isLetterStart(word, at)) whole = false;
+        }
+        if (letter.symbol)
+            check(points > 0 && whole, std::string("места переноса между буквами: ") + letter.name);
+        else
+            check(points == 0, std::string("слово с чужой буквой без мест: ") + letter.name);
     }
 }
 
