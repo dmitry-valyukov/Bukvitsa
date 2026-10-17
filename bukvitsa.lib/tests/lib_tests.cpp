@@ -1710,6 +1710,51 @@ void testWorkspaceAddsFolder() {
     check(refused && ws.library.folders().size() == 1, "каталог, которого нет, — сбой, и реестр его не запоминает");
 }
 
+/// Книга, у которой испорчены сжатые байты части: первый байт потока deflate
+/// — блок запрещённого типа 3, и разжать часть нельзя. Часть ищется по имени
+/// в локальных заголовках архива; не нашлась или не сжата — пусто.
+std::string withBrokenPart(std::string bytes, std::string_view name) {
+    const auto word = [&bytes](size_t at) {
+        return uint32_t(uint8_t(bytes[at])) | uint32_t(uint8_t(bytes[at + 1])) << 8;
+    };
+    const std::string_view signature("PK\x03\x04", 4);
+    for (size_t at = bytes.find(signature); at != std::string::npos && at + 30 <= bytes.size();
+         at = bytes.find(signature, at + signature.size())) {
+        const size_t nameAt = at + 30;
+        const size_t data = nameAt + word(at + 26) + word(at + 28);
+        if (data >= bytes.size()) break;
+        if (word(at + 8) == 8 && std::string_view(bytes).substr(nameAt, word(at + 26)) == name) {
+            bytes[data] = '\xFF';
+            return bytes;
+        }
+    }
+    return {};
+}
+
+/// Обложка, которая не прочиталась из пакета, — книга в непрочитанных обхода с
+/// путём и причиной, где есть код отказа, а обход идёт дальше: соседняя книга
+/// встаёт на полку. Разбор такую книгу принимает — байтов картинок он не читает.
+void testWorkspaceScanNamesBrokenCover() {
+    std::printf("\n=== рабочее место: обложка не прочиталась ===\n");
+
+    Sandbox box("broken-cover");
+    Workspace ws(box.root, never);
+
+    // Обложка романа — его миниатюра fb3/img/cover.jpg, она же img1 тела.
+    const std::string broken = withBrokenPart(onDisk(kBook), "fb3/img/cover.jpg");
+    check(!broken.empty(), "сжатая часть обложки романа найдена и испорчена");
+
+    const std::filesystem::path folder = shelfOf(box, {kOtherBook});
+    putOnDisk(folder / L"broken-cover.fb3", broken);
+
+    const Scanned report = scanned(ws, ws.addFolder(folder, never));
+    check(report.listed == 2 && report.queued == 1 && report.refused.empty() && ws.library.cards().size() == 1,
+          "обход идёт дальше: соседняя книга на полке, книга с битой обложкой в очередь не встала");
+    check(report.unread.size() == 1 && holds(report.unread[0], L"broken-cover.fb3 — ") &&
+              holds(report.unread[0], L"HRESULT 0x"),
+          "книга с битой обложкой — в непрочитанных, с путём и кодом отказа");
+}
+
 /// Наблюдаемый каталог: у книг добавленного — каталог и время правки из
 /// листинга, и они переживают запись реестра; перепроверка неизменного не
 /// читает и обложек не пишет, как и открытие той же книги; файл с другим
@@ -3149,6 +3194,7 @@ int main(int argc, char* argv[]) {
     testWorkspaceKeepsLastBookGuid();
     testWorkspaceOpensBook();
     testWorkspaceAddsFolder();
+    testWorkspaceScanNamesBrokenCover();
     testWorkspaceRescansFolders();
     testWorkspaceCoverBeforeCard();
     testWorkspaceReadsLibraryV1();

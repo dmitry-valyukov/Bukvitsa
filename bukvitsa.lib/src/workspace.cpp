@@ -46,6 +46,11 @@ std::wstring unreadLine(const std::filesystem::path& file, const last_error& fai
     return file.wstring() + L" — " + reasonOf(failure);
 }
 
+/// То же для отказа, который не файловый: обложка, не прочитавшаяся из пакета.
+std::wstring unreadLine(const std::filesystem::path& file, const std::exception& failure) {
+    return file.wstring() + L" — " + reasonOf(failure);
+}
+
 /// Копия испорченного или исправленного при чтении файла — рядом, под тем же
 /// именем с «.bad».
 std::filesystem::path brokenCopyOf(std::filesystem::path file) {
@@ -757,7 +762,20 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
         // документ умирает здесь же: держать разобранное тело, пока ждёт и
         // идёт шаг регистрации, незачем. Обложка — раньше описания: её индекс
         // в нём.
-        std::optional<BookCover> cover = copyCover(*document);
+        //
+        // Байтов картинок разбор не читает, и обложка — первое чтение части
+        // картинки из пакета: испорченные сжатые байты отказывают здесь. Такая
+        // книга — в непрочитанных обхода, с причиной, и в очередь не встаёт, а
+        // обход идёт дальше.
+        std::optional<BookCover> cover;
+
+        try {
+            cover = copyCover(*document);
+        } catch (const std::exception& failure) {
+            report.unread.push_back(unreadLine(book.path, failure));
+            continue;
+        }
+
         const uint32_t characterCount = document->characterCount();
         fb3::Description description = document->takeDescription();
         document.reset();
