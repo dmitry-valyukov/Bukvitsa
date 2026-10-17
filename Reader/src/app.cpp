@@ -142,8 +142,10 @@ App::App()
     // Асинхронно через Win2D/TextureCache, а не синхронным background(path):
     // тот рисует свою DrawingSurface отдельным D3D-устройством, и на сцене
     // оно не уживается с устройством Win2D того же кэша — DirectComposition
-    // падает (dcompi). Тега для асинхронного фона в wxl пока нет.
-    window_.backgroundAsync(splashImage());
+    // падает (dcompi). Тега для асинхронного фона в wxl пока нет. Картинку
+    // ждёт кадр, которого ждёт и выход, — под общим токеном: источник загрузки
+    // окно заводит дочерним от `stop_`, и закрытие окна её отменяет.
+    window_.backgroundAsync(splashImage(), stop_.token());
 
     // Тема диалогов — за показанным экраном: книга тёмная, полка и заставка
     // светлые, как их корни.
@@ -310,7 +312,7 @@ void App::show(Screen next) {
     // Полоса перестаёт быть текущим экраном: её страница уходит со сцены, а
     // задником окна снова заставка.
     presenter_.setActive(false);
-    window_.backgroundAsync(splashImage());
+    window_.backgroundAsync(splashImage(), stop_.token());
 
     if (next == Screen::Start) {
         // Большой кнопке — её книга: обложка, название, автор. На каждом
