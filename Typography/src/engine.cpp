@@ -242,6 +242,12 @@ struct LineRun {
     /// строка, кончившаяся переносом.
     uint16_t hyphenGlyph = 0;
     float hyphenAdvance = 0.0f;
+
+    /// Вертикальный сдвиг над- или подстрочного прогона, в кегле строки: с
+    /// ним дефис встаёт вровень со своими буквами, а не на базовую линию.
+    /// Берётся из формата прогона, а не у соседнего глифа: в смещении глифа
+    /// сидит ещё и посадка знака шрифтом (GPOS), а дефису она чужая.
+    float hyphenAscenderOffset = 0.0f;
 };
 
 /// Ключ кэша шрифтов: семейство плюс начертание.
@@ -1129,6 +1135,7 @@ struct Engine::Impl {
         into.glyphs.textLength = localTo - localFrom;
         into.hyphenGlyph = run.hyphenGlyph;
         into.hyphenAdvance = run.hyphenAdvance * scale;
+        into.hyphenAscenderOffset = run.format.ascenderOffset * scale;
 
         for (uint32_t g = firstGlyph; g < lastGlyph; ++g) {
             const float advance = run.advances[g] * scale;
@@ -1460,14 +1467,16 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         // взят.
         //
         // Возможность выключки по формату у него нулевая: дефис на краю полосы
-        // не раздвигают и не сжимают, как бы ни требовалось строке.
+        // не раздвигают и не сжимают, как бы ни требовалось строке. Сдвиг —
+        // только вертикальный, тот же, что у букв прогона: в `<sup>`, `<sub>`
+        // и знаке сноски дефис стоит рядом с ними, а не на базовой линии.
         if (at.kind == BreakItem::Kind::Penalty && at.flagged && at.width > 0.0f &&
             !runs.empty() && runs.back().hyphenGlyph != 0) {
             LineRun& last = runs.back();
 
             last.glyphs.glyphIndices.push_back(last.hyphenGlyph);
             last.glyphs.advances.push_back(last.hyphenAdvance);
-            last.glyphs.offsets.push_back(DWRITE_GLYPH_OFFSET{});
+            last.glyphs.offsets.push_back(DWRITE_GLYPH_OFFSET{0.0f, last.hyphenAscenderOffset});
             last.opportunities.push_back(DWRITE_JUSTIFICATION_OPPORTUNITY{});
             last.glyphs.width += last.hyphenAdvance;
         }

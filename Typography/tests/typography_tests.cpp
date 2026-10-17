@@ -1427,6 +1427,71 @@ void testHyphenationInLayout(typography::Engine& engine) {
     check(kept, "по неразрывному пробелу строка не рвётся");
 }
 
+/// Дефис переноса в над- и подстрочном стоит рядом со своими буквами, а не на
+/// базовой линии. Шейпер этого глифа не видел — его дописывает строка, — и
+/// сдвиг прогона ему передаётся отдельно. Так кончаются строки длинных `<sup>`
+/// и знаков сносок с текстом (n_3 в nightmare_example).
+void testHyphenShift(typography::Engine& engine) {
+    std::printf("\n=== дефис в над- и подстрочном ===\n");
+
+    typography::ParagraphStyle reference;
+    reference.alignment = typography::Alignment::Left;
+    typography::ParagraphStyle larger = reference;
+    larger.fontSize = reference.fontSize * 1.3f;
+
+    struct Shift {
+        bool hyphenated = true;  ///< при каждом кегле есть строка с переносом
+        bool beside = true;      ///< у каждой такой дефис сдвинут ровно как её буквы
+        float letters = 0.0f;    ///< сдвиг букв последней из них
+        float hyphen = 0.0f;     ///< и её дефиса
+    };
+
+    // Слово шейпится при опорном кегле, а верстается и при нём, и при другом:
+    // при другом сдвиг приходит умножением, и дефису он должен прийти тем же
+    // умножением, что буквам. Полоса — две пятых слова: оно переносится, а
+    // слоги в неё влезают.
+    const auto shiftOf = [&](int8_t script) {
+        typography::FontStyle font;
+        font.script = script;
+        const typography::BookText book = paragraphOf(u"достопримечательность", font);
+        const typography::ShapedParagraphPtr shaped =
+            engine.shape(book, onlyParagraph(book), reference);
+
+        Shift shift;
+        for (const typography::ParagraphStyle& style : {reference, larger}) {
+            const float word = engine.layout(*shaped, 1000.0f, style).front().width;
+
+            size_t hyphens = 0;
+            for (const typography::Line& line : engine.layout(*shaped, word * 0.4f, style)) {
+                if (!endsWithHyphen(line)) continue;
+
+                const typography::GlyphRun& run = line.runs.back();
+                shift.letters = run.offsets.front().ascenderOffset;
+                shift.hyphen = run.offsets.back().ascenderOffset;
+                shift.beside = shift.beside && std::abs(shift.hyphen - shift.letters) < 0.01f;
+                ++hyphens;
+            }
+
+            std::printf("  сдвиг %+d, кегль %.0f: переносов %zu, буквы %.2f, дефис %.2f\n", script,
+                        style.fontSize, hyphens, shift.letters, shift.hyphen);
+            shift.hyphenated = shift.hyphenated && hyphens > 0;
+        }
+        return shift;
+    };
+
+    const Shift super = shiftOf(1);
+    const Shift sub = shiftOf(-1);
+    const Shift plain = shiftOf(0);
+
+    check(super.hyphenated && sub.hyphenated && plain.hyphenated,
+          "слово в узкой полосе переносится в каждом прогоне и кегле");
+    check(super.beside && super.letters > 0.0f,
+          "дефис надстрочного поднят вровень со своими буквами");
+    check(sub.beside && sub.letters < 0.0f,
+          "дефис подстрочного опущен вровень со своими буквами");
+    check(plain.beside && plain.hyphen == 0.0f, "дефис обычного прогона — на базовой линии");
+}
+
 /// Серии переносов на живом тексте: все абзацы «Отцов и детей» в самой узкой
 /// колонке, какую строит читалка, и в ещё более узкой — ни одна серия не
 /// длиннее двух строк. Штраф за двойной перенос такого не обеспечивал: серии в
@@ -2129,6 +2194,7 @@ int main() {
     testNoteMarkRole(engine);
     testHyphenation();
     testHyphenationInLayout(engine);
+    testHyphenShift(engine);
     testTrailingSpace(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
