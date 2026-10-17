@@ -198,9 +198,14 @@ private:
 /// OPC_VALIDATE_ON_LOAD, проверяется при обращении, ошибку в связях или имени
 /// части отдаёт тот вызов, что первым к ним прикоснулся, и разбор, прерванный
 /// тем или другим, продолжить нечем.
+///
+/// HRESULT — в самом тексте, как у остановок вёрстки: для кодов Packaging API
+/// (FACILITY_OPC) системного сообщения может не найтись, и по одним словам
+/// системы не узнать, что отказало.
 void check(HRESULT hr, const char* what) {
     if (FAILED(hr))
-        throw std::system_error(hr, std::system_category(), what);
+        throw std::system_error(hr, std::system_category(),
+                                std::format("{}, HRESULT 0x{:08X}", what, static_cast<std::uint32_t>(hr)));
 }
 
 /// Отказ, который значит «такой части или связи в пакете нет», — ответ о
