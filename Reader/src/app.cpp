@@ -102,7 +102,7 @@ App::App()
       }},
       ws_{standardDataDirectory(), stop_.token()},
       presenter_{ws_.settings, themes_, idleScheduler_, *this, stop_.token()},
-      notices_{window_, screenTheme_},
+      notices_{window_, screenTheme_, stop_.token()},
       start_{window_.chromeCompositor(), *this},
       view_{window_, presenter_, ws_.settings, stop_.token()},
       shelf_{ws_.library.cards(), ws_.settings.continueReading, ws_.coverDirectory(), *this},
