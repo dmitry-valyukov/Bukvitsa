@@ -394,6 +394,19 @@ std::vector<std::pair<wxl::core::u8_text, PackagePart>> OpcPackage::relationship
     return found;
 }
 
+bool OpcPackage::samePart(const PackagePart& first, const PackagePart& second) const {
+    // Имена пришли из GetRawUri адресов, которые собрал сам Packaging API, —
+    // отказ принять их обратно не ответ о файле, а сбой, и он не прячется.
+    ComPtr<IOpcPartUri> firstUri;
+    check(impl_->factory->CreatePartUri(first.name.c_str(), firstUri.put()), "OPC: имя части не принято");
+    ComPtr<IOpcPartUri> secondUri;
+    check(impl_->factory->CreatePartUri(second.name.c_str(), secondUri.put()), "OPC: имя части не принято");
+
+    INT32 order = 0;
+    check(firstUri->ComparePartUri(secondUri.get(), &order), "OPC: имена частей не сравнились");
+    return order == 0;
+}
+
 namespace {
 
 /// Больше этого часть не может быть книгой. Позиции символов книги

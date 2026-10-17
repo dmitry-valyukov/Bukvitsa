@@ -82,6 +82,14 @@ public:
     std::vector<std::pair<wxl::core::u8_text, PackagePart>> relationshipsOfType(
         const PackagePart& source, std::wstring_view relationshipType) const;
 
+    /// Одна ли это часть пакета. Имена сравнивает Packaging API
+    /// (`IOpcPartUri::ComparePartUri`, ноль — равны), а не строки: OPC имён
+    /// частей по регистру ASCII не различает, и две связи вправе назвать одну
+    /// часть по-разному. Что ComparePartUri следует этому, документация
+    /// Windows не обещает — это держит проба (fb3_tests, testSamePart).
+    /// @throw std::system_error, если Packaging API не принял имя.
+    bool samePart(const PackagePart& first, const PackagePart& second) const;
+
     /// Содержимое части целиком.
     ///
     /// Текстовые части возвращаются как std::string, потому что дальше их
