@@ -67,6 +67,20 @@ bool samePath(const std::filesystem::path& one, const std::filesystem::path& oth
                                   static_cast<int>(second.size()), TRUE) == CSTR_EQUAL;
 }
 
+bool sameBookId(u16_view one, u16_view other) {
+    return !one.empty() && one == other;
+}
+
+bool samePlace(u16_view oneBookId, const std::filesystem::path& onePath, u16_view otherBookId,
+               const std::filesystem::path& otherPath) {
+    return (oneBookId.empty() || otherBookId.empty()) && samePath(onePath, otherPath);
+}
+
+bool sameBook(u16_view oneBookId, const std::filesystem::path& onePath, u16_view otherBookId,
+              const std::filesystem::path& otherPath) {
+    return sameBookId(oneBookId, otherBookId) || samePlace(oneBookId, onePath, otherBookId, otherPath);
+}
+
 ShelfCard::ShelfCard(BookEntry book)
     : entry(std::move(book)), progress(entry.characterCount == 0 ? progressLine(0, 0) : u16_text{}) {}
 
@@ -237,10 +251,10 @@ const BookEntry* Library::findSame(const BookEntry& candidate) const {
 }
 
 std::optional<uint32_t> Library::placeOfSame(const BookEntry& candidate) const {
-    if (!candidate.bookId.empty()) {
-        for (uint32_t at = 0; at < cards_.size(); ++at) {
-            if (cards_[at]->entry.bookId == candidate.bookId) return at;
-        }
+    // Сперва UUID, по всему реестру: запись с тем же UUID — та же книга, даже
+    // если раньше неё стоит запись без UUID по тому же пути.
+    for (uint32_t at = 0; at < cards_.size(); ++at) {
+        if (sameBookId(cards_[at]->entry.bookId, candidate.bookId)) return at;
     }
 
     // По пути — только если UUID не помог и не опровергает: у одной из двух
@@ -249,7 +263,7 @@ std::optional<uint32_t> Library::placeOfSame(const BookEntry& candidate) const {
     // открылась бы на чужой странице.
     for (uint32_t at = 0; at < cards_.size(); ++at) {
         const BookEntry& stored = cards_[at]->entry;
-        if (samePath(stored.path, candidate.path) && (stored.bookId.empty() || candidate.bookId.empty())) return at;
+        if (samePlace(stored.bookId, stored.path, candidate.bookId, candidate.path)) return at;
     }
     return std::nullopt;
 }
