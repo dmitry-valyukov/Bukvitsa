@@ -405,23 +405,52 @@ void testPackageRefusals() {
         }
     }
 
-    // Связи не XML и цель, из которой не собрать имя части (кончаться на '/'
-    // оно не может), — испорченный пакет.
+    // Связи не XML и внутренняя связь с абсолютной целью — испорченный пакет:
+    // имени части из такой цели Packaging API не собирает — CombinePartUri
+    // отвечает OPC_E_RELATIVE_URI_REQUIRED (0x80510002).
+    constexpr int kRelativeUriRequired = static_cast<int>(0x80510002u);
     const std::string notXml = "<Relationships";
-    const std::string badTarget = relationships(
-        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/"/>)");
+    const std::string absoluteInside = relationships(
+        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="http://example.com/a.png"/>)");
 
     check(refusedAsPackage(bookWith(kBookRelationship, notXml), "связи тела — не XML"),
           "связи тела — не XML: отказ пакета, а не книга без картинок");
-    check(refusedAsPackage(bookWith(kBookRelationship, badTarget), "цель связи — не имя части"),
-          "цель связи картинки — не имя части: отказ пакета, а не книга без картинки");
+    check(refusedAsPackage(bookWith(kBookRelationship, absoluteInside), "внутренняя связь с абсолютной целью",
+                           kRelativeUriRequired),
+          "внутренняя связь картинки с абсолютной целью — отказ пакета OPC_E_RELATIVE_URI_REQUIRED");
+
+    // Цель «img/» Packaging API не отвергает: CombinePartUri собирает её без
+    // косой черты, в /fb3/img, а такой части в пакете нет — связь к части,
+    // которой нет. Картинка тела с таким src — битая ссылка без номера части,
+    // как у src без части: ни отказа, ни чужой картинки на её месте.
+    {
+        const Document book{fb3Package({
+            .body = R"(<?xml version="1.0" encoding="UTF-8"?><fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" id="00000000-0000-0000-0000-000000000005"><section id="s1"><p>до</p><img src="rIdA"/><p>после</p></section></fb3-body>)",
+            .bodyRelationships = relationships(
+                R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/"/>)"),
+            .otherParts = kProbeImage,
+        })};
+        std::size_t images = 0;
+        bool withoutPart = true;
+        const auto walk = [&](const Node& node, auto& self) -> void {
+            if (const ImageData* data = node.image()) {
+                ++images;
+                withoutPart = withoutPart && !data->partIndex;
+            }
+            for (const Node& child : node.children()) self(child, self);
+        };
+        walk(book.body(), walk);
+        check(book.images().empty() && images == 1 && withoutPart,
+              "цель «img/» — не часть: картинок у книги нет, src на неё — битая ссылка без номера части");
+    }
     check(refusedAsPackage(bookWith(notXml, ""), "связи пакета — не XML"),
           "связи пакета — не XML: отказ пакета, а не «нет связи Book»");
 
     // Один Id у двух связей: первая — наружу или к части, которой нет, вторая —
     // картинка. Картинку потом читают по Id, и повтор подменил бы её; Packaging
-    // API повтор отвергает — OPC_E_DUPLICATE_RELATIONSHIP (0x80510013). Пропусти
-    // он его — разбор откажет сам (шаг картинок), и проба скажет, что код не тот.
+    // API повтор отвергает — OPC_E_DUPLICATE_RELATIONSHIP (0x80510013), ещё при
+    // перечислении связей. Пропусти он его — разбор откажет сам (сверка Id на
+    // шаге картинок), и проба скажет, что код не тот.
     constexpr int kDuplicateRelationship = static_cast<int>(0x80510013u);
     const std::string duplicateOutside = relationships(
         R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="http://example.com/a.png" TargetMode="External"/>)"
