@@ -38,11 +38,12 @@ EdgeCurve straightCurve(float from, float to, float level) {
     return curve;
 }
 
-/// Что чтение точек кромки нашло в файле не таким, как пишет мастер.
+/// Что чтение точек одной кромки нашло в файле не таким, как пишет мастер, —
+/// числом точек: слова читателю идут в числе по нему.
 struct PointFaults {
-    bool outsidePage = false;         ///< координата есть, но не доля страницы
-    bool missingCoordinate = false;   ///< у точки нет x или y
-    bool extraPoints = false;         ///< точек больше, чем у кромки бывает
+    uint32_t outsidePage = 0;         ///< координата есть, но не доля страницы
+    uint32_t missingCoordinate = 0;   ///< у точки нет x или y
+    uint32_t extraPoints = 0;         ///< сверх того, сколько у кромки бывает
 };
 
 /// Доля из атрибута, который есть: вне [0, 1], NaN (from_chars его
@@ -59,21 +60,22 @@ std::optional<float> shareOf(const wxl::xml::node& point, const char* name) {
 /// прежней целиком (у чтения реестра — точкой начальной прямой), а не смесью
 /// координат из файла и прямой; точки сверх `count` отбрасываются. Файл могли
 /// поправить руками, и это не повод ронять обложку, но и не повод молчать: всё
-/// это отмечается в `faults`. Недостающие точки в конце — прежние, молча.
+/// это отмечается в `faults`, по точке. Недостающие точки в конце — прежние,
+/// молча.
 void readPoints(const wxl::xml::node& element, EdgeCurve& curve, size_t first, size_t count, PointFaults& faults) {
     size_t index = first;
     for (const wxl::xml::node& point : element.children_named("point")) {
         if (index >= first + count) {
-            faults.extraPoints = true;
-            break;
+            ++faults.extraPoints;
+            continue;
         }
         if (!point.attribute("x") || !point.attribute("y")) {
-            faults.missingCoordinate = true;
+            ++faults.missingCoordinate;
         } else if (const std::optional<float> x = shareOf(point, "x"), y = shareOf(point, "y"); x && y) {
             curve.x[index] = *x;
             curve.y[index] = *y;
         } else {
-            faults.outsidePage = true;
+            ++faults.outsidePage;
         }
         ++index;
     }
@@ -406,18 +408,20 @@ std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
             // Вторая версия писала листы порознь — topLeft и topRight; её
             // кривая собирается из обеих половин. Различаются они по именам
             // элементов, а не по версии файла: элемент сам говорит, что в нём.
-            PointFaults pointFaults;
+            // Точки — у каждой кромки свои: читатель узнаёт, у какой.
+            PointFaults topFaults;
+            PointFaults bottomFaults;
             if (const wxl::xml::node* curve = element.child("top")) {
-                readPoints(*curve, skin.top, 0, kPoints, pointFaults);
+                readPoints(*curve, skin.top, 0, kPoints, topFaults);
             } else {
                 skin.top = curveOfHalves(element.child("topLeft"), element.child("topRight"),
-                                         skin.top, pointFaults);
+                                         skin.top, topFaults);
             }
             if (const wxl::xml::node* curve = element.child("bottom")) {
-                readPoints(*curve, skin.bottom, 0, kPoints, pointFaults);
+                readPoints(*curve, skin.bottom, 0, kPoints, bottomFaults);
             } else {
                 skin.bottom = curveOfHalves(element.child("bottomLeft"),
-                                            element.child("bottomRight"), skin.bottom, pointFaults);
+                                            element.child("bottomRight"), skin.bottom, bottomFaults);
             }
 
             // Корешок стоит на середине, что бы ни было написано в файле, — и
@@ -425,17 +429,18 @@ std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
             // режутся по середине всё равно. Вторая версия корешка не писала —
             // её кривая собрана с ним на середине, — так что сдвинут он может
             // быть только рукой.
-            const bool spineMoved =
-                skin.top.x[kSpine] != EdgeCurve::kSpineX || skin.bottom.x[kSpine] != EdgeCurve::kSpineX;
+            const bool topSpineMoved = skin.top.x[kSpine] != EdgeCurve::kSpineX;
+            const bool bottomSpineMoved = skin.bottom.x[kSpine] != EdgeCurve::kSpineX;
             skin.top.x[kSpine] = EdgeCurve::kSpineX;
             skin.bottom.x[kSpine] = EdgeCurve::kSpineX;
 
             // Кривая, у которой точки не идут слева направо, — не кривая:
             // такая кромка становится начальной прямой, а не роняет полосу.
             // Порядок — уже с корешком на середине: по нему её и рисуют.
-            const bool unordered = !ascending(skin.top) || !ascending(skin.bottom);
-            if (!ascending(skin.top)) skin.top = straight.top;
-            if (!ascending(skin.bottom)) skin.bottom = straight.bottom;
+            const bool topUnordered = !ascending(skin.top);
+            const bool bottomUnordered = !ascending(skin.bottom);
+            if (topUnordered) skin.top = straight.top;
+            if (bottomUnordered) skin.bottom = straight.bottom;
 
             // Кромки, которые где-то между точками разошлись против прямых на
             // целую высоту полосы, вывернули бы столбец страницы: точку под
@@ -452,27 +457,37 @@ std::optional<std::vector<CorrectedSkin>> Skins::loadFrom(std::string xml) {
             // поправить руками. Она пропускается, и тоже не молча; что ещё в
             // ней было не так, неважно — её нет.
             if (skin.name.empty() || skin.image.empty()) {
-                std::vector<SkinFault> skipReasons;
-                if (skin.name.empty()) skipReasons.push_back(SkinFault::SkippedNoName);
-                if (skin.image.empty()) skipReasons.push_back(SkinFault::SkippedNoImage);
+                std::vector<SkinCorrection> skipReasons;
+                if (skin.name.empty()) skipReasons.push_back(SkinCorrection{SkinFault::SkippedNoName, std::nullopt});
+                if (skin.image.empty()) skipReasons.push_back(SkinCorrection{SkinFault::SkippedNoImage, std::nullopt});
                 correctedSkins.push_back(CorrectedSkin{skin.name, std::move(skipReasons)});
                 continue;
             }
 
             // Исправленная обложка — не молча: читатель видит страницу не
-            // такой, какой правил файл, и должен знать почему. Из двух прямых
-            // причина — та, что решила: выворот ровняет всю обложку.
-            std::vector<SkinFault> faults;
-            if (pointFaults.outsidePage) faults.push_back(SkinFault::OutsidePage);
-            if (pointFaults.missingCoordinate) faults.push_back(SkinFault::MissingCoordinate);
-            if (pointFaults.extraPoints) faults.push_back(SkinFault::ExtraPoints);
-            if (spineMoved) faults.push_back(SkinFault::SpineMoved);
+            // такой, какой правил файл, и должен знать почему. Причина — у той
+            // кромки, которую она исправила, верхняя раньше нижней, а у точек
+            // — с их числом. Из двух прямых причина — та, что решила: выворот
+            // ровняет всю обложку.
+            std::vector<SkinCorrection> corrections;
+            const auto atEdges = [&corrections](SkinFault fault, uint32_t topPoints, uint32_t bottomPoints) {
+                if (topPoints != 0) corrections.push_back(SkinCorrection{fault, SkinEdge::Top, topPoints});
+                if (bottomPoints != 0) corrections.push_back(SkinCorrection{fault, SkinEdge::Bottom, bottomPoints});
+            };
+            const auto atEdgesIf = [&corrections](SkinFault fault, bool atTop, bool atBottom) {
+                if (atTop) corrections.push_back(SkinCorrection{fault, SkinEdge::Top});
+                if (atBottom) corrections.push_back(SkinCorrection{fault, SkinEdge::Bottom});
+            };
+            atEdges(SkinFault::OutsidePage, topFaults.outsidePage, bottomFaults.outsidePage);
+            atEdges(SkinFault::MissingCoordinate, topFaults.missingCoordinate, bottomFaults.missingCoordinate);
+            atEdges(SkinFault::ExtraPoints, topFaults.extraPoints, bottomFaults.extraPoints);
+            atEdgesIf(SkinFault::SpineMoved, topSpineMoved, bottomSpineMoved);
             if (folds) {
-                faults.push_back(SkinFault::FoldsColumn);
-            } else if (unordered) {
-                faults.push_back(SkinFault::Unordered);
+                corrections.push_back(SkinCorrection{SkinFault::FoldsColumn, std::nullopt});
+            } else {
+                atEdgesIf(SkinFault::Unordered, topUnordered, bottomUnordered);
             }
-            if (!faults.empty()) correctedSkins.push_back(CorrectedSkin{skin.name, std::move(faults)});
+            if (!corrections.empty()) correctedSkins.push_back(CorrectedSkin{skin.name, std::move(corrections)});
 
             skins_.push_back(std::move(skin));
         }

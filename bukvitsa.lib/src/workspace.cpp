@@ -50,20 +50,46 @@ std::filesystem::path brokenCopyOf(std::filesystem::path file) {
     return file;
 }
 
+/// Кромка в родительном падеже — так её называют слова исправления.
+const wchar_t* edgeWords(SkinEdge edge) {
+    switch (edge) {
+        case SkinEdge::Top:
+            return L"верхней кромки";
+        case SkinEdge::Bottom:
+            return L"нижней кромки";
+    }
+    wxl::core::abort("edgeWords: кромка вне перечисления");
+}
+
 /// Что чтение исправило в обложке — словами читателю: что было в файле и что
-/// стало на экране.
-const wchar_t* faultWords(SkinFault fault) {
-    switch (fault) {
+/// стало на экране. Причина у кромки называет её, о точках — в числе по
+/// тому, сколько их; выворот и пропуск — о всей обложке. Кромка или число
+/// точек не у той причины — нарушение того, кто собрал исправление
+/// (Skins::loadFrom): слова о таком исправлении соврали бы.
+std::wstring correctionWords(const SkinCorrection& correction) {
+    const bool wholeSkin = correction.fault == SkinFault::FoldsColumn || correction.fault == SkinFault::SkippedNoName ||
+                           correction.fault == SkinFault::SkippedNoImage;
+    const bool aboutPoints = correction.fault == SkinFault::OutsidePage ||
+                             correction.fault == SkinFault::MissingCoordinate ||
+                             correction.fault == SkinFault::ExtraPoints;
+    if (wholeSkin == correction.edge.has_value() || aboutPoints == (correction.points == 0))
+        wxl::core::abort("correctionWords: кромка или число точек не у той причины");
+
+    const std::wstring edge = wholeSkin ? std::wstring{} : std::wstring{edgeWords(*correction.edge)};
+    const bool one = correction.points == 1;
+    switch (correction.fault) {
         case SkinFault::OutsidePage:
-            return L"координата точки кромки не в долях страницы — на месте точки точка начальной прямой";
+            return one ? L"у точки " + edge + L" координата не в долях страницы — на её месте точка начальной прямой"
+                       : L"у точек " + edge + L" координаты не в долях страницы — на их местах точки начальной прямой";
         case SkinFault::MissingCoordinate:
-            return L"у точки кромки нет координаты — на её месте точка начальной прямой";
+            return one ? L"у точки " + edge + L" нет координаты — на её месте точка начальной прямой"
+                       : L"у точек " + edge + L" нет координат — на их местах точки начальной прямой";
         case SkinFault::ExtraPoints:
-            return L"у кромки лишние точки — отброшены";
+            return one ? L"у " + edge + L" лишняя точка — отброшена" : L"у " + edge + L" лишние точки — отброшены";
         case SkinFault::SpineMoved:
-            return L"корешок кромки не на середине — поставлен на середину";
+            return L"корешок " + edge + L" не на середине — поставлен на середину";
         case SkinFault::Unordered:
-            return L"с корешком на середине точки кромки идут не слева направо — кромка показана ровной";
+            return L"с корешком на середине точки " + edge + L" идут не слева направо — кромка показана ровной";
         case SkinFault::FoldsColumn:
             return L"кромки выворачивают столбец — обложка показана ровной";
         case SkinFault::SkippedNoName:
@@ -71,7 +97,7 @@ const wchar_t* faultWords(SkinFault fault) {
         case SkinFault::SkippedNoImage:
             return L"пропущена — у неё нет снимка";
     }
-    wxl::core::abort("faultWords: исправление вне перечисления");
+    wxl::core::abort("correctionWords: исправление вне перечисления");
 }
 
 /// Обложки, которые чтение реестра исправило, — одним сообщением, строкой на
@@ -85,9 +111,9 @@ Notice correctedNotice(const std::vector<CorrectedSkin>& correctedSkins, const s
         details += correctedSkin.name.empty() ? std::wstring{L"Обложка без имени"}
                                               : L"Обложка «" + std::wstring{correctedSkin.name.wchars()} + L"»";
         details += L" в skins.xml: ";
-        for (size_t at = 0; at < correctedSkin.faults.size(); ++at) {
+        for (size_t at = 0; at < correctedSkin.corrections.size(); ++at) {
             if (at > 0) details += L"; ";
-            details += faultWords(correctedSkin.faults[at]);
+            details += correctionWords(correctedSkin.corrections[at]);
         }
         details += L".\n";
     }
@@ -95,8 +121,8 @@ Notice correctedNotice(const std::vector<CorrectedSkin>& correctedSkins, const s
     // него такими, как показаны, а пропущенные из него исчезнут — и те и
     // другие в своём прежнем виде останутся только в копии.
     const auto skipped = [](const CorrectedSkin& correctedSkin) {
-        return std::ranges::any_of(correctedSkin.faults, [](SkinFault fault) {
-            return fault == SkinFault::SkippedNoName || fault == SkinFault::SkippedNoImage;
+        return std::ranges::any_of(correctedSkin.corrections, [](const SkinCorrection& correction) {
+            return correction.fault == SkinFault::SkippedNoName || correction.fault == SkinFault::SkippedNoImage;
         });
     };
     const bool anySkipped = std::ranges::any_of(correctedSkins, skipped);
