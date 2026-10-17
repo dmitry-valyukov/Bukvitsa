@@ -330,8 +330,9 @@ reader::Skin foldedSkin() {
 /// Исправило ли чтение реестра обложек ровно одну обложку — эту и вот этим, в
 /// этом порядке.
 bool correctedOne(const std::optional<std::vector<reader::CorrectedSkin>>& read, std::u16string_view name,
-                  std::initializer_list<reader::SkinFault> faults) {
-    return read && read->size() == 1 && (*read)[0].name == name && std::ranges::equal((*read)[0].faults, faults);
+                  std::initializer_list<reader::SkinCorrection> corrections) {
+    return read && read->size() == 1 && (*read)[0].name == name &&
+           std::ranges::equal((*read)[0].corrections, corrections);
 }
 
 /// Точки полосы на одном расстоянии с допуском в тысячную DIP — столько
@@ -554,7 +555,8 @@ void testSkinsReadSeparateLeaves() {
     rightWithoutHeight.replace(rightFirstAt, rightFirstPoint.size(), "<point x=\"0.51\"/>");
     reader::Skins halvesRead;
     const std::optional<std::vector<reader::CorrectedSkin>> halvesCorrected = halvesRead.loadFrom(rightWithoutHeight);
-    check(correctedOne(halvesCorrected, u"Старая", {reader::SkinFault::MissingCoordinate}) &&
+    check(correctedOne(halvesCorrected, u"Старая",
+                       {{reader::SkinFault::MissingCoordinate, reader::SkinEdge::Top, 1}}) &&
               aboutEqual(halvesRead.list()[0].top.y[spine], 0.5f * (0.02f + fresh.top.y[spine])),
           "правый лист второй версии без высоты у первой точки — точка начальной прямой, а не корешок левого");
 
@@ -588,8 +590,8 @@ void testSkinsReadSeparateLeaves() {
     check(repaired.list().size() == 1 &&
               repaired.list()[0].top.x[spine] == reader::EdgeCurve::kSpineX,
           "корешок из файла встаёт на середину");
-    check(correctedOne(bentRead, u"Старая", {reader::SkinFault::SpineMoved}),
-          "и не молча: обложка названа, корешок поставлен на середину");
+    check(correctedOne(bentRead, u"Старая", {{reader::SkinFault::SpineMoved, reader::SkinEdge::Top}}),
+          "и не молча: обложка названа, корешок верхней кромки поставлен на середину");
 
     // Точки в файле идут слева направо, но корешок сдвинут вправо, и четвёртая
     // точка стоит между серединой и им: с корешком на середине она за ним.
@@ -604,7 +606,8 @@ void testSkinsReadSeparateLeaves() {
     shiftedOrder.replace(shiftedFourthAt, 14, "<point x=\"0.52\"");
     reader::Skins reordered;
     check(correctedOne(reordered.loadFrom(shiftedOrder), u"Старая",
-                       {reader::SkinFault::SpineMoved, reader::SkinFault::Unordered}),
+                       {{reader::SkinFault::SpineMoved, reader::SkinEdge::Top},
+                        {reader::SkinFault::Unordered, reader::SkinEdge::Top}}),
           "корешок сдвинут, и с ним на середине точки не по порядку — оба исправления по порядку");
 
     // Точку увели за край страницы: на её месте — точка начальной прямой, и
@@ -617,7 +620,7 @@ void testSkinsReadSeparateLeaves() {
     offPage.replace(firstHeightAt, firstHeight.size(), " y=\"1.7\"");
     reader::Skins offPageRead;
     const std::optional<std::vector<reader::CorrectedSkin>> offPageCorrected = offPageRead.loadFrom(offPage);
-    check(correctedOne(offPageCorrected, u"Старая", {reader::SkinFault::OutsidePage}) &&
+    check(correctedOne(offPageCorrected, u"Старая", {{reader::SkinFault::OutsidePage, reader::SkinEdge::Top, 1}}) &&
               offPageRead.list()[0].top.x[0] == fresh.top.x[0] && offPageRead.list()[0].top.y[0] == fresh.top.y[0],
           "точка вне страницы — названа, на её месте точка начальной прямой целиком");
 
@@ -627,7 +630,8 @@ void testSkinsReadSeparateLeaves() {
     heightless.replace(firstHeightAt, firstHeight.size(), "");
     reader::Skins heightlessRead;
     const std::optional<std::vector<reader::CorrectedSkin>> heightlessCorrected = heightlessRead.loadFrom(heightless);
-    check(correctedOne(heightlessCorrected, u"Старая", {reader::SkinFault::MissingCoordinate}) &&
+    check(correctedOne(heightlessCorrected, u"Старая",
+                       {{reader::SkinFault::MissingCoordinate, reader::SkinEdge::Top, 1}}) &&
               heightlessRead.list()[0].top.x[0] == fresh.top.x[0] &&
               heightlessRead.list()[0].top.y[0] == fresh.top.y[0],
           "точка без высоты — названа, на её месте точка начальной прямой целиком");
@@ -639,8 +643,47 @@ void testSkinsReadSeparateLeaves() {
     if (topEndAt == std::string::npos) return;
     overfull.insert(topEndAt, "  <point x=\"0.99\" y=\"0.5\"/>\n    ");
     reader::Skins overfullRead;
-    check(correctedOne(overfullRead.loadFrom(overfull), u"Старая", {reader::SkinFault::ExtraPoints}),
+    check(correctedOne(overfullRead.loadFrom(overfull), u"Старая",
+                       {{reader::SkinFault::ExtraPoints, reader::SkinEdge::Top, 1}}),
           "лишняя точка кромки — отброшена и названа");
+
+    // Точки не на месте у обеих кромок: каждая названа своей причиной, верхняя
+    // раньше нижней, и у каждой — число своих точек. Лишние за первой лишней
+    // тоже сосчитаны.
+    reader::Skin scattered = fresh;
+    scattered.name = u16_text{u"Старая"};
+    scattered.image = u16_text{u"old.png"};
+    scattered.top.y[1] = 1.5f;
+    scattered.top.y[2] = -0.5f;
+    scattered.bottom.y[6] = 1.2f;
+    reader::Skins scatteredRegistry;
+    scatteredRegistry.put(scattered);
+    std::string scatteredXml = scatteredRegistry.toXml();
+    const size_t bottomEndAt = scatteredXml.find("</bottom>");
+    check(bottomEndAt != std::string::npos, "нижняя кромка записана");
+    if (bottomEndAt == std::string::npos) return;
+    scatteredXml.insert(bottomEndAt, "  <point x=\"0.98\" y=\"0.9\"/>\n      <point x=\"0.99\" y=\"0.9\"/>\n    ");
+    reader::Skins scatteredRead;
+    check(correctedOne(scatteredRead.loadFrom(scatteredXml), u"Старая",
+                       {{reader::SkinFault::OutsidePage, reader::SkinEdge::Top, 2},
+                        {reader::SkinFault::OutsidePage, reader::SkinEdge::Bottom, 1},
+                        {reader::SkinFault::ExtraPoints, reader::SkinEdge::Bottom, 2}}) &&
+              scatteredRead.list()[0].top.y == fresh.top.y && scatteredRead.list()[0].bottom.y == fresh.bottom.y,
+          "точки у обеих кромок — по кромке и с числом точек, на их местах точки начальной прямой");
+
+    // Корешок сдвинут у обеих кромок — две причины, а не одна на обложку.
+    reader::Skin bothSpines = fresh;
+    bothSpines.name = u16_text{u"Старая"};
+    bothSpines.image = u16_text{u"old.png"};
+    bothSpines.top.x[spine] = 0.47f;
+    bothSpines.bottom.x[spine] = 0.53f;
+    reader::Skins bothSpinesRegistry;
+    bothSpinesRegistry.put(bothSpines);
+    reader::Skins bothSpinesRead;
+    check(correctedOne(bothSpinesRead.loadFrom(bothSpinesRegistry.toXml()), u"Старая",
+                       {{reader::SkinFault::SpineMoved, reader::SkinEdge::Top},
+                        {reader::SkinFault::SpineMoved, reader::SkinEdge::Bottom}}),
+          "корешок сдвинут у обеих кромок — названы обе");
 
     // Обложки без снимка и без имени не встают, и об этом сказано.
     const std::string incomplete = R"(<?xml version="1.0" encoding="utf-8"?>
@@ -653,11 +696,13 @@ void testSkinsReadSeparateLeaves() {
     const std::optional<std::vector<reader::CorrectedSkin>> incompleteCorrected = incompleteRead.loadFrom(incomplete);
     check(incompleteCorrected && incompleteCorrected->size() == 2 && incompleteRead.list().empty() &&
               (*incompleteCorrected)[0].name == std::u16string_view{u"Без снимка"} &&
-              std::ranges::equal((*incompleteCorrected)[0].faults,
-                                 std::initializer_list<reader::SkinFault>{reader::SkinFault::SkippedNoImage}) &&
+              std::ranges::equal((*incompleteCorrected)[0].corrections,
+                                 std::initializer_list<reader::SkinCorrection>{
+                                     {reader::SkinFault::SkippedNoImage, std::nullopt}}) &&
               (*incompleteCorrected)[1].name.empty() &&
-              std::ranges::equal((*incompleteCorrected)[1].faults,
-                                 std::initializer_list<reader::SkinFault>{reader::SkinFault::SkippedNoName}),
+              std::ranges::equal((*incompleteCorrected)[1].corrections,
+                                 std::initializer_list<reader::SkinCorrection>{
+                                     {reader::SkinFault::SkippedNoName, std::nullopt}}),
           "обложки без снимка и без имени пропущены и названы");
 
     // Точку увели за соседку: такая кромка — начальная прямая.
@@ -672,8 +717,24 @@ void testSkinsReadSeparateLeaves() {
     check(straightened.list().size() == 1 && straightened.list()[0].top.x == fresh.top.x &&
               straightened.list()[0].top.y == fresh.top.y,
           "точки не по порядку — кромка становится начальной прямой");
-    check(correctedOne(crossedRead, u"Старая", {reader::SkinFault::Unordered}),
-          "и не молча: обложка названа, причина — точки не слева направо, корешок на месте");
+    check(correctedOne(crossedRead, u"Старая", {{reader::SkinFault::Unordered, reader::SkinEdge::Top}}),
+          "и не молча: обложка названа, причина — точки верхней кромки не слева направо, корешок на месте");
+
+    // Не по порядку только нижняя: ровной становится она одна, и названа она.
+    reader::Skin bottomCrossed = fresh;
+    bottomCrossed.name = u16_text{u"Старая"};
+    bottomCrossed.image = u16_text{u"old.png"};
+    bottomCrossed.top.y[2] = 0.05f;
+    bottomCrossed.bottom.x[3] = 0.6f;
+    reader::Skins bottomCrossedRegistry;
+    bottomCrossedRegistry.put(bottomCrossed);
+    reader::Skins bottomStraightened;
+    const std::optional<std::vector<reader::CorrectedSkin>> bottomCrossedRead =
+        bottomStraightened.loadFrom(bottomCrossedRegistry.toXml());
+    check(correctedOne(bottomCrossedRead, u"Старая", {{reader::SkinFault::Unordered, reader::SkinEdge::Bottom}}) &&
+              aboutEqual(bottomStraightened.list()[0].top.y[2], 0.05f) &&
+              bottomStraightened.list()[0].bottom.x == fresh.bottom.x,
+          "не по порядку только нижняя — ровная и названа она одна, верхняя как была");
 
     // Кромки, которые между точками разошлись на высоту полосы и вывернули бы
     // столбец: ровной становится вся обложка.
@@ -688,7 +749,7 @@ void testSkinsReadSeparateLeaves() {
               unfolded.list()[0].bottom.y == fresh.bottom.y &&
               reader::PageWarp{unfolded.list()[0]}.flat(),
           "обложка, выворачивающая столбец, читается ровной");
-    check(correctedOne(foldedRead, u"Вывернутая", {reader::SkinFault::FoldsColumn}),
+    check(correctedOne(foldedRead, u"Вывернутая", {{reader::SkinFault::FoldsColumn, std::nullopt}}),
           "и не молча: обложка названа, причина — кромки выворачивают столбец");
 
     // Файл поправили руками: первые две точки верхней кромки — на нулевом и на
@@ -713,7 +774,7 @@ void testSkinsReadSeparateLeaves() {
           "кромка на субнормальном шаге читается ровной");
     // Сплайн, ушедший в бесконечность, столбцы не держит (keepsColumns), и
     // причина названа та же.
-    check(correctedOne(subnormalRead, u"Сломанная", {reader::SkinFault::FoldsColumn}),
+    check(correctedOne(subnormalRead, u"Сломанная", {{reader::SkinFault::FoldsColumn, std::nullopt}}),
           "и не молча: обложка с субнормальным шагом названа");
 
     reader::Skins unparsed;
@@ -1173,6 +1234,33 @@ void testWorkspaceKeepsBrokenFiles() {
     }
 }
 
+/// Правит записанный реестр так, как его поправил бы читатель руками: у
+/// точек `heightless` (номера по возрастанию) кромки `curve` (её элемент —
+/// «<top>» или «<bottom>») стирает высоту, а в конец кромки дописывает
+/// `extra` лишних точек. false — в записи нет такой кромки или таких точек.
+bool handEditCurve(std::string& xml, std::string_view curve, std::initializer_list<size_t> heightless, size_t extra) {
+    const size_t curveAt = xml.find(curve);
+    if (curveAt == std::string::npos) return false;
+    const size_t endAt = xml.find("</", curveAt);
+    if (endAt == std::string::npos) return false;
+    for (size_t added = 0; added < extra; ++added) xml.insert(endAt, "  <point x=\"0.99\" y=\"0.5\"/>\n    ");
+
+    // С конца: стёртая высота не сдвигает точки, которые ещё впереди.
+    std::vector<size_t> points;
+    for (size_t at = xml.find("<point", curveAt); at != std::string::npos && at < xml.find("</", curveAt);
+         at = xml.find("<point", at + 1))
+        points.push_back(at);
+    for (size_t order = heightless.size(); order-- > 0;) {
+        const size_t index = heightless.begin()[order];
+        if (index >= points.size()) return false;
+        const size_t heightAt = xml.find(" y=\"", points[index]);
+        const size_t heightEnd = heightAt == std::string::npos ? heightAt : xml.find('"', heightAt + 4);
+        if (heightEnd == std::string::npos) return false;
+        xml.erase(heightAt, heightEnd + 1 - heightAt);
+    }
+    return true;
+}
+
 /// Обложки, чьи кромки в skins.xml неверны, запуск показывает исправленными,
 /// кладёт рядом копию файла и называет их одним сообщением: строкой на
 /// обложку с тем, что исправлено, путями файла и копии и словом о том, что
@@ -1203,11 +1291,20 @@ void testWorkspaceNamesCorrectedSkins() {
     folded.name = u16_text{u"Вывернутая"};
     folded.image = u16_text{u"folded.png"};
 
-    // Третья точка верхней кромки ниже страницы.
+    // Третья точка верхней кромки ниже страницы — одна точка.
     Skin offPage = defaultSkin();
     offPage.name = u16_text{u"Вне страницы"};
     offPage.image = u16_text{u"offpage.png"};
     offPage.top.y[2] = 1.5f;
+
+    // Две точки верхней кромки и одна нижней — вне страницы: две кромки,
+    // у каждой — в числе своих точек.
+    Skin scattered = defaultSkin();
+    scattered.name = u16_text{u"Разбросанная"};
+    scattered.image = u16_text{u"scattered.png"};
+    scattered.top.y[1] = 1.5f;
+    scattered.top.y[2] = -0.5f;
+    scattered.bottom.y[6] = 1.2f;
 
     // Снимка нет, имени нет — такие обложки не встанут.
     Skin imageless = defaultSkin();
@@ -1221,6 +1318,7 @@ void testWorkspaceNamesCorrectedSkins() {
     handEdited.put(unordered);
     handEdited.put(folded);
     handEdited.put(offPage);
+    handEdited.put(scattered);
     handEdited.put(imageless);
     handEdited.put(nameless);
     const std::string xml = handEdited.toXml();
@@ -1241,17 +1339,23 @@ void testWorkspaceNamesCorrectedSkins() {
             const Notice& notice = started.notices[0];
             check(notice.headline == L"Обложки из skins.xml исправлены при чтении", "заголовок — во множественном");
             check(holds(notice.details,
-                        L"Обложка «Сдвинутая» в skins.xml: корешок кромки не на середине — поставлен на середину.\n"),
+                        L"Обложка «Сдвинутая» в skins.xml: корешок нижней кромки не на середине — поставлен на "
+                        L"середину.\n"),
                   "строка обложки со сдвинутым корешком");
-            check(holds(notice.details, L"Обложка «Беспорядочная» в skins.xml: с корешком на середине точки кромки "
-                                        L"идут не слева направо — кромка показана ровной.\n"),
+            check(holds(notice.details, L"Обложка «Беспорядочная» в skins.xml: с корешком на середине точки "
+                                        L"верхней кромки идут не слева направо — кромка показана ровной.\n"),
                   "строка обложки с точками не по порядку");
             check(holds(notice.details, L"Обложка «Вывернутая» в skins.xml: кромки выворачивают столбец — обложка "
                                         L"показана ровной.\n"),
                   "строка обложки, выворачивающей столбец");
-            check(holds(notice.details, L"Обложка «Вне страницы» в skins.xml: координата точки кромки не в долях "
-                                        L"страницы — на месте точки точка начальной прямой.\n"),
-                  "строка обложки с точкой вне страницы");
+            check(holds(notice.details, L"Обложка «Вне страницы» в skins.xml: у точки верхней кромки координата не "
+                                        L"в долях страницы — на её месте точка начальной прямой.\n"),
+                  "строка обложки с одной точкой вне страницы — в единственном");
+            check(holds(notice.details, L"Обложка «Разбросанная» в skins.xml: у точек верхней кромки координаты не "
+                                        L"в долях страницы — на их местах точки начальной прямой; у точки нижней "
+                                        L"кромки координата не в долях страницы — на её месте точка начальной "
+                                        L"прямой.\n"),
+                  "строка обложки с точками вне страницы у двух кромок — по кромке, в числе её точек");
             check(holds(notice.details, L"Обложка «Без снимка» в skins.xml: пропущена — у неё нет снимка.\n"),
                   "строка пропущенной обложки");
             check(holds(notice.details, L"Обложка без имени в skins.xml: пропущена — у неё нет имени.\n"),
@@ -1269,10 +1373,39 @@ void testWorkspaceNamesCorrectedSkins() {
         const Skin* const shownSpine = ws.skins.find(u"Сдвинутая");
         const Skin* const shownUnordered = ws.skins.find(u"Беспорядочная");
         const Skin* const shownFolded = ws.skins.find(u"Вывернутая");
-        check(ws.skins.list().size() == 5 && shownSpine && shownUnordered && shownFolded &&
+        check(ws.skins.list().size() == 6 && shownSpine && shownUnordered && shownFolded &&
                   shownSpine->bottom.x[static_cast<size_t>(reader::EdgeCurve::kSpine)] == reader::EdgeCurve::kSpineX &&
                   PageWarp{*shownUnordered}.flat() && PageWarp{*shownFolded}.flat(),
-              "все пять обложек в реестре, корешок на середине, неверные кромки — ровные");
+              "все шесть обложек в реестре, корешок на середине, неверные кромки — ровные");
+    }
+
+    {
+        // Точки без высоты и лишние у обеих кромок: у верхней по одной, у
+        // нижней по две, — слова в числе по каждой кромке.
+        Sandbox box("corrected-points");
+        Skin incomplete = defaultSkin();
+        incomplete.name = u16_text{u"Неполная"};
+        incomplete.image = u16_text{u"incomplete.png"};
+        Skins incompleteRegistry;
+        incompleteRegistry.put(incomplete);
+        std::string incompleteXml = incompleteRegistry.toXml();
+        check(handEditCurve(incompleteXml, "<top>", {1}, 1) && handEditCurve(incompleteXml, "<bottom>", {2, 3}, 2),
+              "реестр поправлен руками: высоты стёрты, лишние точки дописаны");
+        Workspace ws(box.root);
+        putOnDisk(ws.skinsPath(), incompleteXml);
+
+        const Started started = run(ws.start(never));
+
+        check(started.notices.size() == 1 &&
+                  holds(started.notices[0].details,
+                        L"Обложка «Неполная» в skins.xml: у точки верхней кромки нет координаты — на её месте точка "
+                        L"начальной прямой; у точек нижней кромки нет координат — на их местах точки начальной "
+                        L"прямой; у верхней кромки лишняя точка — отброшена; у нижней кромки лишние точки — "
+                        L"отброшены.\n"),
+              "точки без координаты и лишние — по кромке, в единственном у одной точки, во множественном у двух");
+        check(ws.skins.list().size() == 1 && ws.skins.list()[0].top.y == defaultSkin().top.y &&
+                  ws.skins.list()[0].bottom.y == defaultSkin().bottom.y,
+              "на местах точек без высоты — точки начальной прямой, лишних нет");
     }
 
     {
