@@ -4,6 +4,9 @@ add_executable(typography_tests typography_tests.cpp)
 # берёт из пула память. bukvitsa::mathml — сквозная проверка цепочки EPUB:
 # MathML → TeX → MicroTeX.
 target_link_libraries(typography_tests PRIVATE bukvitsa::typography bukvitsa::mathml wxl::core)
+
+# Пакет FB3 для проб (test_package.h) — у проб FB3: верхний слой берёт у нижнего.
+target_include_directories(typography_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../FB3/tests)
 bukvitsa_consumes_wxl(typography_tests)
 
 add_test(NAME typography_tests COMMAND typography_tests)

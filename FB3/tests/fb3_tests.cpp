@@ -5,18 +5,26 @@
 // wxl.xml выделяет память из STA-пула wxl.core — он должен существовать
 // до первого разбора и пережить последнюю книгу.
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+#include "test_package.h"
 
 import wxl.core;
 
 import bukvitsa.fb3;
 
 using namespace bukvitsa::fb3;
+using namespace bukvitsa::fb3::tests;
 
 namespace {
 
@@ -294,6 +302,115 @@ void testSamePart(const std::filesystem::path& testdata) {
     check(!package.samePart(shouted, shoutedLogo), "в верхнем регистре разные части — разные");
 }
 
+/// Книга пробы: короткое тело и часть-картинка fb3/img/a.png; связи пакета и
+/// тела — из пробы.
+std::string bookWith(std::string_view packageRelationships, std::string_view bodyRelationships) {
+    static constexpr PartBytes image[] = {{"fb3/img/a.png", "картинка A"}};
+    return fb3Package({
+        .body = R"(<?xml version="1.0" encoding="UTF-8"?><fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" id="00000000-0000-0000-0000-000000000002"><section id="s1"><p>Текст</p></section></fb3-body>)",
+        .packageRelationships = packageRelationships,
+        .bodyRelationships = bodyRelationships,
+        .otherParts = image,
+    });
+}
+
+/// Книга не открылась отказом пакета — std::system_error, как у readPart, — а
+/// не открылась бы иначе или открылась вовсе. Пакет с испорченными связями,
+/// пока их отказ глотался, открывался без картинок или кончался словами «нет
+/// связи Book» (std::runtime_error) — о другом.
+bool refusedAsPackage(std::string bytes, const char* what, std::optional<int> code = std::nullopt) {
+    try {
+        const Document document{std::move(bytes)};
+    } catch (const std::system_error& error) {
+        std::printf("  %s: %s\n", what, error.what());
+        return !code || error.code().value() == *code;
+    } catch (const std::exception& error) {
+        std::printf("  %s: не тот отказ — %s\n", what, error.what());
+        return false;
+    }
+    std::printf("  %s: книга открылась\n", what);
+    return false;
+}
+
+/// Отказ Packaging API на связи из файла — отказ разбора, а «нет» — пустой
+/// ответ: связь к части, которой нет, связь за пределы пакета, Id, которого
+/// нет. Тело без файла связей — книга без картинок, а не отказ: пустой набор
+/// связей у такой части Packaging API отдаёт, а не отказывает (документация
+/// этого не говорит — держит проба).
+void testPackageRefusals() {
+    std::printf("\n=== отказы пакета ===\n");
+
+    {
+        const Document book{bookWith(kBookRelationship, "")};
+        check(book.images().empty(), "тело без файла связей — книга без картинок");
+    }
+
+    // Четыре связи картинок: внутрь пакета, наружу по абсолютному адресу,
+    // наружу по относительному — тому же, что имя части a.png, — и к части,
+    // которой нет. Внешняя связь не часть, даже когда её цель совпала с именем
+    // части: прежде такая разрешалась в часть.
+    const std::string mixed = bookWith(kBookRelationship, relationships(
+        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/a.png"/>)"
+        R"(<Relationship Id="rIdWeb" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="http://example.com/a.png" TargetMode="External"/>)"
+        R"(<Relationship Id="rIdBeside" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/a.png" TargetMode="External"/>)"
+        R"(<Relationship Id="rIdLost" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/lost.png"/>)"));
+    {
+        const Document book{std::string(mixed)};
+        check(book.images().size() == 1 && book.images()[0].relationshipId.chars() == "rIdA",
+              "из четырёх связей картинок — одна: внешние и к отсутствующей части не картинки");
+    }
+    {
+        const OpcPackage package(std::as_bytes(std::span(mixed)));
+        const std::optional<PackagePart> body =
+            package.partByPackageRelationship(L"http://www.fictionbook.org/FictionBook3/relationships/Book")
+                .and_then([&](const PackagePart& description) {
+                    return package.partByRelationship(description,
+                                                      L"http://www.fictionbook.org/FictionBook3/relationships/body");
+                });
+        check(body.has_value(), "тело найдено");
+        if (body) {
+            const std::optional<PackagePart> inside = package.partByRelationshipId(*body, u8"rIdA");
+            check(inside && package.readPart(*inside) == "картинка A", "связь внутрь пакета — часть a.png");
+            check(!package.partByRelationshipId(*body, u8"rIdWeb"), "внешняя связь — не часть: пусто");
+            check(!package.partByRelationshipId(*body, u8"rIdBeside"),
+                  "внешняя связь с целью, совпавшей с именем части, — не часть: пусто");
+            check(!package.partByRelationshipId(*body, u8"rIdLost"), "связь к части, которой нет, — пусто");
+            check(!package.partByRelationshipId(*body, u8"rIdNone"), "Id, которого нет, — пусто");
+        }
+    }
+
+    // Связи не XML и цель, из которой не собрать имя части (кончаться на '/'
+    // оно не может), — испорченный пакет.
+    const std::string notXml = "<Relationships";
+    const std::string badTarget = relationships(
+        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/"/>)");
+
+    check(refusedAsPackage(bookWith(kBookRelationship, notXml), "связи тела — не XML"),
+          "связи тела — не XML: отказ пакета, а не книга без картинок");
+    check(refusedAsPackage(bookWith(kBookRelationship, badTarget), "цель связи — не имя части"),
+          "цель связи картинки — не имя части: отказ пакета, а не книга без картинки");
+    check(refusedAsPackage(bookWith(notXml, ""), "связи пакета — не XML"),
+          "связи пакета — не XML: отказ пакета, а не «нет связи Book»");
+
+    // Один Id у двух связей: первая — наружу или к части, которой нет, вторая —
+    // картинка. Картинку потом читают по Id, и повтор подменил бы её; Packaging
+    // API повтор отвергает — OPC_E_DUPLICATE_RELATIONSHIP (0x80510013). Пропусти
+    // он его — разбор откажет сам (шаг картинок), и проба скажет, что код не тот.
+    constexpr int kDuplicateRelationship = static_cast<int>(0x80510013u);
+    const std::string duplicateOutside = relationships(
+        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="http://example.com/a.png" TargetMode="External"/>)"
+        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/a.png"/>)");
+    const std::string duplicateLost = relationships(
+        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/lost.png"/>)"
+        R"(<Relationship Id="rIdA" Type="http://www.fictionbook.org/FictionBook3/relationships/image" Target="img/a.png"/>)");
+    check(refusedAsPackage(bookWith(kBookRelationship, duplicateOutside), "повтор Id: внешняя и картинка",
+                           kDuplicateRelationship),
+          "повтор Id (первая связь наружу) — отказ пакета OPC_E_DUPLICATE_RELATIONSHIP");
+    check(refusedAsPackage(bookWith(kBookRelationship, duplicateLost), "повтор Id: к отсутствующей и картинка",
+                           kDuplicateRelationship),
+          "повтор Id (первая связь к отсутствующей части) — отказ пакета OPC_E_DUPLICATE_RELATIONSHIP");
+}
+
 /// Проверка на одной книге: исключение разбора — её провал, а не конец теста.
 template <class Test>
 void guarded(const char* what, const Test& test) {
@@ -337,6 +454,7 @@ int main() {
     guarded("описание", [&] { testTakeDescription(testdata); });
     guarded("одна ли часть", [&] { testSamePart(testdata); });
     guarded("обложка", [&] { testCover(testdata); });
+    guarded("отказы пакета", [&] { testPackageRefusals(); });
 
     std::printf("\n%s\n", failures == 0 ? "OK" : "ЕСТЬ ОШИБКИ");
     return failures;

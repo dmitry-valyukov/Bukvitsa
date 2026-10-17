@@ -140,9 +140,18 @@ struct Document::Impl {
     ImagePart& loadImage(std::uint32_t index) {
         ImagePart& part = images[index];
 
-        if (part.bytes.empty())
-            if (auto source = package.partByRelationshipId(bodyPart, part.relationshipId))
-                part.bytes = package.readPart(*source);
+        if (part.bytes.empty()) {
+            // В список картинка попала, когда её Id разрешился в ту же часть,
+            // что и её связь (шаг 2 разбора), а пакет с тех пор тот же: «нет»
+            // теперь — его противоречие самому себе, а не ответ о файле.
+            const std::optional<PackagePart> source =
+                package.partByRelationshipId(bodyPart, part.relationshipId);
+            if (!source)
+                wxl::core::abort(std::format("FB3: связь картинки {} разрешилась при разборе, а теперь — нет",
+                                             part.relationshipId.chars()));
+
+            part.bytes = package.readPart(*source);
+        }
 
         return part;
     }
@@ -476,6 +485,15 @@ void Document::parse() {
     std::optional<std::uint32_t> thumbnailImage;
 
     for (auto& [id, part] : imageRelationships) {
+        // Байты картинки потом читаются по Id её связи (loadImage), и Id обязан
+        // назвать эту же связь. Повтор Id, если Packaging API его пропустит,
+        // подменил бы картинку чужой частью или не нашёл бы её вовсе — это
+        // испорченный файл связей, и он — отказ разбора здесь, а не сбой потом.
+        const std::optional<PackagePart> named = impl_->package.partByRelationshipId(impl_->bodyPart, id);
+        if (!named || !impl_->package.samePart(*named, part))
+            throw std::runtime_error(std::format(
+                "FB3: Id {} у связей тела не один — картинку по нему не прочесть", id.chars()));
+
         if (thumbnail && !thumbnailImage && impl_->package.samePart(part, *thumbnail))
             thumbnailImage = static_cast<std::uint32_t>(impl_->images.size());
 
