@@ -35,8 +35,9 @@ constexpr uint8_t symbolOf(const char16_t unit) noexcept {
     return code_point < hyphenTableEnd ? hyphenSymbol[code_point] : 0;
 }
 
-/// Признаки кодовой точки из той же таблицы: заглавная, гласная, буква, знак
-/// и язык буквы алфавита. За границей таблицы — ни одного.
+/// Признаки кодовой точки — второй массив таблицы, рядом с номерами:
+/// заглавная, гласная, буква, знак и язык буквы алфавита. За границей таблицы
+/// — ни одного.
 constexpr uint8_t traitsOf(const char16_t unit) noexcept {
     const auto code_point = static_cast<uint32_t>(unit);
     return code_point < hyphenTableEnd ? hyphenTraits[code_point] : 0;
@@ -235,12 +236,20 @@ constexpr bool isStressMark(const char16_t unit) noexcept {
     return unit == u'\x0301' || unit == u'\x0300';
 }
 
+/// Кончает ли слово кодовая точка выше таблицы: только пробел, пунктуация или
+/// символ из блоков, которые перечисляет генератор таблицы.
+bool isSeparator(const char32_t code_point) noexcept {
+    for (const auto& block : hyphenSeparators)
+        if (code_point >= block[0] && code_point <= block[1])
+            return true;
+    return false;
+}
+
 /// Роль буквы — от `at` до `next`, границы следующей. Решает основа, первая
-/// единица; знаки за ней меняют роль только буквы алфавита: с ударением она
-/// та же, с другим знаком — чужая. Про основу за границей таблицы — и тем
-/// более вне BMP — таблица не знает, буква ли это, и она остаётся границей
-/// слова, как пунктуация.
-WordRole roleOf(const std::u16string_view units, const size_t at, const size_t next) noexcept {
+/// кодовая точка; знаки за ней меняют роль только буквы алфавита: с ударением
+/// она та же, с другим знаком — чужая.
+WordRole roleOf(const u16_view paragraph, const size_t at, const size_t next) noexcept {
+    const std::u16string_view units = paragraph.plain();
     const char16_t base = units[at];
     if (base >= u'0' && base <= u'9')
         return WordRole::Digit;
@@ -266,6 +275,17 @@ WordRole roleOf(const std::u16string_view units, const size_t at, const size_t n
             if (!isStressMark(units[i]))
                 return WordRole::Foreign;
         return WordRole::Letter;
+    }
+
+    // Выше таблицы признаков нет, и всё, что не пробел, не пунктуация и не
+    // символ из их блоков, — буква чужой письменности, в BMP или вне его:
+    // «Muḥammad», «Nguyễn», математическая «𝔞» отменяют перенос своего слова,
+    // а не режут его на куски, которые образцы разметили бы порознь. Знак без
+    // основы там — тоже чужая буква: знак ли это, таблица не знает. Основа вне
+    // BMP — пара суррогатов, и смотреть надо на кодовую точку, а не на единицу.
+    if (base >= hyphenTableEnd) {
+        const char32_t code_point = *unicode::code_points(paragraph.substr(at, next - at)).begin();
+        return isSeparator(code_point) ? WordRole::Boundary : WordRole::Foreign;
     }
 
     const uint8_t traits = traitsOf(base);
@@ -461,7 +481,7 @@ sta_vector<uint8_t> hyphenPointsOf(const u16_view paragraph,
     bool inWord = false;
     for (size_t at = 0, next = 0; at < units.size(); at = next) {
         next = unicode::next_grapheme_boundary(units, at);
-        const WordRole role = roleOf(units, at, next);
+        const WordRole role = roleOf(paragraph, at, next);
         const bool edge = hyphens[at] == kNoteEdge;
 
         if (inWord && (role == WordRole::Boundary || edge)) {
