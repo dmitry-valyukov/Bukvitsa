@@ -647,11 +647,34 @@ task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_
         skin.image = std::move(file);
     }
 
+    // Реестр в памяти меняется до записи, а не после: пишется он целиком, и
+    // запись другого сценария, пошедшая за этой, несёт уже и эту обложку.
+    // Не записался — память возвращается к тому, что на диске, иначе обложка
+    // жила бы до выхода, а следующая запись реестра унесла бы на диск
+    // сохранение, о котором читателю сказали, что оно не удалось. Копия
+    // снимка остаётся: лишний файл — мусор, который никого не касается.
+    std::optional<Skin> previous;
+    if (const Skin* known = skins.find(skin.name)) previous = *known;
+    const Skin placed = skin;
+
     skins.put(std::move(skin));
 
     std::string xml = skins.toXml();
 
-    co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
+    try {
+        co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
+    } catch (...) {
+        // Откатывается только своё: под именем лежит не то, что положил этот
+        // шаг, — его, пока шла запись, сменил или убрал другой сценарий, и
+        // его перемена новее.
+        if (const Skin* now = skins.find(placed.name); now && *now == placed) {
+            if (previous)
+                skins.put(std::move(*previous));
+            else
+                skins.remove(placed.name);
+        }
+        throw;
+    }
 }
 
 task<> Workspace::deleteSkin(u16_view name, cancellation_token stop) {
@@ -660,11 +683,24 @@ task<> Workspace::deleteSkin(u16_view name, cancellation_token stop) {
     // в памяти, должна уйти и с диска: иначе следующий запуск вернул бы её.
     stop.throw_if_canceled();
 
-    if (!skins.remove(name)) co_return;   // реестр успел перемениться под руками
+    const std::vector<Skin>& list = skins.list();
+    const auto found = std::find_if(list.begin(), list.end(), [name](const Skin& skin) { return skin.name == name; });
+    if (found == list.end()) co_return;   // реестр успел перемениться под руками
+
+    // Убранная — с её местом, на случай отката (как у saveSkin: память — до
+    // записи, отказ записи её возвращает). Копия: строка в реестре уходит.
+    const std::size_t place = static_cast<std::size_t>(found - list.begin());
+    Skin removed = *found;
+    skins.remove(name);
 
     std::string xml = skins.toXml();
 
-    co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
+    try {
+        co_await async_file::write_all(poolPath(skinsPath()), std::move(xml));
+    } catch (...) {
+        skins.restore(place, std::move(removed));
+        throw;
+    }
 }
 
 task<PictureVerdict> Workspace::probeImage(std::filesystem::path image, cancellation_token stop) {
