@@ -8,7 +8,7 @@
 #include "file_dialog.h"
 
 #include "app.h"
-#include "registration_end.h"
+#include "event_awaitable.h"
 
 // Импорт последним, после всех обычных заголовков.
 import wxl.async;
@@ -292,8 +292,20 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
     not_null<intrusive_ptr<QueuedRegistration>> const queued = ws_.queueRegistration(
         std::move(loaded.description), loaded.book->characterCount(), std::move(loaded.cover), file);
 
-    // Копией: из итога дальше нужна только запись.
-    const Registered registered = co_await registrationEnd(queued, stop);
+    // Шаг кончился раньше, чем открытие до него дошло, — итог уже в элементе,
+    // ждать нечего: событие конца шага зовётся один раз. Ожидание — отдельной
+    // инструкцией, а не внутри выражения: co_await в выражении MSVC переносит
+    // не во всяком. Ответ ожидания — тот же итог, что остаётся в элементе, и
+    // читается он из элемента.
+    if (!queued->done()) {
+        co_await on_event(queued->ended(), stop);
+    }
+    const RegistrationOutcome& outcome = queued->outcome();
+    if (!outcome) std::rethrow_exception(outcome.error());
+
+    // Ссылкой: элемент держит этот кадр (`queued`), и запись в нём живёт до
+    // конца открытия.
+    const Registered& registered = *outcome;
 
     // Настройки, состояние — у рабочего места, настройки — только в памяти;
     // здесь — то, что видно: книга на полосе, её оглавление и закладки в

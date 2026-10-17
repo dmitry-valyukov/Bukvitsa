@@ -38,7 +38,6 @@ wxl_add_executable(Reader
     src/library_screen.h
     src/look.h
     src/reader_panel.h
-    src/registration_end.h
     src/note_popup.h
     src/notices.h
     src/skin_wizard.h
