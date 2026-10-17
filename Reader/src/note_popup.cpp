@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <cmath>
+#include <vector>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
@@ -17,6 +19,7 @@ using namespace wxl;
 namespace {
 
 constexpr float kPadding = 16.0f;
+constexpr float kBorder = 1.0f;
 constexpr float kCorner = 10.0f;
 constexpr float kMaxWidth = 460.0f;
 constexpr float kGapFromAnchor = 10.0f;
@@ -25,6 +28,18 @@ constexpr float kGapFromAnchor = 10.0f;
 /// пол-экрана, перестаёт быть примечанием и становится второй страницей — а
 /// прокрутка внутри неё дешевле, чем потерянное место чтения.
 constexpr float kMaxHeightShare = 0.55f;
+
+/// Высота полосы, которую рисует один вызов поверхности: 1024 пикселя — не
+/// выше предела любого устройства (2045 на уровне 9_1), так что предел её не
+/// режет, а полоса во всю ширину сноски при масштабе 1,5 (642 пикселя) — 2,6 МБ.
+constexpr int32_t kBandPixels = 1024;
+
+/// Место прокрутки в DIP — в пиксели поверхности, вниз: верх окна не должен
+/// оказаться ниже того, что показано.
+int32_t pixelsOf(double dips, float scale) {
+    constexpr auto most = static_cast<double>(VirtualDrawingSurface::maxSide);
+    return static_cast<int32_t>(std::clamp(std::floor(dips * scale), 0.0, most));
+}
 
 /// Цвет D2D в цвет XAML: подложку рисует не наша поверхность, а Border, —
 /// у него уже есть и скругление, и рамка, и незачем чертить их руками.
@@ -38,7 +53,7 @@ Color toXaml(D2D1_COLOR_F color) {
 }  // namespace
 
 // Спрайт текста — сразу, от композитора: поверхность под него заводит
-// первый показ (draw), тогда же он и получает кисть.
+// первый показ (prepareSurface), тогда же он и получает кисть.
 NotePopup::NotePopup(const Compositor& compositor)
     : compositor_(compositor), sprite_(compositor_.createSpriteVisual()), deviceWatch_(compositor_, *this) {
     using namespace wxl::dsl;
@@ -54,7 +69,7 @@ NotePopup::NotePopup(const Compositor& compositor)
         vAlign.top,
         visibility = Visibility::Collapsed,
         CornerRadius{kCorner},
-        BorderThickness{1},
+        BorderThickness{kBorder},
         Padding{kPadding},
 
         // Сноска — не страница: нажатие и колесо по ней здесь и кончаются, как
@@ -74,6 +89,7 @@ NotePopup::NotePopup(const Compositor& compositor)
             horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
             verticalScrollBarVisibility = ScrollBarVisibility::Auto,
             verticalOffset = Bind{scrollTop_},
+            onViewChanging = method(this, &NotePopup::viewChanging),
             content = paper_,
         },
     };
@@ -86,34 +102,77 @@ void NotePopup::hide() {
 }
 
 void NotePopup::renderingDeviceReplaced() noexcept {
-    if (visible_) draw();
+    if (visible_) startBands();
 }
 
-void NotePopup::draw() noexcept {
-    const float width = width_;
-    const float height = height_;
-    const float scale = scale_;
-    const SizeInt32 pixels{static_cast<int32_t>(width * scale + 0.5f),
-                           static_cast<int32_t>(height * scale + 0.5f)};
-    if (pixels.width <= 0 || pixels.height <= 0) return;
+void NotePopup::viewChanging(const ScrollViewer&, ScrollViewerViewChangingEventArgs& args) {
+    if (!visible_) return;
+    viewTop_ = args.nextView().verticalOffset();
+    applyBands(bands_.advance(
+        {pixelsOf(viewTop_, scale_), pixelsOf(args.finalView().verticalOffset(), scale_)}));
+}
 
+void NotePopup::prepareSurface() noexcept {
+    // Сторона меньше пикселя — поверхность, в которую нечего рисовать: решётка
+    // у неё пустая.
+    auto const pixels = SizeInt32{static_cast<int32_t>(width_ * scale_ + 0.5f),
+                                  static_cast<int32_t>(height_ * scale_ + 0.5f)};
     if (surface_) {
         surface_->resize(pixels);
+        // Что прежняя сноска нарисовала в новых границах, решётка новой не
+        // знает: отдаётся всё.
+        surface_->trim({});
     } else {
         surface_.emplace(compositor_, pixels);
         sprite_.brush(surface_->brush());
     }
-    sprite_.size({width, height});
+    sprite_.size({width_, height_});
+}
 
-    surface_->draw([&](ID2D1DeviceContext* context) {
-        D2D1_MATRIX_3X2_F atlas{};
-        context->GetTransform(&atlas);
+void NotePopup::startBands() noexcept {
+    const SizeInt32 pixels = surface_->size();
+    bands_.reset({.surfaceWidth = pixels.width,
+                  .surfaceHeight = pixels.height,
+                  .viewportHeight = static_cast<int32_t>(std::ceil(viewportHeight_ * scale_)),
+                  .bandHeight = kBandPixels,
+                  .maxUpdateSide = surface_->maxUpdateSide()});
+    applyBands(bands_.advance({pixelsOf(viewTop_, scale_)}));
+}
+
+// Сперва отдать, потом рисовать: отданное освобождает память раньше, чем её
+// займёт новое, а новые полосы в keepRects ещё не нарисованы — их отдача
+// ничего не стоит.
+void NotePopup::applyBands(const NoteBandsStep& step) noexcept {
+    if (step.trimNeeded) {
+        std::vector<RectInt32> keptParts;
+        keptParts.reserve(step.keepRects.size());
+        for (const NotePixelRect& keptRect : step.keepRects) {
+            keptParts.push_back(RectInt32{keptRect.x, keptRect.y, keptRect.width, keptRect.height});
+        }
+        surface_->trim(keptParts);
+    }
+    for (const NotePixelRect& newPiece : step.drawRects) drawPiece(newPiece);
+}
+
+void NotePopup::drawPiece(const NotePixelRect& updatePiece) noexcept {
+    const float scale = scale_;
+    // Кусок в DIP сноски. Строка берётся с запасом в свою высоту с обеих
+    // сторон: верх строки — подъём шрифтов её прогонов, а глифы надстрочного
+    // знака сдвинуты выше него (ascenderOffset), и чернила строки у края
+    // полосы иначе срезались бы клипом куска.
+    const float pieceTop = static_cast<float>(updatePiece.y) / scale;
+    const float pieceBottom = static_cast<float>(updatePiece.y + updatePiece.height) / scale;
+
+    auto const updateRect =
+        RectInt32{updatePiece.x, updatePiece.y, updatePiece.width, updatePiece.height};
+    surface_->draw(updateRect, [&](ID2D1DeviceContext* context) {
+        D2D1_MATRIX_3X2_F surfacePlace{};
+        context->GetTransform(&surfacePlace);
         context->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
-                              *D2D1::Matrix3x2F::ReinterpretBaseType(&atlas));
+                              *D2D1::Matrix3x2F::ReinterpretBaseType(&surfacePlace));
 
         context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         context->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        context->Clear(D2D1::ColorF(0, 0, 0, 0));   // подложку рисует Border
 
         // Отказ — остановка (system_failure.h): молча пустая сноска была бы
         // сбоем без имени.
@@ -126,13 +185,22 @@ void NotePopup::draw() noexcept {
         auto const noteBrushes = typography::TextBrushes{not_null<ID2D1Brush>{ink.Get()},
                                                          not_null<ID2D1Brush>{ink.Get()}};
         for (const typography::NoteLine& placed : body_.lines) {
-            typography::drawLine(context, placed.line, 0.0f, placed.baseline, noteBrushes);
+            const typography::Line& line = placed.line;
+            if (placed.baseline + line.descent + line.height <= pieceTop) continue;
+            if (placed.baseline - line.ascent - line.height >= pieceBottom) continue;
+            typography::drawLine(context, line, 0.0f, placed.baseline, noteBrushes);
         }
     });
 }
 
 void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const Theme& theme,
                      float fontSize, float scale) {
+    // Прежняя сноска снимается первой, новая показывается последней: сброс места
+    // прокрутки ниже поднимает ViewChanging тут же, внутри show (без DManip —
+    // ScrollData::put_OffsetY), и показанной слушатель рисовал бы новое тело по
+    // прежним масштабу, решётке и поверхности; скрытую он не трогает.
+    hide();
+
     const float width = std::min(kMaxWidth, std::max(area.width * 0.6f, 220.0f));
     const float inner = width - kPadding * 2.0f;
 
@@ -140,10 +208,7 @@ void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const T
     // потоком чтения, заново ничего не разворачивается.
     const typography::BookText& text = book.text();
     body_ = typography::layoutNote(book.engine(), text, text.noteBodies[body], inner, fontSize);
-    if (body_.lines.empty()) {
-        hide();
-        return;
-    }
+    if (body_.lines.empty()) return;
     const float noteHeight = body_.height;
 
     const float height =
@@ -175,7 +240,13 @@ void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const T
     width_ = inner;
     height_ = noteHeight;
     scale_ = scale;
-    draw();
+    // Окно прокрутки — всплывашка без полей и рамки: вёрстки ещё не было, и
+    // спрашивать его у прокрутки рано.
+    viewportHeight_ = std::max(height - 2.0f * (kPadding + kBorder), 0.0f);
+    // Вид — там, куда сброс привёл прокрутку: поле говорит это само.
+    viewTop_ = scrollTop_.get();
+    prepareSurface();
+    startBands();
 
     root_.visibility(Visibility::Visible);
     visible_ = true;
