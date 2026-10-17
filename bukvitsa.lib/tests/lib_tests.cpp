@@ -3022,6 +3022,70 @@ void testQueueGoesOnAfterFailure() {
     std::filesystem::remove(cover);
 }
 
+/// Выход приложения, пока идёт шаг, который кончится отказом записи обложки, а
+/// итога ждёт подписчик под источником, дочерним от общего, — так ждёт
+/// открытие Reader. Ожидание wxl под отменённым токеном итога не отдаёт, а его
+/// подписка стоит в событии до хода очереди, так что шаг, кончившийся раньше,
+/// застаёт подписчика. Об отказе тогда говорит рабочее место — событием, один
+/// раз.
+void testQueueRefusalAtExit() {
+    std::printf("\n=== очередь регистраций: отказ шага на выходе ===\n");
+
+    Sandbox box("queue-refusal-exit");
+    cancellation_source application;
+    Workspace ws(box.root, application.token());
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document{std::string(bytes)};
+
+    const BookEntry known = registerFrom(ws, document, kBook, bytes.size()).entry;
+
+    // Изменённая запись пишет обложку под тем же именем — а на его месте
+    // каталог: файл туда не ляжет.
+    const std::filesystem::path cover = ws.coverDirectory() / known.cover.wchars();
+    std::filesystem::remove(cover);
+    std::filesystem::create_directories(cover);
+
+    std::vector<std::wstring> refusals;
+    const cookie_t refusedWatch = ws.registrationRefused().on_change(
+        [&refusals](const std::wstring& line) noexcept { refusals.push_back(line); });
+
+    // Подписчик — как ожидание wxl под токеном сценария: под отменённым
+    // итог не отдаётся.
+    auto const scenario = cancellation_source{application.token()};
+    const not_null<intrusive_ptr<QueuedRegistration>> failing =
+        queueFrom(ws, document, kBook, bytes.size(), std::chrono::file_clock::now());
+    bool handed = false;
+    const cookie_t failingWatch = failing->ended().add([&scenario, &handed](const RegistrationOutcome&) noexcept {
+        if (!scenario.is_canceled()) handed = true;
+    });
+    check(!failing->done(), "шаг стоит на записи обложки, итога ждёт подписчик");
+
+    application.cancel();
+    check(scenario.is_canceled(), "выход отменил и источник сценария");
+
+    sta_loop::run_until([&] { return failing->done(); });
+    failing->ended().remove(failingWatch);
+    ws.registrationRefused().remove_change(refusedWatch);
+
+    bool lastError = false;
+    if (!failing->outcome()) {
+        try {
+            std::rethrow_exception(failing->outcome().error());
+        } catch (const last_error&) {
+            lastError = true;
+        } catch (...) {
+        }
+    }
+
+    check(lastError && !handed, "шаг кончился отказом записи обложки, ожидание итога не отдало");
+    check(refusals.size() == 1 && holds(refusals[0], kBook.wstring()),
+          "отказ на выходе — событием рабочего места, один раз, строкой с путём");
+    check(*ws.library.find(known.guid) == known && !ws.registering(), "запись прежняя, очередь разобрана");
+
+    std::filesystem::remove(cover);
+}
+
 }  // namespace
 
 // Тесты других слоёв модели — каждый в своём файле.
@@ -3112,6 +3176,7 @@ int main(int argc, char* argv[]) {
     testQueueOutcomeWithoutWaiting();
     testQueueStopsWithApplication();
     testQueueGoesOnAfterFailure();
+    testQueueRefusalAtExit();
 
     runPiecesTests();
     // Поток страниц верстает настоящую книгу: DirectWrite и WIC — после COM.
