@@ -2264,6 +2264,117 @@ void testWorkspaceDeleteSkinStopsBeforeChange() {
           "без отмены — обложка убрана и в памяти, и на диске");
 }
 
+/// Отказ записи реестра обложек: удаление и сохранение кончаются сбоем
+/// `last_error`, а реестр в памяти — тот же, что до вызова, с обложками на
+/// прежних местах: номера тем считаются по порядку реестра; то, что под
+/// тем же именем, пока шла запись, положил другой сценарий, откат не
+/// трогает. Отказ — как у читателя: skins.xml только для чтения, и запись,
+/// меняющая файл переименованием, получает «отказано в доступе». Потом файл снова можно
+/// писать, и удачное сохранение пишет реестр из памяти — с обложкой, чьё
+/// удаление не записалось: прежде она к этой записи из памяти уже ушла и
+/// пропадала с диска вслед за ней.
+void testWorkspaceSkinsWriteRefused() {
+    std::printf("\n=== отказ записи реестра обложек ===\n");
+
+    Sandbox box("refused-skins");
+    Workspace ws(box.root);
+
+    for (const u16_view name : {u16_view{u"Alpha"}, u16_view{u"Beta"}, u16_view{u"Gamma"}, u16_view{u"Delta"}}) {
+        Skin skin = defaultSkin();
+        skin.name = u16_text{name};
+        skin.image = u16_text{u"снимок.jpg"};
+        ws.skins.put(std::move(skin));
+    }
+
+    const std::string written = ws.skins.toXml();
+    putOnDisk(ws.skinsPath(), written);
+
+    // Все три бита записи разом: «только для чтения» у Windows — один
+    // атрибут, и MS STL ставит его, лишь когда сняты все три, а снимает,
+    // когда добавлен хоть один.
+    const auto writable = [&ws](bool yes) {
+        constexpr auto anyWrite = std::filesystem::perms::owner_write | std::filesystem::perms::group_write |
+                                  std::filesystem::perms::others_write;
+        std::filesystem::permissions(ws.skinsPath(), anyWrite,
+                                     yes ? std::filesystem::perm_options::add
+                                         : std::filesystem::perm_options::remove);
+    };
+
+    const auto names = [](const Skins& skins) {
+        std::vector<u16_text> list;
+        for (const Skin& skin : skins.list()) list.push_back(skin.name);
+        return list;
+    };
+    const std::vector<u16_text> before = names(ws.skins);
+
+    const auto refused = [](task<> work) {
+        try {
+            run(std::move(work));
+        } catch (const last_error&) {
+            return true;
+        }
+        return false;
+    };
+
+    writable(false);
+
+    check(refused(ws.deleteSkin(u"Alpha", never)), "удаление: отказ записи — сбой");
+    check(names(ws.skins) == before, "удаление не записалось — обложка снова в реестре и на своём месте");
+    check(onDisk(ws.skinsPath()) == written, "файл цел");
+
+    // Правка и новая — со снимком, который уже лежит: читать нечего, и
+    // отказывает одна запись реестра.
+    Skin edited = *ws.skins.find(u"Gamma");
+    edited.image = u16_text{u"другой.jpg"};
+    check(refused(ws.saveSkin(std::move(edited), {}, never)), "правка: отказ записи — сбой");
+    check(names(ws.skins) == before && ws.skins.find(u"Gamma")->image == u"снимок.jpg",
+          "правка не записалась — в реестре прежняя обложка");
+
+    Skin refusedNew = defaultSkin();
+    refusedNew.name = u16_text{u"Отказ"};
+    refusedNew.image = u16_text{u"отказ.jpg"};
+    check(refused(ws.saveSkin(std::move(refusedNew), {}, never)), "новая: отказ записи — сбой");
+    check(names(ws.skins) == before, "новая не записалась — её нет в реестре");
+
+    // Пока отказывающая запись в пути, под тем же именем ложится более
+    // новое — так кладёт его другой сценарий. Откат его не трогает.
+    Skin firstEdit = *ws.skins.find(u"Beta");
+    firstEdit.image = u16_text{u"первая.jpg"};
+    task<> refusedEdit = ws.saveSkin(std::move(firstEdit), {}, never);
+    check(!refusedEdit.done(), "правка встала на записи реестра");
+    Skin newerEdit = *ws.skins.find(u"Beta");
+    newerEdit.image = u16_text{u"новее.jpg"};
+    ws.skins.put(std::move(newerEdit));
+    check(refused(std::move(refusedEdit)) && ws.skins.find(u"Beta")->image == u"новее.jpg",
+          "откат правки не затирает более новую обложку под тем же именем");
+
+    task<> refusedDelete = ws.deleteSkin(u"Delta", never);
+    check(!refusedDelete.done(), "удаление встало на записи реестра");
+    Skin newerDelta = defaultSkin();
+    newerDelta.name = u16_text{u"Delta"};
+    newerDelta.image = u16_text{u"новая-delta.jpg"};
+    ws.skins.put(std::move(newerDelta));
+    check(refused(std::move(refusedDelete)) && ws.skins.find(u"Delta")->image == u"новая-delta.jpg",
+          "откат удаления не затирает обложку, заведённую под тем же именем заново");
+
+    check(names(ws.skins) == before, "имена и порядок — прежние");
+
+    writable(true);
+
+    Skin probe = defaultSkin();
+    probe.name = u16_text{u"Probe"};
+    probe.image = u16_text{u"probe.jpg"};
+    run(ws.saveSkin(std::move(probe), {}, never));
+
+    std::vector<u16_text> after = before;
+    after.push_back(u16_text{u"Probe"});
+
+    Skins onDiskSkins;
+    check(names(ws.skins) == after, "после удачного сохранения в реестре все прежние и новая");
+    check(onDiskSkins.loadFrom(onDisk(ws.skinsPath())) && names(onDiskSkins) == after,
+          "и на диске: обложка, чьё удаление не записалось, никуда не ушла");
+}
+
 /// Дерево источников: отмена родителя доходит до чтения, которое ждёт под
 /// токеном дочернего, — так закрытие окна кончает сценарии; отмена дочернего
 /// родителя не трогает — так владелец отменяет одну задачу.
@@ -2441,6 +2552,7 @@ int main(int argc, char* argv[]) {
     testWorkspaceOpenStopsOnStateRead();
     testWorkspaceSaveSkinStopsBeforeWrites();
     testWorkspaceDeleteSkinStopsBeforeChange();
+    testWorkspaceSkinsWriteRefused();
     testWorkspaceReadsStopWithParent();
     testWorkspaceFolderKeepsWhatShelfShowed();
     testWorkspaceRescanKeepsWhatShelfShowed();
