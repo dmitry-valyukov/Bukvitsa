@@ -15,6 +15,10 @@ std::wstring reasonOf(const last_error& failure) {
 
     // Системе нечего сказать о коде: показывается диагностика — что делали, код и
     // «unknown error»; текст наш и ASCII, но проверяется, как любой чужой.
+    return reasonOf(static_cast<const std::exception&>(failure));
+}
+
+std::wstring reasonOf(const std::exception& failure) {
     const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
     return said ? std::wstring(said->to_utf16().wchars()) : std::wstring(L"(сообщение не в UTF-8)");
 }
@@ -25,10 +29,7 @@ Notice noticeOf(std::exception_ptr error) {
     } catch (const last_error& failure) {
         return {L"Не удалось выполнить операцию с файлом", reasonOf(failure)};
     } catch (const std::exception& failure) {
-        // Чужой текст: чей он и в какой кодировке, здесь неизвестно, потому
-        // проверяется, а не принимается на веру.
-        const std::optional<u8_view> said = unicode::checked(std::string_view(failure.what()));
-        return {L"Ошибка", said ? std::wstring(said->to_utf16().wchars()) : std::wstring(L"(сообщение не в UTF-8)")};
+        return {L"Ошибка", reasonOf(failure)};
     } catch (...) {
         return {L"Неизвестная ошибка", L"Сценарий прерван."};
     }

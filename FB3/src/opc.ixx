@@ -38,6 +38,11 @@ struct PackagePart {
 /// Навигация только по типам содержимого и типам связей: имена частей в FB3
 /// не зафиксированы форматом, и официальный пример «Hardcore file structure»
 /// существует именно затем, чтобы ломать реализации, которые их угадывают.
+///
+/// Пустой ответ поиска — честное «нет»: связи нет, она ведёт за пределы
+/// пакета или к части, которой в нём нет. Всякий иной отказ Packaging API —
+/// std::system_error: пакет испорчен (связи и имена он проверяет при
+/// обращении, а не при открытии) или отказала система.
 // TODO: Наследоваться от wxl.core::noncopyable
 class OpcPackage {
 public:
@@ -78,6 +83,11 @@ public:
     std::optional<PackagePart> partByRelationshipId(const PackagePart& source,
                                                     wxl::core::u8_view relationshipId) const;
 
+    /// Есть ли от части связь такого типа — к части, наружу или к части,
+    /// которой нет: связь, которая ни к чему не привела, и связи нет вовсе — не
+    /// одно и то же.
+    bool hasRelationship(const PackagePart& source, std::wstring_view relationshipType) const;
+
     /// Все связи заданного типа от части — например, все картинки тела.
     std::vector<std::pair<wxl::core::u8_text, PackagePart>> relationshipsOfType(
         const PackagePart& source, std::wstring_view relationshipType) const;
@@ -102,7 +112,11 @@ public:
 
 private:
     struct Impl;   ///< COM живёт здесь и не протекает в заголовок
-    Impl* impl_;
+
+    /// Пакет владеет Impl. unique_ptr, а не голый указатель: конструктор,
+    /// бросивший на отказе, деструктора не зовёт, и Impl с фабрикой без него
+    /// утекал бы на каждом файле, который не оказался пакетом OPC.
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace bukvitsa::fb3
