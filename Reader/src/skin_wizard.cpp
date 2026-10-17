@@ -67,7 +67,6 @@ Visibility shownWhen(bool naming) {
 SkinWizard::SkinWizard(const Compositor& compositor, Actions& actions)
     : actions_(actions),
       compositor_(compositor),
-      skin_(editor_.skin()),
       visual_(compositor_.createSpriteVisual()),
       deviceWatch_(compositor_, *this) {
     // Поле имени просит фокус, когда диалог открылся, и отпускает просьбу,
@@ -252,20 +251,16 @@ void SkinWizard::pointerReleased(Object const&, PointerRoutedEventArgs& args) {
     // Точку отпустили — кривые устоялись: время пересчитать карту изгиба и
     // показать страницу по-новому. Не на каждом движении: пересборка карты
     // стоит прохода по всем пикселям слоя.
-    publish();
+    editor_.drop();
 }
 
-void SkinWizard::publish() {
-    skin_.set(editor_.skin());
-}
-
+// Полосе обложку и снимок объявляет модель правки — своим открытием.
 void SkinWizard::openNew(std::filesystem::path image) {
     editor_.openNew(std::move(image));
     dragged_.reset();
     naming_.set(false);
 
     redraw();
-    publish();
 }
 
 void SkinWizard::openEdit(const Skin& skin, std::filesystem::path image) {
@@ -275,7 +270,6 @@ void SkinWizard::openEdit(const Skin& skin, std::filesystem::path image) {
     naming_.set(false);
 
     redraw();
-    publish();
 }
 
 void SkinWizard::show() {
@@ -291,6 +285,10 @@ void SkinWizard::hide() {
     dragged_.reset();
     naming_.set(false);
     root_.visibility(Visibility::Collapsed);
+
+    // Пустое значение — перемена и после открытия той же обложки с тем же
+    // снимком, так что следующее такое открытие тоже скажется полосе.
+    editor_.close();
 }
 
 bool SkinWizard::resizeSurface() {
