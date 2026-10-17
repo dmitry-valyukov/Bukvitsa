@@ -107,10 +107,10 @@ wxl::async::task<bool> App::checkImage(std::filesystem::path image, cancellation
     co_return false;
 }
 
+// Предпросмотр снимает и подложку темы приносит слушатель (preview): скрытие
+// мастера опустошает то, что тот показывает полосе.
 detached_task App::leaveWizard() {
     wizard_.hide();
-    presenter_.setPreview(nullptr);
-    showBackdrop();
     view_.root().focus(FocusState::Programmatic);
     co_return;
 }
@@ -247,17 +247,19 @@ void App::applySkins(int theme) {
     showBackdrop();
 }
 
-/// Полоса рисуется с правимыми кривыми. Он же — пересчёт после отпускания
-/// точки: мастер объявляет правку, когда она устоялась.
-void App::preview(Skin const& skin) noexcept {
-    presenter_.setPreview(&skin);
+/// Полоса рисуется с правимыми кривыми на снимке мастера, а после мастера —
+/// по теме. Он же — пересчёт после отпускания точки: мастер объявляет правку,
+/// когда она устоялась.
+void App::preview(std::optional<SkinPreview> const& wizardPreview) noexcept {
+    presenter_.setPreview(wizardPreview ? &wizardPreview->skin : nullptr);
     showBackdrop();
 
     // Ответ о слое изгиба у полосы уже есть: setPreview перерисовал
     // предпросмотр сразу. Под показанным мастером — отпущенная точка, другой
     // снимок — говорим здесь же; открытие мастера зовёт сюда до show(), и
-    // скажет открывший — после него.
-    if (wizard_.isOpen()) reportWarpRefusal();
+    // скажет открывший — после него. Скрытие — не о чем: вне мастера о
+    // пределе не говорится.
+    if (wizardPreview && wizard_.isOpen()) reportWarpRefusal();
 }
 
 void App::reportWarpRefusal() {
@@ -280,12 +282,12 @@ void App::reportWarpRefusal() {
     notices_.post({L"Изгиб страницы недоступен на этом устройстве", std::wstring{details.wchars()}});
 }
 
-/// Путь снимка знает рабочее место, байты читает loadBackdrop. Тот же файл —
-/// ничего: снимок у полосы уже есть (или в дороге).
+/// Путь снимка знает мастер или рабочее место, байты читает loadBackdrop. Тот
+/// же файл — ничего: снимок у полосы уже есть (или в дороге).
 void App::showBackdrop() {
     std::filesystem::path wanted;
-    if (presenter_.previewing()) {
-        wanted = wizard_.imagePath();
+    if (const std::optional<SkinPreview>& wizardPreview = wizard_.shownPreview().get()) {
+        wanted = wizardPreview->imagePath;
     } else if (const Skin* skin = presenter_.activeSkin()) {
         wanted = ws_.skinImagePath(*skin);
     }

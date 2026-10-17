@@ -1,12 +1,13 @@
 // Тесты модели правки обложки: попадание в кружочек, перенос точки между
-// соседками, точка корешка, начало правки и имя. Всё, что мастер решает, не
-// глядя на экран, — без окна и указателя.
+// соседками, точка корешка, начало правки, имя и то, что полоса показывает под
+// мастером. Всё, что мастер решает, не глядя на экран, — без окна и указателя.
 
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 // Заголовки читалки после всех стандартных: модель правки импортирует wxl.core.
 #include "check.h"
@@ -43,6 +44,16 @@ const EdgeCurve& curveOf(const SkinEditor& editor, Edge edge) {
 SkinEditor::Point centerOf(const SkinEditor& editor, Edge edge, size_t at, SkinEditor::Size area) {
     const EdgeCurve& curve = curveOf(editor, edge);
     return {curve.x[at] * area.width, curve.y[at] * area.height};
+}
+
+/// Всё, что модель сказала слушателю предпросмотра, по порядку — так, как это
+/// слышит приложение.
+using PreviewLog = std::vector<std::optional<SkinPreview>>;
+
+/// Слушает предпросмотр `editor` с этих пор; слушатель уходит вместе с полем.
+void listen(SkinEditor& editor, PreviewLog& told) {
+    static_cast<void>(editor.shownPreview().on_change(
+        [&told](const std::optional<SkinPreview>& wizardPreview) noexcept { told.push_back(wizardPreview); }));
 }
 
 bool ascending(const EdgeCurve& curve) {
@@ -263,6 +274,149 @@ void testName() {
     check(editor.skin().name.empty(), "сама правка имени не получает: «Отмена» спросит снова");
 }
 
+/// Открытие и закрытие — каждое перемена того, что видит полоса, и слушатель
+/// узнаёт о каждом, даже когда открывают ту же новую обложку на том же снимке:
+/// обложка у неё всякий раз начальная, и без закрытия между открытиями
+/// значение не сменилось бы.
+void testPreviewFollowsOpenAndClose() {
+    std::printf("\n=== правка обложки: полоса узнаёт об открытии и закрытии ===\n");
+
+    SkinEditor editor;
+    PreviewLog told;
+    listen(editor, told);
+    auto const photo = std::filesystem::path{L"a.jpg"};
+
+    check(!editor.shownPreview().get(), "до открытия полосе показывать нечего");
+
+    editor.openNew(photo);
+    check(told.size() == 1 && told[0] && told[0]->skin == defaultSkin() && told[0]->imagePath == photo,
+          "новая: сказано раз — начальная обложка на выбранном снимке");
+    check(told.size() == 1 && editor.shownPreview().get() == told[0],
+          "сказанное и есть то, что лежит в поле");
+
+    editor.close();
+    check(told.size() == 2 && !told[1], "закрытие: сказано, что показывать нечего");
+
+    editor.openNew(photo);
+    check(told.size() == 3 && told[2] == SkinPreview{defaultSkin(), photo},
+          "та же новая на том же снимке после закрытия — сказано снова");
+
+    editor.close();
+    editor.close();
+    check(told.size() == 4 && !told[3], "закрытое закрыть ещё раз — не перемена");
+}
+
+/// «Другой снимок» открывает новую на другом файле. При нетронутых точках
+/// обложка та же — меняется только снимок, и о нём сказано. После сдвинутых
+/// точек и после правки своей полоса получает начальную обложку, а не прежние
+/// кривые: сказанное — то, что открыто, а не то, что было до открытия.
+void testPreviewTellsAnotherImage() {
+    std::printf("\n=== правка обложки: другой снимок ===\n");
+
+    SkinEditor editor;
+    PreviewLog told;
+    listen(editor, told);
+    auto const firstPhoto = std::filesystem::path{L"a.jpg"};
+    auto const secondPhoto = std::filesystem::path{L"b.jpg"};
+
+    editor.openNew(firstPhoto);
+    editor.openNew(secondPhoto);
+    check(told.size() == 2 && told[1] && told[1]->imagePath == secondPhoto && told[1]->skin == told[0]->skin,
+          "при нетронутых точках — сказано: обложка та же, снимок новый");
+
+    editor.openNew(secondPhoto);
+    check(told.size() == 2, "тот же снимок снова — не перемена: полоса его уже показывает");
+
+    editor.drag(Grip{Edge::Top, 2}, {editor.skin().top.x[2] * kWide.width, 80.0f}, kWide);
+    editor.drop();
+    editor.openNew(firstPhoto);
+    check(told.size() == 4 && told.back() && told.back()->skin == defaultSkin() &&
+              told.back()->imagePath == firstPhoto,
+          "после сдвинутых точек — сказано с начальной обложкой на новом снимке");
+
+    Skin alpha = defaultSkin();
+    alpha.name = u16_text{u"Alpha"};
+    alpha.image = u16_text{u"alpha.png"};
+    alpha.top.y[2] = 0.1f;
+    editor.openEdit(alpha, std::filesystem::path{L"skins/alpha.png"});
+    editor.openNew(secondPhoto);
+    check(told.size() == 6 && told.back() && told.back()->skin == defaultSkin() &&
+              told.back()->imagePath == secondPhoto,
+          "после правки своей — сказано с начальной обложкой, без её имени и точек");
+}
+
+/// Правка одной обложки, выход и та же правка снова — три перемены: открытие,
+/// закрытие, открытие. Так и у системной, которую правят «на основе».
+void testPreviewReopensEdit() {
+    std::printf("\n=== правка обложки: та же обложка после выхода ===\n");
+
+    Skin alpha = defaultSkin();
+    alpha.name = u16_text{u"Alpha"};
+    alpha.image = u16_text{u"alpha.png"};
+    alpha.top.y[2] = 0.1f;
+    auto const alphaPhoto = std::filesystem::path{L"skins/alpha.png"};
+
+    SkinEditor editor;
+    PreviewLog told;
+    listen(editor, told);
+
+    editor.openEdit(alpha, alphaPhoto);
+    editor.close();
+    editor.openEdit(alpha, alphaPhoto);
+    check(told.size() == 3 && told[0] && told[0]->skin == alpha && told[0]->imagePath == alphaPhoto &&
+              !told[1] && told[2] == told[0],
+          "своя: открытие, закрытие, открытие — сказано трижды");
+
+    const Skin& antique = systemSkins()[0];
+    auto const antiquePhoto = std::filesystem::path{L"Assets/book-1.png"};
+    editor.close();
+    editor.openEdit(antique, antiquePhoto);
+    editor.close();
+    editor.openEdit(antique, antiquePhoto);
+    check(told.size() == 7 && told[4] && told[4]->skin.top == antique.top && told[4]->skin.name.empty() &&
+              !told[5] && told[6] == told[4],
+          "системная: то же — на её точках, без имени");
+}
+
+/// Полоса получает кривые отпущенными, а не на каждом движении. Отпущенная
+/// точка, которая ничего не сдвинула, — то же значение, и слушатель не
+/// зовётся: так обещает поле (`observable` не объявляет равного), и карта
+/// изгиба не пересобирается зря — проход по всем пикселям слоя.
+void testPreviewTellsDrop() {
+    std::printf("\n=== правка обложки: отпущенная точка ===\n");
+
+    SkinEditor editor;
+    PreviewLog told;
+    listen(editor, told);
+    auto const photo = std::filesystem::path{L"a.jpg"};
+
+    editor.openNew(photo);
+    const EdgeCurve& top = editor.skin().top;
+    editor.drag(Grip{Edge::Top, 2}, {top.x[2] * kWide.width, 40.0f}, kWide);
+    editor.drag(Grip{Edge::Top, 2}, {top.x[2] * kWide.width, 80.0f}, kWide);
+    check(told.size() == 1, "пока тянут — полосе не сказано");
+
+    editor.drop();
+    check(told.size() == 2 && told[1] && aboutEqual(told[1]->skin.top.y[2], 0.1f) &&
+              told[1]->skin == editor.skin() && told[1]->imagePath == photo,
+          "отпустили — сказано: новые кривые на том же снимке");
+
+    editor.drop();
+    check(told.size() == 2, "нажали и отпустили, не сдвинув, — кривые те же, не сказано");
+
+    // Точки сжаты у правого края, как в testDragKeepsColumns: подъём шестой на
+    // всю четверть высоты вывернул бы столбец, модель его отвергает, точка
+    // стоит — и отпускать её значит снова отпустить те же кривые.
+    Skin crowdedSkin = defaultSkin();
+    crowdedSkin.top.x = {0.156f, 0.194f, 0.371f, 0.465f, 0.5f, 0.877f, 0.905f, 0.927f, 0.948f};
+    crowdedSkin.top.y = {0.0f, 0.0f, 0.0f, 0.0f, 0.039f, 0.0f, 0.0f, 0.0f, 0.0f};
+    editor.openEdit(crowdedSkin, photo);
+    const size_t toldAtOpen = told.size();
+    editor.drag(Grip{Edge::Top, 6}, {crowdedSkin.top.x[6] * kWide.width, kEdgeReach * kWide.height}, kWide);
+    editor.drop();
+    check(toldAtOpen == 3 && told.size() == toldAtOpen, "отвергнутый перенос отпустили — не сказано");
+}
+
 }  // namespace
 
 void runSkinEditorTests() {
@@ -272,4 +426,8 @@ void runSkinEditorTests() {
     testSpineMovesVertically();
     testOpen();
     testName();
+    testPreviewFollowsOpenAndClose();
+    testPreviewTellsAnotherImage();
+    testPreviewReopensEdit();
+    testPreviewTellsDrop();
 }

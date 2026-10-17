@@ -20,6 +20,7 @@ void SkinEditor::openNew(std::filesystem::path image) {
     image_ = std::move(image);
     skin_ = defaultSkin();
     name.set({});
+    shownPreview_.set(SkinPreview{skin_, image_});
 }
 
 void SkinEditor::openEdit(const Skin& skin, std::filesystem::path image) {
@@ -37,6 +38,19 @@ void SkinEditor::openEdit(const Skin& skin, std::filesystem::path image) {
         skin_.name = {};
     }
     name.set(skin_.name);
+    shownPreview_.set(SkinPreview{skin_, image_});
+}
+
+void SkinEditor::drop() {
+    // Закрытой правке отпускать нечего: точку тянут только в открытом мастере.
+    // Принять отпущенную значило бы открыть правку снова — полоса показала бы
+    // предпросмотр, которого никто не открывал.
+    if (!shownPreview_.get()) wxl::core::abort("SkinEditor::drop: правка закрыта");
+    shownPreview_.set(SkinPreview{skin_, image_});
+}
+
+void SkinEditor::close() {
+    shownPreview_.set(std::nullopt);
 }
 
 std::optional<SkinEditor::Grip> SkinEditor::gripAt(Point point, Size area) const {
