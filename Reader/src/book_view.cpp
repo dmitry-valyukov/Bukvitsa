@@ -394,6 +394,10 @@ void BookView::hideNote() {
 }
 
 void BookView::redraw() noexcept {
+    // Ответ о слое изгиба — только этой перерисовки: не дойдёт она до
+    // ensureWarp (меры нет, тема, приглашение) — прежнему ответу не место.
+    warpRefusal_.reset();
+
     const PageFlow& flow = presenter_.flow();
     if (!spreadView_.measured() || flow.width() <= 0.0f || flow.height() <= 0.0f) return;
 
@@ -540,14 +544,18 @@ bool BookView::ensureWarp(ID2D1DeviceContext* context) {
     // предел устройства, известный заранее, а не сбой: на Windows 10 бывают
     // устройства уровня 9.x с пределом 2048–4096 пикселей. Страница тогда
     // рисуется без изгиба; прежний слой — другой меры — отпускается, чтобы
-    // ни изгиб, ни предпросмотр под конфигуратором на нём не рисовали.
+    // ни изгиб, ни предпросмотр под конфигуратором на нём не рисовали. Молча
+    // это остаться не может: читатель тянет точки мастера, а ничего не
+    // гнётся, — ответ запоминается, и сказать о нём — владельцу.
     if (const UINT32 deviceLimit = context->GetMaximumBitmapSize();
         pixels.width > deviceLimit || pixels.height > deviceLimit) {
         warpLayer_.Reset();
         warpMap_.Reset();
         warpFlat_ = false;
+        warpRefusal_ = WarpRefusal{pixels.width, pixels.height, deviceLimit};
         return false;
     }
+    warpRefusal_.reset();
 
     if (!warpLayer_ || warpPixels_.width != pixels.width || warpPixels_.height != pixels.height) {
         if (!warpContext_) {
