@@ -11,6 +11,10 @@
 
 #include "app.h"
 
+// Заголовок вёрстки — после своих: точку расширения остановки
+// (setDeviceLossCheck) заполняет запуск.
+#include "bukvitsa/typography/system_failure.h"
+
 import wxl.core;
 
 wxl::Teardown wxl_launched() {
