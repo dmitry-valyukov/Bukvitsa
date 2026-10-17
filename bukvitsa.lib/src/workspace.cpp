@@ -17,8 +17,11 @@ import wxl.core;
 
 using wxl::async::async_directory;
 using wxl::async::async_file;
+using wxl::async::cancellation_source;
 using wxl::async::cancellation_token;
+using wxl::async::detached_task;
 using wxl::async::last_error;
+using wxl::async::operation_canceled_exception;
 using wxl::async::task;
 
 namespace bukvitsa::reader {
@@ -147,8 +150,7 @@ Notice correctedNotice(const std::vector<CorrectedSkin>& correctedSkins, const s
 /// Отчёт одного каталога — в общий отчёт перепроверки.
 void addUp(ScanReport& total, ScanReport part) {
     total.listed += part.listed;
-    total.parsed += part.parsed;
-    total.added += part.added;
+    total.queued += part.queued;
     total.marked += part.marked;
     total.restored += part.restored;
     total.unread.insert(total.unread.end(), std::make_move_iterator(part.unread.begin()),
@@ -178,7 +180,240 @@ std::filesystem::path standardDataDirectory() {
     return path / L"Bukvitsa" / L"Reader";
 }
 
-Workspace::Workspace(std::filesystem::path directory) : directory_(std::move(directory)) {}
+Workspace::Workspace(std::filesystem::path directory, cancellation_token appStop)
+    : directory_(std::move(directory)), appStop_(std::move(appStop)) {}
+
+Workspace::~Workspace() {
+    // Кадр разборщика держит это рабочее место — ссылкой на него он ставит
+    // книги в реестр, — и уйти раньше разбора значило бы оставить кадр с
+    // висящей ссылкой. Разбор кончается всегда — шагом или отменой общего
+    // токена, — так что застать его здесь — нарушенный порядок выхода.
+    if (draining_) wxl::core::abort("~Workspace: разбор очереди регистраций ещё идёт");
+}
+
+// ---- очередь регистраций --------------------------------------------------
+
+QueuedRegistration::QueuedRegistration(fb3::Description description, uint32_t characterCount,
+                                       std::optional<BookCover> cover, BookFile file)
+    : description_(std::move(description)),
+      characterCount_(characterCount),
+      cover_(std::move(cover)),
+      file_(std::move(file)),
+      bookId_(description_.id.to_utf16()) {}
+
+void QueuedRegistration::take(fb3::Description description, uint32_t characterCount,
+                              std::optional<BookCover> cover, BookFile file) {
+    // Тот же файл, а новые входы его каталога или времени не знают — открытие
+    // файлом после листинга: известное остаётся, тем же правилом, что у реестра
+    // (`Library::entryFor`), — каталог всегда, время при том же размере. Иначе
+    // книга, которую обход поставил, а открытие поставило снова, выпала бы из
+    // каталога и читалась бы следующей перепроверкой заново.
+    if (samePath(file.path, file_.path)) {
+        if (file.folder.empty()) file.folder = file_.folder;
+        if (file.modified == kUnknownTime && file.size == file_.size) file.modified = file_.modified;
+    }
+
+    description_ = std::move(description);
+    characterCount_ = characterCount;
+    cover_ = std::move(cover);
+    file_ = std::move(file);
+    bookId_ = description_.id.to_utf16();
+}
+
+const RegistrationOutcome& QueuedRegistration::outcome() const {
+    if (!outcome_) wxl::core::abort("QueuedRegistration::outcome: шаг регистрации ещё не кончился");
+    return *outcome_;
+}
+
+namespace {
+
+/// Те же входы постановки: тот же файл тем же размером и временем правки —
+/// шаг зарегистрировал бы то же самое.
+bool sameInputs(const BookFile& one, const BookFile& other) {
+    return samePath(one.path, other.path) && one.size == other.size && one.modified == other.modified;
+}
+
+}  // namespace
+
+not_null<intrusive_ptr<QueuedRegistration>> Workspace::queueRegistration(fb3::Description description,
+                                                                          uint32_t characterCount,
+                                                                          std::optional<BookCover> cover,
+                                                                          BookFile file) {
+    // Та же книга — по правилу реестра и его же порядком (`Library::findSame`):
+    // сперва UUID по всей очереди, затем путь при пустом UUID. Ключ — из того,
+    // что поставлено, а не из записи, какой её сделает реестр: запись решает
+    // шаг, по реестру, каким его оставили шаги впереди. Из двух подходящих —
+    // позднейший: ждёт книга в очереди не больше одного раза, а впереди может
+    // идти её же шаг.
+    const u16_text bookId = description.id.to_utf16();
+    std::optional<size_t> place;
+    for (size_t at = 0; at < registrationQueue_.size(); ++at) {
+        if (sameBookId(registrationQueue_[at]->bookId_, bookId)) place = at;
+    }
+    if (!place) {
+        for (size_t at = 0; at < registrationQueue_.size(); ++at) {
+            const QueuedRegistration& waiting = *registrationQueue_[at].get();
+            if (samePlace(waiting.bookId_, waiting.file_.path, bookId, file.path)) place = at;
+        }
+    }
+
+    if (place) {
+        const not_null<intrusive_ptr<QueuedRegistration>> same = registrationQueue_[*place];
+
+        // Те же входы — тот же шаг: повтор ничего не добавил бы.
+        if (sameInputs(same->file_, file)) return same;
+
+        // Другие, а элемент ждёт и итога его не ждёт никто — входы его: файл
+        // прочитан позже, и регистрировать надо его — копию с другого пути,
+        // каталог и время из листинга (`take` не затирает известное
+        // неизвестным).
+        if (!same->stepping_ && !same->ended_) {
+            same->take(std::move(description), characterCount, std::move(cover), std::move(file));
+            return same;
+        }
+
+        // Шаг идёт — его входы уже у реестра; итога ждёт подписчик — открытие
+        // ждёт запись своего файла, и чужой файл ему не подменить. Новые входы
+        // встают за ним своим элементом.
+    }
+
+    // Конструктор закрыт: элемент заводит только очередь. Указатель берёт
+    // первую ссылку самосчитающего, а не добавляет свою.
+    auto const queued = not_null<intrusive_ptr<QueuedRegistration>>{
+        new QueuedRegistration{std::move(description), characterCount, std::move(cover), std::move(file)}};
+    registrationQueue_.push_back(queued);
+
+    // Разборщик один: живой дойдёт и до этой книги. Нет его — заводится здесь,
+    // и шаг начинается в этом же вызове.
+    if (!draining_) {
+        draining_ = true;
+        drainRegistrations();
+    }
+
+    return queued;
+}
+
+detached_task Workspace::drainRegistrations() {
+    // Свой источник, дочерний от общего: выход приложения кончает разбор, а
+    // больше его не кончает никто — шаг ждёт только записи обложки, которой
+    // отмена не делит.
+    auto const stop = cancellation_source{appStop_};
+
+    while (!registrationQueue_.empty()) {
+        // Копией: голова уходит из очереди раньше, чем её итог разойдётся по
+        // подписчикам, а держать элемент до конца событий надо.
+        const not_null<intrusive_ptr<QueuedRegistration>> head = registrationQueue_.front();
+
+        if (stop.is_canceled()) {
+            // Выход: книги, не дошедшие до шага, не регистрируются — каждая
+            // кончается отменой, и её ждущие узнают это из итога.
+            registrationQueue_.pop_front();
+            auto const canceled = std::make_exception_ptr(
+                operation_canceled_exception{"очередь регистраций кончилась раньше шага этой книги"});
+            endRegistration(*head.get(), RegistrationOutcome{std::unexpect, canceled});
+            continue;
+        }
+
+        head->stepping_ = true;
+
+        std::optional<RegistrationOutcome> outcome;
+        try {
+            // Отдельной строкой, а не внутри emplace: значение шага — до
+            // итога, и co_await в аргументах MSVC переносит не всякий.
+            Registered registered = co_await registerQueued(*head.get());
+            outcome.emplace(std::move(registered));
+        } catch (const last_error&) {
+            // Обложка не записалась — книга в реестр не встала; итог донесёт
+            // сбой до того, кто его ждёт, или событие рабочего места, если не
+            // ждёт никто, а очередь идёт дальше.
+            outcome.emplace(std::unexpect, std::current_exception());
+        } catch (const std::exception& failure) {
+            // Всё прочее — не исход шага: шаг обещает только сбой записи
+            // обложки, а иное (нехватка памяти и подобное) — нарушенное
+            // обещание. Отпусти его дальше — разборщик кончился бы мимо
+            // `draining_`, очередь встала бы навсегда, открытие ждало бы до
+            // выхода, а выход остановился бы с неверным словом. Остановка —
+            // здесь, с текстом исключения.
+            wxl::core::abort(std::string{"Workspace::drainRegistrations: шаг регистрации кончился не сбоем "
+                                         "записи обложки: "} +
+                             failure.what());
+        } catch (...) {
+            wxl::core::abort("Workspace::drainRegistrations: шаг регистрации кончился неизвестным исключением");
+        }
+
+        // Голова уходит до событий: проснувшийся подписчик, поставивший ту же
+        // книгу снова, получит новый элемент, а не кончившийся.
+        registrationQueue_.pop_front();
+        endRegistration(*head.get(), std::move(*outcome));
+    }
+
+    draining_ = false;
+}
+
+void Workspace::endRegistration(QueuedRegistration& queued, RegistrationOutcome outcome) {
+    queued.outcome_ = std::move(outcome);
+    const RegistrationOutcome& ended = *queued.outcome_;
+
+    // Реестр переменился — раньше конца шага у элемента: ждущий открытия,
+    // проснувшись, будит запись реестра «сейчас», и она снимет уже и эту
+    // перемену, а не отложит её на паузу.
+    if (ended && (ended->isChanged || ended->restored)) bookRegistered_.event_(*ended);
+
+    // Отказ, которого никто не ждёт: подписчика у конца шага нет — книга
+    // перепроверки или добавленного каталога. Стоит подписчик — отказ его, и
+    // говорит о нём он. Отмена — не отказ: её приносит выход.
+    if (!ended && !queued.ended_) {
+        try {
+            std::rethrow_exception(ended.error());
+        } catch (const last_error& failure) {
+            registrationRefused_.event_(unreadLine(queued.file_.path, failure));
+        } catch (const operation_canceled_exception&) {
+        }
+    }
+
+    queued.ended_(ended);
+}
+
+task<Registered> Workspace::registerQueued(const QueuedRegistration& queued) {
+    // Guid, под которым настройки помнят этот файл: реестр мог книгу потерять
+    // (битый library.xml), а её место чтения в books\{guid}.xml цело, и
+    // «Продолжить чтение» не должно открывать книгу с начала. Другой файл —
+    // пусто, и guid будет новым.
+    const u16_view remembered =
+        settings.lastBookPath == queued.file_.path ? u16_view{settings.lastBookGuid} : u16_view{};
+
+    // Обложка — раньше записи в реестре. Карточка, встав в реестр, тут же
+    // встаёт и на полку, а полка сразу берёт картинку из файла обложки: файл,
+    // записанный после, опоздал бы, и картинка, не нашедшая его, осталась бы
+    // пустой — сама она файла не ждёт. Потому сперва запись, какой она станет
+    // (имя файлу обложки даёт её guid), затем обложка и лишь потом перемена
+    // реестра.
+    //
+    // Обложку пишет только новая или изменённая запись: у той же записи в кэше
+    // тот же файл, и переписывать его незачем.
+    const BookEntry planned =
+        library.entryFor(queued.description_, queued.characterCount_, queued.cover_, queued.file_, remembered);
+
+    if (const BookEntry* stored = library.find(planned.guid); !stored || *stored != planned) {
+        if (const CoverBytes cached = coverOf(queued.cover_, planned.guid); !cached.name.empty())
+            co_await async_file::write_all(poolPath(coverDirectory() / cached.name.wchars()), std::string(cached.bytes));
+    }
+
+    // Пока обложка писалась, другой шаг идти не мог — очередь одна, и
+    // разборщик один, — а прочие перемены реестра (пометки перепроверки,
+    // каталоги) записей книг не меняют. Добавление решает заново и просит
+    // guid задуманной записи, как guid из настроек, и обязано его отдать:
+    // другой guid значил бы, что запись этой книги переменилась под шагом, а
+    // обложка лежит под чужим именем.
+    const AddedBook added = library.add(queued.description_, queued.characterCount_, queued.cover_, queued.file_,
+                                        planned.guid);
+    if (added.entry.guid != planned.guid)
+        wxl::core::abort("Workspace::registerQueued: реестр отдал не тот guid, что задуман для обложки");
+
+    // Запись — копией, а не ссылкой: между co_await реестр может дополниться,
+    // и вектор переедет вместе со всеми ссылками в него.
+    co_return Registered{added.entry, added.isNew, added.isChanged, added.restored};
+}
 
 // ---- где что лежит --------------------------------------------------------
 
@@ -332,75 +567,24 @@ task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_to
     co_return LoadedBook{std::move(book), std::move(description), std::move(cover), fileSize};
 }
 
-task<Registered> Workspace::registerBook(const fb3::Description& description, uint32_t characterCount,
-                                         const std::optional<BookCover>& cover, BookFile file) {
-    // Guid, под которым настройки помнят этот файл: реестр мог книгу потерять
-    // (битый library.xml), а её место чтения в books\{guid}.xml цело, и
-    // «Продолжить чтение» не должно открывать книгу с начала. Другой файл —
-    // пусто, и guid будет новым.
-    const u16_view remembered = settings.lastBookPath == file.path ? u16_view{settings.lastBookGuid} : u16_view{};
-
-    // Обложка — раньше записи в реестре. Карточка, встав в реестр, тут же
-    // встаёт и на полку, а полка сразу берёт картинку из файла обложки: файл,
-    // записанный после, опоздал бы, и картинка, не нашедшая его, осталась бы
-    // пустой — сама она файла не ждёт. Потому сперва запись, какой она станет
-    // (имя файлу обложки даёт её guid), затем обложка и лишь потом перемена
-    // реестра.
-    //
-    // Обложку пишет только новая или изменённая запись: у той же записи в кэше
-    // тот же файл, и переписывать его незачем. Это снимает столкновение
-    // перепроверки каталога и открытия той же неизменной книги — две записи
-    // одной обложки разом через один временный файл. Одновременные регистрации
-    // изменённой или новой книги этим не упорядочены и сталкиваются по-прежнему
-    // (ограничение — в шапке workspace.h).
-    const BookEntry planned = library.entryFor(description, characterCount, cover, file, remembered);
-
-    if (const BookEntry* stored = library.find(planned.guid); !stored || *stored != planned) {
-        if (const CoverBytes cached = coverOf(cover, planned.guid); !cached.name.empty())
-            co_await async_file::write_all(poolPath(coverDirectory() / cached.name.wchars()), std::string(cached.bytes));
-    }
-
-    // Пока обложка писалась, реестр мог перемениться: ту же книгу могла
-    // поставить в него другая регистрация. Добавление решает заново, а guid
-    // задуманной записи просит, как guid из настроек: книге, которой в реестре
-    // так и нет, достаётся он — и обложка под ним уже лежит; книга, которая
-    // успела в него встать, остаётся под своим guid и при своей обложке, а
-    // обложка под задуманным guid остаётся в кэше лишней.
-    const AddedBook added = library.add(description, characterCount, cover, file, planned.guid);
-
-    // Запись — копией, а не ссылкой: между co_await реестр может дополниться,
-    // и вектор переедет вместе со всеми ссылками в него.
-    co_return Registered{added.entry, added.isNew, added.restored};
-}
-
-task<Opened> Workspace::openBook(const LoadedBook& loaded, cancellation_token stop) {
-    // Под отменённым токеном открытие не начинается — модель не тронута. Дальше
-    // токен слушает только чтение состояния, а оно стоит последним: отмена,
-    // пришедшая на записи обложки, реестра и настроек в памяти не разделяет —
-    // меняются оба, — и кончает открытие на чтении.
+task<Opened> Workspace::openBook(const BookEntry& entry, cancellation_token stop) {
+    // Под отменённым токеном открытие не начинается — настройки не тронуты.
+    // Дальше токен слушает только чтение состояния: книга, которую оно не
+    // дочитало, на полосу не встаёт.
     stop.throw_if_canceled();
 
-    // Порядок — это порядок обязательств: регистрация (реестр — в памяти,
-    // обложка — в кэш), затем настройки, которые на книгу указывают, — тоже в
-    // памяти, и лишь потом её состояние. Файлы реестра и настроек пишут циклы
-    // приложения, по одному на файл: запись отсюда шла бы разом с их записью
-    // того же файла.
-    //
-    // Ни времени правки, ни каталога открытие не знает: у книги, которая уже в
-    // реестре, они остаются от обхода каталога (`Library::entryFor`).
-    auto const file = BookFile{.path = loaded.book->path(), .size = loaded.fileSize};
-    const Registered registered =
-        co_await registerBook(loaded.description, loaded.book->characterCount(), loaded.cover, file);
-
-    settings.lastBookGuid = registered.entry.guid;
-    settings.lastBookPath = registered.entry.path;
+    // Настройки, которые на книгу указывают, — в памяти, и лишь потом её
+    // состояние. Файл настроек пишет цикл приложения, один на файл: запись
+    // отсюда шла бы разом с его записью того же файла.
+    settings.lastBookGuid = entry.guid;
+    settings.lastBookPath = entry.path;
 
     // Состояние — отдельной строкой, а не внутри фигурной инициализации:
     // `co_await` в списке инициализаторов агрегата роняет бэкенд MSVC 14.51
     // (C1001).
-    BookState state = co_await readState(registered.entry.guid, std::move(stop));
+    BookState state = co_await readState(entry.guid, std::move(stop));
 
-    Opened opened{registered.entry, std::move(state)};
+    Opened opened{entry, std::move(state)};
 
     co_return opened;
 }
@@ -494,9 +678,10 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
             ++report.marked;
     }
 
-    // Отмена кончает обход на чтении следующей книги. Книги, зарегистрированные
-    // до неё, полка уже показала, и реестр в памяти их знает; файл реестра
-    // отсюда не пишется — его пишет вызывающий, и после отмены тоже.
+    // Отмена кончает обход на чтении следующей книги. Книги, поставленные до
+    // неё, регистрирует очередь — их шагов отмена обхода не трогает, — и
+    // реестр в памяти их узнает; файл реестра отсюда не пишется — его пишет
+    // вызывающий, и после отмены тоже.
     for (const BookFile& book : books) {
         // Тот же файл не читается вовсе: запись этого каталога с тем же
         // размером и тем же временем правки — тот же файл, и ни чтение, ни
@@ -524,8 +709,8 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
         }
 
         // Чтение, успевшее кончиться, отвечает байтами и под отменой, пришедшей
-        // на обратном пути; её обход спрашивает сам: разбор дорогой, а книгу,
-        // начатую после отмены, регистрация положила бы в реестр в памяти мимо
+        // на обратном пути; её обход спрашивает сам: разбор дорогой, а книга,
+        // начатая после отмены, встала бы в очередь и в реестр в памяти мимо
         // его последней записи — ту вызывающий делает, когда отменяет.
         stop.throw_if_canceled();
 
@@ -547,28 +732,23 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
         }
 
         // Реестру нужны описание, число знаков и обложка — их снимаем, и
-        // документ умирает до ожидания: держать разобранное тело, пока пишется
-        // обложка, незачем. Обложка — раньше описания: её индекс в нём.
-        const std::optional<BookCover> cover = copyCover(*document);
+        // документ умирает здесь же: держать разобранное тело, пока ждёт и
+        // идёт шаг регистрации, незачем. Обложка — раньше описания: её индекс
+        // в нём.
+        std::optional<BookCover> cover = copyCover(*document);
         const uint32_t characterCount = document->characterCount();
-        const fb3::Description description = document->takeDescription();
+        fb3::Description description = document->takeDescription();
         document.reset();
 
         // Полка растёт на каждой книге, а не в конце: в этом и смысл — читатель
         // видит, как она наполняется. Новая книга встаёт карточкой реестра
-        // прямо в регистрации, и полка, привязанная к карточкам, слышит её сама.
-        try {
-            const Registered registered = co_await registerBook(description, characterCount, cover, std::move(file));
-
-            ++report.parsed;
-            if (registered.isNew) ++report.added;
-            if (registered.restored) ++report.restored;
-        } catch (const last_error& failure) {
-            // Обложка не записалась — и книга в реестр не встала: запись без
-            // файла обложки показала бы пустую картинку, а та же запись потом
-            // обложку не переписывает. Следующая перепроверка попробует снова.
-            report.unread.push_back(unreadLine(book.path, failure));
-        }
+        // своим шагом в очереди, и полка, привязанная к карточкам, слышит её
+        // сама. Шага обход не ждёт — читает следующую, пока пишется обложка
+        // этой: что встало и что не встало, говорят события рабочего места, и
+        // элемент обходу не нужен.
+        static_cast<void>(
+            queueRegistration(std::move(description), characterCount, std::move(cover), std::move(file)));
+        ++report.queued;
     }
 
     co_return report;
