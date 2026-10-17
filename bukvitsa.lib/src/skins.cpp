@@ -547,4 +547,11 @@ bool Skins::remove(u16_view name) {
     return false;
 }
 
+void Skins::restore(std::size_t place, Skin skin) {
+    if (find(skin.name)) return;
+
+    const std::size_t at = std::min(place, skins_.size());
+    skins_.insert(skins_.begin() + static_cast<std::ptrdiff_t>(at), std::move(skin));
+}
+
 }  // namespace bukvitsa::reader

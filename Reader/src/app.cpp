@@ -100,9 +100,9 @@ App::App()
           // спросить.
           dsl::onClosed = method(this, &App::close),
       }},
-      ws_{standardDataDirectory()},
+      ws_{standardDataDirectory(), stop_.token()},
       presenter_{ws_.settings, themes_, idleScheduler_, *this, stop_.token()},
-      notices_{window_, screenTheme_},
+      notices_{window_, screenTheme_, stop_.token()},
       start_{window_.chromeCompositor(), *this},
       view_{window_, presenter_, ws_.settings, stop_.token()},
       shelf_{ws_.library.cards(), ws_.settings.continueReading, ws_.coverDirectory(), *this},
@@ -129,7 +129,9 @@ App::App()
       // Тема — с самого начала: за ней идёт подложка полосы, а имена в
       // настройках слушатель пишет, только если они изменились, — до чтения
       // настроек тему никто не меняет.
-      themeWatch_{presenter_.theme(), *this} {
+      themeWatch_{presenter_.theme(), *this},
+      registeredWatch_{ws_.bookRegistered(), *this},
+      refusedWatch_{ws_.registrationRefused(), *this} {
     // Рамка окна тёмная, как и остров: системный светлый заголовок над тёмными
     // ящиками, мастером и полкой смотрелся бы чужим. Тега для неё в wxl пока
     // нет.

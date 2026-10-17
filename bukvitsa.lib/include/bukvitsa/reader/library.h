@@ -292,6 +292,22 @@ private:
 /// который перепроверка сводит с записью, — одно и то же сравнение.
 bool samePath(const std::filesystem::path& one, const std::filesystem::path& other);
 
+/// Та же книга по UUID (`bookId`): он есть у обеих и один и тот же.
+bool sameBookId(u16_view one, u16_view other);
+
+/// Та же книга по пути: путь тот же (`samePath`), и UUID этого не
+/// опровергает — у одной из двух его нет. Два разных UUID по одному пути — две
+/// книги.
+bool samePlace(u16_view oneBookId, const std::filesystem::path& onePath, u16_view otherBookId,
+               const std::filesystem::path& otherPath);
+
+/// Та же книга — по UUID или по пути (шапка, «у книги две личности»). Одно
+/// правило на реестр (`Library::findSame`, `add`) и очередь регистраций
+/// рабочего места: книга, которая уже ждёт там своего шага, — та же книга
+/// ровно тогда, когда реестр счёл бы её той же.
+bool sameBook(u16_view oneBookId, const std::filesystem::path& onePath, u16_view otherBookId,
+              const std::filesystem::path& otherPath);
+
 /// Новый guid записи реестра, в фигурных скобках, как их пишет Windows.
 u16_text newGuid();
 
