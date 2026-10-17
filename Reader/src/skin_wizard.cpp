@@ -411,10 +411,15 @@ void SkinWizard::redraw() noexcept {
 }
 
 void SkinWizard::saveRequested() {
+    // Сохранение уже идёт — второе не начинается и диалог имени не открывается:
+    // Enter, нажатый дважды, записал бы обложку дважды. Первое, кончившись,
+    // вернёт «Сохранить» (saveEnded).
+    if (editor_.saving()) return;
+
     // У правки старой обложки копия и имя уже есть — сохранение идёт сразу,
     // без диалога. Имя спрашивается только у новой.
     if (!editor_.needsName()) {
-        actions_.saveSkin(editor_.skin(), editor_.imagePath());
+        actions_.saveSkin(editor_.beginSave());
         return;
     }
     beginNaming();
@@ -426,12 +431,13 @@ void SkinWizard::beginNaming() {
 }
 
 void SkinWizard::confirmName() {
-    // Имя — в модели правки: поле положило его туда само, проверенным.
-    std::optional<Skin> saved = editor_.result();
-    if (!saved) return;   // безымянную сохранять некуда
+    // Имя — в модели правки: поле положило его туда само, проверенным. Идущего
+    // сохранения здесь не бывает: диалог открывает только saveRequested, а он
+    // при идущем сохранении молчит.
+    if (!editor_.nameOk()) return;   // безымянную сохранять некуда
 
     naming_.set(false);
-    actions_.saveSkin(std::move(*saved), editor_.imagePath());
+    actions_.saveSkin(editor_.beginSave());
 }
 
 void SkinWizard::cancelName() {
