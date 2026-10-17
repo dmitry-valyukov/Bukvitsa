@@ -857,26 +857,26 @@ bool canceled(task<T> work) {
 /// Рабочий поток занят, пока ворота не открыты: операции, ушедшие ему после,
 /// стоят не начатыми. Не открытые к концу — открываются на выходе, чтобы
 /// тело, державшее поток, кончилось.
-class WorkerHeld {
+class HeldWorker {
 public:
-    WorkerHeld() : hold_(sta_loop::async_call([this] { gate_.acquire(); })) {}
+    HeldWorker() : holdingTask_(sta_loop::async_call([this] { workerGate_.acquire(); })) {}
 
-    WorkerHeld(const WorkerHeld&) = delete;
-    WorkerHeld& operator=(const WorkerHeld&) = delete;
+    HeldWorker(const HeldWorker&) = delete;
+    HeldWorker& operator=(const HeldWorker&) = delete;
 
-    ~WorkerHeld() {
-        if (hold_) gate_.release();
+    ~HeldWorker() {
+        if (holdingTask_) workerGate_.release();
     }
 
     /// Ворота открыты, и тело, державшее поток, вернулось.
     void open() {
-        gate_.release();
-        run(std::move(hold_));
+        workerGate_.release();
+        run(std::move(holdingTask_));
     }
 
 private:
-    std::binary_semaphore gate_{0};
-    task<> hold_;
+    std::binary_semaphore workerGate_{0};
+    task<> holdingTask_;
 };
 
 /// Рабочий поток ответил на всё, что ему ушло раньше: знак, поставленный
@@ -884,18 +884,20 @@ private:
 /// в обратном канале, ни одна ждущая корутина ещё не проснулась; deliver()
 /// поворачивает петлю, пока знак не вернётся, — и ответы, лежавшие раньше
 /// него, доходят до ждущих.
-class WorkerAnswered {
+class AnsweredWorker {
 public:
-    WorkerAnswered() : mark_(sta_loop::async_call([this] { reached_.release(); })) { reached_.acquire(); }
+    AnsweredWorker() : markTask_(sta_loop::async_call([this] { reachedSignal_.release(); })) {
+        reachedSignal_.acquire();
+    }
 
-    WorkerAnswered(const WorkerAnswered&) = delete;
-    WorkerAnswered& operator=(const WorkerAnswered&) = delete;
+    AnsweredWorker(const AnsweredWorker&) = delete;
+    AnsweredWorker& operator=(const AnsweredWorker&) = delete;
 
-    void deliver() { run(std::move(mark_)); }
+    void deliver() { run(std::move(markTask_)); }
 
 private:
-    std::binary_semaphore reached_{0};
-    task<> mark_;
+    std::binary_semaphore reachedSignal_{0};
+    task<> markTask_;
 };
 
 /// Байты файла, прочитанные обычным способом: проверка того, что записало
@@ -2389,13 +2391,20 @@ void testWorkspaceOpenStopsOnStateRead() {
     //
     // Не начатое: поток занят, чтение стоит за ним, отмена приходит раньше, и
     // поток, дойдя до чтения, его не начинает — отменённое до начала не
-    // исполняется и отвечает отменой.
+    // исполняется и отвечает отменой. Поток занимают, когда шаг регистрации
+    // уже кончился: шаг с записью обложки ждал бы её за занятым потоком, и
+    // конец шага не пришёл бы.
     cancellation_source reading;
     {
-        WorkerHeld heldWorker;
-        task<Opened> reopening = openIn(ws, loaded, reading.token());
-        check(!reopening.done() && !ws.registering(),
-              "та же запись — шаг без записи обложки, открытие стоит на чтении состояния");
+        const Registered reregistered =
+            endOf(ws.queueRegistration(loaded.description, loaded.book->characterCount(), loaded.cover,
+                                       BookFile{.path = loaded.book->path(), .size = loaded.fileSize}));
+        check(!reregistered.isNew && !reregistered.isChanged && !ws.registering(),
+              "та же запись — шаг без записи обложки");
+
+        HeldWorker heldWorker;
+        task<Opened> reopening = ws.openBook(reregistered.entry, reading.token());
+        check(!reopening.done(), "открытие стоит на чтении состояния");
         reading.cancel();
         heldWorker.open();
 
@@ -2410,12 +2419,12 @@ void testWorkspaceOpenStopsOnStateRead() {
     // до чтения, уже указывают на книгу.
     ws.settings.lastBookGuid = u16_text{};
     ws.settings.lastBookPath.clear();
-    cancellation_source late;
-    task<Opened> answeredOpening = openIn(ws, loaded, late.token());
+    cancellation_source lateStop;
+    task<Opened> answeredOpening = openIn(ws, loaded, lateStop.token());
     check(!answeredOpening.done(), "открытие стоит на чтении состояния");
-    WorkerAnswered stateAnswered;
-    late.cancel();
-    stateAnswered.deliver();
+    AnsweredWorker answeredState;
+    lateStop.cancel();
+    answeredState.deliver();
 
     check(canceled(std::move(answeredOpening)), "чтение ответило раньше отмены — открытие всё равно кончается отменой");
     check(ws.settings.lastBookGuid == ws.library.cards()[0]->entry.guid && ws.settings.lastBookPath == kBook,
@@ -2436,31 +2445,31 @@ void testWorkspaceScanStopsAfterListing() {
     // Файл ушёл — перепроверка пометила бы его запись «не найдена».
     std::filesystem::remove(folder / kBook.filename());
 
-    cancellation_source rescan;
-    task<ScanReport> rescanning = ws.scanFolder(folder, rescan.token());
-    check(!rescanning.done(), "перепроверка стоит на листинге");
+    cancellation_source rescanStop;
+    task<ScanReport> pendingRescan = ws.scanFolder(folder, rescanStop.token());
+    check(!pendingRescan.done(), "перепроверка стоит на листинге");
     {
-        WorkerAnswered listingAnswered;
-        rescan.cancel();
-        listingAnswered.deliver();
+        AnsweredWorker answeredListing;
+        rescanStop.cancel();
+        answeredListing.deliver();
     }
-    check(canceled(std::move(rescanning)), "листинг ответил раньше отмены — перепроверка кончается отменой");
+    check(canceled(std::move(pendingRescan)), "листинг ответил раньше отмены — перепроверка кончается отменой");
     check(ws.library.cards().size() == 1 && !ws.library.cards()[0]->missing().get(),
           "пометки «не найдена» нет: листинг с записями не сведён");
 
-    const std::filesystem::path another = box.root / L"another";
-    std::filesystem::create_directories(another);
-    std::filesystem::copy_file(kOtherBook, another / kOtherBook.filename());
+    const std::filesystem::path anotherFolder = box.root / L"another";
+    std::filesystem::create_directories(anotherFolder);
+    std::filesystem::copy_file(kOtherBook, anotherFolder / kOtherBook.filename());
 
-    cancellation_source adding;
-    task<ScanReport> addition = ws.addFolder(another, adding.token());
-    check(!addition.done(), "добавление стоит на листинге");
+    cancellation_source addingStop;
+    task<ScanReport> pendingAddition = ws.addFolder(anotherFolder, addingStop.token());
+    check(!pendingAddition.done(), "добавление стоит на листинге");
     {
-        WorkerAnswered listingAnswered;
-        adding.cancel();
-        listingAnswered.deliver();
+        AnsweredWorker answeredListing;
+        addingStop.cancel();
+        answeredListing.deliver();
     }
-    check(canceled(std::move(addition)), "листинг ответил раньше отмены — добавление кончается отменой");
+    check(canceled(std::move(pendingAddition)), "листинг ответил раньше отмены — добавление кончается отменой");
     check(ws.library.folders().size() == 1 && !ws.registering() && ws.library.cards().size() == 1,
           "каталог не запомнен, его книги не поставлены");
 }
