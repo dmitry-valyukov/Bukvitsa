@@ -2,6 +2,7 @@
 // кончается импортом wxl.async.
 #include "notices.h"
 
+#include "Failure.h"
 #include "ShowDialog.h"
 
 // Последним: слова читателю (`noticeOf`) несут импорт wxl.async, после чего
@@ -15,8 +16,29 @@ namespace bukvitsa::reader {
 
 using namespace wxl;
 
-Notices::Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme)
-    : window_(std::move(window)), screenTheme_(screenTheme) {
+namespace {
+
+/// Чем XAML отказывает показу, пока над островом открыт другой диалог:
+/// E_ASYNC_OPERATION_NOT_STARTED (ERROR_CONTENTDIALOG_MULTIPLE_OPEN).
+constexpr int32_t kAnotherDialogOpen = static_cast<int32_t>(0x80000019);
+
+/// Сообщение, которому показаться уже не над чем, — строкой в stderr и в
+/// вывод отладчика: заголовок и подробности.
+void writeOut(const Notice& notice) {
+    std::string line = "Сообщение, которое некому показать: ";
+    unicode::append_utf8(line, unicode::repaired(notice.headline));
+    if (!notice.details.empty()) {
+        line += " — ";
+        unicode::append_utf8(line, unicode::repaired(notice.details));
+    }
+    core::report(line);
+}
+
+}  // namespace
+
+Notices::Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme,
+                 wxl::async::cancellation_token stop)
+    : window_(std::move(window)), screenTheme_(screenTheme), dialogStop_(std::move(stop)) {
     instance_ = this;
     previous_ = wxl::async::on_detached_task_failure();
     wxl::async::on_detached_task_failure() = [](std::exception_ptr error) noexcept {
@@ -25,6 +47,11 @@ Notices::Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme con
 }
 
 Notices::~Notices() {
+    // Не вышедшие из очереди — сообщения, которых читатель так и не увидел:
+    // экрана не дождались или чужой диалог не закрылся до выхода. Терять их
+    // нельзя и здесь.
+    for (const Notice& notice : pending_) writeOut(notice);
+
     if (instance_ != this) return;
     wxl::async::on_detached_task_failure() = previous_;
     instance_ = nullptr;
@@ -32,6 +59,15 @@ Notices::~Notices() {
 
 void Notices::post(Notice notice) {
     using namespace wxl::dsl;
+
+    // Окно закрыто: на выходе показать уже нечем — диалог под отменённым
+    // токеном и не показался бы, — а терять нельзя: это сбой, отказ последней
+    // записи или сценарий, упавший на выходе, и процесс выйдет с кодом 0.
+    // Заголовок и подробности — строкой в stderr и в вывод отладчика.
+    if (dialogStop_.is_canceled()) {
+        writeOut(notice);
+        return;
+    }
 
     if (lines_) {
         // Диалог открыт — дописываем. Заголовок второго сообщения — строкой
@@ -94,11 +130,17 @@ void Notices::post(Notice notice) {
     };
     dialog.requestedTheme(screenTheme_.get());
 
-    // Открыт чужой диалог — XAML откажет исключением. Зовут отсюда и из
-    // noexcept-обработчика сбоев, так что отказ — не ошибка, а очередь.
+    // Открыт чужой диалог (вопрос об удалении обложки) — XAML отказывает
+    // показу сразу, и showDialog отдаёт отказ исключением из вызова. Отказ —
+    // не ошибка, а очередь: сообщение выйдет, когда вопрос закроется (flush).
+    // Иное исключение — не отказ, и прятать его в очередь нельзя: оно идёт
+    // дальше, а из noexcept-обработчика сбоев это остановка с его текстом.
+    // Ответа диалога ждёт wxl под токеном сообщений: выход этот кадр видит, а
+    // закрытие окна закрывает диалог.
     try {
-        showDialog(dialog, host);
+        showDialog(dialog, host, dialogStop_.token());
     } catch (...) {
+        if (failureOf(std::current_exception()).hresult != kAnotherDialogOpen) throw;
         if (!mergeIntoPending(notice)) pending_.push_back(std::move(notice));
         return;
     }
