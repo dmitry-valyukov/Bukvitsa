@@ -1487,8 +1487,18 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         // остаётся выключенной влево — её короткость это конец мысли, а не
         // изъян набора, — но если и она переполнена, сжать надо и её: за поле
         // не должно вылезать ничего.
+        //
+        // Так же набирается строка, кончившаяся обязательным разрывом, —
+        // `<br/>` или переводом строки в преформате. Разбивка уже считает её
+        // короткой по смыслу: перед разрывом стоит клей бесконечной
+        // растяжимости, `\hfil\break` Кнута (breakItems). Растяни её выключка
+        // до полосы — пробелы в ней разъехались бы, а одно слово получило бы
+        // разрядку остатком.
+        const bool forcedBreak =
+            at.kind == BreakItem::Kind::Penalty && at.penalty <= -kInfinitePenalty;
         const bool overfull = natural > available + 0.05f;
-        const bool wantsJustification = style.alignment == Alignment::Justify && !lastLine;
+        const bool wantsJustification =
+            style.alignment == Alignment::Justify && !lastLine && !forcedBreak;
 
         if (natural > 0.0f && (wantsJustification || overfull))
             impl.justify(runs, available);

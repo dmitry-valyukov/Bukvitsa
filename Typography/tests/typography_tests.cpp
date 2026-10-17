@@ -2041,6 +2041,42 @@ void testTrailingSpace(typography::Engine& engine) {
     check(inside, "строки за концом текста нет");
 }
 
+/// Строка, кончившаяся обязательным разрывом (`<br/>` свёртка делает
+/// переводом строки), набирается как последняя: выключка по формату не тянет
+/// её до полосы. Короткая она по смыслу, и разбивка так её и считает; до
+/// исправления выключка раздвигала в ней пробелы, а одному слову давала
+/// разрядку — так растягивался преформат в сноске nightmare.
+void testLineBeforeForcedBreak(typography::Engine& engine) {
+    std::printf("\n=== строка до обязательного разрыва ===\n");
+
+    // Полоса широкая: обе строки в ней коротки, и строку, дотянутую до края,
+    // видно сразу.
+    constexpr float kWidth = 1000.0f;
+    const typography::BookText book = paragraphOf(u"слово\nдальше текст абзаца");
+
+    typography::ParagraphStyle justified;   // по формату — по умолчанию
+    typography::ParagraphStyle ragged;
+    ragged.alignment = typography::Alignment::Left;
+
+    // Естественная ширина — у тех же строк, набранных влево: их выключка не
+    // трогает, а переломы у обоих наборов одни — обязательный разрыв и конец
+    // абзаца.
+    const auto lines = layoutOf(engine, book, kWidth, justified);
+    const auto natural = layoutOf(engine, book, kWidth, ragged);
+    const bool sameBreaks = lines.size() == 2 && natural.size() == 2 &&
+                            lines[0].textStart == 0 && lines[1].textStart == natural[1].textStart;
+
+    if (sameBreaks)
+        std::printf("  по формату %.1f и %.1f, влево %.1f и %.1f, полоса %.0f\n", lines[0].width,
+                    lines[1].width, natural[0].width, natural[1].width, kWidth);
+    check(sameBreaks && std::abs(lines[0].width - natural[0].width) < 0.01f &&
+              lines[0].width < kWidth * 0.5f && !lines[0].runs.empty() &&
+              lines[0].runs.front().originX == 0.0f,
+          "строка до обязательного разрыва — естественной ширины, у начала полосы");
+    check(sameBreaks && std::abs(lines[1].width - natural[1].width) < 0.01f,
+          "последняя строка абзаца — как была");
+}
+
 /// Тела сносок настоящих книг в хранилище: лежат за потоком чтения по
 /// порядку документа, глав не открывают, у каждого якоря непустое тело, и
 /// тело верстается тем же хранилищем, без разбора заново.
@@ -2130,6 +2166,7 @@ int main() {
     testHyphenation();
     testHyphenationInLayout(engine);
     testTrailingSpace(engine);
+    testLineBeforeForcedBreak(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
     testHyphenSeries(engine, testdata);
