@@ -597,8 +597,8 @@ task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_to
 
 task<Opened> Workspace::openBook(const BookEntry& entry, cancellation_token stop) {
     // Под отменённым токеном открытие не начинается — настройки не тронуты.
-    // Дальше токен слушает только чтение состояния: книга, которую оно не
-    // дочитало, на полосу не встаёт.
+    // Дальше токен слушает только чтение состояния — само чтение и вопрос
+    // сразу за ним, — и книга, чьё открытие отменили, на полосу не встаёт.
     stop.throw_if_canceled();
 
     // Настройки, которые на книгу указывают, — в памяти, и лишь потом её
@@ -610,7 +610,14 @@ task<Opened> Workspace::openBook(const BookEntry& entry, cancellation_token stop
     // Состояние — отдельной строкой, а не внутри фигурной инициализации:
     // `co_await` в списке инициализаторов агрегата роняет бэкенд MSVC 14.51
     // (C1001).
-    BookState state = co_await readState(entry.guid, std::move(stop));
+    BookState state = co_await readState(entry.guid, stop);
+
+    // Чтение, успевшее кончиться, отвечает состоянием и под отменой, пришедшей
+    // на обратном пути, — ответ, успевший раньше отмены, — ответ, — но тот, кто
+    // отменил, открытия больше не ждёт, что бы чтение ни ответило: дальше книга
+    // встала бы на полосу. Тем же правилом токен спрашивают сразу за чтением
+    // readBook и saveSkin.
+    stop.throw_if_canceled();
 
     Opened opened{entry, std::move(state)};
 
@@ -631,12 +638,20 @@ task<ScanReport> Workspace::scanFolder(std::filesystem::path folder, cancellatio
         if (!absent(failure)) throw;
     }
 
+    // Листинг, успевший кончиться, отвечает и под отменой, пришедшей на
+    // обратном пути; обход спрашивает её сам: дальше пометки меняют реестр.
+    stop.throw_if_canceled();
+
     co_return co_await scanListing(std::move(folder), std::move(listing), std::move(stop));
 }
 
 task<ScanReport> Workspace::addFolder(std::filesystem::path folder, cancellation_token stop) {
     std::vector<async_directory::listed_entry> listing =
         co_await async_directory::list(poolPath(folder / L"*.fb3"), stop);
+
+    // Листинг, успевший кончиться, отвечает и под отменой; её добавление
+    // спрашивает само, до первой перемены реестра — как у перепроверки.
+    stop.throw_if_canceled();
 
     // Наблюдаемым каталог становится, когда перечислился: каталог, которого не
     // прочесть, реестр не запоминает — каждый запуск спотыкался бы о него
