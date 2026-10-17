@@ -13,6 +13,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <optional>
+#include <semaphore>
 #include <span>
 #include <string>
 #include <string_view>
@@ -846,6 +847,56 @@ bool canceled(task<T> work) {
     }
     return false;
 }
+
+// Рабочий поток спящей петли проб один и берёт операции по порядку
+// (sta_loop::start: и async_call, и операции под токеном идут ему одним
+// каналом), а его ответы лежат в обратном канале, пока петлю не повернут. На
+// этом стоят два порядка, которых проба отмены иначе у свободного потока не
+// выиграет: операция ещё не начата — или уже ответила, а ждущий не проснулся.
+
+/// Рабочий поток занят, пока ворота не открыты: операции, ушедшие ему после,
+/// стоят не начатыми. Не открытые к концу — открываются на выходе, чтобы
+/// тело, державшее поток, кончилось.
+class WorkerHeld {
+public:
+    WorkerHeld() : hold_(sta_loop::async_call([this] { gate_.acquire(); })) {}
+
+    WorkerHeld(const WorkerHeld&) = delete;
+    WorkerHeld& operator=(const WorkerHeld&) = delete;
+
+    ~WorkerHeld() {
+        if (hold_) gate_.release();
+    }
+
+    /// Ворота открыты, и тело, державшее поток, вернулось.
+    void open() {
+        gate_.release();
+        run(std::move(hold_));
+    }
+
+private:
+    std::binary_semaphore gate_{0};
+    task<> hold_;
+};
+
+/// Рабочий поток ответил на всё, что ему ушло раньше: знак, поставленный
+/// следом, исполняется только после них, и конструктор ждёт его. Ответы лежат
+/// в обратном канале, ни одна ждущая корутина ещё не проснулась; deliver()
+/// поворачивает петлю, пока знак не вернётся, — и ответы, лежавшие раньше
+/// него, доходят до ждущих.
+class WorkerAnswered {
+public:
+    WorkerAnswered() : mark_(sta_loop::async_call([this] { reached_.release(); })) { reached_.acquire(); }
+
+    WorkerAnswered(const WorkerAnswered&) = delete;
+    WorkerAnswered& operator=(const WorkerAnswered&) = delete;
+
+    void deliver() { run(std::move(mark_)); }
+
+private:
+    std::binary_semaphore reached_{0};
+    task<> mark_;
+};
 
 /// Байты файла, прочитанные обычным способом: проверка того, что записало
 /// рабочее место.
@@ -2288,9 +2339,10 @@ void testWorkspaceStartReadsModelsWhole() {
 }
 
 /// Открытие под отменённым токеном не трогает ничего — ни модели, ни диска;
-/// отменённое на записи обложки меняет в памяти и реестр, и настройки и
-/// кончается отменой на чтении состояния. Файлов реестра и настроек открытие
-/// не пишет ни так, ни так.
+/// отмена, пришедшая на записи обложки, книгу в реестр ставит, а открытие её
+/// записи не начинается и настроек не трогает; отмена на чтении состояния
+/// кончает открытие, когда настройки уже указывают на книгу. Файлов реестра и
+/// настроек открытие не пишет ни так, ни так.
 void testWorkspaceOpenStopsOnStateRead() {
     std::printf("\n=== отмена: открытие книги ===\n");
 
@@ -2329,14 +2381,88 @@ void testWorkspaceOpenStopsOnStateRead() {
           "файлов реестра и настроек открытие не пишет — их пишет вызывающий");
 
     // Состояние: попросили на его чтении — открытие кончается отменой, а
-    // настройки уже указывают на книгу (так было и прежде).
+    // настройки уже указывают на книгу (так было и прежде). Операция чтения
+    // уходит рабочему потоку в самом вызове, и свободный поток кончает её раньше
+    // отмены: файла состояния нет, и отказ CreateFileW приходит сразу. Оба
+    // порядка — порознь и наверняка: чтение, которое держат не начатым, и
+    // чтение, которое уже ответило.
+    //
+    // Не начатое: поток занят, чтение стоит за ним, отмена приходит раньше, и
+    // поток, дойдя до чтения, его не начинает — отменённое до начала не
+    // исполняется и отвечает отменой.
     cancellation_source reading;
-    task<Opened> reopening = openIn(ws, loaded, reading.token());
-    check(!reopening.done() && !ws.registering(),
-          "та же запись — шаг без записи обложки, открытие стоит на чтении состояния");
-    reading.cancel();
-    check(canceled(std::move(reopening)) && ws.settings.lastBookGuid == ws.library.cards()[0]->entry.guid,
-          "отмена на чтении состояния: настройки указывают на книгу, на полосу она не встаёт");
+    {
+        WorkerHeld heldWorker;
+        task<Opened> reopening = openIn(ws, loaded, reading.token());
+        check(!reopening.done() && !ws.registering(),
+              "та же запись — шаг без записи обложки, открытие стоит на чтении состояния");
+        reading.cancel();
+        heldWorker.open();
+
+        check(canceled(std::move(reopening)), "отмена раньше чтения состояния — открытие кончается отменой");
+        check(ws.settings.lastBookGuid == ws.library.cards()[0]->entry.guid,
+              "отмена раньше чтения состояния: настройки уже указывают на книгу, на полосу она не встаёт");
+    }
+
+    // Ответившее: чтение кончилось — «файла нет», чистый лист в обратном
+    // канале, — и только потом попросили. Ответ, успевший раньше отмены, —
+    // ответ, но открытие после отмены дальше не идёт; настройки, поставленные
+    // до чтения, уже указывают на книгу.
+    ws.settings.lastBookGuid = u16_text{};
+    ws.settings.lastBookPath.clear();
+    cancellation_source late;
+    task<Opened> answeredOpening = openIn(ws, loaded, late.token());
+    check(!answeredOpening.done(), "открытие стоит на чтении состояния");
+    WorkerAnswered stateAnswered;
+    late.cancel();
+    stateAnswered.deliver();
+
+    check(canceled(std::move(answeredOpening)), "чтение ответило раньше отмены — открытие всё равно кончается отменой");
+    check(ws.settings.lastBookGuid == ws.library.cards()[0]->entry.guid && ws.settings.lastBookPath == kBook,
+          "чтение ответило раньше отмены: настройки указывают на книгу — их ставят до чтения");
+}
+
+/// Листинг каталога ответил раньше отмены — и только потом попросили: обход и
+/// добавление кончаются отменой, не сведя листинг с реестром. Перепроверка не
+/// ставит пометок «не найдена», добавление не запоминает каталог.
+void testWorkspaceScanStopsAfterListing() {
+    std::printf("\n=== отмена: листинг каталога уже ответил ===\n");
+
+    Sandbox box("stop-listing");
+    const std::filesystem::path folder = shelfOf(box, {kBook});
+    Workspace ws(box.root, never);
+    scanned(ws, ws.addFolder(folder, never));
+
+    // Файл ушёл — перепроверка пометила бы его запись «не найдена».
+    std::filesystem::remove(folder / kBook.filename());
+
+    cancellation_source rescan;
+    task<ScanReport> rescanning = ws.scanFolder(folder, rescan.token());
+    check(!rescanning.done(), "перепроверка стоит на листинге");
+    {
+        WorkerAnswered listingAnswered;
+        rescan.cancel();
+        listingAnswered.deliver();
+    }
+    check(canceled(std::move(rescanning)), "листинг ответил раньше отмены — перепроверка кончается отменой");
+    check(ws.library.cards().size() == 1 && !ws.library.cards()[0]->missing().get(),
+          "пометки «не найдена» нет: листинг с записями не сведён");
+
+    const std::filesystem::path another = box.root / L"another";
+    std::filesystem::create_directories(another);
+    std::filesystem::copy_file(kOtherBook, another / kOtherBook.filename());
+
+    cancellation_source adding;
+    task<ScanReport> addition = ws.addFolder(another, adding.token());
+    check(!addition.done(), "добавление стоит на листинге");
+    {
+        WorkerAnswered listingAnswered;
+        adding.cancel();
+        listingAnswered.deliver();
+    }
+    check(canceled(std::move(addition)), "листинг ответил раньше отмены — добавление кончается отменой");
+    check(ws.library.folders().size() == 1 && !ws.registering() && ws.library.cards().size() == 1,
+          "каталог не запомнен, его книги не поставлены");
 }
 
 /// Сохранение обложки: под отменённым токеном не начинается, отмена на
@@ -3231,6 +3357,7 @@ int main(int argc, char* argv[]) {
     testWorkspaceReadsStopOnRequest();
     testWorkspaceStartReadsModelsWhole();
     testWorkspaceOpenStopsOnStateRead();
+    testWorkspaceScanStopsAfterListing();
     testWorkspaceSaveSkinStopsBeforeWrites();
     testWorkspaceDeleteSkinStopsBeforeChange();
     testWorkspaceSkinsWriteRefused();
