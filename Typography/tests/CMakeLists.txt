@@ -15,3 +15,24 @@ target_compile_definitions(typography_tests PRIVATE
 
 # windowscodecs — CLSID фабрики WIC для растеризации формулы в тесте.
 target_link_libraries(typography_tests PRIVATE windowscodecs)
+
+# Точка расширения остановки (system_failure.h) ставится раз на процесс:
+# сценарий — аргумент программы, каждый — свой запуск; сценарии с остановкой
+# сверяются по её строке в stderr, код выхода у них не смотрится.
+add_executable(system_failure_tests system_failure_tests.cpp)
+target_link_libraries(system_failure_tests PRIVATE bukvitsa::typography wxl::core)
+bukvitsa_consumes_wxl(system_failure_tests)
+
+add_test(NAME system_failure.lost COMMAND system_failure_tests lost)
+add_test(NAME system_failure.order COMMAND system_failure_tests order)
+add_test(NAME system_failure.unset COMMAND system_failure_tests unset)
+add_test(NAME system_failure.twice COMMAND system_failure_tests twice)
+add_test(NAME system_failure.empty COMMAND system_failure_tests empty)
+set_tests_properties(system_failure.order PROPERTIES
+    PASS_REGULAR_EXPRESSION "check 0x80070057; [^\n]*probe: other failure, HRESULT 0x80070057")
+set_tests_properties(system_failure.unset PROPERTIES
+    PASS_REGULAR_EXPRESSION "probe: no check, HRESULT 0x80004005")
+set_tests_properties(system_failure.twice PROPERTIES
+    PASS_REGULAR_EXPRESSION "setDeviceLossCheck: проверка ставится второй раз")
+set_tests_properties(system_failure.empty PROPERTIES
+    PASS_REGULAR_EXPRESSION "setDeviceLossCheck: пустая проверка")

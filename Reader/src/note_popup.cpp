@@ -40,7 +40,7 @@ Color toXaml(D2D1_COLOR_F color) {
 // Спрайт текста — сразу, от композитора: поверхность под него заводит
 // первый показ (draw), тогда же он и получает кисть.
 NotePopup::NotePopup(const Compositor& compositor)
-    : compositor_(compositor), sprite_(compositor_.createSpriteVisual()) {
+    : compositor_(compositor), sprite_(compositor_.createSpriteVisual()), deviceWatch_(compositor_, *this) {
     using namespace wxl::dsl;
 
     // Подложка ростом с текст сноски: она внутри прокрутки, и её высота — это
@@ -85,7 +85,14 @@ void NotePopup::hide() {
     root_.visibility(Visibility::Collapsed);
 }
 
-void NotePopup::draw(const Theme& theme, float width, float height, float scale) noexcept {
+void NotePopup::renderingDeviceReplaced() noexcept {
+    if (visible_) draw();
+}
+
+void NotePopup::draw() noexcept {
+    const float width = width_;
+    const float height = height_;
+    const float scale = scale_;
     const SizeInt32 pixels{static_cast<int32_t>(width * scale + 0.5f),
                            static_cast<int32_t>(height * scale + 0.5f)};
     if (pixels.width <= 0 || pixels.height <= 0) return;
@@ -111,7 +118,7 @@ void NotePopup::draw(const Theme& theme, float width, float height, float scale)
         // Отказ — остановка (system_failure.h): молча пустая сноска была бы
         // сбоем без имени.
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ink;
-        typography::stopIfFailed(context->CreateSolidColorBrush(theme.text, &ink),
+        typography::stopIfFailed(context->CreateSolidColorBrush(ink_, &ink),
                                  "NotePopup: не создалась кисть сноски");
 
         // Знак сноски внутри сноски — цветом текста, а не ссылки: всплывашка
@@ -164,7 +171,11 @@ void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const T
     // прежнюю.
     scrollTop_.set(0.0);
 
-    draw(theme, inner, noteHeight, scale);
+    ink_ = theme.text;
+    width_ = inner;
+    height_ = noteHeight;
+    scale_ = scale;
+    draw();
 
     root_.visibility(Visibility::Visible);
     visible_ = true;
