@@ -5,9 +5,12 @@
 // wxl.xml выделяет память из STA-пула wxl.core — он должен существовать
 // до первого разбора и пережить последнюю книгу.
 
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
 
 import wxl.core;
 
@@ -224,6 +227,73 @@ void testTakeDescription(const std::filesystem::path& testdata) {
           "takeDescription отдаёт название");
 }
 
+/// Обложка — картинка тела, к части которой ведёт миниатюра пакета, а не
+/// последняя картинка того же типа: у «nightmare» миниатюра — первая из
+/// четырнадцати связей тела с PNG, у «hardcore» — первая из двух с SVG
+/// (вторая — j.o.p.a.jPeG, объявленная SVG в [Content_Types].xml). Без
+/// миниатюры обложка — картинка, чей Id связи называет её обложкой.
+void testCover(const std::filesystem::path& testdata) {
+    std::printf("\n=== обложка ===\n");
+
+    struct Expected {
+        const char* book;
+        std::string_view relationshipId;
+        const char* what;
+    };
+    const Expected expected[] = {
+        {kNovel, "img1", "роман: миниатюра — единственная картинка"},
+        {kNightmare, "img1", "nightmare: миниатюра cover1.png, а не последняя PNG"},
+        {"hardcore_file_structure.fb3", "img1", "hardcore: миниатюра cover/thumb.svg, а не другая часть SVG"},
+        {"anathomy_tutorial_example.fb3", "Cover.png", "anathomy: миниатюры нет — картинка, названная обложкой"},
+    };
+
+    for (const Expected& book : expected) {
+        const Document document(testdata / book.book);
+        const std::optional<std::uint32_t> cover = document.description().coverImageIndex;
+        const std::string_view found =
+            cover && *cover < document.images().size() ? document.images()[*cover].relationshipId.chars() : "";
+        std::printf("  %s: обложка — связь «%.*s»\n", book.book, static_cast<int>(found.size()), found.data());
+        check(found == book.relationshipId, book.what);
+    }
+}
+
+/// Одна ли это часть, решает Packaging API, и проба держит то, на что
+/// полагается выбор обложки: разные части — разные, а имя одной части в
+/// другом регистре ASCII — та же часть, как велит OPC. Части — настоящие:
+/// миниатюра nightmare, к которой ведут и связь пакета, и первая связь тела.
+void testSamePart(const std::filesystem::path& testdata) {
+    std::printf("\n=== одна ли часть: %s ===\n", kNightmare);
+
+    const OpcPackage package(testdata / kNightmare);
+    const std::optional<PackagePart> thumbnail = package.partByPackageRelationship(
+        L"http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail");
+    const std::optional<PackagePart> body =
+        package.partByPackageRelationship(L"http://www.fictionbook.org/FictionBook3/relationships/Book")
+            .and_then([&](const PackagePart& description) {
+                return package.partByRelationship(description,
+                                                  L"http://www.fictionbook.org/FictionBook3/relationships/body");
+            });
+    check(thumbnail && body, "миниатюра и тело найдены");
+    if (!thumbnail || !body) return;
+
+    const std::optional<PackagePart> cover = package.partByRelationshipId(*body, u8"img1");
+    const std::optional<PackagePart> logo = package.partByRelationshipId(*body, u8"img33");
+    check(cover && logo, "картинки тела img1 и img33 найдены");
+    if (!cover || !logo) return;
+
+    std::printf("  миниатюра: %ls, img1: %ls, img33: %ls\n", thumbnail->name.c_str(), cover->name.c_str(),
+                logo->name.c_str());
+    check(package.samePart(*thumbnail, *cover), "миниатюра пакета и img1 тела — одна часть");
+    check(!package.samePart(*thumbnail, *logo), "миниатюра и img33 (logo_litres.png) — разные части");
+
+    // Имя той же части в верхнем регистре ASCII — другая строка, но по OPC
+    // та же часть; имя соседней — другая часть и в том же регистре.
+    auto const shouted = PackagePart{L"/FB3/IMG/COVER1.PNG", cover->contentType};
+    auto const shoutedLogo = PackagePart{L"/FB3/IMG/LOGO_LITRES.PNG", logo->contentType};
+    check(package.samePart(shouted, *cover), "имя части в другом регистре ASCII — та же часть");
+    check(!package.samePart(shouted, shoutedLogo), "в верхнем регистре разные части — разные");
+}
+
 /// Проверка на одной книге: исключение разбора — её провал, а не конец теста.
 template <class Test>
 void guarded(const char* what, const Test& test) {
@@ -265,6 +335,8 @@ int main() {
     guarded("тела сносок", [&] { testNoteBodies(testdata); });
     guarded("байты картинок", [&] { testTakeImageBytes(testdata); });
     guarded("описание", [&] { testTakeDescription(testdata); });
+    guarded("одна ли часть", [&] { testSamePart(testdata); });
+    guarded("обложка", [&] { testCover(testdata); });
 
     std::printf("\n%s\n", failures == 0 ? "OK" : "ЕСТЬ ОШИБКИ");
     return failures;
