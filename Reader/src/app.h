@@ -118,7 +118,7 @@ private:
     detached_task deleteSkin(u16_text name) override;
 
     // SkinWizard::Actions
-    detached_task saveSkin(Skin skin, std::filesystem::path photo) override;
+    detached_task saveSkin(SkinSave save) override;
     detached_task chooseAnotherImage() override;
     detached_task leaveWizard() override;
 
@@ -152,6 +152,15 @@ private:
     /// читателю сказано, что именно не так. Шаг ждёт под токеном сценария,
     /// который его позвал: отменить шаг — дело его владельца.
     wxl::async::task<bool> checkImage(std::filesystem::path image, wxl::async::cancellation_token stop);
+
+    /// Начинает сеанс мастера обложек — дорогу в него (добавить, править,
+    /// другой снимок): прежний сеанс отменён. Отдаёт токен нового — под ним
+    /// дорога ждёт снимка.
+    [[nodiscard]] wxl::async::cancellation_token beginWizardSession();
+
+    /// Кончает сеанс мастера — выход из него и уход с полосы: дорога, которая
+    /// ещё ждёт снимка, мастера не откроет, а показанный скрыт.
+    void endWizardSession();
 
     // ---- отложенные записи ----
 
@@ -265,6 +274,13 @@ private:
     /// отменяет вместе со всеми. Предзагрузка одна на запуск, и источник ей
     /// один.
     wxl::async::cancellation_source preloadStop_{stop_.token()};
+
+    /// Сеанс мастера обложек, дочерний от общего: от начала дороги в мастер до
+    /// выхода из него, ухода с полосы или следующей дороги — каждая заводит
+    /// свой (beginWizardSession), а отменяет его владелец (endWizardSession и
+    /// следующая дорога). Под ним дорога ждёт снимка; по нему сохранение
+    /// решает, закрывать ли мастер.
+    wxl::async::cancellation_source wizardSession_{stop_.token()};
 
     /// Предзагрузка — задача, которую держит владелец: чтение книги под
     /// кнопкой «Продолжить чтение», начатое при запуске. Её забирает

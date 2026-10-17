@@ -19,6 +19,7 @@ constexpr size_t kLast = static_cast<size_t>(EdgeCurve::kPoints) - 1;
 void SkinEditor::openNew(std::filesystem::path image) {
     image_ = std::move(image);
     skin_ = defaultSkin();
+    pendingTicket_ = 0;
     name.set({});
     shownPreview_.set(SkinPreview{skin_, image_});
 }
@@ -26,6 +27,7 @@ void SkinEditor::openNew(std::filesystem::path image) {
 void SkinEditor::openEdit(const Skin& skin, std::filesystem::path image) {
     image_ = std::move(image);
     skin_ = skin;
+    pendingTicket_ = 0;
 
     // Системную правят «на основе», а не поверх: записать поверх нечего — в
     // реестре её нет, она часть программы, и удалить такую запись потом было
@@ -50,6 +52,7 @@ void SkinEditor::drop() {
 }
 
 void SkinEditor::close() {
+    pendingTicket_ = 0;
     shownPreview_.set(std::nullopt);
 }
 
@@ -130,6 +133,25 @@ std::optional<Skin> SkinEditor::result() const {
     Skin saved = skin_;
     saved.name = name.get();
     return saved;
+}
+
+SkinSave SkinEditor::beginSave() {
+    // Каждое из трёх — сбой того, кто просит: мастер спрашивает saving() и
+    // nameOk() раньше, а закрытый мастер сохранить не просит. Начать всё равно
+    // значило бы записать вторую копию или безымянную обложку.
+    if (!shownPreview_.get()) wxl::core::abort("SkinEditor::beginSave: правка закрыта");
+    if (saving()) wxl::core::abort("SkinEditor::beginSave: сохранение уже идёт");
+    std::optional<Skin> savedSkin = needsName() ? result() : std::optional<Skin>{skin_};
+    if (!savedSkin) wxl::core::abort("SkinEditor::beginSave: имя не годится");
+
+    pendingTicket_ = ++lastTicket_;
+    return SkinSave{std::move(*savedSkin), image_, pendingTicket_};
+}
+
+bool SkinEditor::saveEnded(uint64_t ticket) {
+    if (ticket != pendingTicket_) return false;
+    pendingTicket_ = 0;
+    return true;
 }
 
 }  // namespace bukvitsa::reader

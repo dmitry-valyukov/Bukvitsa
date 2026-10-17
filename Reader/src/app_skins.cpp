@@ -25,17 +25,26 @@ using wxl::async::last_error;
 //
 // Новая обложка, правка существующей и другой снимок под открытым мастером —
 // у каждой своя корутина над общим шагом checkImage: снимок проверяется до
-// мастера, а мастеру достаётся путь уже проверенного. Шаг ждёт под токеном
-// своего сценария. Предпросмотр мастер включает сам — открытием правки
-// (preview).
+// мастера, а мастеру достаётся путь уже проверенного. Предпросмотр мастер
+// включает сам — открытием правки (preview).
+//
+// Каждая дорога начинает сеанс мастера (beginWizardSession) и ждёт снимка под
+// его токеном: следующая дорога, выход из мастера и уход с полосы сеанс
+// отменяют, и снимок, который ещё читается, мастера уже не откроет. Снимок,
+// прочитанный раньше отмены, — ответ, как у вопроса об удалении (deleteSkin),
+// поэтому после ожидания сеанс спрашивается ещё раз. Иначе другой снимок
+// открыл бы правку под скрытым мастером — полоса осталась бы в предпросмотре,
+// и скрытие его уже не сняло бы, — а новая обложка встала бы поверх полки или
+// заставки, где с открытым мастером клавиши экранов молчат.
 
 detached_task App::addSkin() {
-    auto const stop = cancellation_source{stop_.token()};
+    const cancellation_token session = beginWizardSession();
 
     const std::filesystem::path path = askForImage(window_.handle());
     if (path.empty()) co_return;
 
-    if (!co_await checkImage(path, stop.token())) co_return;
+    if (!co_await checkImage(path, session)) co_return;
+    if (session.is_canceled()) co_return;
 
     wizard_.openNew(path);
     panel_.close();
@@ -46,7 +55,7 @@ detached_task App::addSkin() {
 /// По полному списку тем, а не по реестру: системные обложки живут только в
 /// нём, а шестерёнка есть и у них — правка «на основе».
 detached_task App::editSkin(u16_text name) {
-    auto const stop = cancellation_source{stop_.token()};
+    const cancellation_token session = beginWizardSession();
 
     const std::optional<int> index = themes_.indexOfSkin(name);
     const Skin* known = index ? themes_.skinAt(*index) : nullptr;
@@ -57,7 +66,8 @@ detached_task App::editSkin(u16_text name) {
     const Skin skin = *known;
     const std::filesystem::path image = ws_.skinImagePath(skin);
 
-    if (!co_await checkImage(image, stop.token())) co_return;
+    if (!co_await checkImage(image, session)) co_return;
+    if (session.is_canceled()) co_return;
 
     wizard_.openEdit(skin, image);
     panel_.close();
@@ -66,16 +76,30 @@ detached_task App::editSkin(u16_text name) {
 }
 
 detached_task App::chooseAnotherImage() {
-    auto const stop = cancellation_source{stop_.token()};
+    const cancellation_token session = beginWizardSession();
 
     const std::filesystem::path path = askForImage(window_.handle());
 
     // Отказался — остаёмся на прежнем снимке: читатель ничего не терял.
     if (path.empty()) co_return;
 
-    if (!co_await checkImage(path, stop.token())) co_return;
+    if (!co_await checkImage(path, session)) co_return;
+    if (session.is_canceled()) co_return;
 
     wizard_.openNew(path);
+}
+
+cancellation_token App::beginWizardSession() {
+    wizardSession_.cancel();
+    wizardSession_ = cancellation_source{stop_.token()};
+    return wizardSession_.token();
+}
+
+// Предпросмотр снимает и подложку темы приносит слушатель (preview): скрытие
+// мастера опустошает то, что тот показывает полосе.
+void App::endWizardSession() {
+    wizardSession_.cancel();
+    wizard_.hide();
 }
 
 /// Читает файл и пробует раскодировать его как картинку. Нет — читателю
@@ -107,10 +131,8 @@ wxl::async::task<bool> App::checkImage(std::filesystem::path image, cancellation
     co_return false;
 }
 
-// Предпросмотр снимает и подложку темы приносит слушатель (preview): скрытие
-// мастера опустошает то, что тот показывает полосе.
 detached_task App::leaveWizard() {
-    wizard_.hide();
+    endWizardSession();
     view_.root().focus(FocusState::Programmatic);
     co_return;
 }
@@ -121,17 +143,36 @@ detached_task App::leaveWizard() {
 /// тут же становится текущей темой. Отмена кончает сценарий, только пока
 /// рабочее место не начало писать: тогда не записано ничего и применять
 /// нечего; начатое сохранение доходит до конца и применяется.
-detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
+///
+/// Запись — под своим источником от общего, а не под сеансом мастера: выход
+/// сразу после «Сохранить» кончает сеанс, но молча не записать то, что
+/// читатель попросил записать, было бы маскировкой. От сеанса зависит только
+/// конец: список тем меняется всегда — реестр уже другой, — а мастер
+/// закрывается, только пока открыта та же правка и жив сеанс, в котором
+/// сохранить попросили. Правка другая — пока писалось, другой снимок открыл
+/// новую, — или сеанс кончился — читатель вышел, ушёл с полосы или пошёл в
+/// мастер другой дорогой, — и закрывать мастер этому сценарию уже не по праву.
+detached_task App::saveSkin(SkinSave save) {
     auto const stop = cancellation_source{stop_.token()};
+    const cancellation_token askedSession = wizardSession_.token();
 
-    const u16_text skinName = skin.name;
+    const u16_text skinName = save.skin.name;
 
+    // Конец мастеру говорится всегда — удачный, отказ и всякое другое
+    // исключение, уходящее дальше (отмена кончает сценарий, сбой идёт в
+    // обработчик сбоев сценариев): по номеру мастер сам решит, его ли это
+    // сохранение, а конец снова разрешает сохранять.
     try {
-        co_await ws_.saveSkin(std::move(skin), photo, stop.token());
+        co_await ws_.saveSkin(std::move(save.skin), save.photo, stop.token());
     } catch (const last_error& failure) {
-        notices_.post(noticeOf(L"Не удалось сохранить обложку", photo.wstring(), failure));
+        static_cast<void>(wizard_.saveEnded(save.ticket));
+        notices_.post(noticeOf(L"Не удалось сохранить обложку", save.photo.wstring(), failure));
         co_return;
+    } catch (...) {
+        static_cast<void>(wizard_.saveEnded(save.ticket));
+        throw;
     }
+    const bool sameEdit = wizard_.saveEnded(save.ticket);
 
     themes_.setSkins(ws_.skins.list());
 
@@ -142,7 +183,7 @@ detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
     // (themeChanged): смена темы здесь ничем не отличается от смены клавишей T.
     applySkins(themes_.afterSave(skinName, presenter_.theme().get()));
 
-    leaveWizard();
+    if (sameEdit && !askedSession.is_canceled()) leaveWizard();
 }
 
 /// Убрать обложку из реестра и из полосы тем.
@@ -159,6 +200,11 @@ detached_task App::saveSkin(Skin skin, std::filesystem::path photo) {
 /// Удалили ту, что была на экране, — читатель возвращается на встроенную
 /// тему, номер которой читалка держит в настройках ровно на этот случай.
 detached_task App::deleteSkin(u16_text name) {
+    // Дорога в мастер, начатая раньше вопроса, уже не откроет, что бы читатель
+    // ни ответил: открылась бы правка обложки, которую удаляют, и её
+    // сохранение вернуло бы удалённую в реестр.
+    wizardSession_.cancel();
+
     auto const stop = cancellation_source{stop_.token()};
 
     if (!ws_.skins.find(name)) co_return;   // реестр успел перемениться под руками

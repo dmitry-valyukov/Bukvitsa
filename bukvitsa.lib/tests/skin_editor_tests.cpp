@@ -1,6 +1,7 @@
 // Тесты модели правки обложки: попадание в кружочек, перенос точки между
-// соседками, точка корешка, начало правки, имя и то, что полоса показывает под
-// мастером. Всё, что мастер решает, не глядя на экран, — без окна и указателя.
+// соседками, точка корешка, начало правки, имя, то, что полоса показывает под
+// мастером, и сохранение одно за раз. Всё, что мастер решает, не глядя на
+// экран, — без окна и указателя.
 
 #include <cmath>
 #include <cstdio>
@@ -417,6 +418,78 @@ void testPreviewTellsDrop() {
     check(toldAtOpen == 3 && told.size() == toldAtOpen, "отвергнутый перенос отпустили — не сказано");
 }
 
+/// Сохранение — одно за раз: пока отданное не кончилось, второе не начинается.
+/// Конец — по номеру: конец сохранения прежнего открытия, пришедший после
+/// нового открытия или закрытия, нынешнего не трогает.
+void testSaveOneAtATime() {
+    std::printf("\n=== правка обложки: сохранение одно за раз ===\n");
+
+    SkinEditor editor;
+    auto const photo = std::filesystem::path{L"a.jpg"};
+
+    editor.openNew(photo);
+    editor.name.set(u16_text{u"Осень"});
+    check(!editor.saving(), "открыта — сохранение не идёт");
+
+    const SkinSave firstSave = editor.beginSave();
+    check(firstSave.skin.name.plain() == u"Осень" && firstSave.photo == photo && editor.saving(),
+          "новая: под набранным именем и с выбранного снимка, и оно идёт");
+    check(editor.skin().name.empty() && editor.needsName(),
+          "сама правка имени не получает: отказ записи спросит его снова");
+
+    check(editor.saveEnded(firstSave.ticket) && !editor.saving(),
+          "кончилось нынешнее — сказано, что нынешнее, и можно снова");
+
+    const SkinSave secondSave = editor.beginSave();
+    check(secondSave.ticket != firstSave.ticket && editor.saving(), "второе — со своим номером");
+    check(!editor.saveEnded(firstSave.ticket) && editor.saving(),
+          "конец первого — не нынешнего: сказано, и второе идёт");
+    check(editor.saveEnded(secondSave.ticket) && !editor.saving(),
+          "конец второго — нынешнего — кончает");
+
+    Skin own = defaultSkin();
+    own.name = u16_text{u"Alpha"};
+    own.image = u16_text{u"alpha.png"};
+    own.top.y[2] = 0.1f;
+    auto const ownPhoto = std::filesystem::path{L"skins/alpha.png"};
+    const SkinSave thirdSave = editor.beginSave();
+    editor.openEdit(own, ownPhoto);
+    check(!editor.saving(), "правка другой забывает идущее сохранение");
+    const SkinSave ownSave = editor.beginSave();
+    check(ownSave.skin == own && ownSave.photo == ownPhoto,
+          "своя: как есть, под своим именем, без вопроса");
+    check(!editor.saveEnded(thirdSave.ticket) && editor.saving(),
+          "конец сохранения новой — не нынешнего — сохранение своей не кончает");
+
+    // Сохранение своей идёт, а читатель взял другой снимок: новая — другая
+    // правка, её можно сохранять, а конец прежнего её не касается.
+    editor.openNew(photo);
+    check(!editor.saving(), "новое открытие забывает идущее сохранение");
+    editor.name.set(u16_text{u"Зима"});
+    const SkinSave newSave = editor.beginSave();
+    check(!editor.saveEnded(ownSave.ticket) && editor.saving(),
+          "конец сохранения прежнего открытия — не нынешней правки, и нынешнее идёт");
+    check(editor.saveEnded(newSave.ticket) && !editor.saving(), "конец своего — кончает");
+
+    const SkinSave closedSave = editor.beginSave();
+    editor.close();
+    check(!editor.saving(), "закрытие забывает идущее сохранение");
+    editor.openNew(photo);
+    editor.name.set(u16_text{u"Весна"});
+    const SkinSave reopenedSave = editor.beginSave();
+    check(!editor.saveEnded(closedSave.ticket) && editor.saving() &&
+              reopenedSave.ticket != closedSave.ticket,
+          "конец сохранения до закрытия новое после открытия не кончает");
+
+    // Сохранение своей идёт, другой снимок открыл новую, и тогда запись
+    // кончилась: правка уже другая, и закрывать мастер по этому концу нельзя.
+    editor.openEdit(own, ownPhoto);
+    const SkinSave lateSave = editor.beginSave();
+    editor.openNew(photo);
+    check(!editor.saveEnded(lateSave.ticket) && !editor.saving(),
+          "позднее сохранение своей после другого снимка — не нынешней правки");
+}
+
 }  // namespace
 
 void runSkinEditorTests() {
@@ -430,4 +503,5 @@ void runSkinEditorTests() {
     testPreviewTellsAnotherImage();
     testPreviewReopensEdit();
     testPreviewTellsDrop();
+    testSaveOneAtATime();
 }
