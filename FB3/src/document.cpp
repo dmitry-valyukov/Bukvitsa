@@ -80,14 +80,46 @@ bool holdsInlineContent(NodeKind kind) {
 
 /* ------------------------------------------------------------------ */
 
+namespace {
+
+/// Запись конца центрального каталога zip — 22 байта с сигнатурой `PK\5\6`;
+/// за ней только комментарий архива, не длиннее 65 535 байт.
+constexpr std::size_t kEndRecordBytes = 22;
+constexpr std::size_t kMaxCommentBytes = 65535;
+
+/// Байты говорят, zip ли это, раньше Packaging API, и только то, что они
+/// говорят наверняка. Короче записи конца каталога или не с заголовка части
+/// `PK\3\4` — не zip, а значит, не книга FB3: о таком файле молчать вправе.
+/// Начало zip есть, а записи конца каталога в последних 22 + 65 535 байтах нет,
+/// — архив обрезан или испорчен (хвост за концом каталога длиннее, чем бывает
+/// комментарий), то есть это испорченная книга, а не чужой файл: отказ
+/// разбора. Ответу Packaging API «не zip» здесь не доверить: код его отказа
+/// не говорит, о файле ли он, а на крошечный файл ему мог бы отказать и наш
+/// поток из байтов — перемоткой назад от начала (STG_E_INVALIDFUNCTION).
+/// Длины здесь — только от размера байтов: из файла не берётся ни одна.
+void refuseNonZip(std::string_view bytes) {
+    if (bytes.size() < kEndRecordBytes || !bytes.starts_with("PK\x03\x04"))
+        throw NotFb3Book("FB3: это не zip — не книга FB3");
+
+    const std::size_t tail = std::min(bytes.size(), kEndRecordBytes + kMaxCommentBytes);
+    if (bytes.substr(bytes.size() - tail).find("PK\x05\x06") == std::string_view::npos)
+        throw std::runtime_error("FB3: нет конца каталога zip (архив обрезан или испорчен)");
+}
+
+/// Пакет из байтов файла — когда сами байты не сказали «не zip».
+OpcPackage packageOf(const std::string& bytes) {
+    refuseNonZip(bytes);
+    return OpcPackage(std::span(reinterpret_cast<const std::byte*>(bytes.data()), bytes.size()));
+}
+
+}  // namespace
+
 struct Document::Impl {
     explicit Impl(const std::filesystem::path& path) : package(path) {}
 
     /// Байты книги переезжают сюда и живут дольше пакета: он читает части по
     /// требованию и смотрит в них до самого конца.
-    explicit Impl(std::string&& fileBytes)
-        : bytes(std::move(fileBytes)),
-          package(std::span(reinterpret_cast<const std::byte*>(bytes.data()), bytes.size())) {}
+    explicit Impl(std::string&& fileBytes) : bytes(std::move(fileBytes)), package(packageOf(bytes)) {}
 
     std::string bytes;
 
@@ -460,9 +492,16 @@ Document::Document(std::string fileBytes) : impl_(std::make_unique<Impl>(std::mo
 void Document::parse() {
     // 1. Точка входа пакета: связь Book ведёт к метаданным, от них связь
     //    body — к тексту. Пути не угадываются нигде.
+    //    Связи Book нет вовсе, а пакет и его связи прочитаны чисто (иначе
+    //    отказ пакета пришёл бы раньше) — это наверняка не книга FB3. Связь
+    //    есть, но ведёт наружу или к части, которой нет, — книга FB3, которая
+    //    не разобралась, и молчать о ней нельзя.
     auto description = impl_->package.partByPackageRelationship(kRelBook);
-    if (!description)
-        throw std::runtime_error("FB3: в пакете нет связи Book — это не книга FB3");
+    if (!description) {
+        if (!impl_->package.hasRelationship(PackagePart{}, kRelBook))
+            throw NotFb3Book("FB3: в пакете нет связи Book — это не книга FB3");
+        throw std::runtime_error("FB3: связь Book ведёт не к части пакета — наружу или к части, которой нет");
+    }
 
     impl_->descriptionPart = std::move(*description);
 

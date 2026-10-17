@@ -95,20 +95,25 @@ inline std::string relationships(std::string_view items) {
 inline const std::string kBookRelationship = relationships(
     R"(<Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/Book" Target="fb3/description.xml"/>)");
 
-/// Книга FB3 из частей пробы: тело — всегда, связи пакета — по умолчанию связь
-/// Book, связи тела и прочие части (картинки) — если есть. Описание и его связь
-/// с телом — минимум формата. Пустые связи тела — файла связей у тела нет вовсе.
+/// Типы содержимого пакета книги FB3: связи, XML, png, описание и тело.
+inline constexpr std::string_view kContentTypes =
+    R"(<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/fb3/description.xml" ContentType="application/fb3-description+xml"/><Override PartName="/fb3/body.xml" ContentType="application/fb3-body+xml"/></Types>)";
+
+/// Книга FB3 из частей пробы: тело — всегда, типы содержимого и связи пакета —
+/// по умолчанию те, что у книги, связи тела и прочие части (картинки) — если
+/// есть. Описание и его связь с телом — минимум формата. Пустые связи тела —
+/// файла связей у тела нет вовсе.
 struct BookPackage {
     std::string_view body{};
     std::string_view packageRelationships = kBookRelationship;
     std::string_view bodyRelationships{};
     std::span<const PartBytes> otherParts{};
+    std::string_view contentTypes = kContentTypes;
 };
 
 inline std::string fb3Package(const BookPackage& book) {
     std::vector<PartBytes> parts = {
-        {"[Content_Types].xml",
-         R"(<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/fb3/description.xml" ContentType="application/fb3-description+xml"/><Override PartName="/fb3/body.xml" ContentType="application/fb3-body+xml"/></Types>)"},
+        {"[Content_Types].xml", book.contentTypes},
         {"_rels/.rels", book.packageRelationships},
         {"fb3/description.xml",
          R"(<?xml version="1.0" encoding="UTF-8"?><fb3-description xmlns="http://www.fictionbook.org/FictionBook3/description" id="00000000-0000-0000-0000-000000000001" version="1.0"><title><main>Проба</main></title></fb3-description>)"},

@@ -401,6 +401,19 @@ std::optional<PackagePart> OpcPackage::partByRelationshipId(const PackagePart& s
     return impl_->resolve(relationship.get());
 }
 
+bool OpcPackage::hasRelationship(const PackagePart& source, std::wstring_view relationshipType) const {
+    ComPtr<IOpcRelationshipSet> set = impl_->relationshipsOf(source.name.empty() ? nullptr : &source);
+    if (!set) return false;
+
+    ComPtr<IOpcRelationshipEnumerator> enumerator;
+    check(set->GetEnumeratorForType(std::wstring(relationshipType).c_str(), enumerator.put()),
+          "OPC: связи не перечисляются");
+
+    BOOL has = FALSE;
+    check(enumerator->MoveNext(&has), "OPC: связи не перечисляются");
+    return has != FALSE;
+}
+
 std::vector<std::pair<wxl::core::u8_text, PackagePart>> OpcPackage::relationshipsOfType(
     const PackagePart& source, std::wstring_view relationshipType) const {
     std::vector<std::pair<wxl::core::u8_text, PackagePart>> found;
