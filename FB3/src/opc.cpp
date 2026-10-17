@@ -200,8 +200,9 @@ private:
 /// тем или другим, продолжить нечем.
 ///
 /// HRESULT — в самом тексте, как у остановок вёрстки: для кодов Packaging API
-/// (FACILITY_OPC) системного сообщения может не найтись, и по одним словам
-/// системы не узнать, что отказало.
+/// (FACILITY_OPC) слов у системы нет — за кодом в what() идёт «unknown error»,
+/// — и без кода не узнать, что отказало. Слова эти — честный ответ системы, и
+/// показываются они, как у прочих сбоев без слов (reasonOf у bukvitsa.lib).
 void check(HRESULT hr, const char* what) {
     if (FAILED(hr))
         throw std::system_error(hr, std::system_category(),
@@ -278,8 +279,12 @@ struct OpcPackage::Impl {
         ComPtr<IUri> target;
         check(relationship->GetTargetUri(target.put()), "OPC: у связи не узнать цель");
 
-        // Цель внутренней связи обязана быть именем части: не собралась в
-        // имя — испорчен файл связей, а не «части нет».
+        // Имя части из цели собирает сам Packaging API. Отказ — испорченная
+        // цель: у абсолютного адреса внутренней связи имени части нет
+        // (OPC_E_RELATIVE_URI_REQUIRED), и это отказ разбора. Цель с косой
+        // чертой в конце он не отвергает, а собирает без неё («img/» от
+        // /fb3/body.xml — /fb3/img): такого имени среди частей нет, и это
+        // «части нет» у partAt, как у всякой связи к отсутствующей части.
         ComPtr<IOpcPartUri> combined;
         check(source->CombinePartUri(target.get(), combined.put()), "OPC: цель связи — не имя части");
 
