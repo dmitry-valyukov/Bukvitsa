@@ -83,6 +83,11 @@ public:
     std::optional<PackagePart> partByRelationshipId(const PackagePart& source,
                                                     wxl::core::u8_view relationshipId) const;
 
+    /// Есть ли от части связь такого типа — к части, наружу или к части,
+    /// которой нет: связь, которая ни к чему не привела, и связи нет вовсе — не
+    /// одно и то же.
+    bool hasRelationship(const PackagePart& source, std::wstring_view relationshipType) const;
+
     /// Все связи заданного типа от части — например, все картинки тела.
     std::vector<std::pair<wxl::core::u8_text, PackagePart>> relationshipsOfType(
         const PackagePart& source, std::wstring_view relationshipType) const;

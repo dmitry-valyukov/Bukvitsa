@@ -1731,28 +1731,52 @@ std::string withBrokenPart(std::string bytes, std::string_view name) {
     return {};
 }
 
-/// Обложка, которая не прочиталась из пакета, — книга в непрочитанных обхода с
-/// путём и причиной, где есть код отказа, а обход идёт дальше: соседняя книга
-/// встаёт на полку. Разбор такую книгу принимает — байтов картинок он не читает.
-void testWorkspaceScanNamesBrokenCover() {
-    std::printf("\n=== рабочее место: обложка не прочиталась ===\n");
+/// Книга FB3, которая не разобралась или чья обложка не прочиталась из пакета,
+/// — в непрочитанных обхода с путём и причиной, а обход идёт дальше: соседняя
+/// книга встаёт на полку. Чужой файл с расширением .fb3 — не zip —
+/// пропускается молча. Обложку разбор принимает — байтов картинок он не читает,
+/// — сжатые связи тела читает на шаге картинок, связи пакета — на шаге связи
+/// Book, а обрезанной книге, у которой нет конца каталога zip, отказывает
+/// раньше Packaging API.
+void testWorkspaceScanNamesBrokenBooks() {
+    std::printf("\n=== рабочее место: битые книги в обходе ===\n");
 
-    Sandbox box("broken-cover");
+    Sandbox box("broken-books");
     Workspace ws(box.root, never);
 
     // Обложка романа — его миниатюра fb3/img/cover.jpg, она же img1 тела.
-    const std::string broken = withBrokenPart(onDisk(kBook), "fb3/img/cover.jpg");
-    check(!broken.empty(), "сжатая часть обложки романа найдена и испорчена");
+    const std::string brokenCover = withBrokenPart(onDisk(kBook), "fb3/img/cover.jpg");
+    const std::string brokenRelationships = withBrokenPart(onDisk(kBook), "fb3/_rels/body.xml.rels");
+    const std::string brokenPackageRelationships = withBrokenPart(onDisk(kBook), "_rels/.rels");
+    check(!brokenCover.empty() && !brokenRelationships.empty() && !brokenPackageRelationships.empty(),
+          "сжатые обложка, связи тела и связи пакета романа найдены и испорчены");
+    const std::string novel = onDisk(kBook);
 
     const std::filesystem::path folder = shelfOf(box, {kOtherBook});
-    putOnDisk(folder / L"broken-cover.fb3", broken);
+    putOnDisk(folder / L"broken-cover.fb3", brokenCover);
+    putOnDisk(folder / L"broken-rels.fb3", brokenRelationships);
+    putOnDisk(folder / L"broken-package-rels.fb3", brokenPackageRelationships);
+    putOnDisk(folder / L"truncated.fb3", novel.substr(0, novel.size() / 2));
+    putOnDisk(folder / L"text.fb3", "Это текст, а не книга, хоть и назван .fb3: ни zip, ни пакета OPC в нём нет.");
 
     const Scanned report = scanned(ws, ws.addFolder(folder, never));
-    check(report.listed == 2 && report.queued == 1 && report.refused.empty() && ws.library.cards().size() == 1,
-          "обход идёт дальше: соседняя книга на полке, книга с битой обложкой в очередь не встала");
-    check(report.unread.size() == 1 && holds(report.unread[0], L"broken-cover.fb3 — ") &&
-              holds(report.unread[0], L"HRESULT 0x"),
+    check(report.listed == 6 && report.queued == 1 && report.refused.empty() && ws.library.cards().size() == 1,
+          "обход идёт дальше: соседняя книга на полке, битые и чужой файл в очередь не встали");
+
+    const auto lineAbout = [&report](std::wstring_view file, std::wstring_view reason) {
+        return std::ranges::count_if(report.unread, [file, reason](const std::wstring& line) {
+            return holds(line, std::wstring(file) + L" — ") && holds(line, reason);
+        });
+    };
+    check(report.unread.size() == 4 && lineAbout(L"broken-cover.fb3", L"HRESULT 0x") == 1,
           "книга с битой обложкой — в непрочитанных, с путём и кодом отказа");
+    check(lineAbout(L"broken-rels.fb3", L"HRESULT 0x") == 1,
+          "книга с битыми связями тела — в непрочитанных, с путём и кодом");
+    check(lineAbout(L"broken-package-rels.fb3", L"HRESULT 0x") == 1,
+          "книга с битыми связями пакета — в непрочитанных, с путём и кодом, а не молча");
+    check(lineAbout(L"truncated.fb3", L"нет конца каталога zip") == 1,
+          "обрезанная книга — в непрочитанных: нет конца каталога zip");
+    check(lineAbout(L"text.fb3", L"") == 0, "чужой файл .fb3 — молча");
 }
 
 /// Наблюдаемый каталог: у книг добавленного — каталог и время правки из
@@ -3194,7 +3218,7 @@ int main(int argc, char* argv[]) {
     testWorkspaceKeepsLastBookGuid();
     testWorkspaceOpensBook();
     testWorkspaceAddsFolder();
-    testWorkspaceScanNamesBrokenCover();
+    testWorkspaceScanNamesBrokenBooks();
     testWorkspaceRescansFolders();
     testWorkspaceCoverBeforeCard();
     testWorkspaceReadsLibraryV1();

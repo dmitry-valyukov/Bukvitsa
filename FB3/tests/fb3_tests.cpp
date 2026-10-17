@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -302,16 +304,40 @@ void testSamePart(const std::filesystem::path& testdata) {
     check(!package.samePart(shouted, shoutedLogo), "в верхнем регистре разные части — разные");
 }
 
+/// Тело книги пробы: один короткий абзац.
+constexpr std::string_view kProbeBody =
+    R"(<?xml version="1.0" encoding="UTF-8"?><fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" id="00000000-0000-0000-0000-000000000002"><section id="s1"><p>Текст</p></section></fb3-body>)";
+
+/// Часть-картинка книги пробы.
+constexpr PartBytes kProbeImage[] = {{"fb3/img/a.png", "картинка A"}};
+
 /// Книга пробы: короткое тело и часть-картинка fb3/img/a.png; связи пакета и
 /// тела — из пробы.
 std::string bookWith(std::string_view packageRelationships, std::string_view bodyRelationships) {
-    static constexpr PartBytes image[] = {{"fb3/img/a.png", "картинка A"}};
     return fb3Package({
-        .body = R"(<?xml version="1.0" encoding="UTF-8"?><fb3-body xmlns="http://www.fictionbook.org/FictionBook3/body" id="00000000-0000-0000-0000-000000000002"><section id="s1"><p>Текст</p></section></fb3-body>)",
+        .body = kProbeBody,
         .packageRelationships = packageRelationships,
         .bodyRelationships = bodyRelationships,
-        .otherParts = image,
+        .otherParts = kProbeImage,
     });
+}
+
+/// Чем кончился разбор: книга открылась, файл наверняка не книга FB3
+/// (NotFb3Book) — или книгу FB3 разбор не принял (всякий иной отказ).
+enum class Outcome { Opened, NotFb3, Refused };
+
+Outcome outcomeOf(std::string bytes, const char* what) {
+    try {
+        const Document document{std::move(bytes)};
+    } catch (const NotFb3Book& error) {
+        std::printf("  %s: не книга FB3 — %s\n", what, error.what());
+        return Outcome::NotFb3;
+    } catch (const std::exception& error) {
+        std::printf("  %s: отказ разбора — %s\n", what, error.what());
+        return Outcome::Refused;
+    }
+    std::printf("  %s: книга открылась\n", what);
+    return Outcome::Opened;
 }
 
 /// Книга не открылась отказом пакета — std::system_error, как у readPart, — а
@@ -411,6 +437,73 @@ void testPackageRefusals() {
           "повтор Id (первая связь к отсутствующей части) — отказ пакета OPC_E_DUPLICATE_RELATIONSHIP");
 }
 
+/// Молчать вправе только о том, что наверняка не книга FB3: байты не zip
+/// (короче записи конца каталога или не с заголовка части PK\3\4) или пакет,
+/// прочитанный чисто, без связи Book. Обрезанный архив, испорченные
+/// [Content_Types].xml и _rels/.rels, связь Book к части, которой нет, — книга
+/// FB3, которая не разобралась. Подпись zip проверяется до Packaging API — и
+/// книги testdata, и пакет storedZip она принимает.
+void testNotFb3Boundary(const std::filesystem::path& testdata) {
+    std::printf("\n=== не книга FB3 — только наверняка ===\n");
+
+    const std::string book = bookWith(kBookRelationship, "");
+    check(outcomeOf(book, "пакет storedZip") == Outcome::Opened, "пакет storedZip подпись zip принимает: книга");
+
+    bool allBooks = true;
+    for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3", "hardcore_file_structure.fb3",
+                             "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3"}) {
+        std::ifstream in(testdata / name, std::ios::binary);
+        std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        allBooks = !bytes.empty() && outcomeOf(std::move(bytes), name) == Outcome::Opened && allBooks;
+    }
+    check(allBooks, "четыре книги testdata из байтов — книги: подпись zip их принимает");
+
+    check(outcomeOf("", "0 байт") == Outcome::NotFb3, "0 байт — не zip, не книга FB3");
+    check(outcomeOf("PK\x03", "3 байта") == Outcome::NotFb3, "3 байта — не zip, не книга FB3");
+    check(outcomeOf(std::string("PK\x03\x04") + std::string(17, 'x'), "21 байт") == Outcome::NotFb3,
+          "21 байт с началом zip — короче записи конца каталога: не zip, не книга FB3");
+    check(outcomeOf("Это текст, а не книга, хоть и назван .fb3: ни zip, ни пакета OPC в нём нет.", "текст") ==
+              Outcome::NotFb3,
+          "текст — не zip, не книга FB3");
+
+    check(outcomeOf(book.substr(0, book.size() / 2), "обрезанный zip") == Outcome::Refused,
+          "обрезанный zip (начало есть, записи конца каталога нет) — книга, которая не разобралась");
+
+    // Края подписи. Запись конца каталога с комментарием в 65 535 байт стоит
+    // ровно на самом раннем месте, где её ищут, — книга. Начало «PK», но не
+    // заголовок части — не zip, сколько бы байтов ни было. Ровно 22 байта с
+    // началом zip и без записи конца каталога — уже не «короче записи», а zip
+    // без конца каталога: отказ разбора.
+    std::string longComment = book;
+    longComment[longComment.size() - 2] = '\xFF';
+    longComment[longComment.size() - 1] = '\xFF';
+    longComment += std::string(65535, 'c');
+    check(outcomeOf(std::move(longComment), "комментарий архива в 65 535 байт") == Outcome::Opened,
+          "конец каталога на самом раннем месте (комментарий 65 535 байт) — книга");
+    check(outcomeOf("PKxx — начало как у zip, но не заголовок части", "PKxx") == Outcome::NotFb3,
+          "начало «PK», но не PK\\3\\4 — не zip, не книга FB3");
+    check(outcomeOf(std::string("PK\x03\x04") + std::string(18, 'x'), "22 байта") == Outcome::Refused,
+          "ровно 22 байта с началом zip без конца каталога — книга, которая не разобралась");
+    check(outcomeOf(fb3Package({.body = kProbeBody, .contentTypes = "<Types"}), "типы содержимого не XML") ==
+              Outcome::Refused,
+          "[Content_Types].xml не XML — книга, которая не разобралась");
+    check(outcomeOf(bookWith("<Relationships", ""), "связи пакета не XML") == Outcome::Refused,
+          "_rels/.rels не XML — книга, которая не разобралась, а не «не книга»");
+
+    check(outcomeOf(bookWith(relationships(""), ""), "без связи Book") == Outcome::NotFb3,
+          "пакет прочитан чисто, связи Book нет — не книга FB3");
+    check(outcomeOf(bookWith(relationships(
+                        R"(<Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/Book" Target="fb3/nope.xml"/>)"),
+                        ""),
+                    "связь Book к части, которой нет") == Outcome::Refused,
+          "связь Book к части, которой нет, — книга, которая не разобралась");
+    check(outcomeOf(bookWith(relationships(
+                        R"(<Relationship Id="rId1" Type="http://www.fictionbook.org/FictionBook3/relationships/Book" Target="http://example.com/d.xml" TargetMode="External"/>)"),
+                        ""),
+                    "связь Book наружу") == Outcome::Refused,
+          "связь Book наружу — книга, которая не разобралась");
+}
+
 /// Проверка на одной книге: исключение разбора — её провал, а не конец теста.
 template <class Test>
 void guarded(const char* what, const Test& test) {
@@ -455,6 +548,7 @@ int main() {
     guarded("одна ли часть", [&] { testSamePart(testdata); });
     guarded("обложка", [&] { testCover(testdata); });
     guarded("отказы пакета", [&] { testPackageRefusals(); });
+    guarded("не книга FB3", [&] { testNotFb3Boundary(testdata); });
 
     std::printf("\n%s\n", failures == 0 ? "OK" : "ЕСТЬ ОШИБКИ");
     return failures;
