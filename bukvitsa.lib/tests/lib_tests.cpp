@@ -3297,13 +3297,14 @@ void runSkinEditorTests();
 // Мелкие куски модели, вынесенные из экранов (pieces_tests.cpp).
 void runPiecesTests();
 // Слои модели своими файлами: карта клавиш, список тем, поиск по книге, места
-// открытой книги, файл настроек, полосы длинной сноски.
+// открытой книги, файл настроек, полосы длинной сноски, мера всплывашки.
 void runKeyMapTests();
 void runThemeListTests();
 void runBookSearchTests();
 void runBookPlacesTests();
 void runSettingsTests();
 void runNoteBandsTests();
+void runNoteFrameTests();
 // Пробы слоёв модели — каждая в своём файле.
 void runPageFlowTests();
 void runChapterTailTests();
@@ -3338,6 +3339,7 @@ int main(int argc, char* argv[]) {
     runBookPlacesTests();
     runSettingsTests();
     runNoteBandsTests();
+    runNoteFrameTests();
 
     // Петля операций wxl — одна на процесс, как у тестов самой wxl: её каналы
     // живут столько же, сколько процесс, и второй раз не стартуют. COM — для

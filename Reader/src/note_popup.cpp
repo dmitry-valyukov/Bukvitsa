@@ -9,6 +9,7 @@
 
 #include "Bind.h"
 
+#include "bukvitsa/reader/note_frame.h"
 #include "bukvitsa/typography/glyph_painter.h"
 #include "bukvitsa/typography/system_failure.h"
 
@@ -18,8 +19,6 @@ using namespace wxl;
 
 namespace {
 
-constexpr float kPadding = 16.0f;
-constexpr float kBorder = 1.0f;
 constexpr float kCorner = 10.0f;
 constexpr float kMaxWidth = 460.0f;
 constexpr float kGapFromAnchor = 10.0f;
@@ -31,7 +30,7 @@ constexpr float kMaxHeightShare = 0.55f;
 
 /// Высота полосы, которую рисует один вызов поверхности: 1024 пикселя — не
 /// выше предела любого устройства (2045 на уровне 9_1), так что предел её не
-/// режет, а полоса во всю ширину сноски при масштабе 1,5 (642 пикселя) — 2,6 МБ.
+/// режет, а полоса во всю ширину сноски при масштабе 1,5 (686 пикселей) — 2,8 МБ.
 constexpr int32_t kBandPixels = 1024;
 
 /// Место прокрутки в DIP — в пиксели поверхности, вниз: верх окна не должен
@@ -58,9 +57,10 @@ NotePopup::NotePopup(const Compositor& compositor)
     : compositor_(compositor), sprite_(compositor_.createSpriteVisual()), deviceWatch_(compositor_, *this) {
     using namespace wxl::dsl;
 
-    // Подложка ростом с текст сноски: она внутри прокрутки, и её высота — это
-    // высота сноски. Сам текст живёт на поверхности композитора, привязанной
-    // к этому элементу, поэтому прокрутка двигает его вместе с ним.
+    // Подложка ростом с текст сноски и полем над ним и под ним: она внутри
+    // прокрутки, и её высота — это высота сноски. Сам текст живёт на
+    // поверхности композитора, привязанной к этому элементу, поэтому прокрутка
+    // двигает его вместе с ним.
     ElementCompositionPreview::setElementChildVisual(paper_, sprite_);
 
     Apply {
@@ -69,8 +69,10 @@ NotePopup::NotePopup(const Compositor& compositor)
         vAlign.top,
         visibility = Visibility::Collapsed,
         CornerRadius{kCorner},
-        BorderThickness{kBorder},
-        Padding{kPadding},
+        // Поля у рамки нет: поле вокруг тела — внутри окна прокрутки, на
+        // поверхности (note_frame.h). Окно режет всё, что за его краем, и срез
+        // приходится на край поля, а не на край колонки.
+        BorderThickness{kNoteBorder},
 
         // Сноска — не страница: нажатие и колесо по ней здесь и кончаются, как
         // у ящиков панели. Всплыв к полосе, нажатие ушло бы ведущему щелчком
@@ -113,10 +115,7 @@ void NotePopup::viewChanging(const ScrollViewer&, ScrollViewerViewChangingEventA
 }
 
 void NotePopup::prepareSurface() noexcept {
-    // Сторона меньше пикселя — поверхность, в которую нечего рисовать: решётка
-    // у неё пустая.
-    auto const pixels = SizeInt32{static_cast<int32_t>(width_ * scale_ + 0.5f),
-                                  static_cast<int32_t>(height_ * scale_ + 0.5f)};
+    auto const pixels = SizeInt32{shownFrame_.windowWidth, shownFrame_.paperPixels};
     if (surface_) {
         surface_->resize(pixels);
         // Что прежняя сноска нарисовала в новых границах, решётка новой не
@@ -126,14 +125,18 @@ void NotePopup::prepareSurface() noexcept {
         surface_.emplace(compositor_, pixels);
         sprite_.brush(surface_->brush());
     }
-    sprite_.size({width_, height_});
+    // Спрайт — ровно в пиксели поверхности, а не в DIP окна: кисть поверхности
+    // растягивает её на спрайт (CompositionStretch::Fill по умолчанию), и спрайт
+    // мимо целых пикселей пересэмплировал бы текст на долю пикселя — при
+    // масштабе 1,25 и 1,75 он вышел бы мягким.
+    sprite_.size({static_cast<float>(pixels.width) / scale_, static_cast<float>(pixels.height) / scale_});
 }
 
 void NotePopup::startBands() noexcept {
     const SizeInt32 pixels = surface_->size();
     bands_.reset({.surfaceWidth = pixels.width,
                   .surfaceHeight = pixels.height,
-                  .viewportHeight = static_cast<int32_t>(std::ceil(viewportHeight_ * scale_)),
+                  .viewportHeight = shownFrame_.windowHeight,
                   .bandHeight = kBandPixels,
                   .maxUpdateSide = surface_->maxUpdateSide()});
     applyBands(bands_.advance({pixelsOf(viewTop_, scale_)}));
@@ -184,11 +187,13 @@ void NotePopup::drawPiece(const NotePixelRect& updatePiece) noexcept {
         // знаков не ловит, и цвет ссылки обещал бы щелчок, которого нет.
         auto const noteBrushes = typography::TextBrushes{not_null<ID2D1Brush>{ink.Get()},
                                                          not_null<ID2D1Brush>{ink.Get()}};
+        // Тело — в поле от края подложки: слева и сверху kNotePadding.
         for (const typography::NoteLine& placed : body_.lines) {
             const typography::Line& line = placed.line;
-            if (placed.baseline + line.descent + line.height <= pieceTop) continue;
-            if (placed.baseline - line.ascent - line.height >= pieceBottom) continue;
-            typography::drawLine(context, line, 0.0f, placed.baseline, noteBrushes);
+            const float baseline = kNotePadding + placed.baseline;
+            if (baseline + line.descent + line.height <= pieceTop) continue;
+            if (baseline - line.ascent - line.height >= pieceBottom) continue;
+            typography::drawLine(context, line, kNotePadding, baseline, noteBrushes);
         }
     });
 }
@@ -202,17 +207,22 @@ void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const T
     hide();
 
     const float width = std::min(kMaxWidth, std::max(area.width * 0.6f, 220.0f));
-    const float inner = width - kPadding * 2.0f;
 
     // Тело верстается из хранилища книги: его блоки развёрнуты там вместе с
-    // потоком чтения, заново ничего не разворачивается.
+    // потоком чтения, заново ничего не разворачивается. Колонка — всплывашка
+    // без двух рамок и двух полей; поле остаётся внутри окна прокрутки
+    // (note_frame.h).
     const typography::BookText& text = book.text();
-    body_ = typography::layoutNote(book.engine(), text, text.noteBodies[body], inner, fontSize);
+    body_ = typography::layoutNote(book.engine(), text, text.noteBodies[body], noteColumn(width),
+                                   fontSize);
     if (body_.lines.empty()) return;
-    const float noteHeight = body_.height;
 
-    const float height =
-        std::min(noteHeight + kPadding * 2.0f, std::max(area.height * kMaxHeightShare, 120.0f));
+    // Мера — с округлением разметки до пикселей этого экрана: окно прокрутки
+    // и поверхность в целых пикселях, а рост — такой, что окно не ниже
+    // подложки, пока тело помещается в долю полосы.
+    const NoteFrame popupFrame =
+        noteFrame(width, body_.height, std::max(area.height * kMaxHeightShare, 120.0f), scale);
+    const float height = popupFrame.popupHeight;
 
     // Встать под знаком сноски, а если внизу не помещается — над ним: так
     // всплывашка не закрывает того места, ради которого её открыли. Не
@@ -231,18 +241,16 @@ void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const T
     root_.background(SolidColorBrush{toXaml(theme.panel)});
     root_.borderBrush(SolidColorBrush{toXaml(theme.dim)});
 
-    paper_.height(noteHeight);
+    paper_.height(popupFrame.paperHeight);
     // Новая сноска — с начала, а не с того места, до которого прокрутили
     // прежнюю.
     scrollTop_.set(0.0);
 
     ink_ = theme.text;
-    width_ = inner;
-    height_ = noteHeight;
-    scale_ = scale;
-    // Окно прокрутки — всплывашка без полей и рамки: вёрстки ещё не было, и
+    // Окно прокрутки — из меры, а не у прокрутки: разметки ещё не было, и
     // спрашивать его у прокрутки рано.
-    viewportHeight_ = std::max(height - 2.0f * (kPadding + kBorder), 0.0f);
+    shownFrame_ = popupFrame;
+    scale_ = scale;
     // Вид — там, куда сброс привёл прокрутку: поле говорит это само.
     viewTop_ = scrollTop_.get();
     prepareSurface();

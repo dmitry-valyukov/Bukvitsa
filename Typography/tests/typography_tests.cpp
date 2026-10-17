@@ -1909,9 +1909,10 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
           "колонка вдвое уже — строк больше, сноска выше");
 
     // Сноски настоящей книги: каждая, на которую ссылается текст.
+    // Без книги проба не прошла бы, а промолчала: отсутствие файла — провал.
     const std::filesystem::path bookPath = testdata / "nightmare_example.fb3";
     if (!std::filesystem::exists(bookPath)) {
-        std::printf("  нет nightmare_example.fb3: сноски книги пропущены\n");
+        check(false, "nightmare_example.fb3 на месте — по нему раскладываются сноски книги");
         return;
     }
 
@@ -1932,6 +1933,91 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
 
     std::printf("  nightmare_example: сносок %zu\n", targets.size());
     check(!targets.empty() && allPlaced, "каждая сноска книги раскладывается в строки сверху вниз");
+}
+
+/// Сноска ставит перья и шаги там, где её свёрстали, — внутри колонки. У
+/// каждой строки каждого тела сносок nightmare_example проверяется то, по чему
+/// drawLine расставит глифы: перо каждого глифа (место пера и сдвиг выключки)
+/// и конец шагов каждого прогона — внутри колонки, ширина прогона — сумма его
+/// шагов, ширина строки — сумма её прогонов. Чернил проба не мерит: глиф
+/// вправе выступить за свой шаг (курсивная прописная в конце строки,
+/// курсивное «р» в начале), и этот выступ вбирает поле всплывашки вокруг
+/// колонки. Тела нарочно пёстрые: в n_3 вперемешку над- и подстрочные
+/// вставки, курсив, разрядка, капитель и моноширный; в n_2 и e_2 — слово в
+/// 25 664 знака, которое вёрстка рубит по колонке, как то же слово в потоке
+/// (testLayout на полосе 260); строки, выключенные до самого края, есть у
+/// каждой колонки.
+void testNotePensInsideColumn(typography::Engine& engine, const std::filesystem::path& testdata) {
+    std::printf("\n=== сноска: перья и шаги внутри колонки ===\n");
+
+    // Без книги проба не прошла бы, а промолчала: отсутствие файла — провал.
+    const std::filesystem::path bookPath = testdata / "nightmare_example.fb3";
+    if (!std::filesystem::exists(bookPath)) {
+        check(false, "nightmare_example.fb3 на месте — по нему проверяются перья и шаги сносок");
+        return;
+    }
+
+    const fb3::Document nightmare{bookPath};
+    const typography::BookText book = typography::flatten(nightmare);
+
+    // Кегль книги по умолчанию: сноска набирается от него мельче.
+    constexpr float kFontSize = 20.0f;
+    // Допуск — как у пробы полосы (testLayout): выключка раздаёт добавку во
+    // float и вправе промахнуться на последний разряд.
+    constexpr float kSlack = 0.15f;
+
+    // Колонка самой широкой всплывашки (460 DIP без двух рамок и двух полей) и
+    // узкая, где строк больше и переносов чаще.
+    for (const float column : {426.0f, 260.0f}) {
+        size_t lineCount = 0;
+        size_t edgeLines = 0;
+        float leftmost = 0.0f;
+        float rightmost = 0.0f;
+        size_t rightmostBody = 0;
+        size_t rightmostLine = 0;
+        bool widthsAgree = true;
+
+        for (size_t body = 0; body < book.noteBodies.size(); ++body) {
+            const typography::NoteLayout note =
+                typography::layoutNote(engine, book, book.noteBodies[body], column, kFontSize);
+
+            for (size_t index = 0; index < note.lines.size(); ++index) {
+                const typography::Line& line = note.lines[index].line;
+                ++lineCount;
+
+                float lineEnd = 0.0f;
+                float runsWidth = 0.0f;
+                for (const typography::GlyphRun& run : line.runs) {
+                    float pen = run.originX;
+                    for (size_t glyph = 0; glyph < run.glyphIndices.size(); ++glyph) {
+                        const float glyphStart = pen + run.offsets[glyph].advanceOffset;
+                        leftmost = std::min(leftmost, glyphStart);
+                        lineEnd = std::max(lineEnd, glyphStart);
+                        pen += run.advances[glyph];
+                    }
+                    lineEnd = std::max(lineEnd, pen);
+
+                    if (std::abs(pen - run.originX - run.width) > 0.01f) widthsAgree = false;
+                    runsWidth += run.width;
+                }
+                if (std::abs(runsWidth - line.width) > 0.01f) widthsAgree = false;
+
+                if (lineEnd > column - 0.5f) ++edgeLines;
+                if (lineEnd > rightmost) {
+                    rightmost = lineEnd;
+                    rightmostBody = body;
+                    rightmostLine = index;
+                }
+            }
+        }
+
+        std::printf("  колонка %.0f: строк %zu, у края %zu; перья и шаги от %.2f до %.2f (тело %zu, строка %zu)\n",
+                    column, lineCount, edgeLines, leftmost, rightmost, rightmostBody, rightmostLine);
+        check(lineCount > 0 && edgeLines > 0, "у тел сносок есть строки, выключенные до края колонки");
+        check(leftmost >= -kSlack && rightmost <= column + kSlack,
+              "перья и шаги каждой строки сноски — внутри колонки");
+        check(widthsAgree, "ширина прогона — сумма его шагов, ширина строки — сумма её прогонов");
+    }
 }
 
 /// Позиция символа в книге по прогонам позиций там, где она не идёт вровень с
@@ -2559,6 +2645,7 @@ int main() {
     shootHyphenation(engine, testdata);
     testNoteLayout(engine, testdata);
     testNoteBodies(engine, testdata);
+    testNotePensInsideColumn(engine, testdata);
 
     for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3",
                              "hardcore_file_structure.fb3",

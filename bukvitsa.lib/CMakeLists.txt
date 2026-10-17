@@ -19,6 +19,7 @@ add_library(bukvitsa_lib STATIC
     src/key_map.cpp
     src/library.cpp
     src/note_bands.cpp
+    src/note_frame.cpp
     src/notice.cpp
     src/page_flow.cpp
     src/settings.cpp
@@ -39,6 +40,7 @@ add_library(bukvitsa_lib STATIC
     include/bukvitsa/reader/key_map.h
     include/bukvitsa/reader/library.h
     include/bukvitsa/reader/note_bands.h
+    include/bukvitsa/reader/note_frame.h
     include/bukvitsa/reader/notice.h
     include/bukvitsa/reader/page_canvas.h
     include/bukvitsa/reader/page_flow.h
