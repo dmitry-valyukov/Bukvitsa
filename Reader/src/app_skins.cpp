@@ -40,6 +40,7 @@ detached_task App::addSkin() {
     wizard_.openNew(path);
     panel_.close();
     wizard_.show();
+    reportWarpRefusal();
 }
 
 /// По полному списку тем, а не по реестру: системные обложки живут только в
@@ -61,6 +62,7 @@ detached_task App::editSkin(u16_text name) {
     wizard_.openEdit(skin, image);
     panel_.close();
     wizard_.show();
+    reportWarpRefusal();
 }
 
 detached_task App::chooseAnotherImage() {
@@ -238,6 +240,32 @@ void App::applySkins(int theme) {
 void App::preview(Skin const& skin) noexcept {
     presenter_.setPreview(&skin);
     showBackdrop();
+
+    // Ответ о слое изгиба у полосы уже есть: setPreview перерисовал
+    // предпросмотр сразу. Под показанным мастером — отпущенная точка, другой
+    // снимок — говорим здесь же; открытие мастера зовёт сюда до show(), и
+    // скажет открывший — после него.
+    if (wizard_.isOpen()) reportWarpRefusal();
+}
+
+void App::reportWarpRefusal() {
+    // Слой изгиба больше предела битмапа устройства — страница плоская, какие
+    // точки ни ставь, и читатель, тянущий их, должен знать почему. Один раз
+    // за запуск, а не на каждой отпущенной точке: предел — свойство
+    // устройства, и окно на каждую было бы шумом. Сообщение, а не подпись в
+    // мастере: у мастера слов для читателя нет — только кнопки и имя, — а
+    // сообщения уже говорят о том, что не удалось, и тоже по разу
+    // (loadBackdrop).
+    const std::optional<BookView::WarpRefusal>& refusal = view_.warpRefusal();
+    if (!refusal || warpRefusalReported_) return;
+    warpRefusalReported_ = true;
+    const u16_text details =
+        core::format(u"Изгиб рисуется в слое вдвое выше полосы — {}×{} пикселей, а битмап на этом устройстве "
+                     u"не больше {} пикселей по стороне. Страница показана без изгиба, какие точки ни ставь; "
+                     u"точки сохранятся вместе с обложкой, а в окне поменьше слой уложится в предел, и изгиб "
+                     u"появится.",
+                     refusal->layerWidth, refusal->layerHeight, refusal->deviceLimit);
+    notices_.post({L"Изгиб страницы недоступен на этом устройстве", std::wstring{details.wchars()}});
 }
 
 /// Путь снимка знает рабочее место, байты читает loadBackdrop. Тот же файл —
