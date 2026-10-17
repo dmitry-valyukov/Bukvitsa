@@ -50,9 +50,18 @@ public:
     bool visible() const { return visible_; }
 
 private:
-    /// Рисует свёрстанную сноску в поверхность. noexcept: вёрстка — в show,
-    /// раньше, а отказу рисования ответа нет — остановка.
-    void draw(const Theme& theme, float width, float height, float scale) noexcept;
+    /// Рисует свёрстанную сноску в поверхность — цветом, в размер и масштаб,
+    /// которые поставил show. noexcept: вёрстка — в show, раньше, а отказу
+    /// рисования ответа нет — остановка.
+    void draw() noexcept;
+
+    /// Устройство под поверхностями композитора острова заменено (wxl):
+    /// пиксели сноски пропали с прежним, а своего из его контекста она не
+    /// держит — кисть заводится на каждый рисунок. Показанная рисуется заново
+    /// тем же, чем в show; скрытую нарисует следующий показ. Слушатель
+    /// держателя deviceWatch_: noexcept — ход очереди потока исключению никому
+    /// не отдаст.
+    void renderingDeviceReplaced() noexcept;
 
     wxl::Compositor compositor_;
 
@@ -70,6 +79,18 @@ private:
 
     typography::NoteLayout body_;   ///< тело показанной сноски; шрифты — у движка книги
     bool visible_ = false;
+
+    /// Чем нарисована показанная сноска: цвет текста темы, размер текста в DIP
+    /// и масштаб экрана. Помнится затем, чтобы нарисовать её заново после
+    /// замены устройства — тема и мера к тому времени у show уже не в руках.
+    D2D1_COLOR_F ink_{};
+    float width_ = 0.0f;
+    float height_ = 0.0f;
+    float scale_ = 1.0f;
+
+    /// Замена потерянного устройства — последней: слушатель рисует всем, что
+    /// выше, и снимается сам, умирая раньше.
+    wxl::RenderingDeviceWatch<&NotePopup::renderingDeviceReplaced> deviceWatch_;
 };
 
 }  // namespace bukvitsa::reader

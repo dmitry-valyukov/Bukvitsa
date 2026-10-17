@@ -68,7 +68,8 @@ SkinWizard::SkinWizard(const Compositor& compositor, Actions& actions)
     : actions_(actions),
       compositor_(compositor),
       skin_(editor_.skin()),
-      visual_(compositor_.createSpriteVisual()) {
+      visual_(compositor_.createSpriteVisual()),
+      deviceWatch_(compositor_, *this) {
     // Поле имени просит фокус, когда диалог открылся, и отпускает просьбу,
     // когда закрылся; встал ли фокус, поле узнаёт само.
     nameFocused_.follow(naming_, std::identity{});
@@ -320,6 +321,10 @@ bool SkinWizard::resizeSurface() {
 
     visual_.size({width, height});
     return true;
+}
+
+void SkinWizard::renderingDeviceReplaced() noexcept {
+    redraw();
 }
 
 void SkinWizard::redraw() noexcept {

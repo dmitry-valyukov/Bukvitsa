@@ -95,6 +95,9 @@ BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Se
       // нельзя было до Loaded. Событие приходит из цикла сообщений, то есть не
       // раньше, чем полоса достроится.
       sizeWatch_(window_, *this),
+      // Замена потерянного устройства — у композитора окна: на нём растры
+      // разворота и листов. Сноска на композиторе острова слушает своё сама.
+      deviceWatch_(compositor_, *this),
       // Холстом ведущего полоса становится последним членом: всё, о чём
       // ведущий её попросит, к этой минуте построено.
       canvasAttachment_(presenter_.attachCanvas(*this)) {
@@ -432,6 +435,31 @@ void BookView::animateTurnsChanged(bool) noexcept {
     spreadView_.dropSpareRasters();
 }
 
+void BookView::renderingDeviceReplaced() noexcept {
+    // Всё, заведённое из контекста прежнего устройства, — его и пропало с
+    // ним: рисовать им в контекст нового — отказ Direct2D. Отпускается здесь
+    // — и с ним прежнее устройство, которое оно держит, — а заводит заново
+    // следующая отрисовка (drawThemeBackdrop, ensureWarp, ensureBlur,
+    // Book::bitmap), как в первый раз. Снимок подложки — память WIC, не
+    // устройства, и остаётся; кисти заводятся на каждый кадр и не держатся.
+    if (Book* const shownBook = presenter_.flow().book()) shownBook->dropDeviceBitmaps();
+    photoBitmap_.Reset();
+    warpBlur_.Reset();
+    warpShrink_.Reset();
+    warpDisplace_.Reset();
+    warpMap_.Reset();
+    warpLayer_.Reset();
+    warpContext_.Reset();
+    warpPixels_ = {};
+
+    // Пиксели растров пропали все, а нарисовать полоса умеет лишь нынешний
+    // разворот: летящие листы несут растры прежних — их не из чего
+    // перерисовать. Всё, что летит, садится, как при смене стратегии, и
+    // осевший растр — тот, что видно, — рисуется заново.
+    turnAnimation_->finishAll();
+    redraw();
+}
+
 std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     std::unique_ptr<TurnAnimation> chosenAnimation;
     if (settings_.animateTurns.get()) {
@@ -709,7 +737,8 @@ void BookView::drawThemeBackdrop(ID2D1DeviceContext* context, float width, float
 
     // Битмап устройства заводится раз на снимок и держится: CreateBitmapFromWicBitmap
     // на каждый кадр стоил бы дорого, а перерисовка бывает лишь на листании и
-    // растяжке. Устройство поверхности стабильно, пока не потеряно. Снимок
+    // растяжке. Устройство поверхности стабильно, пока не потеряно, а
+    // потерянное отпускает его (renderingDeviceReplaced). Снимок
     // больше предела устройства уменьшается до него, а отказ Direct2D —
     // остановка (deviceBitmapOf).
     if (!photoBitmap_) photoBitmap_ = deviceBitmapOf(context, backdropSource_.Get());
@@ -766,14 +795,38 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
         return;
     }
 
+    // Открытый рисунок слоя закрывается и тогда, когда его прервала потеря
+    // устройства: DeviceLost из stopIfFailed посреди drawPageContent (кисть,
+    // тень корешка, картинка книги в deviceBitmapOf) идёт к рисунку
+    // поверхности мимо EndDraw ниже, а контекст, оставленный внутри BeginDraw,
+    // следующему рисунку до замены ответил бы D2DERR_WRONG_STATE — остановкой.
+    // Ответ EndDraw на раскрутке не смотрится: летит исключение — DeviceLost,
+    // чью потерю устройство уже подтвердило проверке, и тогда ответ известен,
+    // или иное, которое и так кончит процесс, — а бросить из деструктора на
+    // раскрутке значит terminate. Слой и контекст отпустит замена
+    // (renderingDeviceReplaced).
+    struct LayerEndOnUnwind {
+        ID2D1DeviceContext* openLayer;
+        ~LayerEndOnUnwind() {
+            if (openLayer) static_cast<void>(openLayer->EndDraw());
+        }
+    };
+
     warpContext_->SetTarget(warpLayer_.Get());
     warpContext_->BeginDraw();
+    auto layerEnd = LayerEndOnUnwind{warpContext_.Get()};
     warpContext_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
     // Вертикальная двойка растит слой, горизонтальный масштаб — тот же, что
     // redraw() даёт поверхности: содержимое рисуется в DIP, слой — в пикселях.
     warpContext_->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale * 2.0f));
 
     drawPageContent(warpContext_.Get(), width, height);
+    // Дошли сюда — рисунок слоя закрывает EndDraw ниже, и его ответ
+    // смотрится: D2DERR_RECREATE_TARGET — устройство потеряно посреди рисунка,
+    // проверка stopIfFailed (system_failure.h) кончает рисунок поверхности, и
+    // полоса нарисует разворот заново по замене (renderingDeviceReplaced).
+    // Прочие отказы — остановка.
+    layerEnd.openLayer = nullptr;
     typography::stopIfFailed(warpContext_->EndDraw(), "BookView: не закрылся рисунок слоя изгиба");
 
     // Хвост цепочки собирается по месту: изгиб, если есть что гнуть, потом
