@@ -12,6 +12,9 @@
 #include "bukvitsa/typography/block.h"
 #include "bukvitsa/typography/system_failure.h"
 
+// Последним: сторож замены устройства останавливает через wxl.core.
+import wxl.core;
+
 namespace bukvitsa::reader {
 
 using Microsoft::WRL::ComPtr;
@@ -159,9 +162,26 @@ void Book::decodeImages(fb3::Document& document) {
     }
 }
 
+void Book::dropDeviceBitmaps() {
+    for (ImageAsset& asset : images_) asset.bitmap.Reset();
+    bitmapDevice_.Reset();
+}
+
 ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
     if (index >= images_.size())
         return nullptr;
+
+    // Сторож замены устройства: битмапы книги сбрасывает тот, кто её рисует,
+    // по замене (dropDeviceBitmaps). Контекст другого устройства при битмапах
+    // прежнего — сброса не было, и картинка прежнего устройства ушла бы в
+    // контекст нового: отказ Direct2D у EndDraw, без имени.
+    Microsoft::WRL::ComPtr<ID2D1Device> device;
+    context->GetDevice(&device);
+    if (!bitmapDevice_) {
+        bitmapDevice_ = std::move(device);
+    } else if (device != bitmapDevice_) {
+        wxl::core::abort("Book: контекст другого устройства, а битмапы картинок — с прежнего");
+    }
 
     ImageAsset& asset = images_[index];
     if (asset.bitmap) return asset.bitmap.Get();
@@ -169,15 +189,17 @@ ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
 
     // Целиком в одном вызове и не больше, чем держит устройство; пиксели в
     // памяти отпускаются, как только стали битмапом устройства, а сжатые
-    // байты — сразу после раскодирования: битмап сделан, или они не картинка.
-    // Чужие байты, битые не в заголовке, а в данных, отказывают здесь:
-    // картинка не рисуется, и больше её не пробуют, а место под неё вёрстка
-    // уже отвела — оно остаётся пустым. Отказ Direct2D — остановка
-    // (deviceBitmapOf).
+    // байты остаются: потерянное устройство заберёт битмап, и он
+    // раскодируется из них снова. Чужие байты, битые не в заголовке, а в
+    // данных, отказывают здесь: байты отпускаются, картинка не рисуется, и
+    // больше её не пробуют, а место под неё вёрстка уже отвела — оно остаётся
+    // пустым. Отказ Direct2D — остановка (deviceBitmapOf).
     const uint32_t deviceSide = std::min<uint32_t>(kMaxPictureSide, context->GetMaximumBitmapSize());
     const DecodedPicture decodedPicture = decodeImage(wic_.Get(), asset.bytes, deviceSide);
-    asset.bytes = std::string{};
-    if (!decodedPicture.bitmap) return nullptr;
+    if (!decodedPicture.bitmap) {
+        asset.bytes = std::string{};
+        return nullptr;
+    }
 
     asset.bitmap = deviceBitmapOf(context, decodedPicture.bitmap.Get());
     return asset.bitmap.Get();

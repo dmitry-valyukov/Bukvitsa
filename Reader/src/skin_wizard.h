@@ -96,6 +96,13 @@ private:
     /// ответа нет — остановка.
     void redraw() noexcept;
 
+    /// Устройство под поверхностями композитора заменено (wxl): пиксели сетки
+    /// пропали с прежним, а своего из его контекста мастер не держит — кисти
+    /// заводятся на каждый рисунок. Сетка рисуется заново. Слушатель
+    /// держателя deviceWatch_: noexcept — ход очереди потока исключению никому
+    /// не отдаст.
+    void renderingDeviceReplaced() noexcept;
+
     /// Сетка в DIP — то, во что модель правки переводит доли снимка.
     SkinEditor::Size area() const { return {width_, height_}; }
 
@@ -159,6 +166,10 @@ private:
     float width_ = 0.0f;
     float height_ = 0.0f;
     float scale_ = 1.0f;
+
+    /// Замена потерянного устройства — последней: слушатель рисует всем, что
+    /// выше, и снимается сам, умирая раньше.
+    wxl::RenderingDeviceWatch<&SkinWizard::renderingDeviceReplaced> deviceWatch_;
 };
 
 }  // namespace bukvitsa::reader

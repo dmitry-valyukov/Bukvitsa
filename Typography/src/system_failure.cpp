@@ -8,7 +8,31 @@
 // Последним: остановка — wxl.core.
 import wxl.core;
 
-namespace bukvitsa::typography::detail {
+namespace bukvitsa::typography {
+
+namespace {
+
+/// Проверка на потерю устройства от читалки; пусто — не поставлена. Один
+/// STA-поток, ставится до первого рисунка — без синхронизации.
+DeviceLossCheck deviceLossCheck = nullptr;
+
+/// Остановка с текстом «what, HRESULT 0x…» на месте `where`.
+[[noreturn]] void stopOnFailure(HRESULT result, std::string_view what, std::source_location where) noexcept;
+
+}  // namespace
+
+void setDeviceLossCheck(DeviceLossCheck check) noexcept {
+    if (!check) wxl::core::abort("setDeviceLossCheck: пустая проверка");
+    if (deviceLossCheck) wxl::core::abort("setDeviceLossCheck: проверка ставится второй раз");
+    deviceLossCheck = check;
+}
+
+void detail::failed(HRESULT result, std::string_view what, std::source_location where) {
+    if (deviceLossCheck) deviceLossCheck(result);
+    stopOnFailure(result, what, where);
+}
+
+namespace {
 
 void stopOnFailure(HRESULT result, std::string_view what, std::source_location where) noexcept {
     // Текст — в буфер на стеке, а не в строку: среди причин остановки —
@@ -28,4 +52,6 @@ void stopOnFailure(HRESULT result, std::string_view what, std::source_location w
     wxl::core::abort(std::string_view(text, static_cast<size_t>(written.out - text)), where);
 }
 
-}  // namespace bukvitsa::typography::detail
+}  // namespace
+
+}  // namespace bukvitsa::typography
