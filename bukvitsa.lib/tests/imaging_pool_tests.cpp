@@ -17,6 +17,7 @@
 #include "check.h"
 
 #include "bukvitsa/reader/imaging.h"
+#include "imaging_probe.h"
 
 import wxl.async;
 import wxl.core;
@@ -105,6 +106,7 @@ void stopsBetweenBandsInPool() {
     const bool endedAtOnce = decoding.done();
     check(endedAtOnce && canceled(std::move(decoding)),
           "пул: отменено после первой полосы — ожидание кончилось отменой за один проход петли");
+    check(sta_loop::outstanding() == before + 1, "пул: сирота на счету петли, пока тело стоит");
 
     // Ступень ссылается на то, что здесь, — тело возвращается раньше, чем
     // проба уйдёт.
@@ -117,7 +119,12 @@ void stopsBetweenBandsInPool() {
 }  // namespace
 
 int main() {
-    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    // Без буфера: строки проб доходят до ctest и тогда, когда процесс
+    // остановится посреди.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
+    if (FAILED(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
+        wxl::core::abort("imaging_pool_tests: COM не поднялся на потоке проб");
     sta_loop::start_dispatched("bukvitsa imaging pool tests: I/O");
 
     decodesInPool();

@@ -32,6 +32,7 @@
 #include "bukvitsa/reader/book_places.h"
 #include "bukvitsa/reader/imaging.h"
 #include "bukvitsa/reader/shelf_text.h"
+#include "imaging_probe.h"
 #include "bukvitsa/reader/workspace.h"
 
 import wxl.async;
@@ -2235,6 +2236,14 @@ constexpr auto kHugePng = std::string_view{
 /// Снимок пробы: JPEG 800×507.
 const std::filesystem::path kPhoto = testdata / L"bg_paper2.jpg";
 
+/// Раскодирование на месте — формой книги, своей фабрикой пробы.
+DecodedPicture decodedHere(std::string_view bytes) {
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
+    if (FAILED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))))
+        wxl::core::abort("decodedHere: фабрика WIC");
+    return decodeImage(wic.Get(), bytes);
+}
+
 /// Пиксели снимка такого размера — со своими байтами и шагом строки w·4.
 bool sized(const DecodedPixels& pixels, uint32_t width, uint32_t height) {
     return !pixels.empty() && pixels.width == width && pixels.height == height && pixels.stride == width * 4;
@@ -2274,7 +2283,7 @@ void testDecodeAsyncTellsImages() {
     const std::string photo = onDisk(kPhoto);
     const std::string book = onDisk(kBook);
 
-    const DecodedPicture here = decodeImage(photo);
+    const DecodedPicture here = decodedHere(photo);
     const DecodedPicture pooled = run(decodeImageAsync(photo, kMaxPictureSide, never));
     check(pooled.verdict.refusal == PictureRefusal::None && here.verdict.refusal == PictureRefusal::None &&
               sized(pooled.pixels, 800, 507) && sized(here.pixels, 800, 507),
@@ -2286,11 +2295,11 @@ void testDecodeAsyncTellsImages() {
 
     const DecodedPicture notImage = run(decodeImageAsync(book, kMaxPictureSide, never));
     check(notImage.verdict.refusal == PictureRefusal::NotAnImage && notImage.pixels.empty() &&
-              decodeImage(book).verdict.refusal == PictureRefusal::NotAnImage,
+              decodedHere(book).verdict.refusal == PictureRefusal::NotAnImage,
           "книга — не картинка, как на месте");
 
     const DecodedPicture huge = run(decodeImageAsync(std::string{kHugePng}, kMaxPictureSide, never));
-    const DecodedPicture hugeHere = decodeImage(kHugePng);
+    const DecodedPicture hugeHere = decodedHere(kHugePng);
     check(huge.verdict.refusal == PictureRefusal::TooLarge && huge.verdict.declaredSize.width == 65535 &&
               huge.verdict.declaredSize.height == 65535 && huge.pixels.empty() &&
               hugeHere.verdict.refusal == PictureRefusal::TooLarge,
@@ -2311,7 +2320,7 @@ void testDecodeAsyncLeavesCaller() {
     HeldWorker heldWorker;
     task<DecodedPicture> decoding = decodeImageAsync(photo, kMaxPictureSide, never);
     check(!decoding.done(), "рабочий поток занят — раскодирование не кончилось");
-    check(sized(decodeImage(photo).pixels, 800, 507) && !decoding.done(),
+    check(sized(decodedHere(photo).pixels, 800, 507) && !decoding.done(),
           "поток вызова тем временем свободен: раскодирует сам, а ответа пула всё нет");
 
     heldWorker.open();
@@ -2358,10 +2367,12 @@ void testDecodeAsyncStopsOnRequest() {
     check(sta_loop::outstanding() == before, "ворота открыты — сирота вернулась, на счету петли ничего");
 }
 
-/// PNG одного цвета (BGRA 10, 20, 30, 255) такого размера — снимок проб
-/// полосами: сжимается в килобайты, а раскодируется целиком. Кодирует WIC
+/// PNG, у которого цвет говорит номер строки: B — младший байт номера, G —
+/// старший, R — номер, сведённый к 0…255 (y·255/(h−1)), альфа 255. По B и G
+/// строка узнаётся точно, R меняется плавно и не убывает — его не ломает
+/// уменьшение. Сжимается в килобайты, а раскодируется целиком. Кодирует WIC
 /// пробы, в памяти; отказ — ошибка пробы, остановка.
-std::string solidPng(uint32_t width, uint32_t height) {
+std::string rowsPng(uint32_t width, uint32_t height) {
     using Microsoft::WRL::ComPtr;
     const auto must = [](HRESULT result, const char* what) {
         if (FAILED(result)) wxl::core::abort(what);
@@ -2369,79 +2380,111 @@ std::string solidPng(uint32_t width, uint32_t height) {
 
     ComPtr<IWICImagingFactory> wic;
     must(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)),
-         "solidPng: фабрика");
+         "rowsPng: фабрика");
     ComPtr<IStream> stream;
-    must(::CreateStreamOnHGlobal(nullptr, TRUE, &stream), "solidPng: поток");
+    must(::CreateStreamOnHGlobal(nullptr, TRUE, &stream), "rowsPng: поток");
     ComPtr<IWICBitmapEncoder> encoder;
-    must(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder), "solidPng: кодировщик");
-    must(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache), "solidPng: кодировщик на поток");
+    must(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder), "rowsPng: кодировщик");
+    must(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache), "rowsPng: кодировщик на поток");
     ComPtr<IWICBitmapFrameEncode> frame;
-    must(encoder->CreateNewFrame(&frame, nullptr), "solidPng: кадр");
-    must(frame->Initialize(nullptr), "solidPng: кадр без свойств");
-    must(frame->SetSize(width, height), "solidPng: размер");
+    must(encoder->CreateNewFrame(&frame, nullptr), "rowsPng: кадр");
+    must(frame->Initialize(nullptr), "rowsPng: кадр без свойств");
+    must(frame->SetSize(width, height), "rowsPng: размер");
     WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
-    must(frame->SetPixelFormat(&format), "solidPng: формат");
-    if (format != GUID_WICPixelFormat32bppBGRA) wxl::core::abort("solidPng: кодировщик сменил формат");
+    must(frame->SetPixelFormat(&format), "rowsPng: формат");
+    if (format != GUID_WICPixelFormat32bppBGRA) wxl::core::abort("rowsPng: кодировщик сменил формат");
 
     std::vector<BYTE> row(size_t{width} * 4);
-    for (size_t at = 0; at < row.size(); at += 4) {
-        row[at] = 10;
-        row[at + 1] = 20;
-        row[at + 2] = 30;
-        row[at + 3] = 255;
+    for (uint32_t y = 0; y < height; ++y) {
+        for (size_t at = 0; at < row.size(); at += 4) {
+            row[at] = static_cast<BYTE>(y & 0xFF);
+            row[at + 1] = static_cast<BYTE>(y >> 8);
+            row[at + 2] = static_cast<BYTE>(uint64_t{y} * 255 / (height - 1));
+            row[at + 3] = 255;
+        }
+        must(frame->WritePixels(1, width * 4, width * 4, row.data()), "rowsPng: строка");
     }
-    for (uint32_t y = 0; y < height; ++y)
-        must(frame->WritePixels(1, width * 4, width * 4, row.data()), "solidPng: строка");
-    must(frame->Commit(), "solidPng: кадр записан");
-    must(encoder->Commit(), "solidPng: файл записан");
+    must(frame->Commit(), "rowsPng: кадр записан");
+    must(encoder->Commit(), "rowsPng: файл записан");
 
     STATSTG stat{};
-    must(stream->Stat(&stat, STATFLAG_NONAME), "solidPng: длина");
-    must(stream->Seek(LARGE_INTEGER{}, STREAM_SEEK_SET, nullptr), "solidPng: к началу");
+    must(stream->Stat(&stat, STATFLAG_NONAME), "rowsPng: длина");
+    must(stream->Seek(LARGE_INTEGER{}, STREAM_SEEK_SET, nullptr), "rowsPng: к началу");
     std::string bytes(static_cast<size_t>(stat.cbSize.QuadPart), '\0');
     ULONG read = 0;
-    must(stream->Read(bytes.data(), static_cast<ULONG>(bytes.size()), &read), "solidPng: чтение");
-    if (read != bytes.size()) wxl::core::abort("solidPng: прочитано меньше записанного");
+    must(stream->Read(bytes.data(), static_cast<ULONG>(bytes.size()), &read), "rowsPng: чтение");
+    if (read != bytes.size()) wxl::core::abort("rowsPng: прочитано меньше записанного");
     return bytes;
 }
 
-/// Пиксель снимка — BGRA, по байтам в одном слове.
-uint32_t pixelAt(const DecodedPixels& pixels, uint32_t x, uint32_t y) {
-    uint32_t pixel = 0;
+/// Байты пикселя снимка: B, G, R, A — PBGRA, у непрозрачного как есть.
+struct PixelBytes {
+    uint8_t b, g, r, a;
+};
+
+PixelBytes pixelAt(const DecodedPixels& pixels, uint32_t x, uint32_t y) {
+    PixelBytes pixel{};
     std::memcpy(&pixel, pixels.bytes.get() + size_t{y} * pixels.stride + size_t{x} * 4, sizeof pixel);
     return pixel;
 }
 
-/// Цвет solidPng в PBGRA: непрозрачный, предумножение его не меняет.
-constexpr uint32_t kSolidPixel = 0xFF1E140Au;
+/// Первая и последняя строка каждой полосы снимка такой высоты — по 256 строк.
+std::vector<uint32_t> bandEdges(uint32_t height) {
+    std::vector<uint32_t> rows;
+    for (uint32_t top = 0; top < height; top += 256) {
+        rows.push_back(top);
+        rows.push_back(std::min(top + 256, height) - 1);
+    }
+    return rows;
+}
 
-/// Кадр копируется полосами, и до конца: у снимка 4000×3000 — двенадцать
-/// полос (одиннадцать по 256 строк и хвост в 184), у уменьшенного до 1000 —
-/// 1000×750 через уменьшение, три полосы с хвостом; в первой и последней
-/// строке, у обоих краёв, — цвет снимка, а не пустая память недокопированной
-/// полосы. На рабочем потоке петли — то же, что на месте.
+/// Кадр копируется полосами, каждая — на своё место и до конца: у снимка
+/// 4000×3000 — двенадцать полос (одиннадцать по 256 строк и хвост в 184); в
+/// первой и последней строке каждой полосы, у обоих краёв, по B и G узнаётся
+/// ровно эта строка. Уменьшенный до 1000 — 1000×750, три полосы через
+/// уменьшение: точного равенства Fant не обещает, поэтому R по строкам не
+/// убывает, а на краях полос — в двух единицах от среднего четырёх строк
+/// исходника. На рабочем потоке петли — то же, что на месте.
 void testDecodeCopiesAllBands() {
     std::printf("\n=== раскодирование полосами: все строки ===\n");
 
-    const std::string png = solidPng(4000, 3000);
+    const std::string png = rowsPng(4000, 3000);
 
-    const auto whole = [](const DecodedPixels& picture, uint32_t width, uint32_t height) {
-        return sized(picture, width, height) && pixelAt(picture, 0, 0) == kSolidPixel &&
-               pixelAt(picture, width - 1, 0) == kSolidPixel && pixelAt(picture, 0, height - 1) == kSolidPixel &&
-               pixelAt(picture, width - 1, height - 1) == kSolidPixel;
+    const auto rowsInPlace = [](const DecodedPixels& picture, uint32_t width, uint32_t height) {
+        if (!sized(picture, width, height)) return false;
+        for (const uint32_t y : bandEdges(height)) {
+            for (const uint32_t x : {0u, width - 1}) {
+                const PixelBytes pixel = pixelAt(picture, x, y);
+                if (pixel.b != (y & 0xFF) || pixel.g != (y >> 8) || pixel.a != 255) return false;
+            }
+        }
+        return true;
     };
 
-    const DecodedPicture here = decodeImage(png);
-    check(here.verdict.refusal == PictureRefusal::None && whole(here.pixels, 4000, 3000),
-          "4000×3000 на месте — все двенадцать полос, последняя строка цела");
+    const DecodedPicture here = decodedHere(png);
+    check(here.verdict.refusal == PictureRefusal::None && rowsInPlace(here.pixels, 4000, 3000),
+          "4000×3000 на месте — края всех двенадцати полос на своих строках");
 
     const DecodedPicture pooled = run(decodeImageAsync(png, kMaxPictureSide, never));
-    check(pooled.verdict.refusal == PictureRefusal::None && whole(pooled.pixels, 4000, 3000),
+    check(pooled.verdict.refusal == PictureRefusal::None && rowsInPlace(pooled.pixels, 4000, 3000),
           "4000×3000 на рабочем потоке петли — так же");
 
     const DecodedPicture shrunk = run(decodeImageAsync(png, 1000, never));
-    check(shrunk.verdict.refusal == PictureRefusal::None && whole(shrunk.pixels, 1000, 750),
-          "уменьшенный до 1000 — 1000×750 полосами через уменьшение, последняя строка цела");
+    bool rising = sized(shrunk.pixels, 1000, 750);
+    for (uint32_t y = 1; rising && y < 750; ++y) {
+        for (const uint32_t x : {0u, 999u})
+            rising = rising && pixelAt(shrunk.pixels, x, y).r >= pixelAt(shrunk.pixels, x, y - 1).r;
+    }
+    bool nearSource = sized(shrunk.pixels, 1000, 750);
+    for (const uint32_t y : bandEdges(750)) {
+        // Строка уменьшенного — четыре строки исходника, 4y…4y+3: R их
+        // середины, 4y+1,5, сведённый к 0…255.
+        const double expected = (4.0 * y + 1.5) * 255.0 / 2999.0;
+        for (const uint32_t x : {0u, 999u})
+            nearSource = nearSource && std::abs(pixelAt(shrunk.pixels, x, y).r - expected) <= 2.0;
+    }
+    check(shrunk.verdict.refusal == PictureRefusal::None && rising && nearSource,
+          "уменьшенный до 1000 — 1000×750 полосами через уменьшение: R не убывает, края полос — у своих строк");
 }
 
 /// Тело копирует полосы по порядку и между ними спрашивает, не осиротело ли.
@@ -2458,7 +2501,7 @@ void testDecodeCopiesAllBands() {
 void testDecodeStopsBetweenBands() {
     std::printf("\n=== раскодирование полосами: отмена между полосами ===\n");
 
-    const std::string png = solidPng(4000, 3000);
+    const std::string png = rowsPng(4000, 3000);
     const size_t before = sta_loop::outstanding();
 
     // Полосы записывает рабочий поток, читает проба — после возврата тела,
@@ -2488,6 +2531,7 @@ void testDecodeStopsBetweenBands() {
     const bool endedAtOnce = decoding.done();
     check(endedAtOnce && canceled(std::move(decoding)),
           "отменено после первой полосы — ожидание кончилось отменой за один проход петли, тело ещё стоит");
+    check(sta_loop::outstanding() == before + 1, "сирота на счету петли, пока тело стоит");
 
     mayGoOn.release();
     sta_loop::run_until([before] { return sta_loop::outstanding() == before; });

@@ -33,10 +33,7 @@ namespace {
 
 /// Фабрика WIC — системная: не создалась — остановка, а не «не картинка».
 /// Отказ — без проверки на потерю устройства: фабрику заводят и в пуле, а у
-/// WIC устройства нет. Поток пула COM сам не поднимает и живёт в неявной MTA
-/// процесса — её держит рабочий поток петли wxl; нет её — CoCreateInstance
-/// отвечает CO_E_NOTINITIALIZED, и это тоже остановка: ошибка в коде, а не
-/// ответ о файле.
+/// WIC устройства нет. COM в теле поднят: договор wxl для тела сироты в пуле.
 ComPtr<IWICImagingFactory> newImagingFactory() {
     ComPtr<IWICImagingFactory> wic;
     stopIfFailedOffDevice(
@@ -60,8 +57,50 @@ DecodedPicture notAnImage() {
 /// кончается отменой, а не идёт к следующей ступени: его ответа уже никто не
 /// возьмёт. Вызов WIC посреди не обрывается, так что остановить тело можно
 /// только здесь. На потоке вызова (`state` пусто) спрашивать некого.
-void throwIfStopRequested(const orphan_state* state) {
+void throw_if_stop_requested(const orphan_state* state) {
     if (state && state->stop_requested()) throw operation_canceled_exception();
+}
+
+/// Предел раскодирования — не больше kMaxPictureSide: тогда пиксели — до
+/// 64 МБ, и полоса в байтах укладывается в UINT, которым меряет WIC. Иной —
+/// ошибка вызывающего, остановка на его потоке, до всякого ответа.
+void requireSideLimit(uint32_t maxSide) {
+    if (maxSide == 0 || maxSide > kMaxPictureSide) wxl::core::abort("decodeImage: предел вне (0, kMaxPictureSide]");
+}
+
+/// Говорит ли отказ WIC о самих байтах: битый или незнакомый файл. Так WIC
+/// отвечает, разбирая чужие данные; E_FAIL — тоже: им декодеры отвечают на
+/// данные, битые там, где своего кода у них нет.
+bool brokenDataCode(HRESULT result) noexcept {
+    switch (result) {
+    case WINCODEC_ERR_BADHEADER:
+    case WINCODEC_ERR_BADIMAGE:
+    case WINCODEC_ERR_BADSTREAMDATA:
+    case WINCODEC_ERR_BADMETADATAHEADER:
+    case WINCODEC_ERR_UNKNOWNIMAGEFORMAT:
+    case WINCODEC_ERR_UNSUPPORTEDVERSION:
+    case WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT:
+    case WINCODEC_ERR_COMPONENTNOTFOUND:
+    case WINCODEC_ERR_FRAMEMISSING:
+    case WINCODEC_ERR_PALETTEUNAVAILABLE:
+    case WINCODEC_ERR_IMAGESIZEOUTOFRANGE:
+    case WINCODEC_ERR_STREAMREAD:
+    case E_FAIL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Отказал ли вызов WIC, разбиравший чужие байты, — и это ответ о файле:
+/// `true` — «не картинка». Отказ с иным кодом — от наших аргументов
+/// (WINCODEC_ERR_INSUFFICIENTBUFFER, E_POINTER, E_INVALIDARG) или беда системы
+/// (E_OUTOFMEMORY): остановка со словами `what`, а не «не картинка».
+bool refusedOnData(HRESULT result, std::string_view what) {
+    if (SUCCEEDED(result)) return false;
+    if (brokenDataCode(result)) return true;
+    stopIfFailedOffDevice(result, what);
+    return true;   // недостижимо: отказ выше останавливает
 }
 
 }  // namespace
@@ -79,68 +118,75 @@ ComPtr<IWICBitmapFrameDecode> firstFrameOf(IWICImagingFactory* wic, std::string_
     if (bytes.size() > std::numeric_limits<DWORD>::max()) return nullptr;
 
     // Два рода отказов. Своё — поток, конвертер, уменьшение — не создаётся и
-    // не настраивается лишь от беды системы: остановка. Всё, что разбирает сами
-    // байты, — ответ о файле: декодер на битых байтах отвечает и WINCODEC_ERR_*,
-    // и E_FAIL, различить их нельзя, и все они про файл — «не картинка».
-    // Огромный заявленный размер сюда не доходит: его отсекает бюджет памяти
-    // по заголовку (frameHeaderOf).
+    // не настраивается лишь от беды системы: остановка. Отказ того, что
+    // разбирает сами байты, — ответ о файле, «не картинка», если его код
+    // говорит о данных (refusedOnData); иной код — остановка. Огромный
+    // заявленный размер сюда не доходит: его отсекает бюджет памяти по
+    // заголовку (frameHeaderOf).
     //
     // Поток поверх памяти вызывающего, без копии: WIC обещает в неё не писать,
     // а неконстантный указатель просит по сигнатуре; нужна она только до
     // конца вызова.
     ComPtr<IWICStream> stream;
     stopIfFailedOffDevice(wic->CreateStream(&stream), "WIC: не создался поток");
-    if (FAILED(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<char*>(bytes.data())),
-                                            static_cast<DWORD>(bytes.size()))))
-        return nullptr;
+    stopIfFailedOffDevice(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<char*>(bytes.data())),
+                                                       static_cast<DWORD>(bytes.size())),
+                          "WIC: поток не встал на память снимка");
 
     ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder)))
+    if (refusedOnData(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder),
+                      "WIC: декодер отказал не по данным"))
         return nullptr;
 
     ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(decoder->GetFrame(0, &frame))) return nullptr;
+    if (refusedOnData(decoder->GetFrame(0, &frame), "WIC: кадр не взялся не по данным")) return nullptr;
 
     return frame;
 }
 
 /// Заголовок кадра: размер и, по формату пикселей, укладывается ли он в
 /// бюджет памяти (withinPictureBudget). Нулевая сторона, формат, о котором у
-/// WIC нет сведений, — пусто, «не картинка»: всё это из чужих байт.
+/// WIC нет сведений, — пусто, «не картинка»: всё это из чужих байт; отказ не
+/// по данным — остановка (refusedOnData).
 std::optional<PictureHeader> frameHeaderOf(IWICImagingFactory* wic, IWICBitmapFrameDecode* frame) {
     UINT width = 0;
     UINT height = 0;
-    if (FAILED(frame->GetSize(&width, &height)) || width == 0 || height == 0) return std::nullopt;
+    if (refusedOnData(frame->GetSize(&width, &height), "WIC: кадр не назвал размер не по данным") || width == 0 ||
+        height == 0)
+        return std::nullopt;
 
     WICPixelFormatGUID format{};
-    if (FAILED(frame->GetPixelFormat(&format))) return std::nullopt;
+    if (refusedOnData(frame->GetPixelFormat(&format), "WIC: кадр не назвал формат не по данным"))
+        return std::nullopt;
     ComPtr<IWICComponentInfo> component;
-    if (FAILED(wic->CreateComponentInfo(format, &component))) return std::nullopt;
+    if (refusedOnData(wic->CreateComponentInfo(format, &component), "WIC: формат кадра не нашёлся не по данным"))
+        return std::nullopt;
     ComPtr<IWICPixelFormatInfo> formatInfo;
-    if (FAILED(component.As(&formatInfo))) return std::nullopt;
+    // Формат называет декодер по байтам файла: компонент, который не формат
+    // пикселей (E_NOINTERFACE), — тоже ответ о файле.
+    if (const HRESULT asked = component.As(&formatInfo);
+        asked == E_NOINTERFACE || refusedOnData(asked, "WIC: сведения о формате кадра не взялись не по данным"))
+        return std::nullopt;
     UINT bitsPerPixel = 0;
-    if (FAILED(formatInfo->GetBitsPerPixel(&bitsPerPixel))) return std::nullopt;
+    if (refusedOnData(formatInfo->GetBitsPerPixel(&bitsPerPixel), "WIC: формат кадра не назвал глубину не по данным"))
+        return std::nullopt;
 
     return PictureHeader{PictureSize{width, height}, !withinPictureBudget(width, height, bitsPerPixel)};
 }
 
 /// Раскодирование — общее у формы на потоке вызова и формы в пуле; в пуле
 /// `state` — его состояние сироты, и между ступенями раскодирования оно
-/// спрашивается (throwIfStopRequested), а `afterBand` — ступень проб, после
+/// спрашивается (throw_if_stop_requested), а `afterBand` — ступень проб, после
 /// каждой полосы.
 /// Отказы системы — остановка без проверки на потерю устройства: у WIC его
 /// нет, а в пуле проверку, код потока окна, звать нельзя.
 DecodedPicture decodeWith(IWICImagingFactory* wic, std::string_view bytes, uint32_t maxSide,
                           const orphan_state* state, const std::function<void(uint32_t)>& afterBand) {
-    // Предел — не больше kMaxPictureSide: тогда пиксели — до 64 МБ, и полоса
-    // в байтах укладывается в UINT, которым меряет WIC.
-    if (maxSide == 0 || maxSide > kMaxPictureSide) wxl::core::abort("decodeImage: предел вне (0, kMaxPictureSide]");
-
-    throwIfStopRequested(state);
+    throw_if_stop_requested(state);
     const ComPtr<IWICBitmapFrameDecode> frame = firstFrameOf(wic, bytes);
     if (!frame) return notAnImage();
 
-    throwIfStopRequested(state);
+    throw_if_stop_requested(state);
     const std::optional<PictureHeader> header = frameHeaderOf(wic, frame.Get());
     if (!header) return notAnImage();
     if (header->tooLarge) return DecodedPicture{PictureVerdict{PictureRefusal::TooLarge, header->size}, {}};
@@ -171,8 +217,9 @@ DecodedPicture decodeWith(IWICImagingFactory* wic, std::string_view bytes, uint3
     // Конвертер — своё: остановка; его настройка на кадр — разбор чужих байт.
     ComPtr<IWICFormatConverter> converter;
     stopIfFailedOffDevice(wic->CreateFormatConverter(&converter), "WIC: не создался конвертер");
-    if (FAILED(converter->Initialize(pixelSource.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
-                                     nullptr, 0.0, WICBitmapPaletteTypeMedianCut)))
+    if (refusedOnData(converter->Initialize(pixelSource.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                                            nullptr, 0.0, WICBitmapPaletteTypeMedianCut),
+                      "WIC: конвертер не настроился не по данным"))
         return notAnImage();
     pixelSource = converter;
 
@@ -191,7 +238,7 @@ DecodedPicture decodeWith(IWICImagingFactory* wic, std::string_view bytes, uint3
     // копируется в буфер полосами по kBandRows строк: полоса i — строки
     // [i·kBandRows, min((i+1)·kBandRows, h)), stride·строк байт с отступа
     // i·kBandRows·stride, где stride = w·4. Между полосами раскодирование в
-    // пуле спрашивает, не бросили ли его (throwIfStopRequested): ждущий,
+    // пуле спрашивает, не бросили ли его (throw_if_stop_requested): ждущий,
     // отменив ожидание, свободен сразу, а тело, осиротев, дорабатывает лишь
     // до ближайшей полосы — вызов WIC посреди не обрывается — и не держит пул
     // до конца снимка. Отказ на любой полосе — отказ всей картинки:
@@ -200,20 +247,16 @@ DecodedPicture decodeWith(IWICImagingFactory* wic, std::string_view bytes, uint3
     // Полосой WIC читает не всякий кадр: прогрессивный JPEG и чересстрочные
     // PNG и GIF декодер раскодирует целиком на первой же полосе — вся их
     // работа ложится в один вызов, и отмена доходит до них только после него.
-    // Известный долг: ускорить конец такого снимка нечем, кроме меньшего
-    // бюджета. Требует замера и другое: полосы идут сверху вниз, но
-    // уменьшение Fant может просить у кадра строки с перекрытием назад, и
-    // если декодер JPEG на таком запросе начинает кадр заново, полосы стоят
-    // дороже одного вызова на весь кадр.
     //
     // E_OUTOFMEMORY при копировании — остановка, как и нехватка памяти на сам
     // буфер. Бюджет ограничил только кадр в его собственном формате, и обычно
     // эта нехватка — беда системы; но прогрессивный JPEG держит по ходу ещё
     // коэффициенты (4:2:0 — 3 байта на пиксель, 4:4:4 — 6, CMYK — 8, в
     // пределах бюджета до 2 ГиБ), и тогда это остановка от данных — известная
-    // цена бюджета, который пропускает снимки телефонов на 200 Мп. Прочие
-    // отказы копирования — о файле.
-    throwIfStopRequested(state);
+    // цена бюджета, который пропускает снимки телефонов на 200 Мп. Отказы
+    // копирования с кодом о данных — о файле; от наших аргументов (буфер,
+    // шаг, прямоугольник) — ошибка кода, остановка (refusedOnData).
+    throw_if_stop_requested(state);
 
     DecodedPixels pixels;
     pixels.width = fitted.width;
@@ -224,7 +267,7 @@ DecodedPicture decodeWith(IWICImagingFactory* wic, std::string_view bytes, uint3
 
     const uint32_t bandCount = (pixels.height + kBandRows - 1) / kBandRows;
     for (uint32_t band = 0; band < bandCount; ++band) {
-        throwIfStopRequested(state);
+        throw_if_stop_requested(state);
 
         const uint32_t top = band * kBandRows;
         const uint32_t rows = std::min(kBandRows, pixels.height - top);
@@ -234,7 +277,7 @@ DecodedPicture decodeWith(IWICImagingFactory* wic, std::string_view bytes, uint3
         const HRESULT copied = pixelSource->CopyPixels(&rect, pixels.stride, pixels.stride * rows, into);
         if (copied == E_OUTOFMEMORY)
             stopIfFailedOffDevice(copied, "WIC: не хватило памяти на снимок в бюджете");
-        if (FAILED(copied)) return notAnImage();
+        if (refusedOnData(copied, "WIC: полоса снимка не скопировалась не по данным")) return notAnImage();
 
         if (afterBand) afterBand(band);
     }
@@ -244,13 +287,8 @@ DecodedPicture decodeWith(IWICImagingFactory* wic, std::string_view bytes, uint3
 
 }  // namespace
 
-DecodedPicture decodeImage(std::string_view bytes, uint32_t maxSide) {
-    if (bytes.empty()) return notAnImage();
-
-    return decodeImage(newImagingFactory().Get(), bytes, maxSide);
-}
-
 DecodedPicture decodeImage(IWICImagingFactory* wic, std::string_view bytes, uint32_t maxSide) {
+    requireSideLimit(maxSide);
     return decodeWith(wic, bytes, maxSide, nullptr, {});
 }
 
@@ -264,6 +302,8 @@ namespace {
 /// ближайшей полосы, и пиксели, которых никто не ждёт, отпускаются там же.
 task<DecodedPicture> decodeInPool(std::string bytes, uint32_t maxSide, cancellation_token stop,
                                   std::function<void(uint32_t)> afterBand) {
+    requireSideLimit(maxSide);
+
     auto decoding = [bytes = std::move(bytes), maxSide,
                      afterBand = std::move(afterBand)](const orphan_state& state) -> DecodedPicture {
         if (bytes.empty()) return notAnImage();
@@ -281,10 +321,15 @@ task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide, cance
     return decodeInPool(std::move(bytes), maxSide, std::move(stop), {});
 }
 
-task<DecodedPicture> detail::decodeImageAsync(std::string bytes, uint32_t maxSide, cancellation_token stop,
-                                              std::function<void(uint32_t band)> afterBand) {
+// Ступень проб: объявлена в заголовке проб библиотеки, читалке её не видно.
+namespace detail {
+
+task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide, cancellation_token stop,
+                                      std::function<void(uint32_t band)> afterBand) {
     return decodeInPool(std::move(bytes), maxSide, std::move(stop), std::move(afterBand));
 }
+
+}  // namespace detail
 
 PictureSize fittedSize(uint32_t width, uint32_t height, uint32_t limit) {
     if (limit == 0 || width == 0 || height == 0) wxl::core::abort("fittedSize: нулевая сторона или предел");

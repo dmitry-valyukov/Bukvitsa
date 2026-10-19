@@ -26,7 +26,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -90,14 +89,11 @@ struct DecodedPicture {
 
 /// Снимок, раскодированный целиком и не больше `maxSide` по большей стороне
 /// (больший уменьшается, Fant, с сохранением пропорций), — или почему его
-/// нет. Байты после вызова не нужны: пиксели уже в своём буфере. Фабрика WIC своя
-/// и на один вызов: так раскодируют по одному снимку, а не в цикле.
-/// Раскодирует на потоке вызова; подложку и снимок мастера — в пуле
-/// (`decodeImageAsync`).
-DecodedPicture decodeImage(std::string_view bytes, uint32_t maxSide = kMaxPictureSide);
-
-/// То же фабрикой вызывающего — у книги она одна на все её картинки. Есть
-/// контекст — предел `min(kMaxPictureSide, GetMaximumBitmapSize())`.
+/// нет. Байты после вызова не нужны: пиксели уже в своём буфере. Фабрика —
+/// вызывающего: у книги она одна на все её картинки; есть контекст — предел
+/// `min(kMaxPictureSide, GetMaximumBitmapSize())`. Раскодирует на потоке
+/// вызова; подложку и снимок мастера — в пуле (`decodeImageAsync`). Предел
+/// вне (0, kMaxPictureSide] — остановка.
 DecodedPicture decodeImage(IWICImagingFactory* wic, std::string_view bytes, uint32_t maxSide = kMaxPictureSide);
 
 /// То же в системном пуле, а не на потоке вызова: поток окна, пока снимок
@@ -106,7 +102,8 @@ DecodedPicture decodeImage(IWICImagingFactory* wic, std::string_view bytes, uint
 /// отпускаются на потоке пула, а наружу уходят одни пиксели — битмап из них
 /// делает поток окна (`deviceBitmapOf`). Ответ — тот же, что у
 /// `decodeImage`; отказ системы — остановка там же, в пуле, без проверки на
-/// потерю устройства.
+/// потерю устройства; предел вне (0, kMaxPictureSide] — остановка здесь, на
+/// потоке вызова.
 ///
 /// Под отменённым токеном не начинается. Отмена посреди кончает ожидание
 /// `operation_canceled_exception` сразу, а тело сиротеет: его ответ
@@ -116,19 +113,6 @@ DecodedPicture decodeImage(IWICImagingFactory* wic, std::string_view bytes, uint
 /// (`sta_loop::outstanding`).
 wxl::async::task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide,
                                                   wxl::async::cancellation_token stop);
-
-namespace detail {
-
-/// Ступень проб: `decodeImageAsync`, чьё тело после каждой скопированной
-/// полосы зовёт `afterBand(номер полосы)` на потоке пула — так проба ставит
-/// отмену ровно между полосами, без опроса. Тело может пережить ожидание:
-/// то, на что ссылается `afterBand`, проба держит, пока сирота не вернётся.
-/// В читалке не зовётся.
-wxl::async::task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide,
-                                                  wxl::async::cancellation_token stop,
-                                                  std::function<void(uint32_t band)> afterBand);
-
-}  // namespace detail
 
 /// Бюджет кадра по заголовку — до всякого раскодирования, в байтах: декодер
 /// может держать полный кадр в его собственном формате (чересстрочный PNG —

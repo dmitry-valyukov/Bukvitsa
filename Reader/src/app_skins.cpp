@@ -51,7 +51,7 @@ detached_task App::addSkin() {
     if (pixels.empty()) co_return;
 
     {
-        auto const offered = CheckedImageScope{checkedImage_, path, std::move(pixels)};
+        auto const offeredImageScope = CheckedImageScope{checkedImage_, path, std::move(pixels)};
         wizard_.openNew(path);
     }
     panel_.close();
@@ -77,7 +77,7 @@ detached_task App::editSkin(u16_text name) {
     if (pixels.empty()) co_return;
 
     {
-        auto const offered = CheckedImageScope{checkedImage_, image, std::move(pixels)};
+        auto const offeredImageScope = CheckedImageScope{checkedImage_, image, std::move(pixels)};
         wizard_.openEdit(skin, image);
     }
     panel_.close();
@@ -96,7 +96,7 @@ detached_task App::chooseAnotherImage() {
     DecodedPixels pixels = co_await checkImage(path, session);
     if (pixels.empty()) co_return;
 
-    auto const offered = CheckedImageScope{checkedImage_, path, std::move(pixels)};
+    auto const offeredImageScope = CheckedImageScope{checkedImage_, path, std::move(pixels)};
     wizard_.openNew(path);
 }
 
