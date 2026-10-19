@@ -24,10 +24,19 @@ namespace {
 
 /// Накопленные суммы до элемента: ширина строки между двумя переломами —
 /// это разность сумм, а не отдельный проход по элементам.
+///
+/// Суммы — в double, хотя слагаемые во float. Растяжимость за обязательным
+/// разрывом доходит до десятков тысяч (клей перед ним бесконечно растяжим), и
+/// во float у такой суммы последний разряд — тысячные доли: разность двух
+/// сумм теряла бы растяжимость короткой строки, а клей «плюс S» и следующий
+/// за ним «минус S» (место разрыва, отдающее растяжимость только строке,
+/// кончающейся на нём) гасились бы не в ноль. В double сумма чисел float
+/// абзаца точна, пока их порядки расходятся меньше чем на 29 двоичных
+/// разрядов, — с величинами в DIP так и есть.
 struct Totals {
-    float width = 0.0f;
-    float stretch = 0.0f;
-    float shrink = 0.0f;
+    double width = 0.0;
+    double stretch = 0.0;
+    double shrink = 0.0;
 };
 
 /// Классы плотности строки. Соседние строки разных классов выглядят
@@ -88,6 +97,7 @@ public:
         const float relaxedShrink = -3.0f;
 
         // Как задумано.
+        pass_ = 1;
         if (auto result = attempt(settings_.tolerance, settings_.minAdjustmentRatio, true, false);
             !result.empty())
             return result;
@@ -95,10 +105,12 @@ public:
         // Плотнее, чем хотелось бы: строка сжата сильнее, чем обещали пробелы.
         // Из двух зол это меньшее — слишком плотная строка читается, слишком
         // растянутая рассыпается на слова.
+        pass_ = 2;
         if (auto result = attempt(settings_.tolerance, relaxedShrink, true, false); !result.empty())
             return result;
 
         // Свободнее, чем хотелось бы.
+        pass_ = 3;
         if (auto result = attempt(kInfinitePenalty, relaxedShrink, true, false); !result.empty())
             return result;
 
@@ -107,6 +119,7 @@ public:
         // разрешают вылезти. Бывает на слове шире полосы, которое переносы
         // делят на помещающиеся куски, но только тремя разрывами подряд, —
         // например, на заголовке из слов, склеенных подчёркиванием.
+        pass_ = 4;
         if (auto result = attempt(kInfinitePenalty, relaxedShrink, false, false); !result.empty())
             return result;
 
@@ -119,17 +132,23 @@ public:
         // Разбивка при этом честно берёт ровно одну плохую строку там, где
         // иначе никак, а не разваливает из-за неё весь абзац: скверность
         // растёт кубом и не упирается ни в какой потолок, см. badness().
+        pass_ = 5;
         if (auto result = attempt(kInfinitePenalty, -kInfinitePenalty, false, false); !result.empty())
             return result;
 
         // Аварийный проход: терпим любую строку, лишь бы абзац появился.
+        pass_ = 6;
         return attempt(kInfinitePenalty, -kInfinitePenalty, false, true);
     }
+
+    /// Номер прохода, которым кончился run(), — LineBreaks::pass.
+    uint32_t pass() const { return pass_; }
 
 private:
     std::span<const BreakItem> items_;
     std::span<const float> lineWidths_;
     BreakSettings settings_;
+    uint32_t pass_ = 0;
 
     std::vector<Node> nodes_;
     std::vector<uint32_t> active_;
@@ -154,7 +173,9 @@ private:
 
     /// Ширина от перелома до текущего места. Клей, стоящий на самом переломе,
     /// в строку не входит: он и есть то, что съедено разрывом.
-    static float naturalWidth(const Totals& from, const Totals& to) { return to.width - from.width; }
+    static float naturalWidth(const Totals& from, const Totals& to) {
+        return static_cast<float>(to.width - from.width);
+    }
 
     /// Насколько строку придётся растянуть (>0) или сжать (<0), чтобы она
     /// заняла полосу. Бесконечность — когда тянуть нечем.
@@ -168,11 +189,12 @@ private:
         const float available = lineWidth(node.line);
 
         if (width < available) {
-            const float stretch = at.stretch - node.totals.stretch + settings_.lineEndStretch;
+            const float stretch =
+                static_cast<float>(at.stretch - node.totals.stretch) + settings_.lineEndStretch;
             return stretch > 0.0f ? (available - width) / stretch : kInfinitePenalty;
         }
         if (width > available) {
-            const float shrink = at.shrink - node.totals.shrink;
+            const float shrink = static_cast<float>(at.shrink - node.totals.shrink);
             if (shrink > 0.0f)
                 return (available - width) / shrink;
 
@@ -258,13 +280,11 @@ private:
         active_.push_back(0);
 
         Totals running;
-        std::vector<uint32_t> stillActive;
         std::vector<uint32_t> born;
 
         for (size_t at = 0; at < items_.size(); ++at) {
             if (isBreakpoint(at))
-                considerBreak(at, running, tolerance, minRatio, limitSeries, desperate, stillActive,
-                              born);
+                considerBreak(at, running, tolerance, minRatio, limitSeries, desperate, born);
 
             const BreakItem& item = items_[at];
             if (item.kind != BreakItem::Kind::Penalty) {
@@ -278,11 +298,9 @@ private:
     }
 
     void considerBreak(size_t at, const Totals& running, float tolerance, float minRatio,
-                       bool limitSeries, bool desperate,
-                       std::vector<uint32_t>& stillActive, std::vector<uint32_t>& born) {
+                       bool limitSeries, bool desperate, std::vector<uint32_t>& born) {
         const bool forced = isForcedBreak(items_[at]);
 
-        stillActive.clear();
         born.clear();
 
         // Лучший предок для каждого класса плотности и каждой длины серии
@@ -309,17 +327,72 @@ private:
 
         bool anyFeasible = false;
 
-        for (const uint32_t index : active_) {
+        // Обход активных узлов обрывается на первом, от которого строка сюда
+        // слишком свободна: от всех узлов за ним она свободна тоже, и смотреть
+        // их незачем. В слове шире полосы место разрыва стоит перед каждой
+        // буквой, и активных узлов — по нескольку на каждую букву строки;
+        // строку, которой ещё рано кончаться, оценивал бы каждый из них.
+        //
+        // Почему за ним все свободны. active_ упорядочен по месту узла:
+        // рождённые на этом месте дописываются в хвост, выбывшие убираются без
+        // перестановки. Строка от более позднего узла — хвост строки от более
+        // раннего, и её ширина не больше: ширина каждого элемента
+        // неотрицательна. Это предпосылка breakLines (linebreak.h): ширина
+        // бокса у вёрстки — сумма шагов глифов, и шаг считается не меньше
+        // нуля; отрицательный шаг сдвинул бы границу обрыва, и узел за ним мог
+        // бы оказаться годным. Растяжимость тоже не больше: у каждого клея она
+        // неотрицательна, кроме клея «минус S» в разрыве, который отдаёт
+        // растяжимость только строке, кончающейся на нём: он идёт за штрафом
+        // сразу после клея «плюс S», в любой строке, через это место
+        // проходящей, их сумма — ноль, а строке, начатой на этом разрыве, клей
+        // «минус S» не достаётся — его съедает разрыв. При одной и той же
+        // полосе (ширина штрафа на переломе и растяжимость конца строки у всех
+        // строк сюда общие) недобор у строки от позднего узла не меньше,
+        // растяжимость не больше, и коэффициент подгонки не меньше: если
+        // строка от узла слишком свободна, то и от всех узлов за ним. Суммы
+        // копятся в double и точны (Totals), так что «плюс S» с «минус S»
+        // гасятся в ноль.
+        //
+        // Для переполненной строки так не выйдет: сжимаемость в знаменателе, и
+        // коэффициент вдоль active_ не монотонен. Поэтому выбывшие по сжатию
+        // узлы ищутся проверкой каждого, а не отрезаются началом списка, и
+        // обрыв касается только недобора.
+        //
+        // Полоса одна не у всех: строка от корня — первая, и её полоса короче
+        // на абзацный отступ. Корень стоит в начале active_ и оценивается
+        // всегда; обрыв — только на узле, чья строка идёт уже по последней
+        // ширине из lineWidths, а за ним — только такие узлы. Это так, пока
+        // ширин не больше двух; при большем числе обрыва нет. В аварийном
+        // проходе строка годится любая, и обрыва нет тоже; на обязательном
+        // разрыве — нет: он закрывает все узлы, и хвост нужно снять. Нет его и
+        // при бесконечной терпимости (проходы 3–5): строке, которую тянуть
+        // нечем, adjustmentRatio отвечает ровно kInfinitePenalty, а строке с
+        // крошечной растяжимостью — больше, и на этом пороге монотонность
+        // рвётся: узел за «слишком свободным» мог бы оказаться годным. При
+        // конечной терпимости оба ответа выше неё, и обрыв верен.
+        const bool mayStop =
+            !desperate && !forced && tolerance < kInfinitePenalty && lineWidths_.size() <= 2;
+        const size_t lastWidth = lineWidths_.size() - 1;
+
+        size_t kept = 0;
+        size_t visited = 0;
+        for (; visited < active_.size(); ++visited) {
+            const uint32_t index = active_[visited];
             const Node& node = nodes_[index];
             const float ratio = adjustmentRatio(node, running, at);
+
+            if (mayStop && ratio > tolerance && node.line >= lastWidth)
+                break;
 
             // Узел, до которого уже не дотянуться: строка от него сюда не
             // помещается даже полностью сжатой. Дальше будет только хуже, так
             // что он выбывает — на этом и держится линейность алгоритма.
-            // Обязательный разрыв закрывает все узлы разом.
+            // Обязательный разрыв закрывает все узлы разом. Оставшиеся
+            // сдвигаются к началу на место выбывших; узел читается раньше, чем
+            // на его место пишется следующий, — kept не больше visited.
             const bool tooTight = ratio < minRatio;
             if (!tooTight && !forced)
-                stillActive.push_back(index);
+                active_[kept++] = index;
 
             const bool feasible =
                 desperate || (ratio >= minRatio && ratio <= tolerance);
@@ -369,7 +442,10 @@ private:
             }
         }
 
-        active_ = stillActive;
+        // Хвост за обрывом остаётся активным как есть: строка от его узлов
+        // сюда слишком свободна, но не слишком тесна.
+        active_.erase(active_.begin() + static_cast<ptrdiff_t>(kept),
+                      active_.begin() + static_cast<ptrdiff_t>(visited));
         active_.insert(active_.end(), born.begin(), born.end());
     }
 
@@ -398,10 +474,13 @@ private:
 
 }  // namespace
 
-std::vector<uint32_t> breakLines(std::span<const BreakItem> items,
-                                 std::span<const float> lineWidths,
-                                 const BreakSettings& settings) {
-    return Breaker{items, lineWidths, settings}.run();
+LineBreaks breakLines(std::span<const BreakItem> items, std::span<const float> lineWidths,
+                      const BreakSettings& settings) {
+    Breaker breaker{items, lineWidths, settings};
+    LineBreaks result;
+    result.breaks = breaker.run();
+    result.pass = result.breaks.empty() ? 0 : breaker.pass();
+    return result;
 }
 
 }  // namespace bukvitsa::typography

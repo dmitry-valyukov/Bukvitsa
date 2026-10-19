@@ -439,12 +439,26 @@ void testLayout(typography::Engine& engine, const typography::BookText& book, fl
     uint32_t worstStart = 0;
     std::wstring worstNeighbours;
 
+    // Дороже всех блок: его время, длина и проход разбивки, которым он
+    // разбит, — абзац, ушедший в снисходительные проходы, стоит нескольких.
+    double costliestBlock = 0.0;
+    uint32_t costliestLength = 0;
+    uint32_t costliestPass = 0;
+
     for (const typography::Block& block : blocks) {
         if (block.paragraph.text.count == 0)
             continue;
 
         const typography::ParagraphStyle style = styleFor(block, 20.0f);
+        const auto blockStarted = std::chrono::steady_clock::now();
         const auto lines = engine.layout(book, block.paragraph, width, style);
+        const double blockElapsed = std::chrono::duration<double, std::milli>(
+                                        std::chrono::steady_clock::now() - blockStarted).count();
+        if (blockElapsed > costliestBlock) {
+            costliestBlock = blockElapsed;
+            costliestLength = block.paragraph.text.count;
+            costliestPass = engine.lastBreakPass();
+        }
         const std::wstring_view text = book.textOf(block.paragraph).wchars();
 
         uint32_t reached = 0;
@@ -481,6 +495,8 @@ void testLayout(typography::Engine& engine, const typography::BookText& book, fl
 
     std::printf("  вёрстка полосы %.0f: %zu строк, %zu глифов, %.0f мс\n", width, lineCount,
                 glyphCount, elapsed);
+    std::printf("  дороже всех блок: %.0f мс, %u символов, проход разбивки %u\n", costliestBlock,
+                costliestLength, costliestPass);
 
     check(lineCount > 0, "книга разбита на строки");
 
@@ -1045,7 +1061,8 @@ void testClustersStayWhole(typography::Engine& engine) {
               std::string("длинный прогон делится между буквами: ") + letter.name);
     }
 
-    // Полоса в два кегля рубит слово кусками по полкегля — уже любой буквы.
+    // Полоса в два кегля: слово шире неё рубится перед каждой буквой, и строк
+    // выходит по букве-две — разрез посреди буквы не пропустит ни одна.
     u16_text word;
     for (int round = 0; round < 3; ++round)
         for (const CorpusLetter& letter : kLetters)
@@ -2724,7 +2741,10 @@ void testIndentAfterBreak(typography::Engine& engine) {
     // нулевой колонки, и каждая — полная позиция в четыре пробела: 40 позиций
     // Georgia при кегле 17 — около 650 DIP, вдвое с лишним шире полосы 260.
     // Шире полосы — значит, строк не меньше трёх: «а», хотя бы один кусок
-    // отступа и строка, где он кончается.
+    // отступа и строка, где он кончается. Строка из одного куска отступа
+    // недобирает до табуляции, и растяжимость у неё есть только та, что
+    // разрыв рубки отдаёт строке, кончающейся на нём: без неё такая строка
+    // жёсткая, и абзац разбивался бы не первым проходом, а снисходительным.
     u16_text wideText;
     wideText += u"а\n";
     wideText += indentOf(U'\t', 40);
@@ -2733,8 +2753,10 @@ void testIndentAfterBreak(typography::Engine& engine) {
     const auto wideNatural = layoutOf(engine, wide, 10000.0f, ragged);
     const float wideIndent = wideNatural.size() == 2 ? leadingAdvance(wideNatural[1], 40) : 0.0f;
     const auto wideLines = layoutOf(engine, wide, kColumn, justified);
-    std::printf("  отступ шире полосы: сам по себе %.2f, строк %zu, самая широкая %.2f\n", wideIndent,
-                wideLines.size(), widest(wideLines));
+    const uint32_t widePass = engine.lastBreakPass();
+    std::printf("  отступ шире полосы: сам по себе %.2f, строк %zu, самая широкая %.2f, проход разбивки %u\n",
+                wideIndent, wideLines.size(), widest(wideLines), widePass);
+    check(widePass == 1, "отступ шире полосы разбит первым проходом: строке из куска отступа есть чем растянуться");
     check(wideIndent > kColumn && wideLines.size() >= 3, "отступ из 40 табуляций шире полосы");
     check(insideColumn(wideLines, kColumn) && linesStartAtLetters(wideText, wideLines, "отступ шире полосы"),
           "отступ шире полосы разрублен по буквам, строки внутри полосы");
@@ -2792,6 +2814,164 @@ void testIndentAfterBreak(typography::Engine& engine) {
           "табуляция посреди строки — невидимый прогон шириной до позиции табуляции");
     check(justifiedTab && tabbedJustified.size() > 1 && justifiedTab->width <= tabStop + 0.01f,
           "выключка по формату табуляцию не тянет");
+}
+
+/// Слово шире полосы рубится перед каждой своей буквой, и строка из него
+/// кончается там, где кончается полоса: недобор строки — меньше самой широкой
+/// буквы, и выключке, которой в слове без пробелов закрыть его нечем, кроме
+/// разрядки букв, разряжать почти нечего. Абзац — строка клавиатуры сорок раз подряд,
+/// как «Следом абзац из букв без пробелов» в nightmare_example: 1280 букв, и
+/// слово длиннее предела переносов — мест переноса в нём нет. По формату,
+/// кегль 20, абзацный отступ 30: первая полоса на него короче. Полосы 600 и
+/// 736 — книжные, 260 — колонка сноски. Естественные шаги букв — тот же текст
+/// влево на полосе, куда он входит целиком и не рубится.
+///
+/// Проба 1 — строка не кончается раньше: недобор каждой строки, кроме
+/// последней, меньше самой широкой буквы слова. Мера — самая широкая буква, а
+/// не первая буква следующей строки: Кнут-Пласс с кубической скверностью
+/// выравнивает недоборы соседних строк и вправе отдать букву следующей строке,
+/// если та недобирала больше, — тогда недобор этой строки больше первой буквы
+/// следующей, но не больше самой широкой. Такие строки отчёт помечает
+/// звёздочкой.
+///
+/// Проба 2 — без разрядки: шаг каждой буквы строки, кроме последней, не больше
+/// естественного на долю самой широкой буквы, разделённой на число глифов
+/// строки без одного (последнему глифу остаток выключки может не достаться),
+/// и ещё на 0,05 на глиф — погрешность выключки во float.
+///
+/// Проба 3 — смешанная строка: «аа бб вв » и то же слово, полоса 600. Рубка
+/// начинается посреди строки, где уже есть пробелы, и строка, где она
+/// начинается, тоже не кончается раньше.
+void testWordWiderThanColumn(typography::Engine& engine) {
+    std::printf("\n=== слово шире полосы ===\n");
+
+    constexpr float kIndent = 30.0f;
+    typography::ParagraphStyle justified;   // по формату — по умолчанию
+    justified.fontSize = 20.0f;
+    justified.firstLineIndent = kIndent;
+    typography::ParagraphStyle ragged;
+    ragged.fontSize = 20.0f;
+    ragged.alignment = typography::Alignment::Left;
+
+    u16_text word;
+    for (int round = 0; round < 40; ++round)
+        word += u"йцукенгшщзхъфывапролджэячсмитьбю";
+
+    // Шаги глифов строки по порядку прогонов. У этих букв глиф на единицу
+    // текста, и j-й шаг строки — шаг символа textStart + j.
+    const auto stepsOf = [](const typography::Line& line) {
+        std::vector<float> steps;
+        for (const typography::GlyphRun& run : line.runs)
+            steps.insert(steps.end(), run.advances.begin(), run.advances.end());
+        return steps;
+    };
+
+    // Естественные шаги всего текста: одна строка влево, глиф на символ — или
+    // пусто, если это не так и сравнивать шаги по позиции нельзя.
+    const auto naturalStepsOf = [&](const typography::BookText& book, size_t length) {
+        const auto lines = layoutOf(engine, book, 1.0e6f, ragged);
+        std::vector<float> steps = lines.size() == 1 ? stepsOf(lines.front()) : std::vector<float>{};
+        if (steps.size() != length) steps.clear();
+        return steps;
+    };
+
+    const typography::BookText wordBook = paragraphOf(word);
+    const std::vector<float> wordSteps = naturalStepsOf(wordBook, word.size());
+    check(!wordSteps.empty(), "слово из 1280 букв на широкой полосе — одна строка, глиф на букву");
+    if (wordSteps.empty()) return;
+
+    float widestLetter = 0.0f;
+    for (const float step : wordSteps) widestLetter = std::max(widestLetter, step);
+
+    // Недобор строки index: полоса за вычетом естественной ширины её текста.
+    const auto shortfallOf = [&](std::span<const typography::Line> lines, size_t index, float column,
+                                 const std::vector<float>& natural) {
+        const typography::Line& line = lines[index];
+        float width = 0.0f;
+        for (uint32_t at = line.textStart; at < line.textStart + line.textLength && at < natural.size(); ++at)
+            width += natural[at];
+        return (index == 0 ? column - kIndent : column) - width;
+    };
+    // Естественный шаг первой буквы следующей строки — для отчёта: строка,
+    // недобравшая больше неё, отдала букву соседке.
+    const auto nextLetterOf = [](std::span<const typography::Line> lines, size_t index,
+                                 const std::vector<float>& natural) {
+        const uint32_t at = lines[index + 1].textStart;
+        return at < natural.size() ? natural[at] : 0.0f;
+    };
+
+    std::printf("  самая широкая буква %.2f\n", widestLetter);
+
+    for (const float column : {600.0f, 736.0f, 260.0f}) {
+        const auto lines = layoutOf(engine, wordBook, column, justified);
+        const bool enough = lines.size() >= 3;
+
+        bool notEarly = enough;
+        bool notSpaced = enough;
+        float worstShortfall = 0.0f;
+        float worstExtra = 0.0f;
+        float allowedExtra = 0.0f;
+        std::string report;
+
+        for (size_t index = 0; enough && index + 1 < lines.size(); ++index) {
+            const typography::Line& line = lines[index];
+            const float shortfall = shortfallOf(lines, index, column, wordSteps);
+            const bool gaveAway = shortfall >= nextLetterOf(lines, index, wordSteps) + 0.05f;
+            worstShortfall = std::max(worstShortfall, shortfall);
+            if (shortfall >= widestLetter + 0.05f) notEarly = false;
+
+            char entry[32];
+            std::snprintf(entry, sizeof entry, " %.2f%s", shortfall, gaveAway ? "*" : "");
+            report += entry;
+
+            const std::vector<float> steps = stepsOf(line);
+            if (steps.size() != line.textLength || steps.size() < 2) {
+                notSpaced = false;
+                continue;
+            }
+            const float allowed = widestLetter / static_cast<float>(steps.size() - 1) + 0.05f;
+            for (size_t glyph = 0; glyph < steps.size(); ++glyph) {
+                const float extra = steps[glyph] - wordSteps[line.textStart + glyph];
+                if (extra > worstExtra) {
+                    worstExtra = extra;
+                    allowedExtra = allowed;
+                }
+                if (extra > allowed) notSpaced = false;
+            }
+        }
+
+        std::printf("  полоса %.0f, строк %zu; недобор по строкам:%s\n", column, lines.size(), report.c_str());
+        std::printf("  полоса %.0f: недобор до %.2f, прибавка к шагу буквы до %.2f при допуске %.2f\n", column,
+                    worstShortfall, worstExtra, allowedExtra);
+        check(notEarly, "слово шире полосы: строка не кончается раньше — недобор меньше самой широкой буквы, полоса " +
+                            std::to_string(static_cast<int>(column)));
+        check(notSpaced, "слово шире полосы: выключка не разряжает буквы, полоса " +
+                             std::to_string(static_cast<int>(column)));
+    }
+
+    // Смешанная строка: рубка начинается за тремя короткими словами.
+    u16_text mixed;
+    mixed += u"аа бб вв ";
+    const auto wordStart = static_cast<uint32_t>(mixed.size());
+    mixed += word;
+    const typography::BookText mixedBook = paragraphOf(mixed);
+    const std::vector<float> mixedSteps = naturalStepsOf(mixedBook, mixed.size());
+    constexpr float kMixedColumn = 600.0f;
+    const auto mixedLines = layoutOf(engine, mixedBook, kMixedColumn, justified);
+
+    // Строка, где начинается рубимое слово.
+    size_t chopLine = mixedLines.size();
+    for (size_t index = 0; index < mixedLines.size(); ++index) {
+        const typography::Line& line = mixedLines[index];
+        if (line.textStart <= wordStart && wordStart < line.textStart + line.textLength) chopLine = index;
+    }
+    const bool mixedFound = !mixedSteps.empty() && chopLine + 1 < mixedLines.size();
+    const float mixedShortfall = mixedFound ? shortfallOf(mixedLines, chopLine, kMixedColumn, mixedSteps) : -1.0f;
+    const float mixedNext = mixedFound ? nextLetterOf(mixedLines, chopLine, mixedSteps) : -1.0f;
+    std::printf("  «аа бб вв » и слово, полоса %.0f: строк %zu, рубка начинается в строке %zu, недобор %.2f, следующая буква %.2f\n",
+                kMixedColumn, mixedLines.size(), chopLine, mixedShortfall, mixedNext);
+    check(mixedFound && mixedShortfall < widestLetter + 0.05f,
+          "слово шире полосы за короткими словами: строка, где начинается рубка, не кончается раньше");
 }
 
 /// Строка, кончившаяся обязательным разрывом (`<br/>` свёртка делает
@@ -3524,6 +3704,7 @@ int main() {
     testHyphenShift(engine);
     testTrailingSpace(engine);
     testIndentAfterBreak(engine);
+    testWordWiderThanColumn(engine);
     testLineBeforeForcedBreak(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};

@@ -397,6 +397,9 @@ struct Engine::Impl {
     /// иначе смена шрифта тихо не подействовала бы на всё уже отшейпленное.
     uint64_t styleGeneration = 0;
 
+    /// Каким проходом разбит абзац последним вызовом layout — для замеров.
+    uint32_t lastBreakPass = 0;
+
     /// Запомненная средняя ширина знака (averageCharWidth) и то, при каком
     /// кегле и каком поколении стиля она измерена: смена шрифта книги видна
     /// по поколению, как и у отшейпленных абзацев.
@@ -1046,8 +1049,20 @@ struct Engine::Impl {
                                             bool ragged, float maxWidth) {
         const auto textLength = static_cast<uint32_t>(text.size());
 
+        // Резерв — на обычный текст: элемент на слово и на пробел за ним.
         sta_vector<BreakItem> items;
         items.reserve(textLength / 4 + 8);
+
+        // Рубимое слово даёт по два элемента на букву — место рубки и бокс
+        // буквы, рубимый отступ — по пять на единицу (место рубки в нём — четыре
+        // элемента), — и резерв под них добирается сразу, как только видно, что
+        // рубить. С запасом вдвое: в узкой полосе рубится слово за словом, и
+        // резерв точно по слову перекладывал бы массив на каждом.
+        const auto reserveChop = [&](uint32_t units, size_t perUnit) {
+            const size_t needed = items.size() + perUnit * static_cast<size_t>(units) + 8;
+            if (needed > items.capacity())
+                items.reserve(std::max(needed, items.capacity() * 2));
+        };
 
         // Слово, которое не помещается в полосу целиком (длинный адрес,
         // склеенный текст, а в примере nightmare — нарочно целая строка
@@ -1055,12 +1070,14 @@ struct Engine::Impl {
         // не разрывают и правы: разрыва там нет. Но показать книгу важнее
         // правила, которое здесь всё равно ничего не спасает.
         //
-        // Рубится оно на четверти полосы, а не на полосу целиком: кусков на
-        // строку тогда приходится несколько, и строка может кончиться там, где
-        // надо, а не там, где случайно легла граница куска. Но проверяется
-        // именно полная ширина слова — иначе под нож пошло бы каждое слово
-        // длиннее четверти полосы, то есть половина слов в заголовке.
-        const float chunkWidth = std::max(maxWidth * 0.25f, 1.0f);
+        // Место рубки — перед каждой его буквой: строка рубимого слова тогда
+        // кончается там, где кончается полоса, и недобирает меньше самой
+        // широкой буквы строки, хотя не обязательно меньше первой буквы
+        // следующей: Кнут-Пласс выравнивает недоборы соседних строк. Это
+        // важно: недобор такой строки выключке закрыть нечем, кроме разрядки
+        // букв, — пробелов в слове нет. Но проверяется именно полная ширина
+        // слова — иначе под нож пошло бы каждое слово, которому тесно в конце
+        // строки, а оно должно целиком уйти на следующую.
         bool chopWord = false;
 
         // Конец слова, которое набирается сейчас: по нему видно, сколько букв
@@ -1116,6 +1133,29 @@ struct Engine::Impl {
             item.textPosition = at;
             item.textEnd = at;
             items.push_back(item);
+        };
+
+        // Разрыв, который отдаёт растяжимость только строке, кончающейся на
+        // нём, — приём свободного края у Кнута: клей с растяжимостью, штраф,
+        // клей с той же растяжимостью со знаком минус. Строка, кончающаяся на
+        // штрафе, получает растяжимость первого клея; строка через это место —
+        // их сумму, ноль; второй клей за разрывом съедается. Бесконечный штраф
+        // впереди нужен, чтобы местом разрыва не стал сам первый клей: он
+        // стоял бы сразу за боксом.
+        const auto breakWithStretch = [&](uint32_t at, float stretch, float value) {
+            penalty(at, kInfinitePenalty);
+
+            BreakItem glue;
+            glue.kind = BreakItem::Kind::Glue;
+            glue.stretch = stretch;
+            glue.textPosition = at;
+            glue.textEnd = at;
+            items.push_back(glue);
+
+            penalty(at, value);
+
+            glue.stretch = -stretch;
+            items.push_back(glue);
         };
 
         const auto flush = [&](uint32_t endPosition) {
@@ -1248,13 +1288,23 @@ struct Engine::Impl {
                 // разрыв разрешён — неразрывный пробел держит слово при себе —
                 // и только на границе буквы: пробел бывает основой знака за
                 // ним, и вывод букву не рвёт.
+                //
+                // У отступа шире полосы строка, кончающаяся здесь, — его
+                // остаток, и растяжимость она получает, как на месте его рубки
+                // (ниже): иначе строка из одного остатка была бы жёсткой, и
+                // абзац уходил бы в снисходительные проходы.
                 if (indentEnds) {
                     const u16_view indent = text.substr(pendingStart);
                     const size_t indentLength = i - pendingStart;
+                    const float lastUnit = pending;
                     flush(i);
                     if (point.breakConditionBefore != DWRITE_BREAK_CONDITION_MAY_NOT_BREAK &&
-                        unicode::floor_grapheme_boundary(indent, indentLength) == indentLength)
-                        penalty(i, kIndentBreakPenalty);
+                        unicode::floor_grapheme_boundary(indent, indentLength) == indentLength) {
+                        if (chopWord)
+                            breakWithStretch(i, lastUnit, kIndentBreakPenalty);
+                        else
+                            penalty(i, kIndentBreakPenalty);
+                    }
                 } else {
                     flush(i);
                 }
@@ -1272,15 +1322,17 @@ struct Engine::Impl {
                 // разрыва: там он кончается.
                 if (pendingIsIndent) {
                     float indentWidth = 0.0f;
-                    for (uint32_t at = i; at < textLength && points[at].isWhitespace != 0 &&
-                                          (at == i || points[at].breakConditionBefore !=
-                                                          DWRITE_BREAK_CONDITION_MUST_BREAK);
+                    uint32_t at = i;
+                    for (; at < textLength && points[at].isWhitespace != 0 &&
+                           (at == i || points[at].breakConditionBefore != DWRITE_BREAK_CONDITION_MUST_BREAK);
                          ++at)
                         indentWidth += metrics.width[at];
 
                     chopWord = indentWidth > maxWidth;
-                    if (chopWord)
+                    if (chopWord) {
                         letter = i;
+                        reserveChop(at - i, 5);
+                    }
                 }
 
                 // Начинается слово — сразу смотрим, поместится ли оно в полосу.
@@ -1294,6 +1346,12 @@ struct Engine::Impl {
                 // него: это то же слово, и просмотр вперёд так проходит по
                 // каждому символу ровно один раз за слово, то есть по книге —
                 // один раз.
+                //
+                // В слове, которое всё же рубится, переносы и разрывы после
+                // дефиса остаются местами разрыва, но разбивка их почти не
+                // берёт: рубка перед любой буквой бесплатна, а перенос стоит
+                // штрафа и ширины дефиса. Так и задумано: слову шире полосы
+                // важнее заполнить строку, чем разорваться по слогам.
                 if (!space && (i == 0 || points[i - 1].isWhitespace != 0)) {
                     float piece = 0.0f;
                     float widest = 0.0f;
@@ -1312,8 +1370,10 @@ struct Engine::Impl {
 
                     chopWord = widest > maxWidth;
                     wordEnd = at;
-                    if (chopWord)
+                    if (chopWord) {
                         letter = i;
+                        reserveChop(at - i, 2);
+                    }
                 }
             }
 
@@ -1337,19 +1397,46 @@ struct Engine::Impl {
             };
 
             if (chopWord && !pendingIsGlue && pending > 0.0f && metrics.width[i] > 0.0f &&
-                pending + metrics.width[i] > chunkWidth && startsLetter(i)) {
+                startsLetter(i)) {
+                const float previousWidth = pending;
+                const float previousStretchable = pendingStretchable;
                 flush(i);
 
-                // Клей нулевой ширины: место, где рвать можно, но ничего не
-                // стоит. Кусков на строку выходит несколько, поэтому строка,
-                // кончающаяся на таком клее, растяжимость всё же получает — от
-                // тех же клеев, что остались внутри неё.
-                BreakItem anywhere;
-                anywhere.kind = BreakItem::Kind::Glue;
-                anywhere.stretch = chunkWidth;
-                anywhere.textPosition = i;
-                anywhere.textEnd = i;
-                items.push_back(anywhere);
+                if (pendingIsIndent) {
+                    // В отступе выключка не тянет ничего, и строке, которая идёт
+                    // через место рубки, растяжимости от него не достаётся. Но
+                    // строка, которая здесь кончается, — из одного отступа, и
+                    // её недобор невидим: это пустое место. Жёсткой она быть не
+                    // должна — иначе ни одна такая строка не проходит, пока
+                    // разбивка не дойдёт до проходов, где терпится всё, а там
+                    // строка за полем дешевле недобранной и разрывы остатка
+                    // абзаца уже не различаются. Поэтому место рубки отдаёт
+                    // растяжимость только строке, кончающейся на нём
+                    // (breakWithStretch): ширину единицы отступа перед ним, так
+                    // что недобор до одной единицы проходит первым проходом.
+                    breakWithStretch(i, previousWidth, 0.0f);
+                } else {
+                    // Место рубки слова — клей нулевой ширины: рвать здесь можно,
+                    // и ничего это не стоит. Растяжимость у него малая, какая у
+                    // строки без пробелов и есть: её недобор выключка закрывает
+                    // только остаточным растяжением букв, то есть разрядкой, и
+                    // разбивка, которой пообещали больше, сочла бы хорошей
+                    // строку, недобравшую несколько букв. Здесь, в отличие от
+                    // отступа, растяжимость копится по строке: выключка
+                    // раздаёт остаток по всем её буквам, и десятая доля буквы
+                    // перед каждым местом рубки — это десятая ширины строки. В
+                    // строке из полусотни букв недобор меньше буквы даёт
+                    // коэффициент около 0,2 и проходит первым проходом, а
+                    // каждая недобранная буква сверх того обходится заметно
+                    // дороже. Сжимаемости нет: сжимать слово нечем. У
+                    // невидимого символа растяжимости нет (stretchable).
+                    BreakItem cut;
+                    cut.kind = BreakItem::Kind::Glue;
+                    cut.stretch = previousStretchable * 0.1f;
+                    cut.textPosition = i;
+                    cut.textEnd = i;
+                    items.push_back(cut);
+                }
 
                 pendingStarted = true;
                 pendingIsGlue = false;
@@ -1604,6 +1691,8 @@ const TextStyle& Engine::textStyle() const { return impl_->style; }
 
 float Engine::lineHeightFor(const ParagraphStyle& style) const { return impl_->lineHeightOf(style); }
 
+uint32_t Engine::lastBreakPass() const { return impl_->lastBreakPass; }
+
 float Engine::averageCharWidth(float fontSize) const {
     Impl& impl = *impl_;
     const float fallback = fontSize * 0.5f;
@@ -1683,6 +1772,7 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
     const Paragraph& paragraph = data->paragraph;
     const u16_view text = book.textOf(paragraph);
     const auto textLength = static_cast<uint32_t>(text.size());
+    impl.lastBreakPass = 0;
     if (textLength == 0 || width <= 0.0f || data->referenceFontSize <= 0.0f)
         return {};
 
@@ -1723,8 +1813,10 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         settings.lineEndStretch = kInfinitePenalty;
     }
 
-    std::vector<uint32_t> breaks =
+    LineBreaks broken =
         breakLines(items, std::span<const float>(lineWidths, indented ? 2 : 1), settings);
+    impl.lastBreakPass = broken.pass;
+    std::vector<uint32_t> breaks = std::move(broken.breaks);
 
     if (breaks.empty())
         return {};
