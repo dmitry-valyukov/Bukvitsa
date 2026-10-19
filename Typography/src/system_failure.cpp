@@ -13,7 +13,9 @@ namespace bukvitsa::typography {
 namespace {
 
 /// Проверка на потерю устройства от читалки; пусто — не поставлена. Один
-/// STA-поток, ставится до первого рисунка — без синхронизации.
+/// STA-поток, ставится до первого рисунка — без синхронизации: отказ вне
+/// устройства (failedOffDevice), который приходит с любого потока, её не
+/// читает.
 DeviceLossCheck deviceLossCheck = nullptr;
 
 /// Остановка с текстом «what, HRESULT 0x…» на месте `where`.
@@ -29,6 +31,10 @@ void setDeviceLossCheck(DeviceLossCheck check) noexcept {
 
 void detail::failed(HRESULT result, std::string_view what, std::source_location where) {
     if (deviceLossCheck) deviceLossCheck(result);
+    stopOnFailure(result, what, where);
+}
+
+void detail::failedOffDevice(HRESULT result, std::string_view what, std::source_location where) noexcept {
     stopOnFailure(result, what, where);
 }
 

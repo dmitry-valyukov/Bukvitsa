@@ -1,7 +1,8 @@
 // Точка расширения остановки (system_failure.h): у отказа stopIfFailed сперва
 // зовёт проверку на потерю устройства — бросившая проверка доходит до
 // вызывающего, вернувшаяся ведёт к остановке, — а ставится проверка раз на
-// процесс: второй раз, как и пустая, — остановка.
+// процесс: второй раз, как и пустая, — остановка. Отказ вне устройства
+// (stopIfFailedOffDevice) проверки не зовёт.
 //
 // Раз на процесс — значит, и сценарий на процесс: программа одна, сценарий —
 // её аргумент, и каждый — свой запуск ctest. Сценарии с остановкой ctest
@@ -68,6 +69,18 @@ int stopsWithoutCheck() {
     return 1;
 }
 
+/// Отказ вне устройства проверки не зовёт — её слова в stderr нет, — а
+/// останавливает, как всякий.
+int offDeviceSkipsCheck() {
+    withoutDialog();
+    setDeviceLossCheck([](HRESULT result) {
+        std::fprintf(stderr, "check 0x%08X; ", static_cast<unsigned>(result));
+        std::fflush(stderr);
+    });
+    stopIfFailedOffDevice(E_FAIL, "probe: off device");
+    return 1;
+}
+
 int setTwice() {
     withoutDialog();
     setDeviceLossCheck([](HRESULT) {});
@@ -88,8 +101,9 @@ int main(int argc, char** argv) {
     if (scenario == "lost") return lostReachesCaller();
     if (scenario == "order") return checkBeforeStop();
     if (scenario == "unset") return stopsWithoutCheck();
+    if (scenario == "offdevice") return offDeviceSkipsCheck();
     if (scenario == "twice") return setTwice();
     if (scenario == "empty") return setEmpty();
-    std::fputs("system_failure_tests: lost | order | unset | twice | empty\n", stderr);
+    std::fputs("system_failure_tests: lost | order | unset | offdevice | twice | empty\n", stderr);
     return 2;
 }

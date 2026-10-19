@@ -26,13 +26,17 @@ using wxl::async::last_error;
 // Новая обложка, правка существующей и другой снимок под открытым мастером —
 // у каждой своя корутина над общим шагом checkImage: снимок проверяется до
 // мастера, а мастеру достаётся путь уже проверенного. Предпросмотр мастер
-// включает сам — открытием правки (preview).
+// включает сам — открытием правки (preview), — и подложкой под ним встаёт
+// снимок, раскодированный проверкой: страж (CheckedImageScope) держит его в
+// checkedImage_ на время открытия, и файл второй раз не читается и не
+// раскодируется.
 //
 // Каждая дорога начинает сеанс мастера (beginWizardSession) и ждёт снимка под
 // его токеном: следующая дорога, выход из мастера и уход с полосы сеанс
 // отменяют, и снимок, который ещё читается, мастера уже не откроет. Снимок,
-// прочитанный раньше отмены, — ответ, как у вопроса об удалении (deleteSkin),
-// поэтому после ожидания сеанс спрашивается ещё раз. Иначе другой снимок
+// раскодированный раньше отмены, — ответ операции, поэтому после ожидания
+// сеанс спрашивает сама проверка (checkImage) и кончается отменой: дорога
+// дальше своего co_await не идёт. Иначе другой снимок
 // открыл бы правку под скрытым мастером — полоса осталась бы в предпросмотре,
 // и скрытие его уже не сняло бы, — а новая обложка встала бы поверх полки или
 // заставки, где с открытым мастером клавиши экранов молчат.
@@ -43,10 +47,13 @@ detached_task App::addSkin() {
     const std::filesystem::path path = askForImage(window_.handle());
     if (path.empty()) co_return;
 
-    if (!co_await checkImage(path, session)) co_return;
-    if (session.is_canceled()) co_return;
+    DecodedPixels pixels = co_await checkImage(path, session);
+    if (pixels.empty()) co_return;
 
-    wizard_.openNew(path);
+    {
+        auto const offered = CheckedImageScope{checkedImage_, path, std::move(pixels)};
+        wizard_.openNew(path);
+    }
     panel_.close();
     wizard_.show();
     reportWarpRefusal();
@@ -66,10 +73,13 @@ detached_task App::editSkin(u16_text name) {
     const Skin skin = *known;
     const std::filesystem::path image = ws_.skinImagePath(skin);
 
-    if (!co_await checkImage(image, session)) co_return;
-    if (session.is_canceled()) co_return;
+    DecodedPixels pixels = co_await checkImage(image, session);
+    if (pixels.empty()) co_return;
 
-    wizard_.openEdit(skin, image);
+    {
+        auto const offered = CheckedImageScope{checkedImage_, image, std::move(pixels)};
+        wizard_.openEdit(skin, image);
+    }
     panel_.close();
     wizard_.show();
     reportWarpRefusal();
@@ -83,9 +93,10 @@ detached_task App::chooseAnotherImage() {
     // Отказался — остаёмся на прежнем снимке: читатель ничего не терял.
     if (path.empty()) co_return;
 
-    if (!co_await checkImage(path, session)) co_return;
-    if (session.is_canceled()) co_return;
+    DecodedPixels pixels = co_await checkImage(path, session);
+    if (pixels.empty()) co_return;
 
+    auto const offered = CheckedImageScope{checkedImage_, path, std::move(pixels)};
     wizard_.openNew(path);
 }
 
@@ -102,25 +113,34 @@ void App::endWizardSession() {
     wizard_.hide();
 }
 
-/// Читает файл и пробует раскодировать его как картинку. Нет — читателю
-/// говорится, что именно не так: не картинка или картинка больше бюджета
-/// памяти — с её размером из заголовка, чтобы было видно, во что её
-/// уменьшить. Байты для показа полосе приносит потом loadBackdrop: второе
-/// чтение того же файла дешевле, чем нести байты через мастер в полосу.
-wxl::async::task<bool> App::checkImage(std::filesystem::path image, cancellation_token stop) {
+/// Читает файл и раскодирует его как картинку — в пуле и один раз: годный
+/// снимок дорога отдаёт подложке под мастером как есть. На потоке окна
+/// раскодирование снимка 8000×6000 — секунды без ввода, и Enter, нажатый за
+/// них, доставался бы уже следующей правке мастера; проба и показ порознь
+/// раскодировали бы его дважды. Не годится — читателю говорится, что именно
+/// не так: не картинка или картинка больше бюджета памяти — с её размером из
+/// заголовка, чтобы было видно, во что её уменьшить.
+wxl::async::task<DecodedPixels> App::checkImage(std::filesystem::path image, cancellation_token stop) {
     try {
-        const PictureVerdict verdict = co_await ws_.probeImage(image, std::move(stop));
+        DecodedPicture probed = co_await ws_.probeImageAsync(image, stop);
+
+        // Снимок, раскодированный раньше отмены, — ответ операции, но сеанс,
+        // который его ждал, кончен: ни слов читателю, ни снимка дороге — она
+        // кончается здесь же, отменой.
+        stop.throw_if_canceled();
+
+        const PictureVerdict& verdict = probed.verdict;
         switch (verdict.refusal) {
         case PictureRefusal::None:
-            co_return true;
+            co_return std::move(probed.pixels);
         case PictureRefusal::NotAnImage:
             notices_.post({L"Это не изображение", image.wstring()});
-            co_return false;
+            co_return DecodedPixels{};
         case PictureRefusal::TooLarge: {
             const u16_text headline = core::format(u"Снимок слишком велик: {}×{}", verdict.declaredSize.width,
                                                    verdict.declaredSize.height);
             notices_.post({std::wstring{headline.wchars()}, image.wstring()});
-            co_return false;
+            co_return DecodedPixels{};
         }
         }
         // Новая причина отказа без своих слов молча отказала бы в снимке.
@@ -128,7 +148,7 @@ wxl::async::task<bool> App::checkImage(std::filesystem::path image, cancellation
     } catch (const last_error& failure) {
         notices_.post(noticeOf(L"Не удалось открыть изображение", image.wstring(), failure));
     }
-    co_return false;
+    co_return DecodedPixels{};
 }
 
 detached_task App::leaveWizard() {
@@ -288,6 +308,7 @@ void App::applySkins(int theme) {
     // путём. Забыт он раньше, чем встанет номер: слушатель темы, если номер
     // другой, принесёт нужный сам, и showBackdrop ниже второй раз его не
     // читает.
+    cancelBackdropLoad();
     backdrop_.clear();
     presenter_.skinsChanged(theme);
     showBackdrop();
@@ -328,8 +349,9 @@ void App::reportWarpRefusal() {
     notices_.post({L"Изгиб страницы недоступен на этом устройстве", std::wstring{details.wchars()}});
 }
 
-/// Путь снимка знает мастер или рабочее место, байты читает loadBackdrop. Тот
-/// же файл — ничего: снимок у полосы уже есть (или в дороге).
+/// Путь снимка знает мастер или рабочее место. Тот же файл — ничего: снимок у
+/// полосы уже есть (или в дороге). Снимок, который дорога в мастер уже
+/// раскодировала, — полосе сразу; иной читает и раскодирует loadBackdrop.
 void App::showBackdrop() {
     std::filesystem::path wanted;
     if (const std::optional<SkinPreview>& wizardPreview = wizard_.shownPreview().get()) {
@@ -338,29 +360,53 @@ void App::showBackdrop() {
         wanted = ws_.skinImagePath(*skin);
     }
 
+    // Готовый снимок того же файла, только что прочитанный проверкой, —
+    // полосе сразу, даже если путь тот же: он свежее, а загрузка того же
+    // пути, если она ещё идёт, больше не нужна.
+    if (!checkedImage_.pixels.empty() && checkedImage_.file == wanted) {
+        backdrop_ = wanted;
+        cancelBackdropLoad();
+        view_.setBackdrop(std::move(checkedImage_.pixels));
+        return;
+    }
+
     if (wanted == backdrop_) return;
     backdrop_ = wanted;
+
+    // Прежний снимок полосе больше не нужен — его загрузку отменяет здесь
+    // владелец. Иначе каждая смена темы оставляла бы своё раскодирование
+    // идти до конца, и при частой T они шли бы в пуле разом.
+    cancelBackdropLoad();
 
     // До прихода снимка страница рисуется бумагой темы: прежний снимок ей не
     // годится.
     view_.setBackdrop({});
-    if (!wanted.empty()) loadBackdrop(std::move(wanted));
+    if (!wanted.empty()) loadBackdrop(std::move(wanted), backdropLoad_.token());
 }
 
-/// Байты файла читает операция wxl, раскодирует их полоса у себя. Не
-/// прочитался, не раскодировался или больше бюджета памяти — полоса остаётся
-/// при бумаге темы, а читатель узнаёт почему — один раз на путь за запуск:
-/// тему с этим снимком выбирают снова и снова (T, панель), и окно на каждый
-/// раз было бы шумом, а молчание прятало бы сбой. Пока читали, могли захотеть
-/// другой — тогда этот не нужен.
-detached_task App::loadBackdrop(std::filesystem::path file) {
-    auto const stop = cancellation_source{stop_.token()};
+void App::cancelBackdropLoad() {
+    backdropLoad_.cancel();
+    backdropLoad_ = cancellation_source{stop_.token()};
+}
 
+/// Файл читает операция wxl, раскодирует его системный пул — не поток окна,
+/// который всё раскодирование не брал бы ввода. Не прочитался, не
+/// раскодировался или больше бюджета памяти — полоса остаётся при бумаге
+/// темы, а читатель узнаёт почему — один раз на путь за запуск: тему с этим
+/// снимком выбирают снова и снова (T, панель), и окно на каждый раз было бы
+/// шумом, а молчание прятало бы сбой. Пока читали и раскодировали, могли
+/// захотеть другой — тогда загрузку этого отменил владелец
+/// (cancelBackdropLoad): путь подложки меняется только вместе с отменой.
+detached_task App::loadBackdrop(std::filesystem::path file, cancellation_token stop) {
     try {
-        std::string bytes = co_await ws_.readBytes(file, stop.token());
-        if (file != backdrop_) co_return;
+        DecodedPicture decoded = co_await ws_.probeImageAsync(file, stop);
 
-        const PictureRefusal refusal = view_.setBackdrop(std::move(bytes));
+        // Раскодированное раньше отмены — ответ операции, но снимок, ставший
+        // ненужным (другой путь, выход), полосе не отдаётся.
+        stop.throw_if_canceled();
+
+        const PictureRefusal refusal = decoded.verdict.refusal;
+        view_.setBackdrop(std::move(decoded.pixels));
         if (refusal == PictureRefusal::None || !reportedBackdrops_.insert(file).second) co_return;
         notices_.post({refusal == PictureRefusal::TooLarge ? L"Снимок обложки слишком велик"
                                                            : L"Снимок обложки не раскодировался",

@@ -24,3 +24,17 @@ target_compile_definitions(bukvitsa_lib_tests PRIVATE
     BUKVITSA_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../FB3/testdata")
 
 add_test(NAME bukvitsa_lib_tests COMMAND bukvitsa_lib_tests)
+
+# Раскодирование снимка в системном пуле — под петлёй на очереди диспетчера
+# (start_dispatched), как у читалки с окном: петля стартует раз на процесс, а
+# пробы выше идут на спящей, поэтому своя программа. Сверяется её итог.
+add_executable(bukvitsa_imaging_pool_tests imaging_pool_tests.cpp)
+target_link_libraries(bukvitsa_imaging_pool_tests PRIVATE bukvitsa::lib)
+bukvitsa_consumes_wxl(bukvitsa_imaging_pool_tests)
+target_compile_definitions(bukvitsa_imaging_pool_tests PRIVATE
+    BUKVITSA_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../FB3/testdata")
+
+add_test(NAME bukvitsa_imaging_pool_tests COMMAND bukvitsa_imaging_pool_tests)
+set_tests_properties(bukvitsa_imaging_pool_tests PROPERTIES
+    PASS_REGULAR_EXPRESSION "imaging pool: OK"
+    FAIL_REGULAR_EXPRESSION "FAILED")

@@ -187,7 +187,7 @@ ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
     if (asset.bitmap) return asset.bitmap.Get();
     if (asset.bytes.empty()) return nullptr;
 
-    // Целиком в одном вызове и не больше, чем держит устройство; пиксели в
+    // Целиком и не больше, чем держит устройство; пиксели в
     // памяти отпускаются, как только стали битмапом устройства, а сжатые
     // байты остаются: потерянное устройство заберёт битмап, и он
     // раскодируется из них снова. Чужие байты, битые не в заголовке, а в
@@ -196,12 +196,12 @@ ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
     // пустым. Отказ Direct2D — остановка (deviceBitmapOf).
     const uint32_t deviceSide = std::min<uint32_t>(kMaxPictureSide, context->GetMaximumBitmapSize());
     const DecodedPicture decodedPicture = decodeImage(wic_.Get(), asset.bytes, deviceSide);
-    if (!decodedPicture.bitmap) {
+    if (decodedPicture.pixels.empty()) {
         asset.bytes = std::string{};
         return nullptr;
     }
 
-    asset.bitmap = deviceBitmapOf(context, decodedPicture.bitmap.Get());
+    asset.bitmap = deviceBitmapOf(context, decodedPicture.pixels);
     return asset.bitmap.Get();
 }
 

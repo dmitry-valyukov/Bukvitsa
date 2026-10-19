@@ -9,10 +9,6 @@
 
 #include <d2d1effects.h>
 
-// Родной размер снимка подложки в пикселях — до создания поверхности,
-// поэтому нужен настоящий интерфейс WIC, а не только его объявление.
-#include <wincodec.h>
-
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
 // а стандартный заголовок после импорта MSVC уже не принимает. Свой первым:
 // он единственный тянет за собой стандартные заголовки, которых нет здесь, —
@@ -440,8 +436,8 @@ void BookView::renderingDeviceReplaced() noexcept {
     // ним: рисовать им в контекст нового — отказ Direct2D. Отпускается здесь
     // — и с ним прежнее устройство, которое оно держит, — а заводит заново
     // следующая отрисовка (drawThemeBackdrop, ensureWarp, ensureBlur,
-    // Book::bitmap), как в первый раз. Снимок подложки — память WIC, не
-    // устройства, и остаётся; кисти заводятся на каждый кадр и не держатся.
+    // Book::bitmap), как в первый раз. Снимок подложки — пиксели в памяти,
+    // не устройства, и остаётся; кисти заводятся на каждый кадр и не держатся.
     if (Book* const shownBook = presenter_.flow().book()) shownBook->dropDeviceBitmaps();
     photoBitmap_.Reset();
     warpBlur_.Reset();
@@ -538,26 +534,20 @@ void BookView::paintSpread(ID2D1DeviceContext* context) {
 void BookView::dropBackdrop() {
     // Кэш битмапа устройства заведёт заново drawThemeBackdrop, вкомпоновывая
     // фото прямо в поверхность страницы.
-    backdropSource_.Reset();
+    backdropSource_ = DecodedPixels{};
     photoBitmap_.Reset();
 }
 
-PictureRefusal BookView::setBackdrop(std::string bytes) {
+void BookView::setBackdrop(DecodedPixels pixels) {
     // Нечего ни отпускать, ни показывать — и перерисовывать незачем.
-    if (bytes.empty() && !backdropSource_) return PictureRefusal::None;
+    if (pixels.empty() && backdropSource_.empty()) return;
 
-    // Раскодируется сразу и целиком: байты после этого не нужны, а битые
-    // данные — бумага темы сейчас, а не отказ на каждом кадре, — и ответ
-    // владельцу, который скажет о них читателю.
+    // Снимок раскодирован целиком ещё у владельца, в пуле: битые данные уже
+    // сказались там, а здесь — только смена пикселей; битмап устройства из
+    // них заведёт рисунок (drawThemeBackdrop).
     dropBackdrop();
-    if (bytes.empty()) {
-        redraw();
-        return PictureRefusal::None;
-    }
-    DecodedPicture decodedBackdrop = decodeImage(bytes);
-    backdropSource_ = std::move(decodedBackdrop.bitmap);
+    backdropSource_ = std::move(pixels);
     redraw();
-    return decodedBackdrop.verdict.refusal;
 }
 
 bool BookView::ensureWarp(ID2D1DeviceContext* context) {
@@ -733,15 +723,15 @@ void BookView::ensureBlur(not_null<ID2D1DeviceContext> layerContext) {
 }
 
 void BookView::drawThemeBackdrop(ID2D1DeviceContext* context, float width, float height) {
-    if (!backdropSource_) return;
+    if (backdropSource_.empty()) return;
 
-    // Битмап устройства заводится раз на снимок и держится: CreateBitmapFromWicBitmap
-    // на каждый кадр стоил бы дорого, а перерисовка бывает лишь на листании и
+    // Битмап устройства заводится раз на снимок и держится: копия пикселей в
+    // видеопамять на каждый кадр стоила бы дорого, а перерисовка бывает лишь на листании и
     // растяжке. Устройство поверхности стабильно, пока не потеряно, а
     // потерянное отпускает его (renderingDeviceReplaced). Снимок
     // больше предела устройства уменьшается до него, а отказ Direct2D —
     // остановка (deviceBitmapOf).
-    if (!photoBitmap_) photoBitmap_ = deviceBitmapOf(context, backdropSource_.Get());
+    if (!photoBitmap_) photoBitmap_ = deviceBitmapOf(context, backdropSource_);
 
     // На всю полосу, без сохранения пропорций (как прежняя кисть Fill): снимок
     // скомпонован под полосу — книга по центру, стол по краям.
@@ -764,7 +754,7 @@ void BookView::drawPage(ID2D1DeviceContext* context, float width, float height) 
     // Фото-тема: фотоподложка — в ту же поверхность, под текстом, чтобы страница
     // осталась одним битмапом. Не раскодировалась — бумага темы, чтобы задник не
     // сквозил.
-    if (backdropSource_) {
+    if (!backdropSource_.empty()) {
         context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
         drawThemeBackdrop(context, width, height);
     } else {

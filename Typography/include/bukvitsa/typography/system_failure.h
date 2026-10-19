@@ -23,6 +23,11 @@
 // устройства проверка останавливает сама. Не поставлена (пробы библиотеки)
 // — отказ останавливает, как всякий.
 //
+// Отказ вызова, у которого нет устройства, идёт своей ступенью
+// (stopIfFailedOffDevice): остановка та же, но без проверки — проверка
+// спрашивает устройство, а это код потока, который рисует, тогда как такой
+// вызов может прийти с любого потока.
+//
 // Отказы вёрстки на DirectWrite (engine.cpp) этим путём не идут — они
 // бросают, как бросали. Чужие байты — картинка, которую не раскодировать, —
 // тоже не сюда: это ответ о файле, а не отказ системы.
@@ -53,6 +58,9 @@ namespace detail {
 /// отказа.
 [[noreturn]] void failed(HRESULT result, std::string_view what, std::source_location where);
 
+/// Отказ вне устройства: сразу остановка, без проверки на потерю.
+[[noreturn]] void failedOffDevice(HRESULT result, std::string_view what, std::source_location where) noexcept;
+
 }  // namespace detail
 
 /// Не удался вызов — остановка (`core::abort`) со словами и строкой вызова;
@@ -63,6 +71,15 @@ inline void stopIfFailed(HRESULT result, std::string_view what,
                          std::source_location where = std::source_location::current()) {
     if (FAILED(result)) [[unlikely]]
         detail::failed(result, what, where);
+}
+
+/// Не удался вызов, у которого нет устройства, — остановка, как у
+/// stopIfFailed, но без проверки на потерю устройства; зовётся с любого
+/// потока.
+inline void stopIfFailedOffDevice(HRESULT result, std::string_view what,
+                                  std::source_location where = std::source_location::current()) noexcept {
+    if (FAILED(result)) [[unlikely]]
+        detail::failedOffDevice(result, what, where);
 }
 
 }  // namespace bukvitsa::typography

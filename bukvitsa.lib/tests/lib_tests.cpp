@@ -2,12 +2,14 @@
 // над кривыми обложек. Как у FB3 и вёрстки, без фреймворка.
 
 #include <objbase.h>
+#include <wincodec.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -2219,32 +2221,305 @@ void testWorkspaceFindsLastBook() {
     check(run(ws.lastBookPath(never)).empty(), "guid неизвестен — продолжать нечего");
 }
 
+/// PNG в 68 байт: верный заголовок 65535×65535 в 1 бит на пиксель и начало
+/// данных. Бюджет считает его не меньше чем по 4 байта на пиксель — 17 ГБ, —
+/// так что ответ «слишком велик», а не «не картинка».
+constexpr auto kHugePng = std::string_view{
+    "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52"
+    "\x00\x00\xff\xff\x00\x00\xff\xff\x01\x00\x00\x00\x00\x9e\x7e\xe4"
+    "\xfd\x00\x00\x00\x0b\x49\x44\x41\x54\x78\x9c\x63\x60\x40\x05\x00"
+    "\x00\x10\x00\x01\x39\xbd\x8f\x65\x00\x00\x00\x00\x49\x45\x4e\x44"
+    "\xae\x42\x60\x82",
+    68};
+
+/// Снимок пробы: JPEG 800×507.
+const std::filesystem::path kPhoto = testdata / L"bg_paper2.jpg";
+
+/// Пиксели снимка такого размера — со своими байтами и шагом строки w·4.
+bool sized(const DecodedPixels& pixels, uint32_t width, uint32_t height) {
+    return !pixels.empty() && pixels.width == width && pixels.height == height && pixels.stride == width * 4;
+}
+
 /// Картинка или нет — по байтам, а не по имени; картинка больше бюджета
 /// памяти — свой отказ, с размером из заголовка, до всякого раскодирования.
+/// Вердикт и снимок приходят вместе: снимок — только у картинки.
 void testWorkspaceTellsImages() {
     std::printf("\n=== рабочее место: снимок ===\n");
 
     Sandbox box("image");
     Workspace ws(box.root, never);
 
-    check(run(ws.probeImage(testdata / L"bg_paper2.jpg", never)).refusal == PictureRefusal::None, "jpeg — картинка");
-    check(run(ws.probeImage(kBook, never)).refusal == PictureRefusal::NotAnImage, "книга — не картинка");
+    const DecodedPicture photo = run(ws.probeImageAsync(kPhoto, never));
+    check(photo.verdict.refusal == PictureRefusal::None && sized(photo.pixels, 800, 507),
+          "jpeg — картинка, и снимок при вердикте — 800×507");
 
-    // PNG в 68 байт: верный заголовок 65535×65535 в 1 бит на пиксель и
-    // начало данных. Бюджет считает его не меньше чем по 4 байта на пиксель —
-    // 17 ГБ, — так что ответ «слишком велик», а не «не картинка».
-    static constexpr char kHugePng[] =
-        "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52"
-        "\x00\x00\xff\xff\x00\x00\xff\xff\x01\x00\x00\x00\x00\x9e\x7e\xe4"
-        "\xfd\x00\x00\x00\x0b\x49\x44\x41\x54\x78\x9c\x63\x60\x40\x05\x00"
-        "\x00\x10\x00\x01\x39\xbd\x8f\x65\x00\x00\x00\x00\x49\x45\x4e\x44"
-        "\xae\x42\x60\x82";
-    putOnDisk(box.root / L"huge.png", std::string_view{kHugePng, sizeof kHugePng - 1});
-    const PictureVerdict hugeVerdict = run(ws.probeImage(box.root / L"huge.png", never));
-    check(hugeVerdict.refusal == PictureRefusal::TooLarge && hugeVerdict.declaredSize.width == 65535 &&
-              hugeVerdict.declaredSize.height == 65535,
-          "PNG 65535×65535 — слишком велик, с размером из заголовка");
-    check(run(ws.readBytes(kBook, never)) == onDisk(kBook), "байты файла целиком");
+    const DecodedPicture book = run(ws.probeImageAsync(kBook, never));
+    check(book.verdict.refusal == PictureRefusal::NotAnImage && book.pixels.empty(), "книга — не картинка, снимка нет");
+
+    putOnDisk(box.root / L"huge.png", kHugePng);
+    const DecodedPicture huge = run(ws.probeImageAsync(box.root / L"huge.png", never));
+    check(huge.verdict.refusal == PictureRefusal::TooLarge && huge.verdict.declaredSize.width == 65535 &&
+              huge.verdict.declaredSize.height == 65535 && huge.pixels.empty(),
+          "PNG 65535×65535 — слишком велик, с размером из заголовка, снимка нет");
+}
+
+/// Раскодирование вне потока вызова (у проб — на рабочем потоке спящей
+/// петли; путь системного пула — imaging_pool_tests) отвечает то же, что на
+/// месте: картинка — снимком
+/// того же размера, уменьшенным до предела вызывающего; книга — «не
+/// картинка»; PNG больше бюджета — «слишком велик» с размером из заголовка.
+void testDecodeAsyncTellsImages() {
+    std::printf("\n=== раскодирование на рабочем потоке петли: вердикты ===\n");
+
+    const std::string photo = onDisk(kPhoto);
+    const std::string book = onDisk(kBook);
+
+    const DecodedPicture here = decodeImage(photo);
+    const DecodedPicture pooled = run(decodeImageAsync(photo, kMaxPictureSide, never));
+    check(pooled.verdict.refusal == PictureRefusal::None && here.verdict.refusal == PictureRefusal::None &&
+              sized(pooled.pixels, 800, 507) && sized(here.pixels, 800, 507),
+          "jpeg — картинка 800×507, как на месте");
+
+    const DecodedPicture shrunk = run(decodeImageAsync(photo, 400, never));
+    check(shrunk.verdict.refusal == PictureRefusal::None && sized(shrunk.pixels, 400, 253),
+          "предел вызывающего доходит до тела: 400 по большей стороне — 400×253");
+
+    const DecodedPicture notImage = run(decodeImageAsync(book, kMaxPictureSide, never));
+    check(notImage.verdict.refusal == PictureRefusal::NotAnImage && notImage.pixels.empty() &&
+              decodeImage(book).verdict.refusal == PictureRefusal::NotAnImage,
+          "книга — не картинка, как на месте");
+
+    const DecodedPicture huge = run(decodeImageAsync(std::string{kHugePng}, kMaxPictureSide, never));
+    const DecodedPicture hugeHere = decodeImage(kHugePng);
+    check(huge.verdict.refusal == PictureRefusal::TooLarge && huge.verdict.declaredSize.width == 65535 &&
+              huge.verdict.declaredSize.height == 65535 && huge.pixels.empty() &&
+              hugeHere.verdict.refusal == PictureRefusal::TooLarge,
+          "PNG 65535×65535 — слишком велик, с размером из заголовка, как на месте");
+
+    const DecodedPicture empty = run(decodeImageAsync(std::string{}, kMaxPictureSide, never));
+    check(empty.verdict.refusal == PictureRefusal::NotAnImage && empty.pixels.empty(), "пустые байты — не картинка");
+}
+
+/// Раскодирование идёт не на потоке вызова: пока рабочий поток занят, ответа
+/// нет, а поток вызова свободен — сам раскодирует снимок на месте; ворота
+/// открыты — снимок приходит.
+void testDecodeAsyncLeavesCaller() {
+    std::printf("\n=== раскодирование на рабочем потоке петли: поток вызова свободен ===\n");
+
+    const std::string photo = onDisk(kPhoto);
+
+    HeldWorker heldWorker;
+    task<DecodedPicture> decoding = decodeImageAsync(photo, kMaxPictureSide, never);
+    check(!decoding.done(), "рабочий поток занят — раскодирование не кончилось");
+    check(sized(decodeImage(photo).pixels, 800, 507) && !decoding.done(),
+          "поток вызова тем временем свободен: раскодирует сам, а ответа пула всё нет");
+
+    heldWorker.open();
+    const DecodedPicture decoded = run(std::move(decoding));
+    check(decoded.verdict.refusal == PictureRefusal::None && sized(decoded.pixels, 800, 507),
+          "ворота открыты — снимок пришёл");
+}
+
+/// Под отменённым токеном раскодирование не начинается: ответ — отмена сразу,
+/// и рабочему потоку ничего не ушло. Отменённое, пока рабочий поток занят,
+/// кончает ожидание отменой за один проход петли, не дожидаясь ворот, — а
+/// тело сиротеет и
+/// остаётся на счету петли, пока поток до него не дойдёт: открыли ворота —
+/// сирота вернулась, и на счету ничего.
+void testDecodeAsyncStopsOnRequest() {
+    std::printf("\n=== раскодирование на рабочем потоке петли: отмена ===\n");
+
+    const std::string photo = onDisk(kPhoto);
+    const size_t before = sta_loop::outstanding();
+
+    cancellation_source already;
+    already.cancel();
+    task<DecodedPicture> refused = decodeImageAsync(photo, kMaxPictureSide, already.token());
+    check(refused.done() && sta_loop::outstanding() == before, "под отменённым токеном рабочему потоку ничего не ушло");
+    check(canceled(std::move(refused)), "под отменённым токеном — отмена, а не снимок");
+
+    cancellation_source later;
+    HeldWorker heldWorker;
+    const size_t held = sta_loop::outstanding();
+    task<DecodedPicture> decoding = decodeImageAsync(photo, kMaxPictureSide, later.token());
+    check(!decoding.done() && sta_loop::outstanding() == held + 1, "раскодирование стоит за занятым потоком");
+
+    // Отмена кладёт ожидающего в ход петли: один проход, который ничего не
+    // ждёт, кончает ожидание, ворота ещё закрыты.
+    later.cancel();
+    sta_loop::run_pending();
+    const bool endedAtOnce = decoding.done();
+    check(endedAtOnce && canceled(std::move(decoding)),
+          "отменено под закрытыми воротами — ожидание кончилось отменой за один проход петли, ворота ещё закрыты");
+    check(sta_loop::outstanding() == held + 1, "сирота на счету петли, пока поток до неё не дошёл");
+
+    heldWorker.open();
+    sta_loop::run_until([before] { return sta_loop::outstanding() == before; });
+    check(sta_loop::outstanding() == before, "ворота открыты — сирота вернулась, на счету петли ничего");
+}
+
+/// PNG одного цвета (BGRA 10, 20, 30, 255) такого размера — снимок проб
+/// полосами: сжимается в килобайты, а раскодируется целиком. Кодирует WIC
+/// пробы, в памяти; отказ — ошибка пробы, остановка.
+std::string solidPng(uint32_t width, uint32_t height) {
+    using Microsoft::WRL::ComPtr;
+    const auto must = [](HRESULT result, const char* what) {
+        if (FAILED(result)) wxl::core::abort(what);
+    };
+
+    ComPtr<IWICImagingFactory> wic;
+    must(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)),
+         "solidPng: фабрика");
+    ComPtr<IStream> stream;
+    must(::CreateStreamOnHGlobal(nullptr, TRUE, &stream), "solidPng: поток");
+    ComPtr<IWICBitmapEncoder> encoder;
+    must(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder), "solidPng: кодировщик");
+    must(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache), "solidPng: кодировщик на поток");
+    ComPtr<IWICBitmapFrameEncode> frame;
+    must(encoder->CreateNewFrame(&frame, nullptr), "solidPng: кадр");
+    must(frame->Initialize(nullptr), "solidPng: кадр без свойств");
+    must(frame->SetSize(width, height), "solidPng: размер");
+    WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+    must(frame->SetPixelFormat(&format), "solidPng: формат");
+    if (format != GUID_WICPixelFormat32bppBGRA) wxl::core::abort("solidPng: кодировщик сменил формат");
+
+    std::vector<BYTE> row(size_t{width} * 4);
+    for (size_t at = 0; at < row.size(); at += 4) {
+        row[at] = 10;
+        row[at + 1] = 20;
+        row[at + 2] = 30;
+        row[at + 3] = 255;
+    }
+    for (uint32_t y = 0; y < height; ++y)
+        must(frame->WritePixels(1, width * 4, width * 4, row.data()), "solidPng: строка");
+    must(frame->Commit(), "solidPng: кадр записан");
+    must(encoder->Commit(), "solidPng: файл записан");
+
+    STATSTG stat{};
+    must(stream->Stat(&stat, STATFLAG_NONAME), "solidPng: длина");
+    must(stream->Seek(LARGE_INTEGER{}, STREAM_SEEK_SET, nullptr), "solidPng: к началу");
+    std::string bytes(static_cast<size_t>(stat.cbSize.QuadPart), '\0');
+    ULONG read = 0;
+    must(stream->Read(bytes.data(), static_cast<ULONG>(bytes.size()), &read), "solidPng: чтение");
+    if (read != bytes.size()) wxl::core::abort("solidPng: прочитано меньше записанного");
+    return bytes;
+}
+
+/// Пиксель снимка — BGRA, по байтам в одном слове.
+uint32_t pixelAt(const DecodedPixels& pixels, uint32_t x, uint32_t y) {
+    uint32_t pixel = 0;
+    std::memcpy(&pixel, pixels.bytes.get() + size_t{y} * pixels.stride + size_t{x} * 4, sizeof pixel);
+    return pixel;
+}
+
+/// Цвет solidPng в PBGRA: непрозрачный, предумножение его не меняет.
+constexpr uint32_t kSolidPixel = 0xFF1E140Au;
+
+/// Кадр копируется полосами, и до конца: у снимка 4000×3000 — двенадцать
+/// полос (одиннадцать по 256 строк и хвост в 184), у уменьшенного до 1000 —
+/// 1000×750 через уменьшение, три полосы с хвостом; в первой и последней
+/// строке, у обоих краёв, — цвет снимка, а не пустая память недокопированной
+/// полосы. На рабочем потоке петли — то же, что на месте.
+void testDecodeCopiesAllBands() {
+    std::printf("\n=== раскодирование полосами: все строки ===\n");
+
+    const std::string png = solidPng(4000, 3000);
+
+    const auto whole = [](const DecodedPixels& picture, uint32_t width, uint32_t height) {
+        return sized(picture, width, height) && pixelAt(picture, 0, 0) == kSolidPixel &&
+               pixelAt(picture, width - 1, 0) == kSolidPixel && pixelAt(picture, 0, height - 1) == kSolidPixel &&
+               pixelAt(picture, width - 1, height - 1) == kSolidPixel;
+    };
+
+    const DecodedPicture here = decodeImage(png);
+    check(here.verdict.refusal == PictureRefusal::None && whole(here.pixels, 4000, 3000),
+          "4000×3000 на месте — все двенадцать полос, последняя строка цела");
+
+    const DecodedPicture pooled = run(decodeImageAsync(png, kMaxPictureSide, never));
+    check(pooled.verdict.refusal == PictureRefusal::None && whole(pooled.pixels, 4000, 3000),
+          "4000×3000 на рабочем потоке петли — так же");
+
+    const DecodedPicture shrunk = run(decodeImageAsync(png, 1000, never));
+    check(shrunk.verdict.refusal == PictureRefusal::None && whole(shrunk.pixels, 1000, 750),
+          "уменьшенный до 1000 — 1000×750 полосами через уменьшение, последняя строка цела");
+}
+
+/// Тело копирует полосы по порядку и между ними спрашивает, не осиротело ли.
+/// Ступень проб после полосы (detail::decodeImageAsync) видит все полосы
+/// снимка 4000×3000 — с 0-й по 11-ю. Отмена ровно между полосами — без
+/// опроса: тело, скопировав первую полосу, встаёт на ступени и будит пробу;
+/// проба отменяет токен (на своём потоке: токен — состояние потока STA) —
+/// ожидание кончается отменой за один проход петли, который ничего не ждёт,
+/// хотя тело ещё стоит, — и отпускает тело:
+/// осиротевшее, оно кончается на следующей полосе, второй полосы ступень не
+/// видит, и сирота возвращается петле. Ступень ссылается на семафоры и полосы
+/// пробы, а проба ждёт возврата сироты, так что они живы, пока тело их
+/// трогает.
+void testDecodeStopsBetweenBands() {
+    std::printf("\n=== раскодирование полосами: отмена между полосами ===\n");
+
+    const std::string png = solidPng(4000, 3000);
+    const size_t before = sta_loop::outstanding();
+
+    // Полосы записывает рабочий поток, читает проба — после возврата тела,
+    // который приходит каналом петли.
+    std::vector<uint32_t> bands;
+    const DecodedPicture counted = run(bukvitsa::reader::detail::decodeImageAsync(
+        png, kMaxPictureSide, never, [&bands](uint32_t band) { bands.push_back(band); }));
+    bool inOrder = bands.size() == 12;
+    for (size_t at = 0; inOrder && at < bands.size(); ++at) inOrder = bands[at] == at;
+    check(inOrder && sized(counted.pixels, 4000, 3000), "3000 строк — двенадцать полос по порядку, снимок целиком");
+
+    std::vector<uint32_t> orphanBands;
+    std::binary_semaphore firstBandCopied{0};
+    std::binary_semaphore mayGoOn{0};
+    cancellation_source source;
+    task<DecodedPicture> decoding = bukvitsa::reader::detail::decodeImageAsync(
+        png, kMaxPictureSide, source.token(), [&orphanBands, &firstBandCopied, &mayGoOn](uint32_t band) {
+            orphanBands.push_back(band);
+            if (band != 0) return;
+            firstBandCopied.release();
+            mayGoOn.acquire();
+        });
+
+    firstBandCopied.acquire();
+    source.cancel();
+    sta_loop::run_pending();
+    const bool endedAtOnce = decoding.done();
+    check(endedAtOnce && canceled(std::move(decoding)),
+          "отменено после первой полосы — ожидание кончилось отменой за один проход петли, тело ещё стоит");
+
+    mayGoOn.release();
+    sta_loop::run_until([before] { return sta_loop::outstanding() == before; });
+    check(orphanBands.size() == 1 && orphanBands[0] == 0,
+          "осиротевшее тело кончилось на следующей полосе: ступень видела одну первую");
+    check(sta_loop::outstanding() == before, "сирота вернулась — на счету петли ничего");
+}
+
+/// Проба снимка — одно чтение и одно раскодирование, и оба — операциями
+/// петли: после чтения уходит ровно одна операция, раскодирование, и после
+/// неё проба кончается снимком с вердиктом — третьей операции нет.
+void testProbeDecodesOnce() {
+    std::printf("\n=== проба снимка: один проход раскодирования ===\n");
+
+    Sandbox box("probe-once");
+    Workspace ws(box.root, never);
+
+    const size_t before = sta_loop::outstanding();
+    task<DecodedPicture> probing = ws.probeImageAsync(kPhoto, never);
+    check(!probing.done() && sta_loop::outstanding() == before + 1, "проба ждёт чтения — одна операция");
+
+    AnsweredWorker{}.deliver();
+    check(!probing.done() && sta_loop::outstanding() == before + 1,
+          "байты пришли — ушла одна операция, раскодирование, и проба ждёт её");
+
+    AnsweredWorker{}.deliver();
+    check(probing.done() && sta_loop::outstanding() == before,
+          "раскодирование ответило — проба кончилась, других операций не было");
+
+    const DecodedPicture probed = run(std::move(probing));
+    check(probed.verdict.refusal == PictureRefusal::None && sized(probed.pixels, 800, 507),
+          "вердикт и снимок пришли вместе");
 }
 
 /// Место чтения пишется под guid мест книги, а не последней книги из
@@ -2295,8 +2570,7 @@ void testWorkspaceReadsStopOnRequest() {
     const std::filesystem::path missing = box.root / L"missing.fb3";
 
     check(canceled(ws.readBook(missing, stop)), "книга: не начинается — отмена, а не «файла нет»");
-    check(canceled(ws.readBytes(missing, stop)), "байты: не начинается");
-    check(canceled(ws.probeImage(missing, stop)), "снимок: не начинается");
+    check(canceled(ws.probeImageAsync(missing, stop)), "снимок: не начинается");
     check(canceled(ws.addFolder(box.root / L"missing", stop)), "каталог: не начинается — отмена, а не «нет каталога»");
     check(canceled(ws.scanFolder(box.root / L"missing", stop)),
           "перепроверка каталога: не начинается — отмена, а не «каталога нет»");
@@ -3366,6 +3640,12 @@ int main(int argc, char* argv[]) {
     testWorkspaceRescanAdoptsStrayEntry();
     testWorkspaceFindsLastBook();
     testWorkspaceTellsImages();
+    testDecodeAsyncTellsImages();
+    testDecodeAsyncLeavesCaller();
+    testDecodeAsyncStopsOnRequest();
+    testDecodeCopiesAllBands();
+    testDecodeStopsBetweenBands();
+    testProbeDecodesOnce();
     testStateGoesUnderPlacesGuid();
     testWorkspaceReadsStopOnRequest();
     testWorkspaceStartReadsModelsWhole();

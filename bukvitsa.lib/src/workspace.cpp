@@ -946,14 +946,14 @@ task<> Workspace::deleteSkin(u16_view name, cancellation_token stop) {
     }
 }
 
-task<PictureVerdict> Workspace::probeImage(std::filesystem::path image, cancellation_token stop) {
-    const std::string bytes = co_await async_file::read_all(poolPath(image), std::move(stop));
+task<DecodedPicture> Workspace::probeImageAsync(std::filesystem::path image, cancellation_token stop) {
+    // Не const: байты уходят телу раскодирования перемещением.
+    std::string bytes = co_await async_file::read_all(poolPath(image), stop);
 
-    co_return decodeImage(bytes).verdict;   // пиксели пробе не нужны — битмап отпускается здесь же
-}
-
-task<std::string> Workspace::readBytes(std::filesystem::path file, cancellation_token stop) {
-    co_return co_await async_file::read_all(poolPath(file), std::move(stop));
+    // Чтение, успевшее кончиться раньше просьбы, отвечает байтами; под
+    // отменённым токеном раскодирование не начинается и кончается отменой —
+    // своего вопроса здесь не нужно.
+    co_return co_await decodeImageAsync(std::move(bytes), kMaxPictureSide, std::move(stop));
 }
 
 // ---- общее ----------------------------------------------------------------

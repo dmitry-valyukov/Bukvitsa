@@ -29,12 +29,16 @@ bukvitsa_consumes_wxl(system_failure_tests)
 add_test(NAME system_failure.lost COMMAND system_failure_tests lost)
 add_test(NAME system_failure.order COMMAND system_failure_tests order)
 add_test(NAME system_failure.unset COMMAND system_failure_tests unset)
+add_test(NAME system_failure.offdevice COMMAND system_failure_tests offdevice)
 add_test(NAME system_failure.twice COMMAND system_failure_tests twice)
 add_test(NAME system_failure.empty COMMAND system_failure_tests empty)
 set_tests_properties(system_failure.order PROPERTIES
     PASS_REGULAR_EXPRESSION "check 0x80070057; [^\n]*probe: other failure, HRESULT 0x80070057")
 set_tests_properties(system_failure.unset PROPERTIES
     PASS_REGULAR_EXPRESSION "probe: no check, HRESULT 0x80004005")
+set_tests_properties(system_failure.offdevice PROPERTIES
+    PASS_REGULAR_EXPRESSION "probe: off device, HRESULT 0x80004005"
+    FAIL_REGULAR_EXPRESSION "check 0x")
 set_tests_properties(system_failure.twice PROPERTIES
     PASS_REGULAR_EXPRESSION "setDeviceLossCheck: проверка ставится второй раз")
 set_tests_properties(system_failure.empty PROPERTIES
