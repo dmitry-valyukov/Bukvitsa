@@ -439,10 +439,12 @@ void BookView::renderingDeviceReplaced() noexcept {
     // Всё, заведённое из контекста прежнего устройства, — его и пропало с
     // ним: рисовать им в контекст нового — отказ Direct2D. Отпускается здесь
     // — и с ним прежнее устройство, которое оно держит, — а заводит заново
-    // следующая отрисовка (drawThemeBackdrop, ensureWarp, ensureBlur,
-    // Book::bitmap), как в первый раз. Снимок подложки — пиксели в памяти,
-    // не устройства, и остаётся; кисти заводятся на каждый кадр и не держатся.
-    if (Book* const shownBook = presenter_.flow().book()) shownBook->dropDeviceBitmaps();
+    // следующая отрисовка (drawThemeBackdrop, ensureWarp, ensureBlur), как в
+    // первый раз. Картинки книги отпускает ведущий: их раскодирует заново его
+    // очередь, и до того места под ними пустые. Снимок подложки — пиксели в
+    // памяти, не устройства, и остаётся; кисти заводятся на каждый кадр и не
+    // держатся.
+    presenter_.renderingDeviceReplaced();
     photoBitmap_.Reset();
     warpBlur_.Reset();
     warpShrink_.Reset();
@@ -882,6 +884,8 @@ void BookView::drawPageContent(ID2D1DeviceContext* context, float width, float h
         const float left = flow.columnLeft(column);
         const typography::Page& page = *columns[column];
 
+        // Картинку раскодирует очередь ведущего в пуле; пока её нет, место,
+        // отведённое вёрсткой, пустое, а готовая перерисует разворот.
         for (const typography::PlacedImage& image : page.images) {
             if (ID2D1Bitmap1* bitmap = flow.book()->bitmap(image.imageIndex, context)) {
                 const D2D1_RECT_F target =

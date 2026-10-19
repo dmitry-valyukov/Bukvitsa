@@ -40,13 +40,24 @@ Book::Book(const std::filesystem::path& path, fb3::Document&& document, IDWriteF
       characterCount_(document.characterCount()),
       // Пагинатор спрашивает размеры картинок у нас: вёрстка их не декодирует и
       // про WIC не знает. Главы заводятся по требованию (chapterAt), то есть
-      // после тела конструктора, которое картинки и раскодирует.
+      // после тела конструктора, которое читает размеры из заголовков.
       imageSize_([this](uint32_t index) {
           if (index >= images_.size())
               return typography::ImageSize{};
           return typography::ImageSize{images_[index].width, images_[index].height};
       }) {
     decodeImages(document);
+
+    // Картинки, которые можно показать, стоят в потоке чтения блоками; тела
+    // сносок картинок не рисуют, а обложка из описания в поток не входит.
+    // Нет ни одной — очереди картинок у этой книги делать нечего.
+    for (const typography::Block& flowBlock : text_.flow()) {
+        if (flowBlock.kind == typography::BlockKind::Image && flowBlock.imageIndex < images_.size() &&
+            images_[flowBlock.imageIndex].state != PictureState::Refused) {
+            picturesInFlow_ = true;
+            break;
+        }
+    }
 
     // Границы глав верхнего уровня: начало книги и каждый блок потока,
     // открывающий секцию верхнего уровня. По ним поток режется на главы; тела
@@ -137,33 +148,115 @@ void Book::decodeImages(fb3::Document& document) {
     if (count == 0)
         return;
 
-    // Системная фабрика — не ответ о книге: не создалась — остановка, а не
-    // книга без иллюстраций.
+    // Фабрика — только на заголовки, на время открытия: пиксели раскодирует
+    // пул своей фабрикой на каждый вызов (decodeImageAsync). Системная — не
+    // ответ о книге: не создалась — остановка, а не книга без иллюстраций.
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
     typography::stopIfFailed(
-        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_)),
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)),
         "Book: не создалась фабрика WIC");
 
     for (uint32_t index = 0; index < count; ++index) {
         ImageAsset& asset = images_[index];
 
         // При открытии — только размеры из заголовка: вёрстке они нужны сразу —
-        // без них не построить страницу, — а пиксели — лишь при рисунке.
-        // Раскодировать все картинки здесь значило бы держать их пиксели, пока
-        // книга открыта: сотни мегабайт у иллюстрированной. Не картинка или
-        // больше бюджета памяти — места на странице она не займёт.
+        // без них не построить страницу и не удержать место под картинку, пока
+        // её раскодирует пул, — а пиксели — лишь при рисунке. Раскодировать все
+        // картинки здесь значило бы держать их пиксели, пока книга открыта:
+        // сотни мегабайт у иллюстрированной. Не картинка или больше бюджета
+        // памяти — места на странице она не займёт, и раскодировать её некому.
         asset.bytes = document.takeImageBytes(index);
-        if (const std::optional<PictureHeader> header = pictureSizeOf(wic_.Get(), asset.bytes);
+        if (const std::optional<PictureHeader> header = pictureSizeOf(wic.Get(), asset.bytes);
             header && !header->tooLarge) {
             asset.width = static_cast<float>(header->size.width);
             asset.height = static_cast<float>(header->size.height);
         } else {
             asset.bytes = std::string{};
+            asset.state = PictureState::Refused;
         }
     }
 }
 
+ImageAsset& Book::assetAt(uint32_t index) {
+    // Индекс приходит из вёрстки или очереди и взят из этой же книги: за
+    // концом — ошибка проводки, а не «картинки нет».
+    if (index >= images_.size()) wxl::core::abort("Book: картинки с таким индексом нет");
+    return images_[index];
+}
+
+const ImageAsset& Book::assetAt(uint32_t index) const {
+    if (index >= images_.size()) wxl::core::abort("Book: картинки с таким индексом нет");
+    return images_[index];
+}
+
+PictureState Book::pictureState(uint32_t index) const {
+    return assetAt(index).state;
+}
+
+PictureHolding Book::pictureHolding(uint32_t index) const {
+    const ImageAsset& asset = assetAt(index);
+    return PictureHolding{!asset.bytes.empty(), !asset.pixels.empty(), static_cast<bool>(asset.bitmap)};
+}
+
+std::string Book::beginDecoding(uint32_t index) {
+    ImageAsset& asset = assetAt(index);
+    if (asset.state != PictureState::Unknown)
+        wxl::core::abort("Book::beginDecoding: картинка не ждёт раскодирования");
+    asset.state = PictureState::Decoding;
+    return asset.bytes;
+}
+
+void Book::acceptPicture(uint32_t index, DecodedPicture decodedPicture) {
+    ImageAsset& asset = assetAt(index);
+    if (asset.state != PictureState::Decoding)
+        wxl::core::abort("Book::acceptPicture: ответ пула для картинки, которую не раскодировали");
+
+    if (decodedPicture.verdict.refusal != PictureRefusal::None) {
+        // Чужие байты, битые не в заголовке, а в данных, или картинка больше
+        // бюджета — отказ данных, не системы: байты отпускаются, и больше её не
+        // пробуют.
+        asset.bytes = std::string{};
+        asset.state = PictureState::Refused;
+        return;
+    }
+
+    // «Картинка» без пикселей — нарушение договора раскодирования, а не
+    // пустое место на странице.
+    if (decodedPicture.pixels.empty())
+        wxl::core::abort("Book::acceptPicture: вердикт «картинка», а пикселей нет");
+    asset.pixels = std::move(decodedPicture.pixels);
+    asset.state = PictureState::Ready;
+}
+
+void Book::abandonDecoding() {
+    for (ImageAsset& asset : images_)
+        if (asset.state == PictureState::Decoding) asset.state = PictureState::Unknown;
+}
+
+void Book::abandonDecoding(uint32_t index) {
+    ImageAsset& asset = assetAt(index);
+    if (asset.state != PictureState::Decoding)
+        wxl::core::abort("Book::abandonDecoding: отменено раскодирование картинки, которую не раскодировали");
+    asset.state = PictureState::Unknown;
+}
+
+void Book::keepPictures(std::span<const uint32_t> window) {
+    for (uint32_t index = 0; index < images_.size(); ++index) {
+        ImageAsset& asset = images_[index];
+        if (asset.state != PictureState::Ready) continue;
+        if (std::find(window.begin(), window.end(), index) != window.end()) continue;
+        asset.pixels = DecodedPixels{};
+        asset.bitmap.Reset();
+        asset.state = PictureState::Unknown;
+    }
+}
+
 void Book::dropDeviceBitmaps() {
-    for (ImageAsset& asset : images_) asset.bitmap.Reset();
+    for (ImageAsset& asset : images_) {
+        if (!asset.bitmap) continue;
+        asset.bitmap.Reset();
+        asset.state = PictureState::Unknown;
+    }
     bitmapDevice_.Reset();
 }
 
@@ -184,24 +277,17 @@ ID2D1Bitmap1* Book::bitmap(uint32_t index, ID2D1DeviceContext* context) {
     }
 
     ImageAsset& asset = images_[index];
+    if (asset.state != PictureState::Ready) return nullptr;
     if (asset.bitmap) return asset.bitmap.Get();
-    if (asset.bytes.empty()) return nullptr;
 
-    // Целиком и не больше, чем держит устройство; пиксели в
-    // памяти отпускаются, как только стали битмапом устройства, а сжатые
-    // байты остаются: потерянное устройство заберёт битмап, и он
-    // раскодируется из них снова. Чужие байты, битые не в заголовке, а в
-    // данных, отказывают здесь: байты отпускаются, картинка не рисуется, и
-    // больше её не пробуют, а место под неё вёрстка уже отвела — оно остаётся
-    // пустым. Отказ Direct2D — остановка (deviceBitmapOf).
-    const uint32_t deviceSide = std::min<uint32_t>(kMaxPictureSide, context->GetMaximumBitmapSize());
-    const DecodedPicture decodedPicture = decodeImage(wic_.Get(), asset.bytes, deviceSide);
-    if (decodedPicture.pixels.empty()) {
-        asset.bytes = std::string{};
-        return nullptr;
-    }
-
-    asset.bitmap = deviceBitmapOf(context, decodedPicture.pixels);
+    // Пиксели раскодированы пулом и не больше kMaxPictureSide; битмап из них
+    // не больше, чем держит устройство (deviceBitmapOf уменьшит под слабое).
+    // Сначала битмап, потом отпустить пиксели: отказ посреди — потеря
+    // устройства, бросок из deviceBitmapOf, — оставляет их на следующий
+    // рисунок нового устройства. Сжатые байты остаются: потерянное устройство
+    // заберёт битмап, и очередь раскодирует картинку из них снова.
+    asset.bitmap = deviceBitmapOf(context, asset.pixels);
+    asset.pixels = DecodedPixels{};
     return asset.bitmap.Get();
 }
 

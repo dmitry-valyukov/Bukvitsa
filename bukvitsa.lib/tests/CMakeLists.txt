@@ -11,13 +11,16 @@ add_executable(bukvitsa_lib_tests
     note_frame_tests.cpp
     note_scroll_tests.cpp
     page_flow_tests.cpp
+    picture_queue_tests.cpp
     pieces_tests.cpp
     settings_tests.cpp
     skin_editor_tests.cpp
     theme_list_tests.cpp
 )
 
-target_link_libraries(bukvitsa_lib_tests PRIVATE bukvitsa::lib)
+# d3d11 — программное устройство (WARP) под контексты Direct2D без окна: на
+# них пробы очереди картинок делают битмапы и меняют устройство.
+target_link_libraries(bukvitsa_lib_tests PRIVATE bukvitsa::lib d3d11)
 bukvitsa_consumes_wxl(bukvitsa_lib_tests)
 
 # Книги для проб — общие с FB3 и вёрсткой.

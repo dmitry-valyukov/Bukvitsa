@@ -45,6 +45,11 @@ using namespace bukvitsa::reader::tests;
 using wxl::async::cancellation_source;
 using wxl::async::detached_task;
 
+/// Пробы остановки очереди картинок — у её проб (picture_queue_tests.cpp):
+/// дочерний запуск один на исполняемый файл, и разбирает имя он здесь.
+bool isPictureStopProbe(std::string_view probeName);
+int runPictureStopProbe(std::string_view probeName);
+
 namespace {
 
 using Column = PageFlow::Column;
@@ -1372,6 +1377,8 @@ int runStopProbeChild(std::string_view probeName) {
     }
 #endif
 
+    if (isPictureStopProbe(probeName)) return runPictureStopProbe(probeName);
+
     const bool knownProbe =
         probeName == kStartWithoutBook || probeName == kEndWithoutBook ||
         probeName == kForeignCommand || probeName == kScrollWithoutNote ||
@@ -1425,6 +1432,10 @@ int runStopProbeChild(std::string_view probeName) {
 }
 
 }  // namespace
+
+void checkStopProbe(std::string_view probeName, std::string_view expectedReport) {
+    checkStops(probeName, expectedReport);
+}
 
 void runBookPresenterTests() {
     testTurnOrder();

@@ -23,6 +23,7 @@ add_library(bukvitsa_lib STATIC
     src/note_scroll.cpp
     src/notice.cpp
     src/page_flow.cpp
+    src/picture_queue.cpp
     src/settings.cpp
     src/shelf_text.cpp
     src/skin_editor.cpp
@@ -47,6 +48,7 @@ add_library(bukvitsa_lib STATIC
     include/bukvitsa/reader/notice.h
     include/bukvitsa/reader/page_canvas.h
     include/bukvitsa/reader/page_flow.h
+    include/bukvitsa/reader/picture_queue.h
     include/bukvitsa/reader/settings.h
     include/bukvitsa/reader/shelf_text.h
     include/bukvitsa/reader/skin_editor.h

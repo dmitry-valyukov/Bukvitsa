@@ -1,6 +1,9 @@
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <initializer_list>
 #include <optional>
+#include <vector>
 
 // Заголовки модели после всех стандартных: они ведут к импорту модулей книги и
 // wxl.core, а стандартный заголовок после импорта MSVC уже не принимает. Свой
@@ -329,7 +332,11 @@ void PageFlow::buildSpread() {
     // уже держит.
     book_->trimChapters(static_cast<size_t>(columns_) + 1);
 
-    const Column left = anchor();
+    spread_ = spreadAt(anchor());
+}
+
+PageFlow::Spread PageFlow::spreadAt(const Column& left) {
+    Spread built;
     Column pos = left;
 
     for (int slot = 0; slot < columns_; ++slot) {
@@ -349,11 +356,96 @@ void PageFlow::buildSpread() {
         if (!found)
             break;   // конец книги — дальше пусто
 
-        spread_.pages.push_back(found);
+        built.pages.push_back(found);
         if (pos.chapter == left.chapter)
-            ++spread_.ownColumns;
+            ++built.ownColumns;
         ++pos.index;
     }
+    return built;
+}
+
+/* ---------------- картинки разворота ---------------- */
+
+namespace {
+
+/// Картинки страниц по порядку, без повторов: одна и та же картинка бывает на
+/// развороте не раз, а раскодировать её нужно однажды.
+void appendPictures(const std::vector<const typography::Page*>& pages, std::vector<uint32_t>& pictures) {
+    for (const typography::Page* page : pages)
+        for (const typography::PlacedImage& placed : page->images)
+            if (std::find(pictures.begin(), pictures.end(), placed.imageIndex) == pictures.end())
+                pictures.push_back(placed.imageIndex);
+}
+
+}  // namespace
+
+std::vector<uint32_t> PageFlow::spreadPictures() const {
+    std::vector<uint32_t> pictures;
+    appendPictures(spread_.pages, pictures);
+    return pictures;
+}
+
+std::vector<uint32_t> PageFlow::neighborPictures(bool forward) {
+    std::vector<uint32_t> pictures;
+    if (!readable() || width_ <= 0.0f || spread_.pages.empty()) return pictures;
+
+    const std::optional<Column> left = neighborSpread(forward);
+    if (!left) return pictures;
+
+    // Показанные — уже в окне очереди: у соседа без них.
+    const std::vector<uint32_t> shown = spreadPictures();
+    std::vector<uint32_t> found;
+    appendPictures(spreadAt(*left).pages, found);
+    for (const uint32_t picture : found)
+        if (std::find(shown.begin(), shown.end(), picture) == shown.end()) pictures.push_back(picture);
+    return pictures;
+}
+
+std::optional<PageFlow::Column> PageFlow::neighborSpread(bool forward) {
+    if (!readable() || width_ <= 0.0f) return std::nullopt;
+    const Column here = anchor();
+
+    // Вперёд — тем же шагом ленты, что и переворот: он верстает текущую главу
+    // на страницу вперёд и первую страницу следующей — малая вёрстка, которую
+    // переворот сделал бы всё равно.
+    if (forward) {
+        Column probe = here;
+        if (!ribbonSpread(probe, true)) return std::nullopt;
+        return probe;
+    }
+
+    // Назад — как ribbonSpread, но через границу главы только в главу с
+    // известным концом: ribbonStep назад верстает предыдущую целиком, а ради
+    // предвыборки этого не делают. Есть страницы — глава начата: её конец
+    // известен, только если она досчитана под нынешнюю полосу. Страниц нет —
+    // либо глава пуста по блокам, и её перешагивают, либо не начата (кэш
+    // завёл её только что: «досчитана» и стиль по умолчанию у такой ничего не
+    // говорят), и тогда сосед назад неизвестен.
+    Column probe = here;
+    for (int step = 0; step < columns_; ++step) {
+        if (probe.index > 0) {
+            --probe.index;
+            continue;
+        }
+        bool stepped = false;
+        for (size_t previous = probe.chapter; previous-- > 0;) {
+            const typography::Chapter& chapter = book_->chapterAt(previous);
+            if (chapter.pageCount() == 0) {
+                if (!book_->chapterIsEmpty(previous)) return std::nullopt;
+                continue;
+            }
+            if (!(chapter.style() == pageStyle_) || !chapter.isComplete()) return std::nullopt;
+            probe = Column{previous, chapter.pageCount() - 1};
+            stepped = true;
+            break;
+        }
+        if (!stepped) {
+            probe = Column{};   // начало книги — на самый первый разворот
+            break;
+        }
+    }
+    if (probe == here) return std::nullopt;
+    return probe;
 }
 
 /* ---------------- переходы ---------------- */

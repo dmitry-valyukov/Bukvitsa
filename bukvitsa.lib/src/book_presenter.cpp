@@ -29,6 +29,7 @@ BookPresenter::BookPresenter(Settings& settings, ThemeList& themes, IdleSchedule
       actions_(actions),
       stop_(std::move(ownerToken)),
       chapterTail_(flow_, idleScheduler, stop_.token(), [this] { canvas().redraw(); }),
+      pictureQueue_(flow_, idleScheduler, stop_.token(), [this] { canvas().redraw(); }),
       fontSizeWatch_(settings_.fontSize, *this),
       lineHeightWatch_(settings_.lineHeight, *this),
       marginWatch_(settings_.margin, *this) {
@@ -77,9 +78,10 @@ void BookPresenter::detachCanvas() {
     noteOpen_ = false;
 
     // Досчёт, досчитав главу, попросил бы перерисовки — у холста, которого
-    // больше нет. Отменённый кадр уйдёт на своём ходу очереди, ничего не
-    // тронув; новый заведёт вёрстка под новым холстом.
+    // больше нет; очередь картинок — так же. Отменённые кадры уйдут на своём
+    // ходу очереди, ничего не тронув; новые заведёт вёрстка под новым холстом.
     chapterTail_.restart();
+    pictureQueue_.restart();
 }
 
 PageCanvas& BookPresenter::canvas() {
@@ -94,6 +96,11 @@ PageCanvas& BookPresenter::canvas() {
 
 void BookPresenter::open(not_null<Book> book, uint32_t charOffset) {
     hideNote();   // сноска — из прежней книги
+
+    // Картинки прежней книги больше не нужны: очередь перезаводится, пока
+    // поток ещё на ней, — ушедшее раскодирование забывает прежняя книга.
+    // Картинки новой попросит вёрстка (relayout).
+    pictureQueue_.restart();
     flow_.open(book, charOffset);
     relayout(false);
     position_.set(flow_.position());
@@ -115,7 +122,8 @@ void BookPresenter::goToCharOffset(uint32_t charOffset) {
     // он шёл, просто продолжится по новой текущей.
     const PageFlow::Column targetColumn = flow_.columnOf(charOffset);
     flow_.show(targetColumn);
-    chapterTail_.start();   // глава могла смениться — её хвост тоже нужен
+    chapterTail_.start();      // глава могла смениться — её хвост тоже нужен
+    pictureQueue_.request(WindowMove::Jumped);   // разворот сменился — его картинки тоже
 
     canvas().redraw();
     position_.set(flow_.position());
@@ -168,7 +176,12 @@ void BookPresenter::relayout(bool windowResize) {
 
     // Остаток главы — порциями в свободное время потока: с него узнаётся общее
     // число страниц.
-    if (laidOut) chapterTail_.start();
+    if (!laidOut) return;
+    chapterTail_.start();
+
+    // Картинки нового разворота — в очередь; раскодирование, которое уже идёт,
+    // перевёрстка не отменяет: место чтения то же, и окно с ним.
+    pictureQueue_.request(WindowMove::Stays);
 }
 
 /* ---------------- листание ---------------- */
@@ -202,6 +215,11 @@ void BookPresenter::startTurn(const PageFlow::Column& targetColumn, bool forward
     flow_.show(targetColumn);
     chapterTail_.start();   // вошли в соседнюю главу — её «из M» тоже надо досчитать
 
+    // Картинки нового разворота — первыми, соседи — сначала по ходу
+    // листания. Идущее раскодирование отменяется, только если его картинка
+    // была соседом позади и выпала из окна.
+    pictureQueue_.request(forward ? WindowMove::TurnedForward : WindowMove::TurnedBackward);
+
     // Новый разворот — единственный рисунок переворота. Без анимации на этом
     // переворот и кончается — ровно как прыжок (goToCharOffset).
     canvas().redraw();
@@ -210,6 +228,16 @@ void BookPresenter::startTurn(const PageFlow::Column& targetColumn, bool forward
 
     // Место чтения — при нажатии, а не при посадке листа.
     position_.set(flow_.position());
+}
+
+void BookPresenter::renderingDeviceReplaced() {
+    // Битмапы картинок жили на прежнем устройстве; книга отпускает их, а
+    // очередь раскодирует картинки окна заново из сжатых байтов — разворот,
+    // нарисованный следом, до них стоит с пустыми местами.
+    Book* const shownBook = flow_.book();
+    if (!shownBook) return;
+    shownBook->dropDeviceBitmaps();
+    pictureQueue_.request(WindowMove::Stays);
 }
 
 /* ---------------- ввод ---------------- */

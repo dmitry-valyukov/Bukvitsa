@@ -3629,6 +3629,7 @@ void runNoteScrollTests();
 void runPageFlowTests();
 void runChapterTailTests();
 void runBookPresenterTests();
+void runPictureQueueTests();
 // Проба остановки ведущего на нарушенной проводке — в дочернем запуске этого
 // же исполняемого файла (book_presenter_tests.cpp, флаг `--stop-probe=<имя>`).
 // Пусто — запуск обычный; иначе — код выхода дочернего.
@@ -3722,6 +3723,9 @@ int main(int argc, char* argv[]) {
     runChapterTailTests();
     // Ведущий полосы — на том же романе, с поддельными холстом и простоем.
     runBookPresenterTests();
+    // Очередь картинок — через ведущего, на книге с картинками: раскодирует
+    // рабочий поток той же петли.
+    runPictureQueueTests();
 
     sta_loop::stop();
     ::CoUninitialize();
