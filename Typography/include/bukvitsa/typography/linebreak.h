@@ -49,6 +49,13 @@ struct BreakItem {
     uint32_t textEnd = 0;
 };
 
+/// Обязательный ли здесь разрыв: штраф минус бесконечность. Признак один на
+/// разбивку и нарезку строк — что разбивка обязана взять, то нарезка и
+/// набирает как строку до обязательного разрыва.
+inline bool isForcedBreak(const BreakItem& item) {
+    return item.kind == BreakItem::Kind::Penalty && item.penalty <= -kInfinitePenalty;
+}
+
 struct BreakSettings {
     /// Порог сжатия: строка, которую пришлось бы сжать сильнее, не строка.
     /// -1 — предел, при котором клей сжат до нуля.

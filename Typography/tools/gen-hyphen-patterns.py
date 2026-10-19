@@ -40,10 +40,9 @@
 unicodedata. Версия Юникода прибита (UNICODE_VERSION) и пишется в таблицу:
 unicodedata у каждого Python своя, и с другой версией скрипт работать
 отказывается, — uv по requires-python выше берёт 3.13, где она та самая.
-От TABLE_END и дальше признаков нет, и там таблица несёт только блоки
-пробелов, пунктуации и символов (SEPARATORS) — всё прочее вёрстка считает
-буквой чужой письменности. Вёрстка берёт это отсюда же, чтобы свойство буквы было
-записано в одном месте.
+От TABLE_END и дальше признаков нет: буква ли там кодовая точка, вёрстка
+спрашивает у wxl.core (unicode::is_letter) — это общая категория L из таблицы
+графем wxl.core, той же версии Юникода, что и границы букв.
 """
 
 import argparse
@@ -86,31 +85,6 @@ TABLE_END = 0x0530
 # сама и новее unicodedata в Python 3.13, и сверка не дала бы запустить
 # скрипт вовсе.
 UNICODE_VERSION = "15.1.0"
-
-# От TABLE_END и дальше признаков нет, и всякая кодовая точка там для вёрстки —
-# буква чужой письменности, в BMP или вне его: слово с ней не переносится, а
-# не режется на куски, которые образцы разметили бы порознь. Кончают слово
-# только блоки, где Юникод держит пробелы, пунктуацию и символы, что встают
-# вплотную к латинице и кириллице: тире, кавычки, многоточие, узкие пробелы,
-# валюта, буквоподобные знаки, стрелки, математика, геометрия, прочие символы
-# и шрифт Брайля; дополнительная пунктуация (⸺), пунктуация CJK, неразрывный
-# пробел нулевой ширины, служебные знаки (замена объекта и символа) и
-# пиктограммы эмодзи — вместе с U+1FC00–U+1FFFD, которые Юникод держит
-# свободными под будущие эмодзи и уже метит Extended_Pictographic, как и
-# таблица графем wxl.core: эмодзи новых версий не станут буквами. Это блоки,
-# а не общая категория — её на весь Юникод здесь не держат: буквы в этих
-# блоках (надстрочные ⁱ ⁿ, буквоподобные ℓ ℕ Ω, знаки повтора CJK 々 〆) слово
-# кончают вместе с символами вокруг, а пунктуация и цифры чужих письменностей
-# вне блоков для вёрстки — буквы.
-# Первая и последняя кодовая точка каждого блока.
-SEPARATORS = [
-    (0x2000, 0x2BFF),     # General Punctuation … Miscellaneous Symbols and Arrows
-    (0x2E00, 0x2E7F),     # Supplemental Punctuation
-    (0x3000, 0x303F),     # CJK Symbols and Punctuation
-    (0xFEFF, 0xFEFF),     # ZERO WIDTH NO-BREAK SPACE
-    (0xFFF0, 0xFFFF),     # Specials
-    (0x1F000, 0x1FFFD),   # Mahjong Tiles … Symbols for Legacy Computing и запас эмодзи
-]
 
 # Признаки кодовой точки (hyphenTraits): заглавная и гласная — только у букв
 # алфавита образцов, буква и знак — по общей категории Юникода. Номер языка
@@ -261,13 +235,6 @@ def main() -> int:
                  f"считается по {UNICODE_VERSION}: запустите скрипт через uv (он возьмёт "
                  "Python из requires-python) или поднимите UNICODE_VERSION осознанно")
 
-    previous = TABLE_END - 1
-    for first, last in SEPARATORS:
-        if not previous < first <= last <= 0x10FFFF or (first <= 0xDFFF and last >= 0xD800):
-            sys.exit(f"блок U+{first:04X}–U+{last:04X}: блоки идут по порядку, выше "
-                     "таблицы, не задевая друг друга и суррогатов")
-        previous = last
-
     languages = []
     for name, file, digest in LANGUAGES:
         patterns, exceptions, left, right = parse(source(file, digest))
@@ -406,18 +373,6 @@ def main() -> int:
     out.append(rows(traits_table, 16))
     out.append("};\n")
 
-    # Буквы, которые блоки пробелов, пунктуации и символов делают границей
-    # слова, — сколько их, видно при каждом запуске.
-    boundary_letters = sum(unicodedata.category(chr(code_point)).startswith("L")
-                           for first, last in SEPARATORS
-                           for code_point in range(first, last + 1))
-    out.append("// От hyphenTableEnd и дальше слово кончают только эти блоки: пробелы,")
-    out.append("// пунктуация и символы; прочее там — буква чужой письменности. Первая и")
-    out.append("// последняя кодовая точка блока.")
-    out.append(f"inline constexpr std::uint32_t hyphenSeparators[{len(SEPARATORS)}][2] = {{")
-    out.append("\n".join(f"    {{0x{first:04X}, 0x{last:04X}}}," for first, last in SEPARATORS))
-    out.append("};\n")
-
     out.append(f"inline constexpr std::uint8_t hyphenTrie[{len(data)}] = {{")
     out.append(rows([f"0x{byte:02X}" for byte in data], 16))
     out.append("};\n")
@@ -494,8 +449,6 @@ def main() -> int:
     for index, (name, _, patterns, exceptions, left, right) in enumerate(languages):
         print(f"  {name}: {len(patterns)} образцов, {len(exceptions)} исключений, "
               f"минимум {left}/{right}")
-    print(f"  от U+{TABLE_END:04X}: {len(SEPARATORS)} блоков пробелов, пунктуации и символов, "
-          f"букв в них {boundary_letters} — граница слова")
     return 0
 
 

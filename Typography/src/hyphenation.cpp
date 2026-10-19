@@ -208,7 +208,9 @@ HyphenPoints patternPoints(const std::u16string_view word) noexcept {
 
 /// Чем буква служит слову, когда абзац делится на слова.
 enum class WordRole : uint8_t {
-    Boundary,      ///< пробел, пунктуация, символ: слова здесь нет
+    Boundary,      ///< пробел, пунктуация, символ, а выше таблицы всякая не
+                   ///< буква — цифра не из 0–9, знак без основы, частного
+                   ///< использования (Co) и свободная (Cn): слова здесь нет
     Letter,        ///< буква алфавита образцов
     Foreign,       ///< буква, которой образцы не знают: слово с ней не переносится
     Digit,
@@ -234,15 +236,6 @@ bool isPatternLetter(const char16_t unit) noexcept {
 /// нормализацией такие буквы вернутся.
 constexpr bool isStressMark(const char16_t unit) noexcept {
     return unit == u'\x0301' || unit == u'\x0300';
-}
-
-/// Кончает ли слово кодовая точка выше таблицы: только пробел, пунктуация или
-/// символ из блоков, которые перечисляет генератор таблицы.
-bool isSeparator(const char32_t code_point) noexcept {
-    for (const auto& block : hyphenSeparators)
-        if (code_point >= block[0] && code_point <= block[1])
-            return true;
-    return false;
 }
 
 /// Роль буквы — от `at` до `next`, границы следующей. Решает основа, первая
@@ -277,15 +270,18 @@ WordRole roleOf(const u16_view paragraph, const size_t at, const size_t next) no
         return WordRole::Letter;
     }
 
-    // Выше таблицы признаков нет, и всё, что не пробел, не пунктуация и не
-    // символ из их блоков, — буква чужой письменности, в BMP или вне его:
-    // «Muḥammad», «Nguyễn», математическая «𝔞» отменяют перенос своего слова,
-    // а не режут его на куски, которые образцы разметили бы порознь. Знак без
-    // основы там — тоже чужая буква: знак ли это, таблица не знает. Основа вне
-    // BMP — пара суррогатов, и смотреть надо на кодовую точку, а не на единицу.
+    // Выше таблицы признаков на вопрос, буква ли основа, отвечает wxl::core:
+    // общая категория L из таблицы графем, той же версии Юникода, что и
+    // границы, по которым абзац делится на буквы, — два ответа об одном тексте
+    // не расходятся. Буква любой письменности, в BMP или вне его («Muḥammad»,
+    // «Nguyễn», математическая «𝔞», «ℓ», «ⁿ»), отменяет перенос своего слова,
+    // а не режет его на куски, которые образцы разметили бы порознь; всё не
+    // буква — пробел, пунктуация, символ, цифра, знак без основы — слово
+    // кончает. Основа вне BMP — пара суррогатов, и смотреть надо на кодовую
+    // точку, а не на единицу.
     if (base >= hyphenTableEnd) {
         const char32_t code_point = *unicode::code_points(paragraph.substr(at, next - at)).begin();
-        return isSeparator(code_point) ? WordRole::Boundary : WordRole::Foreign;
+        return unicode::is_letter(code_point) ? WordRole::Foreign : WordRole::Boundary;
     }
 
     const uint8_t traits = traitsOf(base);

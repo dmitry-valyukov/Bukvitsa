@@ -11,8 +11,12 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #include <d2d1_1.h>
 #include <dwrite.h>
@@ -1369,6 +1373,51 @@ void testHyphenationRules() {
                    u8"пе|ре|но|си|мость\U0001F600пе|ре|но|си|мость"),
           "эмодзи кончает слово");
 
+    // Буква ли кодовая точка, решает её общая категория L: ниже U+0530 — по
+    // таблице переносов, выше — unicode::is_letter, по таблице графем wxl.
+    // Буква любой письменности, и модификаторная (Lm) тоже, отменяет перенос
+    // слова, к которому приставлена, — и та, что стоит среди символов и
+    // пунктуации (ⁱ, ℓ, 々). Валюта — не буква и слово кончает.
+    check(markedIs(u"\x03B1" u"переносимость", u8"\u03B1переносимость"),
+          "греческая «α» в таблице — чужая буква");
+    check(markedIs(u"переносимость\x10D0", u8"переносимость\u10D0"),
+          "грузинская «ა» выше таблицы — чужая буква");
+    check(markedIs(u"\x0561" u"переносимость", u8"\u0561переносимость"),
+          "армянская «ա» выше таблицы — чужая буква");
+    check(markedIs(u"переносимость\x02B0", u8"переносимость\u02B0"),
+          "модификаторная «ʰ» (Lm) в таблице — чужая буква");
+    check(markedIs(u"переносимость\x1D43", u8"переносимость\u1D43"),
+          "модификаторная «ᵃ» (Lm) выше таблицы — чужая буква");
+    check(markedIs(u"переносимость\x2071", u8"переносимость\u2071"),
+          "надстрочная «ⁱ» (Lm) среди знаков пунктуации — чужая буква");
+    check(markedIs(u"\x2113" u"переносимость", u8"\u2113переносимость"),
+          "«ℓ» среди буквоподобных символов — чужая буква");
+    check(markedIs(u"переносимость\x3005", u8"переносимость\u3005"),
+          "знак повтора «々» (Lm) среди пунктуации CJK — чужая буква");
+    check(markedIs(u"переносимость\x20AC" u"переносимость",
+                   u8"пе|ре|но|си|мость\u20ACпе|ре|но|си|мость"),
+          "евро — не буква и кончает слово");
+
+    // Известное ограничение: выше таблицы не буква — граница, какой бы она
+    // ни была. Цифра чужой письменности не отменяет перенос, как 0–9, а
+    // делит слово; знак частного использования — лигатура из конвертера —
+    // режет слово на части, которые размечаются порознь; знак без основы за
+    // мягким переносом не прозрачен, и часть до мягкого переноса закрывается
+    // без него и получает места по образцам. Пробы держат это поведение,
+    // чтобы смена его не прошла незамеченной.
+    check(markedIs(u"переносимость\x0663" u"переносимость",
+                   u8"пе|ре|но|си|мость\u0663пе|ре|но|си|мость"),
+          "известное ограничение: арабо-индийская «٣» делит слово");
+    {
+        u16_text text;
+        text.push_back(U'\xE000');
+        text += u"переносимость";
+        check(hyphenCount(text) == 4, "известное ограничение: U+E000 (Co) перед словом — граница");
+    }
+    check(markedIs(u"переносимость\x00AD\x1DC4" u"переносимость",
+                   u8"пе|ре|но|си|мость\u00AD\u1DC4пе|ре|но|си|мость"),
+          "известное ограничение: знак выше таблицы за мягким переносом делит слово");
+
     // Символы, что стоят в книгах вплотную к слову, — граница, а не буква:
     // слово по обе стороны от них переносится.
     struct BookSymbol {
@@ -1387,32 +1436,35 @@ void testHyphenationRules() {
         check(hyphenCount(text) == 8, std::string("слово рядом с «") + symbol.name + "» переносится");
     }
 
-    // Края блоков пробелов, пунктуации и символов: первая и последняя кодовая
-    // точка блока кончают слово, соседняя за краем — буква чужой письменности,
-    // и слово, к которому она приставлена, не переносится. Стоит она в начале
-    // слова: знак за буквой ушёл бы в её графему и решала бы буква.
-    struct BlockEdge {
+    // Выше таблицы роль решает unicode::is_letter: буква любой письменности —
+    // чужая, и слово, к которому она приставлена, не переносится; всё не буква
+    // — граница. Не-буквы — те, что стоят среди букв и легко сошли бы за них:
+    // свободная кодовая точка (Cn) в блоке греческих букв, не-символ,
+    // комбинирующая кириллическая буква — знак (Mn), а не буква, и символы (So)
+    // рядом с иероглифами. Стоит кодовая точка в начале слова: знак за буквой
+    // ушёл бы в её графему, и решала бы буква.
+    struct AboveTable {
         char32_t code;
-        bool separator;
+        bool letter;
     };
-    constexpr BlockEdge kBlockEdges[] = {
-        {U'\x1FFF', false},  {U'\x2000', true},   {U'\x2BFF', true},   {U'\x2C00', false},
-        {U'\x2DFF', false},  {U'\x2E00', true},   {U'\x2E7F', true},   {U'\x2E80', false},
-        {U'\x2FFF', false},  {U'\x3000', true},   {U'\x303F', true},   {U'\x3040', false},
-        {U'\xFEFE', false},  {U'\xFEFF', true},   {U'\xFF00', false},
-        {U'\xFFEF', false},  {U'\xFFF0', true},   {U'\xFFFF', true},   {U'\x10000', false},
-        {U'\x1EFFF', false}, {U'\x1F000', true},  {U'\x1FBFF', true},  {U'\x1FC00', true},
-        {U'\x1FFFD', true},  {U'\x1FFFE', false},
+    constexpr AboveTable kAboveTable[] = {
+        {U'\x2C00', true},    // глаголица, Lu
+        {U'\x10000', true},   // линейное письмо Б, Lo
+        {U'\x1FFF', false},   // свободная, Cn
+        {U'\x1FFFE', false},  // не-символ, Cn
+        {U'\x2DFF', false},   // комбинирующая кириллическая буква, Mn
+        {U'\x2E80', false},   // ключ CJK, So
+        {U'\x2FFF', false},   // знак описания иероглифа, So
     };
-    for (const BlockEdge& edge : kBlockEdges) {
+    for (const AboveTable& point : kAboveTable) {
         u16_text text;
-        text.push_back(edge.code);
+        text.push_back(point.code);
         text += u"переносимость";
 
-        char what[96];
-        std::snprintf(what, sizeof what, "U+%04X перед словом — %s", static_cast<unsigned>(edge.code),
-                      edge.separator ? "граница" : "чужая буква");
-        check(hyphenCount(text) == (edge.separator ? 4u : 0u), what);
+        char what[128];
+        std::snprintf(what, sizeof what, "выше таблицы роль решает is_letter: U+%04X — %s",
+                      static_cast<unsigned>(point.code), point.letter ? "чужая буква" : "граница");
+        check(hyphenCount(text) == (point.letter ? 0u : 4u), what);
     }
 
     // Разложенные «й» и «ё» — «и» с краткой и «е» с диерезисом. Свести их к
@@ -1635,6 +1687,81 @@ void testHyphenationInLayout(typography::Engine& engine) {
             }
 
     check(kept, "по неразрывному пробелу строка не рвётся");
+}
+
+/// Дефис переноса в над- и подстрочном стоит рядом со своими буквами, а не на
+/// базовой линии. Шейпер этого глифа не видел — его дописывает строка, — и
+/// сдвиг прогона ему передаётся отдельно. Так кончаются строки длинных `<sup>`
+/// и знаков сносок с текстом (n_3 в nightmare_example).
+void testHyphenShift(typography::Engine& engine) {
+    std::printf("\n=== дефис в над- и подстрочном ===\n");
+
+    typography::ParagraphStyle reference;
+    reference.alignment = typography::Alignment::Left;
+    typography::ParagraphStyle larger = reference;
+    larger.fontSize = reference.fontSize * 1.3f;
+    // По формату строка с переносом идёт через JustifyGlyphAdvances, и сдвиг
+    // дефиса должен пройти и через него: выключка возвращает смещения глифов
+    // заново.
+    typography::ParagraphStyle justified = reference;
+    justified.alignment = typography::Alignment::Justify;
+
+    struct Shift {
+        bool hyphenated = true;  ///< при каждом кегле и выключке есть строка с переносом
+        bool beside = true;      ///< у каждой такой дефис сдвинут ровно как её буквы
+        float letters = 0.0f;    ///< сдвиг букв последней из них
+        float hyphen = 0.0f;     ///< и её дефиса
+    };
+
+    // Слово шейпится при опорном кегле, а верстается и при нём, и при другом:
+    // при другом сдвиг приходит умножением, и дефису он должен прийти тем же
+    // умножением, что буквам. Полоса — две пятых слова: оно переносится, а
+    // слоги в неё влезают. Эталон — смещение первой буквы строки: в нём, кроме
+    // сдвига формата, сидит и вертикальная посадка глифа шрифтом (GPOS), и
+    // проба полагается на то, что у кириллицы Georgia она нулевая, — тогда
+    // смещение буквы и есть сдвиг формата.
+    const auto shiftOf = [&](int8_t script) {
+        typography::FontStyle font;
+        font.script = script;
+        const typography::BookText book = paragraphOf(u"достопримечательность", font);
+        const typography::ShapedParagraphPtr shaped =
+            engine.shape(book, onlyParagraph(book), reference);
+
+        Shift shift;
+        for (const typography::ParagraphStyle& style : {reference, larger, justified}) {
+            const float word = engine.layout(*shaped, 1000.0f, style).front().width;
+
+            size_t hyphens = 0;
+            for (const typography::Line& line : engine.layout(*shaped, word * 0.4f, style)) {
+                if (!endsWithHyphen(line)) continue;
+
+                const typography::GlyphRun& run = line.runs.back();
+                shift.letters = run.offsets.front().ascenderOffset;
+                shift.hyphen = run.offsets.back().ascenderOffset;
+                shift.beside = shift.beside && std::abs(shift.hyphen - shift.letters) < 0.01f;
+                ++hyphens;
+            }
+
+            std::printf("  сдвиг %+d, кегль %.0f, %s: переносов %zu, буквы %.2f, дефис %.2f\n", script,
+                        style.fontSize,
+                        style.alignment == typography::Alignment::Justify ? "по формату" : "влево",
+                        hyphens, shift.letters, shift.hyphen);
+            shift.hyphenated = shift.hyphenated && hyphens > 0;
+        }
+        return shift;
+    };
+
+    const Shift super = shiftOf(1);
+    const Shift sub = shiftOf(-1);
+    const Shift plain = shiftOf(0);
+
+    check(super.hyphenated && sub.hyphenated && plain.hyphenated,
+          "слово в узкой полосе переносится в каждом прогоне, кегле и выключке");
+    check(super.beside && super.letters > 0.0f,
+          "дефис надстрочного поднят вровень со своими буквами");
+    check(sub.beside && sub.letters < 0.0f,
+          "дефис подстрочного опущен вровень со своими буквами");
+    check(plain.beside && plain.hyphen == 0.0f, "дефис обычного прогона — на базовой линии");
 }
 
 /// Серии переносов на живом тексте: все абзацы «Отцов и детей» в самой узкой
@@ -1935,6 +2062,50 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
     check(!targets.empty() && allPlaced, "каждая сноска книги раскладывается в строки сверху вниз");
 }
 
+/// Докуда строка ставит перья и шаги, от левого края полосы: самое левое перо
+/// глифа (место пера и сдвиг выключки) и самый правый конец шагов.
+struct PenReach {
+    float left = 0.0f;
+    float right = 0.0f;
+};
+
+PenReach penReach(const typography::Line& line) {
+    PenReach reach;
+    for (const typography::GlyphRun& run : line.runs) {
+        float pen = run.originX;
+        for (size_t glyph = 0; glyph < run.glyphIndices.size(); ++glyph) {
+            const float glyphStart = pen + run.offsets[glyph].advanceOffset;
+            reach.left = std::min(reach.left, glyphStart);
+            reach.right = std::max(reach.right, glyphStart);
+            pen += run.advances[glyph];
+        }
+        reach.right = std::max(reach.right, pen);
+    }
+    return reach;
+}
+
+/// Кусок строки для отчёта: табуляция и перевод строки — видимыми знаками, не
+/// длиннее 60 единиц и по границе буквы, как и всякая обрезка в выводе проб.
+std::string reportedText(std::wstring_view text) {
+    const size_t cut = unicode::floor_grapheme_boundary(text, std::min<size_t>(text.size(), 60));
+    std::wstring shown;
+    for (const wchar_t unit : text.substr(0, cut))
+        shown += unit == L'\t' ? L'→' : unit == L'\n' ? L'↵' : unit;
+    return toUtf8(shown) + (cut < text.size() ? "…" : "");
+}
+
+/// Id тел сносок по номеру — со ссылок на них: у тела в модели книги своего id
+/// нет, а ссылка несёт и id, и номер тела. На тело без единой ссылки id не
+/// найдётся, и отчёт назовёт его номером.
+void collectNoteIds(const fb3::Node& node, std::vector<std::string>& ids) {
+    if (node.kind() == fb3::NodeKind::NoteRef) {
+        const fb3::NoteRefData* ref = node.noteRef();
+        if (ref && ref->body && *ref->body < ids.size() && ids[*ref->body].empty())
+            ids[*ref->body] = std::string(ref->targetId.chars());
+    }
+    for (const fb3::Node& child : node.children()) collectNoteIds(child, ids);
+}
+
 /// Сноска ставит перья и шаги там, где её свёрстали, — внутри колонки. У
 /// каждой строки каждого тела сносок nightmare_example проверяется то, по чему
 /// drawLine расставит глифы: перо каждого глифа (место пера и сдвиг выключки)
@@ -1943,10 +2114,12 @@ void testNoteLayout(typography::Engine& engine, const std::filesystem::path& tes
 /// вправе выступить за свой шаг (курсивная прописная в конце строки,
 /// курсивное «р» в начале), и этот выступ вбирает поле всплывашки вокруг
 /// колонки. Тела нарочно пёстрые: в n_3 вперемешку над- и подстрочные
-/// вставки, курсив, разрядка, капитель и моноширный; в n_2 и e_2 — слово в
-/// 25 664 знака, которое вёрстка рубит по колонке, как то же слово в потоке
+/// вставки, курсив, разрядка, капитель и моноширный, а в преформате — строки с
+/// отступом в табуляциях за переводом строки; в n_2 и e_2 — слово в 25 664
+/// знака, которое вёрстка рубит по колонке, как то же слово в потоке
 /// (testLayout на полосе 260); строки, выключенные до самого края, есть у
-/// каждой колонки.
+/// каждой колонки. Самую дальнюю строку проба называет id тела, местом в
+/// абзаце и текстом — по ним видно, где она в книге.
 void testNotePensInsideColumn(typography::Engine& engine, const std::filesystem::path& testdata) {
     std::printf("\n=== сноска: перья и шаги внутри колонки ===\n");
 
@@ -1959,6 +2132,10 @@ void testNotePensInsideColumn(typography::Engine& engine, const std::filesystem:
 
     const fb3::Document nightmare{bookPath};
     const typography::BookText book = typography::flatten(nightmare);
+
+    std::vector<std::string> noteIds(nightmare.noteBodies().size());
+    collectNoteIds(nightmare.body(), noteIds);
+    for (const fb3::Node* noteBody : nightmare.noteBodies()) collectNoteIds(*noteBody, noteIds);
 
     // Кегль книги по умолчанию: сноска набирается от него мельче.
     constexpr float kFontSize = 20.0f;
@@ -1975,44 +2152,68 @@ void testNotePensInsideColumn(typography::Engine& engine, const std::filesystem:
         float rightmost = 0.0f;
         size_t rightmostBody = 0;
         size_t rightmostLine = 0;
+        uint32_t rightmostStart = 0;
+        std::wstring rightmostText;
         bool widthsAgree = true;
 
         for (size_t body = 0; body < book.noteBodies.size(); ++body) {
             const typography::NoteLayout note =
                 typography::layoutNote(engine, book, book.noteBodies[body], column, kFontSize);
 
+            // Строки идут блок за блоком, и первая строка блока — с начала его
+            // текста: по ней видно, какому абзацу строка принадлежит. Блоки без
+            // текста строк не дают.
+            const std::span<const typography::Block> blocks = book.blocksOf(book.noteBodies[body]);
+            size_t blockIndex = 0;
+            bool blockStarted = false;
+
             for (size_t index = 0; index < note.lines.size(); ++index) {
                 const typography::Line& line = note.lines[index].line;
                 ++lineCount;
 
-                float lineEnd = 0.0f;
+                if (line.textStart == 0) {
+                    if (blockStarted) ++blockIndex;
+                    while (blockIndex < blocks.size() && blocks[blockIndex].paragraph.text.count == 0)
+                        ++blockIndex;
+                    blockStarted = true;
+                }
+
                 float runsWidth = 0.0f;
                 for (const typography::GlyphRun& run : line.runs) {
-                    float pen = run.originX;
-                    for (size_t glyph = 0; glyph < run.glyphIndices.size(); ++glyph) {
-                        const float glyphStart = pen + run.offsets[glyph].advanceOffset;
-                        leftmost = std::min(leftmost, glyphStart);
-                        lineEnd = std::max(lineEnd, glyphStart);
-                        pen += run.advances[glyph];
-                    }
-                    lineEnd = std::max(lineEnd, pen);
-
-                    if (std::abs(pen - run.originX - run.width) > 0.01f) widthsAgree = false;
+                    float advances = 0.0f;
+                    for (const float advance : run.advances) advances += advance;
+                    if (std::abs(advances - run.width) > 0.01f) widthsAgree = false;
                     runsWidth += run.width;
                 }
                 if (std::abs(runsWidth - line.width) > 0.01f) widthsAgree = false;
 
-                if (lineEnd > column - 0.5f) ++edgeLines;
-                if (lineEnd > rightmost) {
-                    rightmost = lineEnd;
+                const PenReach reach = penReach(line);
+                leftmost = std::min(leftmost, reach.left);
+                if (reach.right > column - 0.5f) ++edgeLines;
+                if (reach.right > rightmost) {
+                    rightmost = reach.right;
                     rightmostBody = body;
                     rightmostLine = index;
+                    rightmostStart = line.textStart;
+                    rightmostText = blockIndex < blocks.size()
+                                        ? std::wstring(book.textOf(blocks[blockIndex].paragraph)
+                                                           .wchars()
+                                                           .substr(line.textStart, line.textLength))
+                                        : std::wstring();
                 }
             }
         }
 
-        std::printf("  колонка %.0f: строк %zu, у края %zu; перья и шаги от %.2f до %.2f (тело %zu, строка %zu)\n",
-                    column, lineCount, edgeLines, leftmost, rightmost, rightmostBody, rightmostLine);
+        // Без единого тела отчёт о самой дальней строке называет номер 0, а
+        // проверка ниже провалится сама: читать список id за его концом нельзя.
+        const std::string rightmostId =
+            rightmostBody < noteIds.size() && !noteIds[rightmostBody].empty() ? noteIds[rightmostBody]
+                                                                               : std::string("без id");
+        std::printf("  колонка %.0f: строк %zu, у края %zu; перья и шаги от %.2f до %.2f\n"
+                    "    самая дальняя — тело %s (номер %zu), строка %zu, с %u в абзаце: «%s»\n",
+                    column, lineCount, edgeLines, leftmost, rightmost,
+                    rightmostId.c_str(), rightmostBody, rightmostLine,
+                    rightmostStart, reportedText(rightmostText).c_str());
         check(lineCount > 0 && edgeLines > 0, "у тел сносок есть строки, выключенные до края колонки");
         check(leftmost >= -kSlack && rightmost <= column + kSlack,
               "перья и шаги каждой строки сноски — внутри колонки");
@@ -2339,6 +2540,274 @@ void testTrailingSpace(typography::Engine& engine) {
     check(inside, "строки за концом текста нет");
 }
 
+/// Сумма шагов первых count глифов строки — по порядку прогонов: так стоит
+/// отступ, у которого на каждый пробел свой глиф.
+float leadingAdvance(const typography::Line& line, size_t count) {
+    float advance = 0.0f;
+    for (const typography::GlyphRun& run : line.runs) {
+        for (const float glyphAdvance : run.advances) {
+            if (count == 0) return advance;
+            advance += glyphAdvance;
+            --count;
+        }
+    }
+    return advance;
+}
+
+/// Отступ строки — пробелы, с которых она начинается в начале абзаца или за
+/// обязательным разрывом, — разбивка мерит так же, как нарезка строк рисует,
+/// а выключка его не тянет. Нарезка начинает строку за разрывом
+/// с отступа, и разбивка, съевшая бы его как клей, выпустила бы строку за
+/// полосу на его ширину — так бывает у строки преформата с табуляциями перед
+/// «Предварительно» в n_3 nightmare_example на колонке сноски 260. Выключка,
+/// которой отдан отступ, увела бы в него почти весь запас строки с длинным
+/// отступом и парой пробелов между словами. Отступ бывает не только в
+/// преформате: свёртка складывает лишь пробелы ASCII, и в
+/// начале абзаца и за `<br/>` доходят неразрывный пробел, круглая шпация и
+/// прочие пробелы Юникода. Полоса — та, что у сноски: по формату, кегль 17,
+/// без абзацного отступа.
+void testIndentAfterBreak(typography::Engine& engine) {
+    std::printf("\n=== отступ строки ===\n");
+
+    typography::ParagraphStyle justified;
+    justified.fontSize = 17.0f;
+    justified.lineHeight = 1.35f;
+    typography::ParagraphStyle ragged = justified;
+    ragged.alignment = typography::Alignment::Left;
+    constexpr float kColumn = 260.0f;
+    constexpr float kSlack = 0.15f;
+
+    const auto insideColumn = [&](std::span<const typography::Line> lines, float column) {
+        bool inside = !lines.empty();
+        for (const typography::Line& line : lines) {
+            const PenReach reach = penReach(line);
+            if (reach.left < -kSlack || reach.right > column + kSlack) inside = false;
+        }
+        return inside;
+    };
+    const auto widest = [](std::span<const typography::Line> lines) {
+        float reached = 0.0f;
+        for (const typography::Line& line : lines) reached = std::max(reached, penReach(line).right);
+        return reached;
+    };
+    const auto indentOf = [](char32_t code, int count) {
+        u16_text indent;
+        for (int at = 0; at < count; ++at) indent.push_back(code);
+        return indent;
+    };
+
+    // Отступ за переводом строки — в 12 табуляций, как у преформата в глубине
+    // разметки, в 24 пробела, в 6 неразрывных пробелов и в 2 круглые шпации, —
+    // и он же в начале абзаца. За ним — текст на несколько строк: строка с
+    // отступом выключается по формату, и выключка его не тянет — он не шире,
+    // чем в той же строке на полосе, где ничего не выключается и не сжимается.
+    struct Indent {
+        const char* name;
+        char32_t code;
+        int count;
+    };
+    for (const Indent& indent : {Indent{"12 табуляций", U'\t', 12}, Indent{"24 пробела", U' ', 24},
+                                 Indent{"6 неразрывных пробелов", U'\x00A0', 6},
+                                 Indent{"2 круглые шпации", U'\x2003', 2}}) {
+        for (const bool afterBreak : {true, false}) {
+            u16_text indentedText;
+            if (afterBreak) indentedText += u"Строка\n";
+            indentedText += indentOf(indent.code, indent.count);
+            indentedText += u"Предварительно форматированный текст, заголовок и ещё слова до края";
+            const typography::BookText indented = paragraphOf(indentedText);
+            const auto lines = layoutOf(engine, indented, kColumn, justified);
+            const auto naturalLines = layoutOf(engine, indented, 10000.0f, ragged);
+            const size_t line = afterBreak ? 1 : 0;
+            const uint32_t indentStart = afterBreak ? 7 : 0;
+
+            const bool found = lines.size() > line + 1 && naturalLines.size() > line;
+            const float justifiedIndent =
+                found ? leadingAdvance(lines[line], static_cast<size_t>(indent.count)) : 0.0f;
+            const float naturalIndent =
+                found ? leadingAdvance(naturalLines[line], static_cast<size_t>(indent.count)) : 0.0f;
+            std::printf("  %s %s: строк %zu, самая широкая %.2f; отступ по формату %.2f, сам по себе %.2f\n",
+                        indent.name, afterBreak ? "за переводом строки" : "в начале абзаца", lines.size(),
+                        widest(lines), justifiedIndent, naturalIndent);
+            check(insideColumn(lines, kColumn), "строка с отступом — внутри полосы");
+            check(found && lines[line].textStart == indentStart,
+                  "отступ остаётся в строке: она начинается с его первого знака");
+            check(found && justifiedIndent <= naturalIndent + 0.01f, "выключка отступ не тянет");
+        }
+    }
+
+    // Отступ почти во всю полосу и короткое слово за ним — строка шире полосы
+    // на полтора процента. Другого решения у разбивки нет: строку из одного
+    // отступа нечем растянуть. Проба сторожит, что отступ не исключён из
+    // сжатия: DirectWrite сжимает и буквы, и, если отступу сжиматься нельзя,
+    // всё переполнение ложится на три буквы слова — на машине они выходили
+    // 0,86 своей ширины, а со сжимаемым отступом остаются около 1,0 (замер на машине: 0,996).
+    // Порог — не уже 0,92.
+    {
+        const u16_view shortWord = u"сон";
+        u16_text spacedText;
+        spacedText += u"а\n";
+        spacedText += indentOf(U' ', 60);
+        spacedText += shortWord;
+        const typography::BookText spaced = paragraphOf(spacedText);
+        const auto naturalLines = layoutOf(engine, spaced, 10000.0f, ragged);
+        const float naturalWidth = naturalLines.size() == 2 ? naturalLines[1].width : 0.0f;
+        const float column = naturalWidth / 1.015f;
+        const auto spacedLines = layoutOf(engine, spaced, column, justified);
+
+        // Шаги глифов строки по порядку прогонов: отступ — первые 60, за ними буквы.
+        const auto advancesOf = [](const typography::Line& line) {
+            std::vector<float> advances;
+            for (const typography::GlyphRun& run : line.runs)
+                advances.insert(advances.end(), run.advances.begin(), run.advances.end());
+            return advances;
+        };
+        bool lettersKept = spacedLines.size() == 2 && naturalLines.size() == 2;
+        float narrowest = 1.0f;
+        float narrowestAdvance = 0.0f;   // шаг самой сжатой буквы, DIP — для отчёта
+        if (lettersKept) {
+            const std::vector<float> squeezed = advancesOf(spacedLines[1]);
+            const std::vector<float> natural = advancesOf(naturalLines[1]);
+            lettersKept = squeezed.size() == natural.size() && natural.size() > 60;
+            for (size_t glyph = 60; lettersKept && glyph < natural.size(); ++glyph) {
+                if (natural[glyph] <= 0.0f) continue;
+                const float ratio = squeezed[glyph] / natural[glyph];
+                if (ratio < narrowest) {
+                    narrowest = ratio;
+                    narrowestAdvance = squeezed[glyph];
+                }
+            }
+            lettersKept = lettersKept && narrowest >= 0.92f;
+        }
+        std::printf("  отступ почти во всю полосу: строка %.2f на полосе %.2f, строк %zu, буквы — от %.3f своей ширины (шаг %.2f)\n",
+                    naturalWidth, column, spacedLines.size(), narrowest, narrowestAdvance);
+        check(lettersKept && insideColumn(spacedLines, column),
+              "строку с отступом почти во всю полосу сжатие берёт вместе с отступом: буквы не уже 0,92 своей ширины");
+    }
+
+    // Отступ шире полосы рубится, как слово шире полосы, — по буквам. Что он
+    // и правда шире, проверяется его естественной шириной: при узкой
+    // табуляции проба прошла бы впустую. Шире полосы — значит, строк не меньше
+    // трёх: «а», хотя бы один кусок отступа и строка, где он кончается.
+    u16_text wideText;
+    wideText += u"а\n";
+    wideText += indentOf(U'\t', 40);
+    wideText += u"текст дальше";
+    const typography::BookText wide = paragraphOf(wideText);
+    const auto wideNatural = layoutOf(engine, wide, 10000.0f, ragged);
+    const float wideIndent = wideNatural.size() == 2 ? leadingAdvance(wideNatural[1], 40) : 0.0f;
+    const auto wideLines = layoutOf(engine, wide, kColumn, justified);
+    std::printf("  отступ шире полосы: сам по себе %.2f, строк %zu, самая широкая %.2f\n", wideIndent,
+                wideLines.size(), widest(wideLines));
+    check(wideIndent > kColumn && wideLines.size() >= 3, "отступ из 40 табуляций шире полосы");
+    check(insideColumn(wideLines, kColumn) && linesStartAtLetters(wideText, wideLines, "отступ шире полосы"),
+          "отступ шире полосы разрублен по буквам, строки внутри полосы");
+
+    // Пробел — основа знака за переводом строки: отступ из одного него и
+    // слово за знаком. Полоса — между шириной слова и шириной слова с пробелом:
+    // без пробела слово вошло бы, с ним — нет, и место разрыва между отступом и
+    // словом было бы разрывом посреди буквы. Строка выходит шире полосы на долю
+    // пробела, и её снимает равномерное сжатие.
+    const u16_view markedWord = u"ббббббббб";
+    const u16_view markedText = u"а\n \x0301ббббббббб";
+    const u16_view markedLine = u" \x0301ббббббббб";
+    const float wordWidth = layoutOf(engine, paragraphOf(markedWord), 1000.0f, ragged).front().width;
+    const float markedWidth = layoutOf(engine, paragraphOf(markedLine), 1000.0f, ragged).front().width;
+    const float between = (wordWidth + markedWidth) * 0.5f;
+    const typography::BookText marked = paragraphOf(markedText);
+    const auto markedLines = layoutOf(engine, marked, between, justified);
+    std::printf("  пробел — основа знака: слово %.2f, с пробелом %.2f, полоса %.2f, строк %zu\n", wordWidth,
+                markedWidth, between, markedLines.size());
+    check(markedWidth > wordWidth && markedLines.size() == 2 && markedLines[1].textStart == 2 &&
+              linesStartAtLetters(markedText, markedLines, "пробел — основа знака") &&
+              insideColumn(markedLines, between),
+          "отступ из пробела — основы знака не отделяется от знака, и строка внутри полосы");
+
+    // Пробел — основа знака посреди строки: разрыв перед знаком разрешён
+    // правилами переноса строк (UAX #14, LB10), а начать строку со знака без
+    // основы значит разорвать букву. Других мест разрыва здесь нет, и строка
+    // остаётся одна, шире полосы: буква важнее полосы.
+    const u16_view midText = u"аааааа \x0301бббб";
+    const auto midLines = layoutOf(engine, paragraphOf(midText), 60.0f, typography::ParagraphStyle{});
+    std::printf("  знак за пробелом посреди строки: строк %zu, самая широкая %.2f\n", midLines.size(),
+                widest(midLines));
+    check(linesStartAtLetters(midText, midLines, "знак за пробелом"),
+          "строка не начинается со знака, основа которого — пробел на прежней строке");
+
+    // Растягивает ли DirectWrite табуляцию посреди выключенной строки — не
+    // проверка, а сведение для читающего отчёт: у отступа возможности растяжения
+    // сняты, и ответ на нём не виден.
+    const u16_view tabbedText = u"аа\tбб вв гг дд ее жж зз ии кк лл мм нн оо пп рр сс тт уу фф хх цц чч";
+    const typography::BookText tabbed = paragraphOf(tabbedText);
+    const auto tabbedJustified = layoutOf(engine, tabbed, 150.0f, justified);
+    const auto tabbedRagged = layoutOf(engine, tabbed, 150.0f, ragged);
+    const auto tabWidth = [](std::span<const typography::Line> lines) {
+        if (lines.empty()) return -1.0f;
+        for (const typography::GlyphRun& run : lines.front().runs)
+            if (run.textStart == 2 && run.textLength == 1) return run.width;
+        return -1.0f;
+    };
+    std::printf("  табуляция посреди первой строки: влево %.2f, по формату %.2f (-1 — не отдельный прогон)\n",
+                tabWidth(tabbedRagged), tabWidth(tabbedJustified));
+}
+
+/// Строка, кончившаяся обязательным разрывом (`<br/>` свёртка делает
+/// переводом строки), набирается как последняя: выключка по формату не тянет
+/// её до полосы, а сжимает, только если она переполнена. Короткая она по
+/// смыслу — перед разрывом стоит клей бесконечной растяжимости, и разбивка
+/// так её и считает; растяни её выключка — пробелы в ней разъехались бы, как в
+/// строке преформата в сноске nightmare.
+void testLineBeforeForcedBreak(typography::Engine& engine) {
+    std::printf("\n=== строка до обязательного разрыва ===\n");
+
+    typography::ParagraphStyle justified;   // по формату — по умолчанию
+    typography::ParagraphStyle ragged;
+    ragged.alignment = typography::Alignment::Left;
+
+    // Полоса широкая: обе строки в ней коротки, и строку, дотянутую до края,
+    // видно сразу. В первой строке пробел между словами — выключке есть что
+    // раздвинуть, и строка, отданная ей, вышла бы шире естественной.
+    constexpr float kWidth = 1000.0f;
+    const typography::BookText book = paragraphOf(u"одно слово\nдальше текст абзаца");
+
+    // Естественная ширина — у тех же строк, набранных влево: их выключка не
+    // трогает, а переломы у обоих наборов одни — обязательный разрыв и конец
+    // абзаца.
+    const auto lines = layoutOf(engine, book, kWidth, justified);
+    const auto natural = layoutOf(engine, book, kWidth, ragged);
+    const bool sameBreaks = lines.size() == 2 && natural.size() == 2 &&
+                            lines[0].textStart == 0 && lines[1].textStart == natural[1].textStart;
+
+    if (sameBreaks)
+        std::printf("  по формату %.1f и %.1f, влево %.1f и %.1f, полоса %.0f\n", lines[0].width,
+                    lines[1].width, natural[0].width, natural[1].width, kWidth);
+    // Различает ширина: выключка дотянула бы строку до полосы. Начало у полосы
+    // не различает — растянутая по формату строка начинается там же, — это
+    // сведение.
+    check(sameBreaks && std::abs(lines[0].width - natural[0].width) < 0.01f &&
+              lines[0].width < kWidth * 0.5f,
+          "строка до обязательного разрыва — естественной ширины");
+    check(sameBreaks && !lines[0].runs.empty() && lines[0].runs.front().originX == 0.0f,
+          "строка до обязательного разрыва — у начала полосы");
+    check(sameBreaks && std::abs(lines[1].width - natural[1].width) < 0.01f,
+          "последняя строка абзаца — как была");
+
+    // Переполненная строка до обязательного разрыва сжимается в полосу: полоса
+    // на 0,3 % уже её естественной ширины, и разбивке выгоднее сжать три
+    // пробела на доли пикселя, чем рвать раньше и тянуть оставшиеся до края.
+    const typography::BookText tight = paragraphOf(u"одно слово два три\nдальше текст абзаца");
+    const auto tightNatural = layoutOf(engine, tight, kWidth, ragged);
+    const float tightWidth = tightNatural.size() == 2 ? tightNatural[0].width : 0.0f;
+    const float tightColumn = tightWidth / 1.003f;
+    const auto tightLines = layoutOf(engine, tight, tightColumn, justified);
+    const bool wholeLine = tightNatural.size() == 2 && tightLines.size() == 2 &&
+                           tightLines[1].textStart == tightNatural[1].textStart;
+
+    std::printf("  переполненная: естественная %.2f, полоса %.2f, строк %zu, первая %.2f\n", tightWidth,
+                tightColumn, tightLines.size(), tightLines.empty() ? 0.0f : tightLines[0].width);
+    check(wholeLine && tightLines[0].width <= tightColumn + 0.05f && tightLines[0].width < tightWidth,
+          "переполненная строка до обязательного разрыва сжата в полосу");
+}
+
 /// Тела сносок настоящих книг в хранилище: лежат за потоком чтения по
 /// порядку документа, глав не открывают, у каждого якоря непустое тело, и
 /// тело верстается тем же хранилищем, без разбора заново.
@@ -2638,7 +3107,10 @@ int main() {
     testHyphenation();
     testHyphenationRules();
     testHyphenationInLayout(engine);
+    testHyphenShift(engine);
     testTrailingSpace(engine);
+    testIndentAfterBreak(engine);
+    testLineBeforeForcedBreak(engine);
 
     const std::filesystem::path testdata{BUKVITSA_TESTDATA_DIR};
     testHyphenSeries(engine, testdata);

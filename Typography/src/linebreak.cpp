@@ -280,8 +280,7 @@ private:
     void considerBreak(size_t at, const Totals& running, float tolerance, float minRatio,
                        bool limitSeries, bool desperate,
                        std::vector<uint32_t>& stillActive, std::vector<uint32_t>& born) {
-        const bool forced = items_[at].kind == BreakItem::Kind::Penalty &&
-                            items_[at].penalty <= -kInfinitePenalty;
+        const bool forced = isForcedBreak(items_[at]);
 
         stillActive.clear();
         born.clear();

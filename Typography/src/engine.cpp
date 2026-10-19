@@ -245,6 +245,12 @@ struct LineRun {
     /// строка, кончившаяся переносом.
     uint16_t hyphenGlyph = 0;
     float hyphenAdvance = 0.0f;
+
+    /// Вертикальный сдвиг над- или подстрочного прогона, в кегле строки: с
+    /// ним дефис встаёт вровень со своими буквами, а не на базовую линию.
+    /// Берётся из формата прогона, а не у соседнего глифа: в смещении глифа
+    /// сидит ещё и посадка знака шрифтом (GPOS), а дефису она чужая.
+    float hyphenAscenderOffset = 0.0f;
 };
 
 /// Ключ кэша шрифтов: семейство плюс начертание.
@@ -821,6 +827,15 @@ struct Engine::Impl {
     /// вернул бы нас к строке с дырой, — но пусть разбивка берёт его последним.
     static constexpr float kShortTailHyphenPenalty = 300.0f;
 
+    /// Разрыв между отступом строки и её первым словом — последнее средство:
+    /// строка из одного отступа хуже любого переноса, и берёт её разбивка,
+    /// только когда отступ со словом в полосу не входят никак. При выключке
+    /// влево клей не сжимается, и строку «отступ + слово», переполненную на
+    /// любую величину, первый проход отвергает: слово уходит на следующую
+    /// строку без отступа, а строка остаётся из одного отступа — так принято
+    /// сознательно, и здесь это не чинится.
+    static constexpr float kIndentBreakPenalty = 1000.0f;
+
     static sta_vector<BreakItem> breakItems(u16_view text, const CharacterMetrics& metrics,
                                             const sta_vector<DWRITE_LINE_BREAKPOINT>& points,
                                             std::span<const uint8_t> hyphens,
@@ -848,10 +863,10 @@ struct Engine::Impl {
         // перенос унесёт на следующую строку.
         uint32_t wordEnd = 0;
 
-        // Граница буквы, до которой уже дошли внутри рубимого слова. Идёт
-        // только вперёд и только в словах, которые рубятся, — то есть почти
-        // никогда: весь остальной текст рвётся по переломам DirectWrite, а
-        // внутри буквы их не бывает.
+        // Граница буквы, до которой уже дошли внутри рубимого слова или
+        // отступа. Идёт только вперёд и только в том, что рубится, — то есть
+        // почти никогда: весь остальной текст рвётся по переломам DirectWrite,
+        // а внутри буквы их не бывает.
         size_t letter = 0;
 
         float pending = 0.0f;
@@ -859,6 +874,22 @@ struct Engine::Impl {
         bool pendingIsGlue = false;
         bool pendingStarted = false;
         uint32_t pendingStart = 0;
+
+        // Набирается отступ строки — пробелы, с которых она начинается: в начале
+        // абзаца или сразу за обязательным разрывом. Он бокс, а не клей. Клей за
+        // разрывом разбивка съедает, как съедает его Кнут, а нарезка строк
+        // начинает следующую строку с конца разрыва, то есть с этих самых
+        // пробелов: мерить отступ разбивка должна так же, как его рисует
+        // нарезка, — иначе строка с отступом выходит за полосу на его ширину. Отступ
+        // оставляет свёртка пробелов: в преформате — любой; в прочем тексте она
+        // складывает только пробел, табуляцию и переводы строк ASCII, и в начале
+        // абзаца и за переводом строки от `<br/>` доходят неразрывный пробел,
+        // пробелы U+2000–U+200A, U+202F, U+205F, U+3000, перевод строки абзаца,
+        // начатого с `<br/>`, и пробел — основа знака. Всё это поставил автор, и
+        // всё это надо и показать, и измерить. Как бокс отступ не тянется — ни
+        // разбивкой, ни выключкой (sliceRun снимает с его глифов возможности
+        // растяжения), — и рубится, если сам шире полосы, как слово (chopWord).
+        bool pendingIsIndent = false;
 
         // Место переноса по образцам годится, только если здесь начинается и
         // кластер шейпинга: места стоят на границах букв, а кластер бывает шире
@@ -900,9 +931,22 @@ struct Engine::Impl {
                 // нём. Запрет ставится штрафом перед клеем, как `~` у Кнута:
                 // клей, перед которым стоит штраф, а не бокс, местом разрыва
                 // уже не считается, но растяжимость строке отдаёт по-прежнему.
-                if (endPosition < textLength &&
-                    points[endPosition].breakConditionBefore == DWRITE_BREAK_CONDITION_MAY_NOT_BREAK)
-                    penalty(pendingStart, kInfinitePenalty);
+                //
+                // Тот же запрет — там, где за клеем не начинается буква, что бы
+                // ни ответил DirectWrite: пробел бывает основой знака за ним
+                // («аааааа ́бббб»), и по правилам переноса строк (UAX #14, LB10)
+                // разрыв перед таким знаком разрешён, а следующая строка
+                // начиналась бы со знака без основы. Вывод букву не рвёт;
+                // граница — из wxl::core, по куску текста от начала клея: есть
+                // ли она перед символом за клеем, решают этот символ и пробел
+                // перед ним, а не то, что стоит до клея.
+                if (endPosition < textLength) {
+                    const u16_view glue = text.substr(pendingStart);
+                    const size_t glueLength = endPosition - pendingStart;
+                    if (points[endPosition].breakConditionBefore == DWRITE_BREAK_CONDITION_MAY_NOT_BREAK ||
+                        unicode::floor_grapheme_boundary(glue, glueLength) != glueLength)
+                        penalty(pendingStart, kInfinitePenalty);
+                }
 
                 item.kind = BreakItem::Kind::Glue;
                 item.width = pending;
@@ -982,11 +1026,53 @@ struct Engine::Impl {
                         metrics.hyphen[i]);
             }
 
-            if (!pendingStarted || space != pendingIsGlue) {
-                flush(i);
+            // Набирается ли сейчас пробельное — клей или отступ: пробел их
+            // продолжает, непробельный символ кончает. Отступ кончается на
+            // первом непробельном символе.
+            const bool pendingIsSpace = pendingIsGlue || pendingIsIndent;
+            const bool indentEnds = pendingStarted && pendingIsIndent && !space;
+
+            if (!pendingStarted || space != pendingIsSpace) {
+                // Между отступом и словом — место разрыва, иначе отступ со
+                // словом были бы одним боксом, а он может и не войти в
+                // полосу, хотя каждый по отдельности входит. Только где
+                // разрыв разрешён — неразрывный пробел держит слово при себе —
+                // и только на границе буквы: пробел бывает основой знака за
+                // ним, и вывод букву не рвёт.
+                if (indentEnds) {
+                    const u16_view indent = text.substr(pendingStart);
+                    const size_t indentLength = i - pendingStart;
+                    flush(i);
+                    if (point.breakConditionBefore != DWRITE_BREAK_CONDITION_MAY_NOT_BREAK &&
+                        unicode::floor_grapheme_boundary(indent, indentLength) == indentLength)
+                        penalty(i, kIndentBreakPenalty);
+                } else {
+                    flush(i);
+                }
+
+                const bool lineStart =
+                    i == 0 || point.breakConditionBefore == DWRITE_BREAK_CONDITION_MUST_BREAK;
                 pendingStarted = true;
-                pendingIsGlue = space;
+                pendingIsIndent = space && lineStart;
+                pendingIsGlue = space && !pendingIsIndent;
                 pendingStart = i;
+
+                // Отступ шире полосы рубится, как слово шире полосы, — по
+                // границам букв (startsLetter). Мерится он до первого
+                // непробельного символа или до следующего обязательного
+                // разрыва: там он кончается.
+                if (pendingIsIndent) {
+                    float indentWidth = 0.0f;
+                    for (uint32_t at = i; at < textLength && points[at].isWhitespace != 0 &&
+                                          (at == i || points[at].breakConditionBefore !=
+                                                          DWRITE_BREAK_CONDITION_MUST_BREAK);
+                         ++at)
+                        indentWidth += metrics.width[at];
+
+                    chopWord = indentWidth > maxWidth;
+                    if (chopWord)
+                        letter = i;
+                }
 
                 // Начинается слово — сразу смотрим, поместится ли оно в полосу.
                 // Не целиком, а кусками между его собственными местами разрыва:
@@ -1090,8 +1176,10 @@ struct Engine::Impl {
     ///        умножением, а не новым обращением к DirectWrite. Умножается всё
     ///        сразу здесь, при нарезке, — копия глифов на строку всё равно
     ///        делается, а копировать книгу целиком ради масштаба незачем.
-    static void sliceRun(const ShapedRun& run, uint32_t from, uint32_t to, LineRun& into,
-                         float scale) {
+    /// @param rigidEnd конец отступа строки: глифам символов до него выключка
+    ///        не отдаёт растяжения.
+    static void sliceRun(const ShapedRun& run, uint32_t from, uint32_t to, uint32_t rigidEnd,
+                         LineRun& into, float scale) {
         const uint32_t runStart = run.format.start;
         const uint32_t runEnd = runStart + run.format.length;
 
@@ -1116,6 +1204,16 @@ struct Engine::Impl {
         into.glyphs.textLength = localTo - localFrom;
         into.hyphenGlyph = run.hyphenGlyph;
         into.hyphenAdvance = run.hyphenAdvance * scale;
+        into.hyphenAscenderOffset = run.format.ascenderOffset * scale;
+
+        // Глифы отступа — глифы кластеров, что лежат в отступе целиком, то есть
+        // до первого глифа кластера символа rigidEnd: кластер пробела со знаком
+        // на нём — уже буква слова, а не отступ.
+        const uint32_t localRigid =
+            std::clamp(rigidEnd, runStart + localFrom, runStart + localTo) - runStart;
+        const auto rigidGlyph = localRigid < run.format.length
+                                    ? run.clusterMap[localRigid]
+                                    : static_cast<uint16_t>(run.glyphIndices.size());
 
         for (uint32_t g = firstGlyph; g < lastGlyph; ++g) {
             const float advance = run.advances[g] * scale;
@@ -1131,6 +1229,19 @@ struct Engine::Impl {
             DWRITE_JUSTIFICATION_OPPORTUNITY opportunity =
                 g < run.opportunities.size() ? run.opportunities[g]
                                              : DWRITE_JUSTIFICATION_OPPORTUNITY{};
+            // Отступ выключка не тянет: разбивка мерит его боксом, без
+            // растяжимости, и вывод мерит так же. Сжатие у отступа остаётся:
+            // DirectWrite сжимает и буквы, и без сжимаемого отступа остаток
+            // переполнения уходит в буквы короткого слова за ним (замер:
+            // 0,86 их ширины вместо не меньше 0,92). Равномерное сжатие в
+            // justify — по всей строке — страхует случай, когда DirectWrite
+            // остаток не снял.
+            if (g < rigidGlyph) {
+                opportunity.expansionMinimum = 0.0f;
+                opportunity.expansionMaximum = 0.0f;
+                opportunity.expansionPriority = 0;
+                opportunity.allowResidualExpansion = 0;
+            }
             opportunity.expansionMinimum *= scale;
             opportunity.expansionMaximum *= scale;
             opportunity.compressionMaximum *= scale;
@@ -1221,6 +1332,12 @@ struct Engine::Impl {
         // своей основы: насколько сократилась ширина основы, настолько его
         // сдвиг и возвращается назад. Знак с собственной шириной — отдельный
         // глиф в строке и сжимается как буква.
+        //
+        // Отступ выключка не тянет (sliceRun), а сжимает вместе со всеми, и
+        // равномерное сжатие тоже идёт по всей строке, с отступом: снять
+        // остаток с одних букв короткого слова за отступом во всю полосу
+        // значило бы сжать их без меры, до наложения глифов, — порог в 8 %
+        // меряет строку целиком.
         if (total > available && total <= available * 1.08f && total > 0.0f) {
             const float squeeze = available / total;
             float drift = 0.0f;   // на сколько сократилась ширина последней основы
@@ -1428,9 +1545,23 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         line.textLength = to - from;
         line.charOffset = book.charOffsetAt(paragraph, from);
 
+        // Отступ строки — пробелы, с которых она начинается. Строка начинается
+        // с пробела только там, где breakItems набрал отступ боксом (в начале
+        // абзаца, за обязательным разрывом, на рубке отступа шире полосы): клей
+        // разрыв съедает целиком. Бокс разбивка не тянет, и растяжения его
+        // глифов выключке здесь тоже не отдать — иначе разбивка мерила бы одно,
+        // а вывод рисовал бы другое: почти весь запас строки с длинным отступом
+        // и парой пробелов между словами уходил бы в отступ, и левый край кода
+        // гулял бы от строки к строке. Сжатие у отступа остаётся (sliceRun):
+        // без него остаток переполнения DirectWrite снимал бы с букв короткого
+        // слова за отступом; сжатие пробелов на доли процента не видно.
+        uint32_t indentEnd = from;
+        while (indentEnd < to && data->breakpoints[indentEnd].isWhitespace != 0)
+            ++indentEnd;
+
         for (const ShapedRun& run : shaped) {
             LineRun piece;
-            Impl::sliceRun(run, from, to, piece, scale);
+            Impl::sliceRun(run, from, to, indentEnd, piece, scale);
             if (piece.glyphs.glyphIndices.empty())
                 continue;
 
@@ -1447,14 +1578,16 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         // взят.
         //
         // Возможность выключки по формату у него нулевая: дефис на краю полосы
-        // не раздвигают и не сжимают, как бы ни требовалось строке.
+        // не раздвигают и не сжимают, как бы ни требовалось строке. Сдвиг —
+        // только вертикальный, тот же, что у букв прогона: в `<sup>`, `<sub>`
+        // и знаке сноски дефис стоит рядом с ними, а не на базовой линии.
         if (at.kind == BreakItem::Kind::Penalty && at.flagged && at.width > 0.0f &&
             !runs.empty() && runs.back().hyphenGlyph != 0) {
             LineRun& last = runs.back();
 
             last.glyphs.glyphIndices.push_back(last.hyphenGlyph);
             last.glyphs.advances.push_back(last.hyphenAdvance);
-            last.glyphs.offsets.push_back(DWRITE_GLYPH_OFFSET{});
+            last.glyphs.offsets.push_back(DWRITE_GLYPH_OFFSET{0.0f, last.hyphenAscenderOffset});
             last.opportunities.push_back(DWRITE_JUSTIFICATION_OPPORTUNITY{});
             last.glyphs.width += last.hyphenAdvance;
         }
@@ -1474,8 +1607,17 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         // остаётся выключенной влево — её короткость это конец мысли, а не
         // изъян набора, — но если и она переполнена, сжать надо и её: за поле
         // не должно вылезать ничего.
+        //
+        // Так же набирается строка, кончившаяся обязательным разрывом, —
+        // `<br/>` или переводом строки в преформате. Разбивка уже считает её
+        // короткой по смыслу: перед разрывом стоит клей бесконечной
+        // растяжимости, `\hfil\break` Кнута (breakItems). Растяни её выключка
+        // до полосы — пробелы в ней разъехались бы, а одно слово получило бы
+        // разрядку остатком.
+        const bool forcedBreak = isForcedBreak(at);
         const bool overfull = natural > available + 0.05f;
-        const bool wantsJustification = style.alignment == Alignment::Justify && !lastLine;
+        const bool wantsJustification =
+            style.alignment == Alignment::Justify && !lastLine && !forcedBreak;
 
         if (natural > 0.0f && (wantsJustification || overfull))
             impl.justify(runs, available);
