@@ -28,6 +28,38 @@ Command turning(const KeyPress& press, const KeyContext& context) {
     }
 }
 
+/// Прокрутка открытой сноски (п. 1в матрицы): вертикальные клавиши — её, пока
+/// на неё смотрят, то есть поверх нет ни панели, ни мастера, а клавиша пришла
+/// не из ползунка или поля ввода. Короткой сноске и краю длинной команда
+/// уходит всё равно и ничего не делает: отдай её карта книге, страница под
+/// сноской перевернулась бы оттого, что сноска кончилась. Ctrl, как и у
+/// листания, смысла не меняет.
+Command noteScrolling(const KeyPress& press, const KeyContext& context) {
+    if (!context.noteOpen || context.panelOpen || context.wizardOpen) return Command::None;
+    if (context.origin != FocusOrigin::Root && context.origin != FocusOrigin::Button)
+        return Command::None;
+
+    switch (press.key) {
+        case Key::PageDown:
+        case Key::Space:
+            return Command::ScrollNotePageDown;
+        case Key::PageUp:
+            return Command::ScrollNotePageUp;
+        case Key::Down:
+            return Command::ScrollNoteLineDown;
+        case Key::Up:
+            return Command::ScrollNoteLineUp;
+        case Key::Home:
+            return Command::ScrollNoteToStart;
+        case Key::End:
+            return Command::ScrollNoteToEnd;
+        default:
+            // ← и → листают и, листая, сноску закрывают; Escape закрывает её
+            // по приоритету приложения.
+            return Command::None;
+    }
+}
+
 /// Правила полосы (п. 1 матрицы). `taken` — полоса клавишу берёт, даже если
 /// ничего не делает: тогда до приложения она не доходит.
 struct StripAnswer {
@@ -45,6 +77,11 @@ StripAnswer strip(const KeyPress& press, const KeyContext& context) {
     if (context.origin == FocusOrigin::Slider || context.origin == FocusOrigin::TextBox) {
         if (press.key != Key::PageDown && press.key != Key::PageUp) return {};
     }
+
+    // Сноска поверх страницы — раньше листания: вертикальные клавиши, пока на
+    // неё смотрят, прокручивают её.
+    if (const Command scroll = noteScrolling(press, context); scroll != Command::None)
+        return {true, scroll};
 
     const Command turn = turning(press, context);
     const bool isTurning = turn != Command::None || press.key == Key::Home || press.key == Key::End;

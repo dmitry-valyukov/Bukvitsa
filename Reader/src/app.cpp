@@ -556,7 +556,7 @@ void App::onKey(Object const&, KeyRoutedEventArgs& args) {
             break;
 
         // Полосы — её ведущему: листание, начало и конец книги, кегль, тема,
-        // сноска.
+        // прокрутка и закрытие сноски.
         case Command::TurnForward:
         case Command::TurnBackward:
         case Command::GoToStart:
@@ -566,6 +566,12 @@ void App::onKey(Object const&, KeyRoutedEventArgs& args) {
         case Command::FontReset:
         case Command::NextTheme:
         case Command::DismissNote:
+        case Command::ScrollNoteLineDown:
+        case Command::ScrollNoteLineUp:
+        case Command::ScrollNotePageDown:
+        case Command::ScrollNotePageUp:
+        case Command::ScrollNoteToStart:
+        case Command::ScrollNoteToEnd:
             presenter_.perform(command);
             break;
 

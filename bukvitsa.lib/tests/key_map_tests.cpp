@@ -38,6 +38,13 @@ KeyContext withWizard(FocusOrigin origin = FocusOrigin::Root) {
     return context;
 }
 
+/// Над книгой открыта сноска, ничего поверх неё, фокус — там, где сказано.
+KeyContext withNote(FocusOrigin origin = FocusOrigin::Root) {
+    KeyContext context = focusedOn(origin);
+    context.noteOpen = true;
+    return context;
+}
+
 KeyContext onScreen(Screen screen) {
     KeyContext context;
     context.shown = screen;
@@ -96,6 +103,49 @@ bool turnsFontOrTheme(Command command) {
             return true;
         default:
             return false;
+    }
+}
+
+/// Прокрутка открытой сноски — команды, которых у прежнего обработчика не
+/// было.
+bool scrollsNote(Command command) {
+    switch (command) {
+        case Command::ScrollNoteLineDown:
+        case Command::ScrollNoteLineUp:
+        case Command::ScrollNotePageDown:
+        case Command::ScrollNotePageUp:
+        case Command::ScrollNoteToStart:
+        case Command::ScrollNoteToEnd:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// Правило сноски, пересказанное отдельно от карты: пока на открытую сноску
+/// смотрят — поверх нет ни панели, ни мастера, клавиша пришла от корня или
+/// кнопки, — вертикальные клавиши прокручивают её, с Ctrl и без. Пусто —
+/// правило клавишу не трогает, и действует прежний обработчик.
+std::optional<Command> noteRule(const KeyPress& press, const KeyContext& context) {
+    const bool watched = context.noteOpen && !context.panelOpen && !context.wizardOpen &&
+                         (context.origin == FocusOrigin::Root || context.origin == FocusOrigin::Button);
+    if (!watched) return std::nullopt;
+    switch (press.key) {
+        case Key::PageDown:
+        case Key::Space:
+            return Command::ScrollNotePageDown;
+        case Key::PageUp:
+            return Command::ScrollNotePageUp;
+        case Key::Down:
+            return Command::ScrollNoteLineDown;
+        case Key::Up:
+            return Command::ScrollNoteLineUp;
+        case Key::Home:
+            return Command::ScrollNoteToStart;
+        case Key::End:
+            return Command::ScrollNoteToEnd;
+        default:
+            return std::nullopt;
     }
 }
 
@@ -283,11 +333,13 @@ void testWizardKeepsOnlyTurning() {
           "пробел в имени обложки — текст");
 }
 
-/// Полоса отдала свой обработчик клавиш карте, и его поведение — спецификация:
-/// на каждом сочетании над книгой карта отвечает так же, а там, где прежний
-/// обработчик клавишу не брал, команды полосы не отдаёт. Перебор целиком —
-/// клавиша, Ctrl, фокус, мастер, книга, панель, сноска, полный экран, откуда
-/// пришли: то, от чего полоса не зависела, не должно и менять её ответ.
+/// Полоса отдала свой обработчик клавиш карте, и его поведение — спецификация
+/// с одной поправкой — правилом сноски: где оно действует, карта прокручивает
+/// сноску, на всех прочих сочетаниях над книгой отвечает, как прежний
+/// обработчик, а там, где он клавишу не брал, команд полосы не отдаёт.
+/// Перебор целиком — клавиша, Ctrl, фокус, мастер, книга, панель, сноска,
+/// полный экран, откуда пришли: то, от чего полоса не зависела, не должно и
+/// менять её ответ.
 void testStripMatchesFormerHandler() {
     std::printf("\n=== клавиши: полоса — как прежний обработчик ===\n");
 
@@ -311,14 +363,17 @@ void testStripMatchesFormerHandler() {
                     context.bookOpen = (flags & 32u) != 0;
 
                     const Command now = resolve(press, context);
-                    const std::optional<Command> former = formerStrip(press, context);
-                    if (former ? now != *former : turnsFontOrTheme(now)) ++mismatches;
+                    std::optional<Command> expected = noteRule(press, context);
+                    if (!expected) expected = formerStrip(press, context);
+                    if (expected ? now != *expected : turnsFontOrTheme(now) || scrollsNote(now))
+                        ++mismatches;
                     ++combinations;
 
                     // Не над книгой полосы нет вовсе.
                     for (const Screen other : {Screen::Start, Screen::Library}) {
                         context.shown = other;
-                        if (turnsFontOrTheme(resolve(press, context))) ++strayOutside;
+                        const Command outside = resolve(press, context);
+                        if (turnsFontOrTheme(outside) || scrollsNote(outside)) ++strayOutside;
                     }
                 }
             }
@@ -328,6 +383,68 @@ void testStripMatchesFormerHandler() {
     std::printf("        сочетаний над книгой: %d, расхождений: %d\n", combinations, mismatches);
     check(mismatches == 0, "над книгой карта отвечает, как прежний обработчик полосы");
     check(strayOutside == 0, "на заставке и полке команд полосы нет ни на одном сочетании");
+}
+
+/// Открытая сноска: вертикальные клавиши прокручивают её, а не листают книгу,
+/// ← и → листают, Escape закрывает; под панелью и мастером и из ползунка или
+/// поля ввода — как без сноски.
+void testNoteScrollKeys() {
+    std::printf("\n=== клавиши: открытая сноска ===\n");
+
+    for (const FocusOrigin origin : {FocusOrigin::Root, FocusOrigin::Button}) {
+        const KeyContext context = withNote(origin);
+        check(plain(Key::PageDown, context) == Command::ScrollNotePageDown &&
+                  plain(Key::Space, context) == Command::ScrollNotePageDown,
+              about("PgDn и пробел — сноска на окно вниз", origin));
+        check(plain(Key::PageUp, context) == Command::ScrollNotePageUp,
+              about("PgUp — сноска на окно вверх", origin));
+        check(plain(Key::Down, context) == Command::ScrollNoteLineDown &&
+                  plain(Key::Up, context) == Command::ScrollNoteLineUp,
+              about("↓ и ↑ — сноска на строку", origin));
+        check(plain(Key::Home, context) == Command::ScrollNoteToStart &&
+                  plain(Key::End, context) == Command::ScrollNoteToEnd,
+              about("Home/End — начало и конец сноски, не книги", origin));
+        check(plain(Key::Right, context) == Command::TurnForward &&
+                  plain(Key::Left, context) == Command::TurnBackward,
+              about("← и → листают книгу", origin));
+        check(plain(Key::Escape, context) == Command::DismissNote, about("Escape закрывает сноску", origin));
+    }
+
+    check(withControl(Key::PageDown, withNote()) == Command::ScrollNotePageDown &&
+              withControl(Key::End, withNote()) == Command::ScrollNoteToEnd,
+          "Ctrl прокрутку сноски не меняет, как и листание");
+    check(plain(Key::T, withNote()) == Command::NextTheme &&
+              withControl(Key::Add, withNote()) == Command::FontLarger,
+          "тема и кегль при сноске — как без неё");
+
+    KeyContext underPanel = withNote();
+    underPanel.panelOpen = true;
+    check(plain(Key::PageDown, underPanel) == Command::TurnForward &&
+              plain(Key::Down, underPanel) == Command::TurnForward &&
+              plain(Key::Home, underPanel) == Command::GoToStart,
+          "под панелью — листание, как без сноски");
+    check(plain(Key::Escape, underPanel) == Command::ClosePanel, "под панелью Escape — сперва панель");
+
+    KeyContext underWizard = withWizard();
+    underWizard.noteOpen = true;
+    check(plain(Key::PageDown, underWizard) == Command::TurnForward &&
+              plain(Key::Up, underWizard) == Command::TurnBackward &&
+              plain(Key::End, underWizard) == Command::GoToEnd,
+          "под мастером — листание, как без сноски");
+
+    for (const FocusOrigin origin : {FocusOrigin::Slider, FocusOrigin::TextBox}) {
+        const KeyContext context = withNote(origin);
+        check(plain(Key::PageDown, context) == Command::TurnForward &&
+                  plain(Key::PageUp, context) == Command::TurnBackward,
+              about("PgUp/PgDn листают, как без сноски", origin));
+        check(plain(Key::Down, context) == Command::None && plain(Key::Space, context) == Command::None &&
+                  plain(Key::Home, context) == Command::None,
+              about("стрелки, пробел и Home — их, как без сноски", origin));
+    }
+
+    check(plain(Key::PageDown, reading()) == Command::TurnForward &&
+              plain(Key::Home, reading()) == Command::GoToStart,
+          "без сноски — листание и начало книги");
 }
 
 /// Ctrl+L — полка отовсюду: с заставки, из книги, из ползунка и поля.
@@ -488,6 +605,7 @@ void runKeyMapTests() {
     testStripKeys();
     testWizardKeepsOnlyTurning();
     testStripMatchesFormerHandler();
+    testNoteScrollKeys();
     testLibraryFromEverywhere();
     testFunctionKeys();
     testEscapePriority();

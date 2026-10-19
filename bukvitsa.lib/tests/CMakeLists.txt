@@ -9,6 +9,7 @@ add_executable(bukvitsa_lib_tests
     key_map_tests.cpp
     note_bands_tests.cpp
     note_frame_tests.cpp
+    note_scroll_tests.cpp
     page_flow_tests.cpp
     pieces_tests.cpp
     settings_tests.cpp

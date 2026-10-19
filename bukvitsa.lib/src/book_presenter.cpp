@@ -260,6 +260,25 @@ void BookPresenter::perform(Command command) {
             hideNote();
             return;
 
+        case Command::ScrollNoteLineDown:
+            scrollNote(NoteScroll::LineDown);
+            return;
+        case Command::ScrollNoteLineUp:
+            scrollNote(NoteScroll::LineUp);
+            return;
+        case Command::ScrollNotePageDown:
+            scrollNote(NoteScroll::PageDown);
+            return;
+        case Command::ScrollNotePageUp:
+            scrollNote(NoteScroll::PageUp);
+            return;
+        case Command::ScrollNoteToStart:
+            scrollNote(NoteScroll::ToStart);
+            return;
+        case Command::ScrollNoteToEnd:
+            scrollNote(NoteScroll::ToEnd);
+            return;
+
         default:
             break;
     }
@@ -330,6 +349,14 @@ void BookPresenter::hideNote() {
     if (!noteOpen_) return;
     noteOpen_ = false;
     canvas().hideNote();
+}
+
+void BookPresenter::scrollNote(NoteScroll scroll) {
+    // Прокрутку карта отдаёт только при открытой сноске; без неё холсту
+    // прокручивать нечего, а промолчать значило бы съесть клавишу, которую
+    // карта решила по неправде.
+    if (!noteOpen_) wxl::core::abort("BookPresenter::perform: прокрутка сноски без сноски");
+    canvas().scrollNote(scroll);
 }
 
 /* ---------------- кегль, интерлиньяж, поля ---------------- */

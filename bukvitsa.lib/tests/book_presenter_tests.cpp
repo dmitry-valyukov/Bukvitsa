@@ -7,8 +7,9 @@
 // ожидания стоят, пока проба не сделает ход. Листы, их посадки и пул — у
 // холста, и здесь их нет: газета и книга для ведущего одно и то же.
 //
-// Нарушенная проводка (начало и конец без книги, команда не полосы, второй
-// холст, ведущий под холстом, просьба без холста) останавливает читалку —
+// Нарушенная проводка (начало и конец без книги, команда не полосы, прокрутка
+// без сноски, второй холст, ведущий под холстом, просьба без холста)
+// останавливает читалку —
 // такие пробы идут в дочернем процессе: тот же исполняемый файл с флагом
 // `--stop-probe=<имя>`. Смотрится код выхода и отчёт об остановке в stderr:
 // остановиться проба обязана своей строкой, а не чужой.
@@ -79,6 +80,7 @@ constexpr std::string_view kStopProbeFlag = "--stop-probe=";
 constexpr std::string_view kStartWithoutBook = "go-to-start-without-book";
 constexpr std::string_view kEndWithoutBook = "go-to-end-without-book";
 constexpr std::string_view kForeignCommand = "foreign-command";
+constexpr std::string_view kScrollWithoutNote = "scroll-note-without-note";
 constexpr std::string_view kSecondCanvas = "second-canvas";
 constexpr std::string_view kCanvasOutlives = "presenter-dies-under-canvas";
 constexpr std::string_view kNoCanvas = "request-without-canvas";
@@ -117,6 +119,7 @@ enum class Step {
     Restyle,
     ShowNote,
     HideNote,
+    ScrollNote,
     Activate,
     PositionMoved,
 };
@@ -137,6 +140,8 @@ const char* nameOf(Step journalStep) {
             return "showNote";
         case Step::HideNote:
             return "hideNote";
+        case Step::ScrollNote:
+            return "scrollNote";
         case Step::Activate:
             return "activate";
         case Step::PositionMoved:
@@ -180,6 +185,11 @@ public:
 
     void hideNote() override { journal.push_back(entryOf(Step::HideNote)); }
 
+    void scrollNote(NoteScroll scroll) override {
+        journal.push_back(entryOf(Step::ScrollNote));
+        noteScrolls.push_back(scroll);
+    }
+
     void activate(bool entersReading) override {
         Entry activateEntry = entryOf(Step::Activate);
         activateEntry.entersReading = entersReading;
@@ -207,6 +217,9 @@ public:
 
     /// Тело последней показанной сноски.
     uint32_t shownNoteBody = ~uint32_t{0};
+
+    /// Роды прокрутки сноски по порядку просьб.
+    std::vector<NoteScroll> noteScrolls;
 
 private:
     Entry entryOf(Step journalStep) const {
@@ -852,9 +865,10 @@ void testTapUnderWizard() {
 }
 
 /// Сноска: щелчок по знаку показывает её раньше листания, щелчок мимо —
-/// закрывает, не листая; тема, прыжок, переворот, открытие книги и Escape её
-/// прячут; тело, из которого нечего набрать, открытой сноски не делает
-/// (noteOpen в контексте карты).
+/// закрывает, не листая; клавиши прокрутки уходят холсту, не пряча её и не
+/// листая; тема, прыжок, переворот, открытие книги и Escape её прячут; тело,
+/// из которого нечего набрать, открытой сноски не делает (noteOpen в
+/// контексте карты).
 void testNote() {
     std::printf("\n=== ведущий: сноска ===\n");
     const intrusive_ptr<Book> novel = openNovel();
@@ -875,6 +889,23 @@ void testNote() {
     checkSteps(bench.canvas, {Step::ShowNote}, "щелчок по знаку — сноска, не листание");
     check(bench.presenter.noteOpen() && bench.canvas.shownNoteBody == noteMark->noteBody,
           "открыта сноска этого знака");
+
+    // Прокрутка — холсту, своим родом на каждую команду: ни прятанья, ни
+    // листания, место чтения стоит.
+    bench.canvas.journal.clear();
+    for (const Command scrollCommand :
+         {Command::ScrollNoteLineDown, Command::ScrollNoteLineUp, Command::ScrollNotePageDown,
+          Command::ScrollNotePageUp, Command::ScrollNoteToStart, Command::ScrollNoteToEnd})
+        bench.presenter.perform(scrollCommand);
+    checkSteps(bench.canvas,
+               {Step::ScrollNote, Step::ScrollNote, Step::ScrollNote, Step::ScrollNote,
+                Step::ScrollNote, Step::ScrollNote},
+               "клавиши прокрутки — холсту: сноска не спрятана, книга не листнута");
+    check(bench.canvas.noteScrolls ==
+              std::vector<NoteScroll>{NoteScroll::LineDown, NoteScroll::LineUp, NoteScroll::PageDown,
+                                      NoteScroll::PageUp, NoteScroll::ToStart, NoteScroll::ToEnd},
+          "каждая команда — своим родом прокрутки");
+    check(bench.presenter.noteOpen(), "после прокрутки сноска открыта");
 
     bench.canvas.journal.clear();
     bench.presenter.tap(marginPoint(bench.flow(), 0.9f), PointerButton::Left);
@@ -1290,8 +1321,9 @@ void checkStops(std::string_view probeName, std::string_view expectedReport) {
                 probeOutcome.timedOut ? " (снят по сроку)" : "", probeOutcome.reportText.c_str());
 }
 
-/// Начало и конец книги без книги и команда не полосы — ошибка проводки:
-/// карта их так не отдаёт, и ведущий останавливает читалку, а не пропускает.
+/// Начало и конец книги без книги, команда не полосы и прокрутка без открытой
+/// сноски — ошибка проводки: карта их так не отдаёт, и ведущий останавливает
+/// читалку, а не пропускает.
 /// Так же — второй холст поверх первого, ведущий, умирающий под холстом, и
 /// просьба к холсту, которого нет. Незнакомое имя пробы дочерний запуск не
 /// пропускает молча.
@@ -1300,6 +1332,7 @@ void testWiringFaultsStop() {
     checkStops(kStartWithoutBook, "BookPresenter::perform: начало или конец книги без книги");
     checkStops(kEndWithoutBook, "BookPresenter::perform: начало или конец книги без книги");
     checkStops(kForeignCommand, "BookPresenter::perform: команда не полосы");
+    checkStops(kScrollWithoutNote, "BookPresenter::perform: прокрутка сноски без сноски");
     checkStops(kSecondCanvas, "BookPresenter: второй холст поверх первого");
     checkStops(kCanvasOutlives, "BookPresenter: ведущий умирает, а холст под ним остался");
     checkStops(kNoCanvas, "BookPresenter: просьба к холсту, которого нет");
@@ -1341,8 +1374,8 @@ int runStopProbeChild(std::string_view probeName) {
 
     const bool knownProbe =
         probeName == kStartWithoutBook || probeName == kEndWithoutBook ||
-        probeName == kForeignCommand || probeName == kSecondCanvas ||
-        probeName == kCanvasOutlives || probeName == kNoCanvas;
+        probeName == kForeignCommand || probeName == kScrollWithoutNote ||
+        probeName == kSecondCanvas || probeName == kCanvasOutlives || probeName == kNoCanvas;
     if (!knownProbe) {
         std::fprintf(stderr, "%.*s: %.*s\n", static_cast<int>(kUnknownProbeReport.size()),
                      kUnknownProbeReport.data(), static_cast<int>(probeName.size()),
@@ -1369,6 +1402,11 @@ int runStopProbeChild(std::string_view probeName) {
             presenter->perform(Command::GoToEnd);
         } else if (probeName == kForeignCommand) {
             presenter->perform(Command::ShowLibrary);
+        } else if (probeName == kScrollWithoutNote) {
+            // Холст есть: остановиться проба обязана на сноске, а не на
+            // просьбе без холста.
+            firstCanvas.emplace(*presenter);
+            presenter->perform(Command::ScrollNotePageDown);
         } else if (probeName == kSecondCanvas) {
             firstCanvas.emplace(*presenter);
             secondCanvas.emplace(*presenter);

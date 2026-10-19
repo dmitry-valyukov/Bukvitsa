@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <span>
 #include <vector>
 
 // Заголовки проекта после всех стандартных: они ведут к импорту модуля книги,
@@ -10,6 +11,7 @@
 #include "Bind.h"
 
 #include "bukvitsa/reader/note_frame.h"
+#include "bukvitsa/reader/note_scroll.h"
 #include "bukvitsa/typography/glyph_painter.h"
 #include "bukvitsa/typography/system_failure.h"
 
@@ -103,6 +105,30 @@ void NotePopup::hide() {
     root_.visibility(Visibility::Collapsed);
 }
 
+void NotePopup::scroll(NoteScroll noteScroll) {
+    if (!visible_) core::abort("NotePopup: прокрутка скрытой сноски");
+
+    // Окно и подложка — в DIP из пикселей разметки (shownFrame_), а не из роста
+    // в DIP: по пикселям мера обещает, что окно короткой сноски не ниже
+    // подложки, и короткая здесь та же, что у окна прокрутки.
+    //
+    // Шаг — от места, где прокрутка встанет (goalTop_), а не от поля
+    // scrollTop_: поле узнаёт место только от вставшей прокрутки, и посреди
+    // инерции колеса оно ещё на прежнем месте — PgDn шагнул бы от него назад.
+    // После своей просьбы цель — то, что в поле: привязка обрезает её до конца
+    // прокрутки, и следующая клавиша, нажатая раньше, чем прокрутка скажет о
+    // себе, шагает от обрезанной.
+    //
+    // Известное ограничение: поле, равное новой цели, привязка не слышит, и
+    // если прокрутка в полёте, а поле ещё стоит ровно там, куда шагнула
+    // клавиша, прокрутка к нему не вернётся — клавиша пропадёт. Просьбы к
+    // прокрутке при равном поле у привязки wxl нет.
+    const double windowHeight = static_cast<double>(shownFrame_.windowHeight) / scale_;
+    const double paperHeight = static_cast<double>(shownFrame_.paperPixels) / scale_;
+    scrollTop_.set(noteScrollTarget(body_.lines, goalTop_, windowHeight, paperHeight, noteScroll));
+    goalTop_ = scrollTop_.get();
+}
+
 void NotePopup::renderingDeviceReplaced() noexcept {
     if (visible_) startBands();
 }
@@ -110,6 +136,7 @@ void NotePopup::renderingDeviceReplaced() noexcept {
 void NotePopup::viewChanging(const ScrollViewer&, ScrollViewerViewChangingEventArgs& args) {
     if (!visible_) return;
     viewTop_ = args.nextView().verticalOffset();
+    goalTop_ = args.finalView().verticalOffset();
     applyBands(bands_.advance(
         {pixelsOf(viewTop_, scale_), pixelsOf(args.finalView().verticalOffset(), scale_)}));
 }
@@ -253,6 +280,7 @@ void NotePopup::show(Book& book, uint32_t body, Point anchor, Size area, const T
     scale_ = scale;
     // Вид — там, куда сброс привёл прокрутку: поле говорит это само.
     viewTop_ = scrollTop_.get();
+    goalTop_ = viewTop_;
     prepareSurface();
     startBands();
 

@@ -392,6 +392,10 @@ void BookView::hideNote() {
     note_.hide();
 }
 
+void BookView::scrollNote(NoteScroll scroll) {
+    note_.scroll(scroll);
+}
+
 void BookView::redraw() noexcept {
     // Ответ о слое изгиба — только этой перерисовки: не дойдёт она до
     // ensureWarp (меры нет, тема, приглашение) — прежнему ответу не место.

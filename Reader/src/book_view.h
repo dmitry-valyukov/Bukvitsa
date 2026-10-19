@@ -134,6 +134,7 @@ private:
 
     bool showNote(const PageFlow::NoteHit& noteHit) override;
     void hideNote() override;
+    void scrollNote(NoteScroll scroll) override;
 
     /// Вход в чтение и уход: страница живёт на сцене окна, и вне чтения её
     /// быть видно не должно. Уходя, полоса сажает летящие листы, отменяет всё,
