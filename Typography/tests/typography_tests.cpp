@@ -21,6 +21,7 @@
 
 #include <d2d1_1.h>
 #include <dwrite.h>
+#include <dwrite_1.h>
 #include <objbase.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -1103,10 +1104,12 @@ void testClustersStayWhole(typography::Engine& engine) {
         check(std::abs(before - after) < 0.01f, "разрядка не отодвигает знак от буквы");
     }
 
-    // Сжатие переполненной строки: одна буква со знаком шире полосы на десять
-    // процентов — больше, чем DirectWrite сжимает сам, так что остаток
-    // снимает равномерное сжатие. Ширины сжимаются, глиф буквы — нет, и знак
-    // обязан остаться там, где его посадил шрифт.
+    // Сжатие переполненной строки: одна буква со знаком шире полосы на пять
+    // процентов. Букв выключка DirectWrite не сжимает, и всё снимает
+    // равномерное сжатие. Ширины сжимаются, глиф буквы — нет, и знак обязан
+    // остаться там, где его посадил шрифт. Не больше восьми процентов: одну
+    // графему шире полосы на большее равномерное сжатие не трогает — это
+    // ошибка разбивки, а не выключки.
     const typography::BookText single = paragraphOf(u"\x0436\x0301");
     const auto natural = layoutOf(engine, single, 1000.0f, ragged);
     const bool attached = !natural.empty() && natural[0].runs.size() == 1 &&
@@ -1115,7 +1118,7 @@ void testClustersStayWhole(typography::Engine& engine) {
     check(attached, "в Segoe UI знак ударения посажен на «ж»: глиф без ширины");
     if (attached) {
         const typography::GlyphRun& wide = natural[0].runs[0];
-        const auto squeezed = layoutOf(engine, single, wide.advances[0] * 0.9f, style);
+        const auto squeezed = layoutOf(engine, single, wide.advances[0] / 1.05f, style);
         const bool oneRun = squeezed.size() == 1 && squeezed[0].runs.size() == 1 &&
                             squeezed[0].runs[0].advances.size() == 2;
         check(oneRun, "переполненная строка из одной буквы — одна строка из двух глифов");
@@ -1123,7 +1126,7 @@ void testClustersStayWhole(typography::Engine& engine) {
             const typography::GlyphRun& narrow = squeezed[0].runs[0];
             std::printf("       ширина буквы %.3f -> %.3f, знак от буквы %.3f -> %.3f\n",
                         wide.advances[0], narrow.advances[0], markOffset(wide), markOffset(narrow));
-            check(narrow.advances[0] < wide.advances[0] - 0.5f, "строка и правда сжата");
+            check(narrow.advances[0] < wide.advances[0] * 0.97f, "строка и правда сжата");
             check(std::abs(markOffset(narrow) - markOffset(wide)) < 0.01f,
                   "сжатие строки не сдвигает знак с буквы");
         }
@@ -2684,12 +2687,14 @@ void testIndentAfterBreak(typography::Engine& engine) {
 
     // Отступ почти во всю полосу и короткое слово за ним — строка шире полосы
     // на полтора процента. Другого решения у разбивки нет: строку из одного
-    // отступа нечем растянуть. Проба сторожит, что отступ не исключён из
-    // сжатия: DirectWrite сжимает и буквы, и, если отступу сжиматься нельзя,
-    // всё переполнение ложится на три буквы слова — на машине они выходили
-    // 0,86 своей ширины, а со сжимаемым отступом остаются около 1,0 (замер на машине: 0,996).
-    // Порог — не уже 0,92. Отступ — из 60 пробелов и из 15 табуляций той же
-    // ширины: табуляция сжимается как пробел своего шрифта.
+    // отступа нечем растянуть. Межсловных пробелов нет, буквы и отступ
+    // DirectWrite не сжимает, и всё переполнение снимает равномерное сжатие.
+    // Снять его с одних трёх букв слова значило бы сжать их до 0,86 своей
+    // ширины, поэтому буквы сжимаются ровно до порога 0,92, а остальное
+    // отдаёт отступ — и первое слово здесь сдвигается: это цена того, что
+    // буквы не сплющены. Проба сторожит обе стороны: буквы не уже 0,92, отступ
+    // сжат, строка в полосе. Отступ — из 60 пробелов и из 15 табуляций той же
+    // ширины: табуляция в отступе такая же жёсткая, как пробел.
     for (const Indent& indent : {Indent{"60 пробелов", U' ', 60}, Indent{"15 табуляций", U'\t', 15}}) {
         const u16_view shortWord = u"сон";
         const auto indentGlyphs = static_cast<size_t>(indent.count);
@@ -2726,13 +2731,18 @@ void testIndentAfterBreak(typography::Engine& engine) {
                     narrowestAdvance = squeezed[glyph];
                 }
             }
-            lettersKept = lettersKept && narrowest >= 0.92f;
+            lettersKept = lettersKept && narrowest >= 0.92f - 1e-4f;
         }
+        const bool indentSqueezed =
+            spacedLines.size() == 2 && naturalLines.size() == 2 &&
+            leadingAdvance(spacedLines[1], indentGlyphs) < leadingAdvance(naturalLines[1], indentGlyphs);
         std::printf("  отступ почти во всю полосу, %s: строка %.2f на полосе %.2f, строк %zu, буквы — от %.3f своей ширины (шаг %.2f)\n",
                     indent.name, naturalWidth, column, spacedLines.size(), narrowest, narrowestAdvance);
         check(lettersKept && insideColumn(spacedLines, column),
-              std::string("строку с отступом почти во всю полосу сжатие берёт вместе с отступом: буквы не уже 0,92 своей ширины — ") +
+              std::string("отступ почти во всю полосу: буквы не уже 0,92 своей ширины, строка в полосе — ") +
                   indent.name);
+        check(indentSqueezed, std::string("отступ почти во всю полосу: остаток сверх порога букв снял отступ — ") +
+                                  indent.name);
     }
 
     // Отступ шире полосы рубится, как слово шире полосы, — по буквам. Что он
@@ -3064,7 +3074,8 @@ bool isCf(char32_t code) {
 /// вида. Живёт на стеке на время одного вызова; счётчик ссылок формальный.
 class ScriptQuery final : public IDWriteTextAnalysisSource, public IDWriteTextAnalysisSink {
 public:
-    explicit ScriptQuery(std::wstring_view text) : text_(text), shapes_(text.size(), DWRITE_SCRIPT_SHAPES_DEFAULT) {}
+    explicit ScriptQuery(std::wstring_view text)
+        : text_(text), shapes_(text.size(), DWRITE_SCRIPT_SHAPES_DEFAULT), analyses_(text.size()) {}
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) noexcept override {
         if (riid == __uuidof(IDWriteTextAnalysisSource) || riid == __uuidof(IUnknown)) {
@@ -3113,8 +3124,10 @@ public:
 
     HRESULT STDMETHODCALLTYPE SetScriptAnalysis(UINT32 position, UINT32 length,
                                                 const DWRITE_SCRIPT_ANALYSIS* analysis) noexcept override {
-        for (UINT32 at = position; at < position + length && at < shapes_.size(); ++at)
+        for (UINT32 at = position; at < position + length && at < shapes_.size(); ++at) {
             shapes_[at] = analysis->shapes;
+            analyses_[at] = *analysis;
+        }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE SetLineBreakpoints(UINT32, UINT32, const DWRITE_LINE_BREAKPOINT*) noexcept override {
@@ -3134,9 +3147,14 @@ public:
         return shapes_;
     }
 
+    /// Анализ письменности целиком на каждый символ — то, что shape отдаёт
+    /// шейперу; годен после удачного analyze.
+    const std::vector<DWRITE_SCRIPT_ANALYSIS>& analyses() const { return analyses_; }
+
 private:
     std::wstring_view text_;
     std::vector<DWRITE_SCRIPT_SHAPES> shapes_;
+    std::vector<DWRITE_SCRIPT_ANALYSIS> analyses_;
 };
 
 /// Сколько пикселей закрасили строки, нарисованные drawLine одна под другой в
@@ -3400,6 +3418,610 @@ void testInvisibleRuns(typography::Engine& engine, IDWriteFactory* dwrite,
         if (std::string_view(name).starts_with("nightmare"))
             check(controlRuns > 0, "в nightmare_example управляющие символы есть — проверять было что");
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Замеры выключки: сжатие DirectWrite и мера отступа                 */
+
+/// Ответ DirectWrite об одном символе: шаг его глифа и возможность выключки по
+/// формату.
+struct GlyphJustification {
+    float advance = 0.0f;
+    DWRITE_JUSTIFICATION_OPPORTUNITY opportunity{};
+    bool noVisual = false;   ///< анализ пометил символ DWRITE_SCRIPT_SHAPES_NO_VISUAL
+};
+
+/// Что DirectWrite отвечает о символе text[at] шрифтом face кегля fontSize, —
+/// тем же путём, каким идёт shape: анализ письменности, глифы прогона одной
+/// письменности (того, в котором стоит символ), их места и возможности
+/// выключки. Мимо вёрстки нарочно: замер — о самом DirectWrite, а вёрстка его
+/// ответ правит (у отступа и табуляции растяжение снято). nullopt — DirectWrite
+/// не ответил.
+std::optional<GlyphJustification> justificationOf(IDWriteFactory* dwrite, IDWriteFontFace* face, float fontSize,
+                                                  std::wstring_view text, size_t at) {
+    ScriptQuery query(text);
+    Microsoft::WRL::ComPtr<IDWriteTextAnalyzer> analyzer;
+    Microsoft::WRL::ComPtr<IDWriteTextAnalyzer1> analyzer1;
+    if (face == nullptr || at >= text.size() || !query.analyze(dwrite) ||
+        FAILED(dwrite->CreateTextAnalyzer(&analyzer)) || FAILED(analyzer.As(&analyzer1)))
+        return std::nullopt;
+
+    // shape шейпит прогоном формата, а он не шире прогона письменности: сосед с
+    // другой пометкой анализа (табуляция среди букв) идёт своим прогоном.
+    const std::vector<DWRITE_SCRIPT_ANALYSIS>& analyses = query.analyses();
+    const auto sameRun = [&](size_t other) {
+        return analyses[other].script == analyses[at].script && analyses[other].shapes == analyses[at].shapes;
+    };
+    size_t start = at;
+    while (start > 0 && sameRun(start - 1)) --start;
+    size_t end = at + 1;
+    while (end < text.size() && sameRun(end)) ++end;
+
+    const wchar_t* const run = text.data() + start;
+    const auto length = static_cast<UINT32>(end - start);
+    const UINT32 maxGlyphs = 3 * length / 2 + 16;
+    std::vector<UINT16> clusterMap(length);
+    std::vector<DWRITE_SHAPING_TEXT_PROPERTIES> textProperties(length);
+    std::vector<UINT16> glyphs(maxGlyphs);
+    std::vector<DWRITE_SHAPING_GLYPH_PROPERTIES> glyphProperties(maxGlyphs);
+    UINT32 glyphCount = 0;
+    if (FAILED(analyzer->GetGlyphs(run, length, face, FALSE, FALSE, &analyses[at], L"ru-RU", nullptr, nullptr,
+                                   nullptr, 0, maxGlyphs, clusterMap.data(), textProperties.data(), glyphs.data(),
+                                   glyphProperties.data(), &glyphCount)) ||
+        glyphCount == 0)
+        return std::nullopt;
+
+    std::vector<float> advances(glyphCount);
+    std::vector<DWRITE_GLYPH_OFFSET> offsets(glyphCount);
+    std::vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities(glyphCount);
+    if (FAILED(analyzer->GetGlyphPlacements(run, clusterMap.data(), textProperties.data(), length, glyphs.data(),
+                                            glyphProperties.data(), glyphCount, face, fontSize, FALSE, FALSE,
+                                            &analyses[at], L"ru-RU", nullptr, nullptr, 0, advances.data(),
+                                            offsets.data())) ||
+        FAILED(analyzer1->GetJustificationOpportunities(face, fontSize, analyses[at], length, glyphCount, run,
+                                                        clusterMap.data(), glyphProperties.data(),
+                                                        opportunities.data())))
+        return std::nullopt;
+
+    const UINT16 glyph = clusterMap[at - start];
+    GlyphJustification answer;
+    answer.advance = advances[glyph];
+    answer.opportunity = opportunities[glyph];
+    answer.noVisual = (static_cast<UINT32>(analyses[at].shapes) &
+                       static_cast<UINT32>(DWRITE_SCRIPT_SHAPES_NO_VISUAL)) != 0;
+    return answer;
+}
+
+/// Возможность выключки табуляции — та, что ей ставит shape: у прогона
+/// NO_VISUAL DirectWrite не спрашивают, растяжения нет, сжатие — как у
+/// отдельно спрошенного пробела того же шрифта, на столько пробелов, во
+/// сколько встала табуляция (stops).
+std::optional<GlyphJustification> tabJustificationOf(IDWriteFactory* dwrite, IDWriteFontFace* face, float fontSize,
+                                                     uint32_t stops) {
+    const std::optional<GlyphJustification> space = justificationOf(dwrite, face, fontSize, L" ", 0);
+    if (!space) return std::nullopt;
+
+    GlyphJustification tab;
+    tab.advance = static_cast<float>(stops) * space->advance;
+    tab.opportunity.compressionMaximum = static_cast<float>(stops) * space->opportunity.compressionMaximum;
+    tab.opportunity.compressionPriority = space->opportunity.compressionPriority;
+    tab.opportunity.allowResidualCompression = space->opportunity.allowResidualCompression;
+    tab.opportunity.applyToLeadingEdge = space->opportunity.applyToLeadingEdge;
+    tab.opportunity.applyToTrailingEdge = space->opportunity.applyToTrailingEdge;
+    tab.noVisual = true;
+    return tab;
+}
+
+void printJustification(const char* font, const char* name, const std::optional<GlyphJustification>& answer) {
+    if (!answer) {
+        std::printf("  %s, %s: DirectWrite не ответил\n", font, name);
+        return;
+    }
+    const DWRITE_JUSTIFICATION_OPPORTUNITY& o = answer->opportunity;
+    std::printf("  %s, %s: шаг %.2f%s\n"
+                "      растяжение %.2f…%.2f, приоритет %u, остаточное %u; сжатие до %.2f (%.1f %% шага), "
+                "приоритет %u, остаточное %u; края: ведущий %u, замыкающий %u\n",
+                font, name, answer->advance, answer->noVisual ? " (NO_VISUAL)" : "", o.expansionMinimum,
+                o.expansionMaximum, static_cast<unsigned>(o.expansionPriority),
+                static_cast<unsigned>(o.allowResidualExpansion), o.compressionMaximum,
+                answer->advance > 0.0f ? 100.0f * o.compressionMaximum / answer->advance : 0.0f,
+                static_cast<unsigned>(o.compressionPriority), static_cast<unsigned>(o.allowResidualCompression),
+                static_cast<unsigned>(o.applyToLeadingEdge), static_cast<unsigned>(o.applyToTrailingEdge));
+}
+
+/// Шрифт, каким движок набирает текст этого стиля, и кегль — с прогона строки
+/// из одной буквы: шрифт живёт в движке, и замер идёт тем же шрифтом.
+std::pair<IDWriteFontFace*, float> faceOf(typography::Engine& engine, const typography::ParagraphStyle& style) {
+    const auto lines = layoutOf(engine, paragraphOf(u"о"), 1000.0f, style);
+    if (lines.empty() || lines.front().runs.empty()) return {nullptr, 0.0f};
+    return {lines.front().runs.front().fontFace, lines.front().runs.front().fontSize};
+}
+
+/// Пробельный символ строки — то, из чего разбивка набирает клей: свёртка
+/// оставляет в книге неразрывный пробел, пробелы Юникода и табуляцию.
+bool isSpaceUnit(wchar_t unit) {
+    return unit == L' ' || unit == L'\t' || unit == L'\x00A0' || unit == L'\x1680' ||
+           (unit >= L'\x2000' && unit <= L'\x200A') || unit == L'\x202F' || unit == L'\x205F' || unit == L'\x3000';
+}
+
+/// Замер: что DirectWrite разрешает выключке по формату у пробелов и у букв —
+/// Georgia и моноширинный шрифт преформата, кегль 17, как у сноски. На этих
+/// числах стоит правило shape — сжимать при выключке одни пробелы: сколько
+/// можно снять с пробела, с каким приоритетом против букв и разрешено ли буквам
+/// остаточное сжатие (замер, Georgia 17: пробел — до 50 % шага,
+/// «о» — 5,8 %, «й» — 5,1 %, на том же приоритете). Символ стоит между буквами
+/// «о», как в строке книги: письменность пробелу достаётся от соседей. Только
+/// печать.
+void measureJustificationOpportunities(typography::Engine& engine, IDWriteFactory* dwrite) {
+    std::printf("\n=== замер: возможности выключки DirectWrite ===\n");
+
+    typography::ParagraphStyle serif;
+    serif.fontSize = 17.0f;
+    serif.alignment = typography::Alignment::Left;
+    typography::ParagraphStyle mono = serif;
+    mono.monospace = true;
+
+    struct Probe {
+        const char* name;
+        std::wstring_view text;   ///< символ замера — второй
+    };
+    const Probe probes[] = {{"пробел U+0020", L"о о"},
+                            {"неразрывный пробел U+00A0", L"о\x00A0о"},
+                            {"круглая шпация U+2003", L"о\x2003о"},
+                            {"буква «о»", L"ооо"},
+                            {"буква «й»", L"ойо"}};
+
+    for (const auto& [font, style] : {std::pair{"Georgia 17", serif}, std::pair{"моноширинный 17", mono}}) {
+        const auto [face, fontSize] = faceOf(engine, style);
+        for (const Probe& probe : probes)
+            printJustification(font, probe.name, justificationOf(dwrite, face, fontSize, probe.text, 1));
+
+        // Табуляцию shape у DirectWrite не спрашивает — у прогона NO_VISUAL
+        // глифы-заглушки, и возможности ставятся свои. Печатается и то, что
+        // ставит shape (на полную позицию в четыре пробела), и то, что
+        // DirectWrite ответил бы о заглушке сам.
+        printJustification(font, "табуляция, как ставит shape (позиция в 4 пробела)",
+                           tabJustificationOf(dwrite, face, fontSize, 4));
+        printJustification(font, "табуляция, ответ DirectWrite о заглушке",
+                           justificationOf(dwrite, face, fontSize, L"о\tо", 1));
+    }
+}
+
+/// Естественный шаг глифа прогона — из метрик шрифта, мимо выключки.
+std::optional<float> designAdvanceOf(const typography::GlyphRun& run, uint16_t glyph) {
+    DWRITE_GLYPH_METRICS metrics{};
+    if (run.fontFace == nullptr || FAILED(run.fontFace->GetDesignGlyphMetrics(&glyph, 1, &metrics)))
+        return std::nullopt;
+    DWRITE_FONT_METRICS font{};
+    run.fontFace->GetMetrics(&font);
+    return static_cast<float>(metrics.advanceWidth) * run.fontSize / static_cast<float>(font.designUnitsPerEm);
+}
+
+/// Сторож по книгам: строкам по формату хватает сжатия одних межсловных
+/// пробелов — столько, сколько разрешает DirectWrite. На этом стоит правило
+/// shape: буквам выключка сжатия не даёт, и строка, которой мало пробелов,
+/// снимает остаток равномерным сжатием — сначала за отступом. Таких строк в
+/// трёх книгах на полосе 620 — от нуля до двух (замер, остаток не
+/// больше 1,83 % строки); сторож — не больше трёх на книгу: если их станет
+/// заметно больше, буквы плотных строк поплывут равномерным сжатием. Строк,
+/// которые не удалось сопоставить с естественным набором, — не больше
+/// процента: иначе сторож считал бы не те строки.
+///
+/// Естественная ширина строки — сумма естественных шагов её текста, набранного
+/// отдельным абзацем без выключки на полосе 100000, со своими прогонами стиля;
+/// у строки, кончившейся переносом, — плюс дефис по метрикам шрифта. Строка,
+/// у которой число глифов с таким набором не сошлось, в счёт не идёт и
+/// печатается числом. Коэффициент подгонки из вёрстки наружу не выходит,
+/// поэтому он считается по ширинам: переполнение против сжимаемости клея,
+/// какую ему даёт разбивка, — меньшее из ответа DirectWrite и восьмой доли
+/// его ширины; ниже −1 — строка сжата сильнее, чем обещали пробелы (второй
+/// проход и дальше). Пробелы в начале строки — отступ, бокс без сжимаемости,
+/// в счёт не идут.
+void testSpaceShrinkInBooks(typography::Engine& engine, IDWriteFactory* dwrite,
+                               const std::filesystem::path& testdata) {
+    std::printf("\n=== сжатие межсловных пробелов против переполнения строк по формату ===\n");
+
+    // Ответ DirectWrite о пробельном символе шрифта и кегля: их в книге
+    // единицы, а строк тысячи. Табуляция — как её ставит shape, на один
+    // пробел: настоящую ширину её позиции даёт строка.
+    struct Answer {
+        IDWriteFontFace* face;
+        float fontSize;
+        wchar_t unit;
+        std::optional<GlyphJustification> justification;
+    };
+    std::vector<Answer> answers;
+    const auto answerFor = [&](IDWriteFontFace* face, float fontSize, wchar_t unit) {
+        for (const Answer& known : answers)
+            if (known.face == face && known.fontSize == fontSize && known.unit == unit) return known.justification;
+
+        const wchar_t context[] = {L'о', unit, L'о'};
+        answers.push_back(Answer{face, fontSize, unit,
+                                 unit == L'\t' ? tabJustificationOf(dwrite, face, fontSize, 1)
+                                               : justificationOf(dwrite, face, fontSize,
+                                                                 std::wstring_view(context, 3), 1)});
+        return answers.back().justification;
+    };
+    bool answered = true;
+
+    for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3", "hardcore_file_structure.fb3"}) {
+        const std::filesystem::path path = testdata / name;
+        if (!std::filesystem::exists(path)) {
+            std::printf("  %s: нет файла, пропущен\n", name);
+            continue;
+        }
+
+        try {
+            const fb3::Document document(path);
+            const typography::BookText book = typography::flatten(document);
+
+            for (const float width : {620.0f}) {
+                size_t lineCount = 0, unmatched = 0, overfull = 0, uncovered = 0, belowMinusOne = 0;
+                float worstOverflow = 0.0f, worstResidual = 0.0f, lowestRatio = 0.0f;
+                std::wstring worstLine;
+
+                for (const typography::Block& block : book.flow()) {
+                    if (block.paragraph.text.count == 0) continue;
+                    const typography::ParagraphStyle style = styleFor(block, 20.0f);
+                    if (style.alignment != typography::Alignment::Justify) continue;
+
+                    typography::ParagraphStyle loose = style;
+                    loose.alignment = typography::Alignment::Left;
+                    loose.firstLineIndent = 0.0f;
+
+                    const u16_view text = book.textOf(block.paragraph);
+                    const std::span<const typography::StyleSpan> spans = book.spansOf(block.paragraph);
+                    const auto lines = engine.layout(book, block.paragraph, width, style);
+
+                    for (size_t index = 0; index < lines.size(); ++index) {
+                        const typography::Line& line = lines[index];
+                        if (line.textLength == 0) continue;
+                        ++lineCount;
+                        // Ширина строки — без абзацного отступа: его даёт перо, а
+                        // первой строке достаётся полоса за вычетом отступа.
+                        const float available =
+                            index == 0 ? std::max(width - style.firstLineIndent, width * 0.2f) : width;
+
+                        // Текст строки отдельным абзацем, со своими прогонами стиля.
+                        const uint32_t end = line.textStart + line.textLength;
+                        const u16_view piece = text.substr(line.textStart, line.textLength);
+                        typography::BookText alone = paragraphOf(piece);
+                        alone.spans.clear();
+                        for (const typography::StyleSpan& span : spans) {
+                            const uint32_t from = std::max(span.start, line.textStart);
+                            const uint32_t to = std::min(span.start + span.length, end);
+                            if (from < to)
+                                alone.spans.push_back(
+                                    typography::StyleSpan{from - line.textStart, to - from, span.style});
+                        }
+                        alone.blocks.front().paragraph.spans = {0, static_cast<uint32_t>(alone.spans.size())};
+                        const auto naturalLines = layoutOf(engine, alone, 100000.0f, loose);
+
+                        float naturalWidth = 0.0f;
+                        size_t naturalGlyphs = 0;
+                        for (const typography::Line& part : naturalLines) {
+                            naturalWidth += part.width;
+                            for (const typography::GlyphRun& run : part.runs) naturalGlyphs += run.glyphIndices.size();
+                        }
+                        size_t glyphs = 0;
+                        for (const typography::GlyphRun& run : line.runs) glyphs += run.glyphIndices.size();
+
+                        // Лишний глиф строки по формату — дефис переноса: его
+                        // строка дописывает последним глифом последнего прогона.
+                        if (glyphs == naturalGlyphs + 1 && !line.runs.empty() &&
+                            !line.runs.back().glyphIndices.empty()) {
+                            const std::optional<float> hyphen =
+                                designAdvanceOf(line.runs.back(), line.runs.back().glyphIndices.back());
+                            if (!hyphen) {
+                                ++unmatched;
+                                continue;
+                            }
+                            naturalWidth += *hyphen;
+                        } else if (glyphs != naturalGlyphs) {
+                            ++unmatched;
+                            continue;
+                        }
+
+                        // Чей шрифт и кегль у каждого символа строки — прогона
+                        // естественного набора.
+                        std::vector<const typography::GlyphRun*> owners(line.textLength, nullptr);
+                        for (const typography::Line& part : naturalLines)
+                            for (const typography::GlyphRun& run : part.runs)
+                                for (uint32_t at = run.textStart; at < run.textStart + run.textLength && at < owners.size();
+                                     ++at)
+                                    owners[at] = &run;
+
+                        const std::wstring_view units = piece.wchars();
+                        size_t at = 0;
+                        while (at < units.size() && isSpaceUnit(units[at])) ++at;   // отступ — бокс
+
+                        float spaceShrink = 0.0f;   // по ответу DirectWrite, без предела
+                        float glueShrink = 0.0f;    // как в разбивке: на клей меньшее из ответа и 1/8 ширины
+                        float pendingShrink = 0.0f;
+                        float pendingWidth = 0.0f;
+                        for (; at <= units.size(); ++at) {
+                            if (at < units.size() && isSpaceUnit(units[at]) && owners[at] != nullptr) {
+                                const typography::GlyphRun& run = *owners[at];
+                                const std::optional<GlyphJustification> answer =
+                                    answerFor(run.fontFace, run.fontSize, units[at]);
+                                if (!answer) {
+                                    answered = false;
+                                    continue;
+                                }
+                                float unitWidth = answer->advance;
+                                float unitShrink = answer->opportunity.compressionMaximum;
+                                if (units[at] == L'\t') {
+                                    // Табуляция стоит до позиции: ширину даёт её
+                                    // невидимый прогон, сжатие — пробела на каждый
+                                    // пробел этой ширины, как в shape.
+                                    size_t tabs = 0;
+                                    for (uint32_t k = run.textStart; k < run.textStart + run.textLength; ++k)
+                                        tabs += units[k] == L'\t' ? 1 : 0;
+                                    unitWidth = tabs > 0 ? run.width / static_cast<float>(tabs) : 0.0f;
+                                    unitShrink = answer->advance > 0.0f ? unitWidth / answer->advance * unitShrink
+                                                                        : 0.0f;
+                                }
+                                pendingWidth += unitWidth;
+                                pendingShrink += unitShrink;
+                                spaceShrink += unitShrink;
+                            } else if (pendingWidth > 0.0f || pendingShrink > 0.0f) {
+                                glueShrink += std::min(pendingShrink, pendingWidth * 0.125f);
+                                pendingShrink = 0.0f;
+                                pendingWidth = 0.0f;
+                            }
+                        }
+
+                        // Порог переполнения — тот же, с какого вёрстка сжимает строку.
+                        const float overflow = naturalWidth - available;
+                        if (overflow <= 0.05f) continue;
+                        ++overfull;
+                        worstOverflow = std::max(worstOverflow, overflow);
+
+                        if (spaceShrink < overflow) {
+                            ++uncovered;
+                            const float residual = 100.0f * (overflow - spaceShrink) / available;
+                            if (residual > worstResidual) {
+                                worstResidual = residual;
+                                worstLine = std::wstring(units);
+                            }
+                        }
+
+                        // Без сжимаемости коэффициент несёт величину переполнения —
+                        // так же, как в разбивке.
+                        const float ratio = glueShrink > 0.0f ? -overflow / glueShrink
+                                                              : -1.0f - 100.0f * overflow / std::max(available, 1.0f);
+                        if (ratio < -1.0f) {
+                            ++belowMinusOne;
+                            lowestRatio = std::min(lowestRatio, ratio);
+                        }
+                    }
+                }
+
+                std::printf("  %s, полоса %.0f: строк по формату %zu (не сопоставлено %zu), переполнено %zu "
+                            "(наибольшее %.2f DIP)\n"
+                            "    сжатия одних пробелов по DirectWrite не хватает %zu, наибольший остаток %.2f %% "
+                            "строки; коэффициент ниже −1 — %zu, наименьший %.2f\n",
+                            name, width, lineCount, unmatched, overfull, worstOverflow, uncovered, worstResidual,
+                            belowMinusOne, lowestRatio);
+                if (!worstLine.empty())
+                    std::printf("    строка с наибольшим остатком: |%s|\n", reportedText(worstLine).c_str());
+                check(unmatched * 100 <= lineCount,
+                      std::string("не сопоставлено не больше процента строк — ") + name);
+                check(uncovered <= 3,
+                      std::string("строк, где не хватает сжатия межсловных пробелов, не больше трёх — ") + name);
+            }
+        } catch (const std::exception& error) {
+            std::printf("FAILED %s: %s\n", name, error.what());
+            ++failures;
+        }
+    }
+
+    check(answered, "DirectWrite ответил о каждом пробельном символе строк");
+}
+
+/// Первое слово за отступом не гуляет, когда строку переполнило и выключка её
+/// сжимает. Разбивка мерит отступ боксом без сжимаемости, и вывод его не
+/// сжимает: ни DirectWrite (sliceRun снимает возможности), ни равномерное
+/// сжатие остатка, пока буквы за отступом не уже 0,92 своей ширины. Сожмись
+/// отступ — слово за ним уехало бы влево ровно на столько, на сколько он
+/// сжался (строку кода ниже это сдвигало бы на 1,7 DIP). Δ — разница шагов
+/// отступа в строке, сжатой полосой уже её естественной ширины (A), и в той же
+/// строке без выключки (B). Строка стоит между двумя переводами строки и
+/// набирается как последняя: влево, сжатие — только от переполнения.
+void testIndentDoesNotDrift(typography::Engine& engine, IDWriteFactory* dwrite) {
+    std::printf("\n=== первое слово за отступом не гуляет ===\n");
+
+    typography::ParagraphStyle justified;
+    justified.fontSize = 17.0f;
+    justified.lineHeight = 1.35f;
+
+    // Шаги глифов строки по порядку прогонов: сначала отступ — по глифу на
+    // знак, — за ним слова.
+    const auto advancesOf = [](const typography::Line& line) {
+        std::vector<float> advances;
+        for (const typography::GlyphRun& run : line.runs)
+            advances.insert(advances.end(), run.advances.begin(), run.advances.end());
+        return advances;
+    };
+
+    // Самая сжатая буква — шаг в A к шагу в B, с глифа first, мимо пробелов и
+    // глифов без ширины (перевод строки). Глиф на единицу текста — так у этих
+    // строк (кириллица Georgia, ASCII моноширинного); не сошлось число — 0.
+    const auto narrowestLetter = [&](const typography::Line& squeezed, const typography::Line& natural,
+                                     u16_view text, size_t first) {
+        const std::vector<float> a = advancesOf(squeezed);
+        const std::vector<float> b = advancesOf(natural);
+        const std::wstring_view units = text.wchars().substr(natural.textStart, natural.textLength);
+        if (a.size() != b.size() || b.size() != units.size()) return 0.0f;
+        float narrowest = 1.0f;
+        for (size_t glyph = first; glyph < b.size(); ++glyph) {
+            if (isSpaceUnit(units[glyph]) || b[glyph] <= 0.0f) continue;
+            narrowest = std::min(narrowest, a[glyph] / b[glyph]);
+        }
+        return narrowest;
+    };
+
+    // Насколько знак без ширины съехал с основы: место знака от начала основы
+    // — шаг основы и разница их сдвигов — в A против B, наибольшее по строке.
+    // Знака нет или число глифов не сошлось — −1.
+    const auto markShiftOf = [](const typography::Line& squeezed, const typography::Line& natural) {
+        std::vector<float> a, b;
+        std::vector<float> aOffsets, bOffsets;
+        for (const typography::GlyphRun& run : squeezed.runs) {
+            a.insert(a.end(), run.advances.begin(), run.advances.end());
+            for (const auto& offset : run.offsets) aOffsets.push_back(offset.advanceOffset);
+        }
+        for (const typography::GlyphRun& run : natural.runs) {
+            b.insert(b.end(), run.advances.begin(), run.advances.end());
+            for (const auto& offset : run.offsets) bOffsets.push_back(offset.advanceOffset);
+        }
+        if (a.size() != b.size() || aOffsets.size() != a.size() || bOffsets.size() != b.size()) return -1.0f;
+        float shift = -1.0f;
+        for (size_t glyph = 1; glyph < b.size(); ++glyph) {
+            if (b[glyph] != 0.0f || b[glyph - 1] <= 0.0f) continue;
+            const float placedA = a[glyph - 1] + aOffsets[glyph] - aOffsets[glyph - 1];
+            const float placedB = b[glyph - 1] + bOffsets[glyph] - bOffsets[glyph - 1];
+            shift = std::max(shift, std::abs(placedA - placedB));
+        }
+        return shift;
+    };
+
+    struct Measure {
+        bool whole = false;      ///< строка A — та же, что B: с тем же началом и длиной
+        float column = 0.0f;
+        float width = 0.0f;
+        float delta = 0.0f;      ///< шаг отступа в A минус в B
+        float narrowest = 0.0f;
+        float rigid = 0.0f;      ///< ширина отступа в B
+        float flexible = 0.0f;   ///< ширина строки B за отступом
+        float markShift = -1.0f; ///< markShiftOf
+        uint32_t pass = 0;
+    };
+    const auto measure = [&](u16_view text, size_t indentGlyphs, float overflow,
+                             const typography::ParagraphStyle& style) {
+        typography::ParagraphStyle loose = style;
+        loose.alignment = typography::Alignment::Left;
+        const typography::BookText book = paragraphOf(text);
+        const auto natural = layoutOf(engine, book, 10000.0f, loose);   // B
+        Measure result;
+        if (natural.size() != 3) return result;
+
+        result.column = natural[1].width / overflow;
+        const auto squeezed = layoutOf(engine, book, result.column, style);   // A
+        result.pass = engine.lastBreakPass();
+        result.whole = squeezed.size() == 3 && squeezed[1].textStart == natural[1].textStart &&
+                       squeezed[1].textLength == natural[1].textLength;
+        if (!result.whole) return result;
+
+        result.width = squeezed[1].width;
+        result.delta = leadingAdvance(squeezed[1], indentGlyphs) - leadingAdvance(natural[1], indentGlyphs);
+        result.narrowest = narrowestLetter(squeezed[1], natural[1], book.textOf(onlyParagraph(book)), indentGlyphs);
+        result.rigid = leadingAdvance(natural[1], indentGlyphs);
+        result.flexible = natural[1].width - result.rigid;
+        result.markShift = markShiftOf(squeezed[1], natural[1]);
+        return result;
+    };
+
+    // Семь слов за отступом, полоса на полпроцента уже строки: переполнение
+    // меньше сжимаемости её шести межсловных пробелов в разбивке, строка
+    // берётся первым проходом, и всё снимают пробелы между словами. Всё, что
+    // выключка сняла бы с отступа, — сдвиг первого слова.
+    struct Indent {
+        const char* name;
+        char32_t code;
+        int count;
+    };
+    for (const Indent& indent : {Indent{"4 пробела", U' ', 4}, Indent{"2 табуляции", U'\t', 2},
+                                 Indent{"3 неразрывных пробела", U'\x00A0', 3}}) {
+        u16_text text;
+        text += u"а\n";
+        for (int at = 0; at < indent.count; ++at) text.push_back(indent.code);
+        text += u"слово слово слово слово слово слово слово";
+        text += u"\nб";
+
+        const Measure m = measure(text, static_cast<size_t>(indent.count), 1.005f, justified);
+        std::printf("  %s: полоса %.2f, строка %s, ширина %.2f, проход разбивки %u; Δ отступа %+.3f DIP, "
+                    "буквы — от %.3f своей ширины\n",
+                    indent.name, m.column, m.whole ? "цела" : "разбита", m.width, m.pass, m.delta, m.narrowest);
+        check(m.whole, std::string("строка за отступом цела — ") + indent.name);
+        check(m.whole && m.pass == 1, std::string("строка за отступом взята первым проходом — ") + indent.name);
+        check(m.whole && m.width <= m.column + 0.05f, std::string("строка не шире полосы — ") + indent.name);
+        check(m.whole && std::abs(m.delta) <= 0.1f,
+              std::string("первое слово за отступом сдвинулось не больше 0,1 DIP — ") + indent.name);
+    }
+
+    // Строка кода с отступом в четыре пробела, переполненная на 2 %: по расчёту
+    // сжимаемости её пяти межсловных пробелов (меньшее из ответа DirectWrite и
+    // восьмой доли пробела) переполнения не покрыть, коэффициент ниже −1, и
+    // разбивка берёт её вторым проходом — плотнее, чем обещали пробелы (замер:
+    // коэффициент −1,13). Остатка у justify здесь нет: DirectWrite сжимает
+    // пробел до половины шага, и переполнение целиком снимают межсловные
+    // пробелы. Проба сторожит жёсткость отступа в нарезке (sliceRun): дай она
+    // отступу сжатие DirectWrite — тот разделил бы переполнение и с ним, и
+    // первое слово уехало бы на 1,7 DIP. Проход печатается, коэффициент —
+    // оценкой по ответу DirectWrite о пробеле того же шрифта, как его считает
+    // разбивка.
+    typography::ParagraphStyle code = justified;
+    code.monospace = true;
+    constexpr int kCodeSpaces = 5;
+    const u16_view codeText = u"а\n    if (value > limit) return value;\nб";
+    const Measure m = measure(codeText, 4, 1.02f, code);
+
+    const auto [face, fontSize] = faceOf(engine, code);
+    const std::optional<GlyphJustification> space = justificationOf(dwrite, face, fontSize, L"о о", 1);
+    const float overflow = m.column * 0.02f;
+    const float shrink =
+        space ? kCodeSpaces * std::min(space->opportunity.compressionMaximum, space->advance * 0.125f) : 0.0f;
+    std::printf("  строка кода, отступ 4 пробела: полоса %.2f, строка %s, ширина %.2f, проход разбивки %u, "
+                "коэффициент по оценке %.2f; Δ отступа %+.3f DIP, буквы — от %.3f своей ширины (порог 0,92)\n",
+                m.column, m.whole ? "цела" : "разбита", m.width, m.pass, shrink > 0.0f ? -overflow / shrink : 0.0f,
+                m.delta, m.narrowest);
+    check(m.whole && m.pass == 2, "строка кода с коэффициентом ниже −1 взята вторым проходом");
+    check(m.whole && std::abs(m.delta) <= 0.1f,
+          "строка кода с коэффициентом ниже −1 — первое слово за отступом сдвинулось не больше 0,1 DIP");
+    check(m.whole && m.narrowest >= 0.92f, "строка кода с коэффициентом ниже −1 — буквы не уже 0,92 своей ширины");
+
+    // Остаток за отступом. Одно слово за отступом в четыре пробела, полоса на
+    // 1,5 % уже строки: межсловных пробелов нет, буквам и отступу DirectWrite
+    // сжатия не даёт, и всё переполнение снимает равномерное сжатие в justify.
+    // Разбивка берёт строку вторым проходом (коэффициент около −2,5); при 2 %
+    // он был бы ровно на пределе прохода, −3, и проба зависела бы от
+    // округления. За отступом сжатия хватает — буквы выходят около 0,983 своей
+    // ширины, не уже порога 0,92, — и отступ цел: Δ = 0, а буквы сжаты одним
+    // множителем (полоса − отступ) / (строка − отступ). Второй раз — в Segoe UI
+    // со знаком ударения на «и». Предпосылка: Segoe UI сажает знак на букву
+    // отдельным глифом без ширины — подтверждено только для «ж»
+    // (testClustersStayWhole); не так — проверка знака красная, а не пустая.
+    // Сжатие основы не должно сдвинуть знак с места.
+    const auto beyondIndent = [&](const char* name, u16_view text, bool marked) {
+        const Measure beyond = measure(text, 4, 1.015f, justified);
+        const float expected = beyond.flexible > 0.0f ? (beyond.column - beyond.rigid) / beyond.flexible : 0.0f;
+        std::printf("  остаток за отступом, %s: полоса %.2f, строка %s, ширина %.2f, проход разбивки %u; "
+                    "Δ отступа %+.3f DIP, буквы — от %.4f своей ширины (ожидается %.4f), знак съехал на %.3f\n",
+                    name, beyond.column, beyond.whole ? "цела" : "разбита", beyond.width, beyond.pass, beyond.delta,
+                    beyond.narrowest, expected, beyond.markShift);
+        check(beyond.whole && beyond.width <= beyond.column + 0.05f,
+              std::string("остаток за отступом: строка цела и не шире полосы — ") + name);
+        check(beyond.whole && beyond.pass == 2,
+              std::string("остаток за отступом: строка взята вторым проходом — ") + name);
+        check(beyond.whole && expected >= 0.92f,
+              std::string("остаток за отступом: сжатие за отступом не уже порога — ") + name);
+        check(beyond.whole && std::abs(beyond.delta) <= 0.1f,
+              std::string("остаток за отступом: отступ не сжат — ") + name);
+        check(beyond.whole && std::abs(beyond.narrowest - expected) <= 0.01f,
+              std::string("остаток за отступом: буквы сжаты одним множителем — ") + name);
+        if (marked)
+            check(beyond.whole && beyond.markShift >= 0.0f && beyond.markShift < 0.01f,
+                  std::string("остаток за отступом: знак без ширины остаётся на основе — ") + name);
+    };
+    beyondIndent("Georgia", u"а\n    Предварительно\nб", false);
+
+    const typography::TextStyle previous = engine.textStyle();
+    typography::TextStyle segoe = previous;
+    segoe.fontFamily = L"Segoe UI";
+    engine.setTextStyle(segoe);
+    beyondIndent("Segoe UI, ударение", u"а\n    Предвари\x0301тельно\nб", true);
+    engine.setTextStyle(previous);
 }
 
 /// Тела сносок настоящих книг в хранилище: лежат за потоком чтения по
@@ -3714,6 +4336,9 @@ int main() {
     testNoteBodies(engine, testdata);
     testNotePensInsideColumn(engine, testdata);
     testInvisibleRuns(engine, dwrite.Get(), testdata);
+    measureJustificationOpportunities(engine, dwrite.Get());
+    testIndentDoesNotDrift(engine, dwrite.Get());
+    testSpaceShrinkInBooks(engine, dwrite.Get(), testdata);
 
     for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3",
                              "hardcore_file_structure.fb3",

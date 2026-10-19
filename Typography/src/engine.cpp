@@ -55,6 +55,11 @@ constexpr float kSuperscriptRise = 0.34f;   ///< доля кегля вверх
 constexpr float kSubscriptDrop = 0.16f;
 constexpr float kSpacedTracking = 0.22f;    ///< разрядка, доля кегля на глиф
 
+/// Докуда остаток переполнения вправе сжать глифы за отступом строки; что
+/// сверх, снимается с отступа (Impl::justify). Уже этой доли своей ширины
+/// буквы выглядят сжатыми.
+constexpr float kBeyondIndentSqueeze = 0.92f;
+
 /// Шаг позиций табуляции, в ширинах пробела. Четыре — выбор, а не стандарт:
 /// ни Юникод, ни FB3 шага не задают; это обычный шаг редакторов кода, а
 /// табуляция в книге живёт почти только в преформате.
@@ -256,6 +261,11 @@ struct LineRun {
     /// Берётся из формата прогона, а не у соседнего глифа: в смещении глифа
     /// сидит ещё и посадка знака шрифтом (GPOS), а дефису она чужая.
     float hyphenAscenderOffset = 0.0f;
+
+    /// Сколько первых глифов прогона (по порядку глифов) — отступ строки:
+    /// выключка их не тянет и не сжимает, а остаток переполнения снимает
+    /// сначала мимо них (justify).
+    uint32_t rigidGlyphs = 0;
 };
 
 /// Прогон без видимых глифов: управляющие и форматирующие символы —
@@ -710,7 +720,8 @@ struct Engine::Impl {
         return spaces.emplace(face, measure).first->second;
     }
 
-    ShapedRun shape(u16_view paragraph, const FormatRun& format, TabColumns& columns) {
+    ShapedRun shape(u16_view paragraph, const FormatRun& format, TabColumns& columns,
+                    std::span<const DWRITE_LINE_BREAKPOINT> breakpoints) {
         ShapedRun shaped;
         shaped.format = format;
 
@@ -785,11 +796,10 @@ struct Engine::Impl {
             // Выключка табуляцию не тянет: табуляция ставит текст за собой на
             // позицию, а позиция от полосы не зависит. А сжимает — как пробел
             // того же шрифта, с тем же приоритетом, на столько пробелов, во
-            // сколько встала: отступ из табуляций, которому сжиматься нельзя,
-            // отдал бы остаток переполнения буквам короткого слова за ним, и
-            // они вышли бы заметно уже своей ширины. Разрядка (ниже) таких
-            // глифов не касается: просвет дал бы переводу строки ту самую
-            // невидимую ширину.
+            // сколько встала: посреди строки табуляция — клей разбивки, как
+            // пробел. В отступе строки сжатие у неё снимает нарезка (sliceRun).
+            // Разрядка (ниже) таких глифов не касается: просвет дал бы
+            // переводу строки ту самую невидимую ширину.
             std::fill(shaped.advances.begin(), shaped.advances.end(), 0.0f);
             shaped.opportunities.assign(actualGlyphs, DWRITE_JUSTIFICATION_OPPORTUNITY{});
 
@@ -825,6 +835,30 @@ struct Engine::Impl {
                         format.fontFace, format.fontSize, format.script, length, actualGlyphs, text,
                         shaped.clusterMap.data(), glyphProperties.data(), shaped.opportunities.data())))
                     shaped.opportunities.assign(actualGlyphs, DWRITE_JUSTIFICATION_OPPORTUNITY{});
+            }
+
+            // Сжимает выключка только пробелы (почему — в justify). Растяжение
+            // букв остаётся: им выключка закрывает недобор строки без
+            // пробелов. Пробел ли кластер, решает ответ анализа переломов о
+            // его первом символе, как и в разбивке: ширину и сжимаемость
+            // кластера несёт он.
+            ensure(format.start + length <= breakpoints.size());
+            for (UINT32 i = 0; i < length;) {
+                const uint16_t glyph = shaped.clusterMap[i];
+                UINT32 next = i + 1;
+                while (next < length && shaped.clusterMap[next] == glyph)
+                    ++next;
+                const auto glyphEnd =
+                    next < length ? shaped.clusterMap[next] : static_cast<uint16_t>(actualGlyphs);
+
+                if (breakpoints[format.start + i].isWhitespace == 0) {
+                    for (uint32_t g = glyph; g < glyphEnd && g < actualGlyphs; ++g) {
+                        shaped.opportunities[g].compressionMaximum = 0.0f;
+                        shaped.opportunities[g].compressionPriority = 0;
+                        shaped.opportunities[g].allowResidualCompression = 0;
+                    }
+                }
+                i = next;
             }
         }
 
@@ -945,7 +979,7 @@ struct Engine::Impl {
             // отдавать нельзя: он отвечает E_INVALIDARG.
             if (format.length == 0 || format.fontFace == nullptr || format.fontSize <= 0.0f)
                 continue;
-            into.runs.push_back(shape(text, format, columns));
+            into.runs.push_back(shape(text, format, columns, {into.breakpoints.data(), into.breakpoints.size()}));
         }
     }
 
@@ -1110,7 +1144,7 @@ struct Engine::Impl {
         // начатого с `<br/>`, и пробел — основа знака. Всё это поставил автор, и
         // всё это надо и показать, и измерить. Как бокс отступ не тянется — ни
         // разбивкой, ни выключкой (sliceRun снимает с его глифов возможности
-        // растяжения), — и рубится, если сам шире полосы, как слово (chopWord).
+        // растяжения и сжатия), — и рубится, если сам шире полосы, как слово (chopWord).
         bool pendingIsIndent = false;
 
         // Место переноса по образцам годится, только если здесь начинается и
@@ -1473,8 +1507,9 @@ struct Engine::Impl {
     ///        умножением, а не новым обращением к DirectWrite. Умножается всё
     ///        сразу здесь, при нарезке, — копия глифов на строку всё равно
     ///        делается, а копировать книгу целиком ради масштаба незачем.
-    /// @param rigidEnd конец отступа строки: глифам символов до него выключка
-    ///        не отдаёт растяжения.
+    /// @param rigidEnd конец отступа строки: глифам кластеров, начатых до него,
+    ///        выключка не отдаёт ни растяжения, ни сжатия; их число —
+    ///        into.rigidGlyphs.
     static void sliceRun(const ShapedRun& run, uint32_t from, uint32_t to, uint32_t rigidEnd,
                          LineRun& into, float scale) {
         const uint32_t runStart = run.format.start;
@@ -1504,11 +1539,14 @@ struct Engine::Impl {
         into.hyphenAdvance = run.hyphenAdvance * scale;
         into.hyphenAscenderOffset = run.format.ascenderOffset * scale;
 
-        // Глифы отступа — глифы кластеров, что лежат в отступе целиком, то есть
-        // до первого глифа кластера символа rigidEnd: кластер пробела со знаком
-        // на нём — уже буква слова, а не отступ.
-        const uint32_t localRigid =
+        // Глифы отступа — глифы кластеров, что начинаются в отступе. Кластер
+        // пробела со знаком на нём — отступ целиком, со знаком: ширину
+        // кластера несёт пробел, и разбивка кладёт её в бокс отступа.
+        uint32_t localRigid =
             std::clamp(rigidEnd, runStart + localFrom, runStart + localTo) - runStart;
+        while (localRigid > localFrom && localRigid < localTo &&
+               run.clusterMap[localRigid] == run.clusterMap[localRigid - 1])
+            ++localRigid;
         const auto rigidGlyph = localRigid < run.format.length
                                     ? run.clusterMap[localRigid]
                                     : static_cast<uint16_t>(run.glyphIndices.size());
@@ -1527,18 +1565,20 @@ struct Engine::Impl {
             DWRITE_JUSTIFICATION_OPPORTUNITY opportunity =
                 g < run.opportunities.size() ? run.opportunities[g]
                                              : DWRITE_JUSTIFICATION_OPPORTUNITY{};
-            // Отступ выключка не тянет: разбивка мерит его боксом, без
-            // растяжимости, и вывод мерит так же. Сжатие у отступа остаётся:
-            // DirectWrite сжимает и буквы, и без сжимаемого отступа остаток
-            // переполнения уходит в буквы короткого слова за ним (замер:
-            // 0,86 их ширины вместо не меньше 0,92). Равномерное сжатие в
-            // justify — по всей строке — страхует случай, когда DirectWrite
-            // остаток не снял.
+            // Отступ выключка не тянет и не сжимает: разбивка мерит его
+            // боксом, без растяжимости и сжимаемости, и вывод мерит так же
+            // (почему и что с остатком переполнения — в justify). Табуляция в
+            // отступе — так же; посреди строки она сжимается, как пробел
+            // (shape).
             if (g < rigidGlyph) {
                 opportunity.expansionMinimum = 0.0f;
                 opportunity.expansionMaximum = 0.0f;
                 opportunity.expansionPriority = 0;
                 opportunity.allowResidualExpansion = 0;
+                opportunity.compressionMaximum = 0.0f;
+                opportunity.compressionPriority = 0;
+                opportunity.allowResidualCompression = 0;
+                ++into.rigidGlyphs;
             }
             opportunity.expansionMinimum *= scale;
             opportunity.expansionMaximum *= scale;
@@ -1582,7 +1622,9 @@ struct Engine::Impl {
     }
 
     /// Раздвигает строку до полосы. Ширины считает DirectWrite: он знает, где
-    /// в этой письменности можно добавить, а где нельзя.
+    /// в этой письменности можно добавить, а где нельзя. Порядок прогонов —
+    /// уже экранный (reorderVisually): у каждого прогона отступ — его первые
+    /// rigidGlyphs глифов, где бы прогон ни встал.
     void justify(sta_vector<LineRun>& runs, float available) {
         if (!analyzer1)
             return;
@@ -1590,11 +1632,15 @@ struct Engine::Impl {
         sta_vector<float> advances;
         sta_vector<DWRITE_GLYPH_OFFSET> offsets;
         sta_vector<DWRITE_JUSTIFICATION_OPPORTUNITY> opportunities;
+        sta_vector<uint8_t> rigid;   // глиф отступа строки: остаток его не сжимает первым
 
         for (const LineRun& run : runs) {
             advances.insert(advances.end(), run.glyphs.advances.begin(), run.glyphs.advances.end());
             offsets.insert(offsets.end(), run.glyphs.offsets.begin(), run.glyphs.offsets.end());
             opportunities.insert(opportunities.end(), run.opportunities.begin(), run.opportunities.end());
+            ensure(run.rigidGlyphs <= run.glyphs.advances.size());
+            rigid.insert(rigid.end(), run.rigidGlyphs, 1);
+            rigid.insert(rigid.end(), run.glyphs.advances.size() - run.rigidGlyphs, 0);
         }
 
         const auto glyphCount = static_cast<UINT32>(advances.size());
@@ -1614,15 +1660,38 @@ struct Engine::Impl {
             justifiedOffsets = offsets;
         }
 
-        // Остаток. DirectWrite сжимает ровно настолько, насколько разрешают
-        // возможности, и на последних долях пикселя может не дотянуть. Строка,
-        // вылезшая за поле, ломает всю страницу, поэтому такой остаток снимаем
-        // равномерно — доля процента на межбуквенном просвете не видна.
-        // Большой промах не трогаем: он означал бы ошибку в разбивке, и её
-        // надо видеть, а не заглаживать.
+        // Сжатие DirectWrite выключке отдано только межсловным пробелам: shape
+        // снимает его у букв, sliceRun — у отступа. DirectWrite разрешает
+        // сжать и буквы, на том же приоритете, что пробелы (замер, Georgia 17:
+        // пробел — до 50 % шага, «о» — до 5,8 %, «й» — до 5,1 %), и
+        // переполнение расходилось бы по буквам каждой плотной строки, хотя
+        // разбивка мерит сжимаемость строки одним клеем. Отступ разбивка мерит
+        // жёстким боксом, а сожми его вывод — первое слово за ним уехало бы
+        // влево (замер: строка кода второго прохода — на 1,7 DIP). Пробелов
+        // хватает: по трём книгам строк, которым мало их сжатия, — от нуля до
+        // двух, остаток не больше 1,83 % строки.
+        //
+        // Остаток. Глубже 50 % шага DirectWrite пробел не сожмёт — остаточного
+        // сжатия у пробела нет, — а строку, которой этого мало, разбивка
+        // берёт нарочно (проход плотнее, чем обещали пробелы); бывает и
+        // недобор на долях пикселя. Строка, вылезшая за поле, ломает всю
+        // страницу, поэтому остаток O снимаем равномерно: сначала с глифов за
+        // отступом (ширина F) — не уже kBeyondIndentSqueeze их ширины, — а что
+        // сверх, max(0, O − 0,08·F), с глифов отступа (ширина R) по их
+        // ширинам; на столько и сдвигается первое слово. Переход непрерывный:
+        // две соседние строки по разные стороны порога иначе получили бы
+        // сдвиги отступа скачком — гуляющий край, от которого жёсткий отступ
+        // и спасает. Большой промах — больше 8 % строки — не трогаем: он
+        // означал бы ошибку в разбивке, и её надо видеть, а не заглаживать. В
+        // пределах 8 % отступ не сжимается уже 0,92: O ≤ 0,08·(F + R).
         float total = 0.0f;
-        for (const float advance : justified)
-            total += advance;
+        float rigidTotal = 0.0f;
+        for (size_t i = 0; i < justified.size(); ++i) {
+            total += justified[i];
+            if (rigid[i] != 0)
+                rigidTotal += justified[i];
+        }
+        const float flexible = total - rigidTotal;
 
         // Сжимаются ширины, а глиф буквы не сжимается — поэтому знак,
         // посаженный на букву, не должен уехать вместе с сократившейся
@@ -1630,20 +1699,21 @@ struct Engine::Impl {
         // своей основы: насколько сократилась ширина основы, настолько его
         // сдвиг и возвращается назад. Знак с собственной шириной — отдельный
         // глиф в строке и сжимается как буква.
-        //
-        // Отступ выключка не тянет (sliceRun), а сжимает вместе со всеми, и
-        // равномерное сжатие тоже идёт по всей строке, с отступом: снять
-        // остаток с одних букв короткого слова за отступом во всю полосу
-        // значило бы сжать их без меры, до наложения глифов, — порог в 8 %
-        // меряет строку целиком.
         if (total > available && total <= available * 1.08f && total > 0.0f) {
-            const float squeeze = available / total;
+            const float overflow = total - available;
+            const float beyondIndent =
+                flexible > 0.0f
+                    ? std::max((available - rigidTotal) / flexible, kBeyondIndentSqueeze)
+                    : 1.0f;
+            const float fromIndent = std::max(0.0f, overflow - flexible * (1.0f - beyondIndent));
+            const float indentSqueeze = rigidTotal > 0.0f ? 1.0f - fromIndent / rigidTotal : 1.0f;
             float drift = 0.0f;   // на сколько сократилась ширина последней основы
 
             for (size_t i = 0; i < justified.size(); ++i) {
                 if (justified[i] == 0.0f) {
                     justifiedOffsets[i].advanceOffset += drift;
                 } else {
+                    const float squeeze = rigid[i] != 0 ? indentSqueeze : beyondIndent;
                     drift = justified[i] * (1.0f - squeeze);
                     justified[i] -= drift;
                 }
@@ -1856,9 +1926,9 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         // глифов выключке здесь тоже не отдать — иначе разбивка мерила бы одно,
         // а вывод рисовал бы другое: почти весь запас строки с длинным отступом
         // и парой пробелов между словами уходил бы в отступ, и левый край кода
-        // гулял бы от строки к строке. Сжатие у отступа остаётся (sliceRun):
-        // без него остаток переполнения DirectWrite снимал бы с букв короткого
-        // слова за отступом; сжатие пробелов на доли процента не видно.
+        // гулял бы от строки к строке. Сжатия у отступа нет тоже (sliceRun);
+        // остаток переполнения он отдаёт, лишь когда буквы за ним сжались бы
+        // уже kBeyondIndentSqueeze (justify).
         uint32_t indentEnd = from;
         while (indentEnd < to && data->breakpoints[indentEnd].isWhitespace != 0)
             ++indentEnd;
