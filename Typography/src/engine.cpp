@@ -55,6 +55,11 @@ constexpr float kSuperscriptRise = 0.34f;   ///< доля кегля вверх
 constexpr float kSubscriptDrop = 0.16f;
 constexpr float kSpacedTracking = 0.22f;    ///< разрядка, доля кегля на глиф
 
+/// Шаг позиций табуляции, в ширинах пробела. Четыре — выбор, а не стандарт:
+/// ни Юникод, ни FB3 шага не задают; это обычный шаг редакторов кода, а
+/// табуляция в книге живёт почти только в преформате.
+constexpr uint32_t kTabColumns = 4;
+
 /// Предел длины прогона шейпинга. Кластерная карта DirectWrite -- массив
 /// UINT16, так что прогон, дающий больше 65535 глифов, разобрать нельзя;
 /// запас взят с большим отрывом, потому что глифов бывает больше, чем
@@ -253,6 +258,74 @@ struct LineRun {
     float hyphenAscenderOffset = 0.0f;
 };
 
+/// Прогон без видимых глифов: управляющие и форматирующие символы —
+/// табуляция, переводы строки, мягкий перенос, пробел нулевой ширины, метки
+/// направления. Так их помечает анализ письменности DirectWrite
+/// (DWRITE_SCRIPT_SHAPES_NO_VISUAL), и это договор с вызывающим: глифы,
+/// которые шейпер им всё же даёт (заглушку .notdef со своей шириной),
+/// показывать нельзя — IDWriteTextLayout их и не показывает. Здесь — всё
+/// обоснование; дальше по коду на него только ссылаются: шрифт такому прогону
+/// — базовый (formatRuns), ширины и возможности выключки — свои (shape),
+/// глифы не рисуются (GlyphRun::invisible).
+bool isInvisible(const DWRITE_SCRIPT_ANALYSIS& script) {
+    return (static_cast<UINT32>(script.shapes) & static_cast<UINT32>(DWRITE_SCRIPT_SHAPES_NO_VISUAL)) != 0;
+}
+
+/// Колонка исходной строки — мерка позиций табуляции. Строка исходного текста
+/// начинается с абзаца и за каждым обязательным разрывом (перевод строки и
+/// прочие — как их видит анализ переломов); колонка — число букв от её
+/// начала, а табуляция доводит её до следующей кратной kTabColumns. Буква, а
+/// не единица текста: «й» из двух кодовых точек и знак вне BMP — одна
+/// колонка. Буква без вида (isInvisible: мягкий перенос, пробел нулевой
+/// ширины, метка направления) колонки не занимает: на строке её нет, и
+/// табуляция за ней встала бы мимо позиции. Ограничение: широкий знак
+/// (иероглиф, UAX #11 East Asian Width W/F) — тоже одна колонка, а не две, как
+/// в терминале. Колонка зависит только от текста, а не от того, где разбивка
+/// разорвёт строку, и потому ширина табуляции считается при шейпинге.
+///
+/// Курсор идёт только вперёд: прогоны шейпятся по порядку текста, и абзац
+/// проходится один раз, сколько бы табуляций в нём ни было.
+struct TabColumns {
+    u16_view text;
+    std::span<const DWRITE_LINE_BREAKPOINT> breakpoints;
+    std::span<const DWRITE_SCRIPT_ANALYSIS> scripts;
+    uint32_t at = 0;       ///< до какого места текста колонки сосчитаны
+    uint32_t column = 0;   ///< колонок до at, если строка на at не начинается заново
+
+    static uint32_t nextStop(uint32_t from) { return (from / kTabColumns + 1) * kTabColumns; }
+
+    /// Колонка буквы, которая начинается на position.
+    uint32_t columnAt(uint32_t position) {
+        assert(position >= at && "табуляции спрашиваются по порядку текста");
+        while (at < position) {
+            const uint32_t current = lineColumn();
+            if (text.plain()[at] == u'\t')
+                column = nextStop(current);
+            else
+                column = isInvisible(scripts[at]) ? current : current + 1;
+            at = static_cast<uint32_t>(unicode::next_grapheme_boundary(text, at));
+        }
+        // Табуляция — управляющий символ, и буква на ней кончается и с неё
+        // начинается (UAX #29, GB4 и GB5): шаг по буквам приходит на неё
+        // ровно. Иначе — сломаны границы букв, и считать дальше не от чего.
+        ensure(at == position);
+        return lineColumn();
+    }
+
+private:
+    uint32_t lineColumn() const {
+        return at > 0 && breakpoints[at].breakConditionBefore == DWRITE_BREAK_CONDITION_MUST_BREAK
+                   ? 0
+                   : column;
+    }
+};
+
+/// Пробел шрифта на кегль 1 — мерка табуляции (Engine::Impl::spaceOf).
+struct SpaceMeasure {
+    float advance = 0.0f;
+    DWRITE_JUSTIFICATION_OPPORTUNITY opportunity{};
+};
+
 /// Ключ кэша шрифтов: семейство плюс начертание.
 struct FaceKey {
     std::wstring family;
@@ -337,6 +410,10 @@ struct Engine::Impl {
     /// один и тот же объект на одно и то же начертание, поэтому карта не растёт
     /// от того, что фолбэк спрашивают на каждом абзаце.
     std::unordered_map<IDWriteFontFace*, ComPtr<IDWriteFontFace>> mapped;
+
+    /// Пробелы шрифтов — мерка табуляции (spaceOf). Сбрасывается со сменой
+    /// стиля: возможность выключки спрашивается на языке книги.
+    std::unordered_map<IDWriteFontFace*, SpaceMeasure> spaces;
 
     /* ---------------- шрифты ---------------- */
 
@@ -549,8 +626,17 @@ struct Engine::Impl {
                     prototype.ascenderOffset = -blockStyle.fontSize * kSubscriptDrop;
                 }
 
-                appendFontRuns(runs, prototype, text.wchars().data(), textLength,
-                               familyFor(merged).c_str(), merged.bold, merged.italic);
+                // Прогону без видимых глифов (isInvisible) фолбэк не нужен:
+                // шрифт, подобранный управляющему символу, принёс бы в строку
+                // свою высоту — строка с табуляцией в преформате вышла бы выше
+                // той же строки без неё.
+                if (isInvisible(prototype.script)) {
+                    prototype.fontFace = baseFace(familyFor(merged).c_str(), merged.bold, merged.italic);
+                    runs.push_back(prototype);
+                } else {
+                    appendFontRuns(runs, prototype, text.wchars().data(), textLength,
+                                   familyFor(merged).c_str(), merged.bold, merged.italic);
+                }
                 at = end;
             }
         }
@@ -561,7 +647,67 @@ struct Engine::Impl {
 
     /* ---------------- шейпинг ---------------- */
 
-    ShapedRun shape(u16_view paragraph, const FormatRun& format) {
+    /// Пробел шрифта — мерка табуляции: его ширина и возможность выключки по
+    /// формату на кегль 1. Метрики шейпинга линейны по кеглю, и табуляция
+    /// любого кегля берёт отсюда умножением. Меряется раз на шрифт: табуляций
+    /// в преформате тысячи, а шрифтов — единицы.
+    ///
+    /// Шрифт без пробела — сломанный шрифт: мерить табуляцию нечем, и
+    /// подставить что-нибудь значило бы набрать её наугад. Сейчас шрифт книги
+    /// не выбирает читатель (а отсутствующий заменяется системным), так что это
+    /// остановка; когда шрифт станет настройкой, здесь нужен отказ вёрстки с
+    /// ответом читателю, а не падение.
+    const SpaceMeasure& spaceOf(IDWriteFontFace* face, float fontSize) {
+        if (const auto found = spaces.find(face); found != spaces.end())
+            return found->second;
+
+        const UINT32 code = U' ';
+        UINT16 glyph = 0;
+        check(face->GetGlyphIndices(&code, 1, &glyph));
+        if (glyph == 0)
+            wxl::core::abort("Engine::shape: у шрифта нет пробела — табуляцию нечем мерить");
+
+        DWRITE_GLYPH_METRICS design{};
+        check(face->GetDesignGlyphMetrics(&glyph, 1, &design));
+        SpaceMeasure measure;
+        measure.advance =
+            static_cast<float>(design.advanceWidth) / static_cast<float>(metricsOf(face).designUnitsPerEm);
+
+        // Возможность выключки пробела — та, что DirectWrite даёт ему в тексте:
+        // анализ письменности самого пробела, его глиф от шейпера и вопрос о
+        // возможностях. Не вышло спросить — нулей, как у прогона текста.
+        if (analyzer1) {
+            constexpr wchar_t kSpace[] = L" ";
+            AnalysisSource source(kSpace, 1, style.locale.c_str());
+            AnalysisSink analysis(1);
+            check(analyzer->AnalyzeScript(&source, 0, 1, &analysis));
+
+            UINT16 clusterMap = 0;
+            DWRITE_SHAPING_TEXT_PROPERTIES textProperties{};
+            UINT16 glyphs[4]{};
+            DWRITE_SHAPING_GLYPH_PROPERTIES glyphProperties[4]{};
+            UINT32 glyphCount = 0;
+            check(analyzer->GetGlyphs(kSpace, 1, face, FALSE, FALSE, &analysis.scripts()[0],
+                                      style.locale.c_str(), nullptr, nullptr, nullptr, 0, 4, &clusterMap,
+                                      &textProperties, glyphs, glyphProperties, &glyphCount));
+            // Пробел — один глиф: иначе мерить по нему табуляцию нечем.
+            ensure(glyphCount == 1);
+
+            DWRITE_JUSTIFICATION_OPPORTUNITY opportunity{};
+            if (SUCCEEDED(analyzer1->GetJustificationOpportunities(face, fontSize, analysis.scripts()[0], 1, 1,
+                                                                   kSpace, &clusterMap, glyphProperties,
+                                                                   &opportunity))) {
+                opportunity.expansionMinimum /= fontSize;
+                opportunity.expansionMaximum /= fontSize;
+                opportunity.compressionMaximum /= fontSize;
+                measure.opportunity = opportunity;
+            }
+        }
+
+        return spaces.emplace(face, measure).first->second;
+    }
+
+    ShapedRun shape(u16_view paragraph, const FormatRun& format, TabColumns& columns) {
         ShapedRun shaped;
         shaped.format = format;
 
@@ -617,15 +763,66 @@ struct Engine::Impl {
             &format.script, style.locale.c_str(), featuresArgument, rangesArgument, rangeCount,
             shaped.advances.data(), shaped.offsets.data()));
 
-        // Возможности выключки по формату спрашиваются здесь, пока на руках
-        // исходный текст и свойства глифов: у нарезанной строки их уже не
-        // будет.
-        shaped.opportunities.resize(actualGlyphs);
-        if (analyzer1 && actualGlyphs > 0) {
-            if (FAILED(analyzer1->GetJustificationOpportunities(
-                    format.fontFace, format.fontSize, format.script, length, actualGlyphs, text,
-                    shaped.clusterMap.data(), glyphProperties.data(), shaped.opportunities.data())))
-                shaped.opportunities.assign(actualGlyphs, DWRITE_JUSTIFICATION_OPPORTUNITY{});
+        const DWRITE_FONT_METRICS& fontMetrics = metricsOf(format.fontFace);
+        const float scale = format.fontSize / static_cast<float>(fontMetrics.designUnitsPerEm);
+
+        const bool invisible = isInvisible(format.script);
+        if (invisible) {
+            // Прогон без вида (isInvisible): глифы и кластерная карта остаются
+            // как есть — по ним строка режется и связывается с текстом, — а
+            // ширины и возможности выключки ставятся свои. У перевода строки,
+            // мягкого переноса и прочих ширины нет: иначе строка до `<br/>`
+            // несла бы невидимый хвост, центровка съезжала бы на его половину,
+            // а при выключке вправо у края оставалась бы дыра. Табуляция
+            // доводит перо до следующей позиции по колонкам исходной строки
+            // (TabColumns); ширина её зависит только от текста, поэтому и
+            // считается здесь, раз на шейпинг, — разбивка и вывод мерят её
+            // одинаково.
+            //
+            // Выключка табуляцию не тянет: табуляция ставит текст за собой на
+            // позицию, а позиция от полосы не зависит. А сжимает — как пробел
+            // того же шрифта, с тем же приоритетом, на столько пробелов, во
+            // сколько встала: отступ из табуляций, которому сжиматься нельзя,
+            // отдал бы остаток переполнения буквам короткого слова за ним, и
+            // они вышли бы заметно уже своей ширины. Разрядка (ниже) таких
+            // глифов не касается: просвет дал бы переводу строки ту самую
+            // невидимую ширину.
+            std::fill(shaped.advances.begin(), shaped.advances.end(), 0.0f);
+            shaped.opportunities.assign(actualGlyphs, DWRITE_JUSTIFICATION_OPPORTUNITY{});
+
+            for (UINT32 i = 0; i < length; ++i) {
+                if (text[i] != L'\t')
+                    continue;
+
+                const SpaceMeasure& space = spaceOf(format.fontFace, format.fontSize);
+                const uint32_t column = columns.columnAt(format.start + i);
+                const auto stops = static_cast<float>(TabColumns::nextStop(column) - column);
+
+                // Ширину кластера несёт его первый глиф — на него и указывает
+                // карта у каждого символа кластера.
+                ensure(shaped.clusterMap[i] < actualGlyphs);
+                const uint16_t glyph = shaped.clusterMap[i];
+                shaped.advances[glyph] += stops * space.advance * format.fontSize;
+
+                DWRITE_JUSTIFICATION_OPPORTUNITY& opportunity = shaped.opportunities[glyph];
+                opportunity.compressionMaximum +=
+                    stops * space.opportunity.compressionMaximum * format.fontSize;
+                opportunity.compressionPriority = space.opportunity.compressionPriority;
+                opportunity.allowResidualCompression = space.opportunity.allowResidualCompression;
+                opportunity.applyToLeadingEdge = space.opportunity.applyToLeadingEdge;
+                opportunity.applyToTrailingEdge = space.opportunity.applyToTrailingEdge;
+            }
+        } else {
+            // Возможности выключки по формату спрашиваются здесь, пока на руках
+            // исходный текст и свойства глифов: у нарезанной строки их уже не
+            // будет.
+            shaped.opportunities.resize(actualGlyphs);
+            if (analyzer1 && actualGlyphs > 0) {
+                if (FAILED(analyzer1->GetJustificationOpportunities(
+                        format.fontFace, format.fontSize, format.script, length, actualGlyphs, text,
+                        shaped.clusterMap.data(), glyphProperties.data(), shaped.opportunities.data())))
+                    shaped.opportunities.assign(actualGlyphs, DWRITE_JUSTIFICATION_OPPORTUNITY{});
+            }
         }
 
         // Разрядка — не возможность шрифта, а типографский приём: раздвигаем
@@ -636,7 +833,7 @@ struct Engine::Impl {
         // хангыля без готового слога шрифт держит отдельными кластерами.
         // Буквы, слитые шрифтом в одну лигатуру, раздвинуть нечем: у
         // границы между ними нет своего глифа.
-        if (format.style.spaced) {
+        if (format.style.spaced && !invisible) {
             const float spacing = format.fontSize * kSpacedTracking;
             const u16_view letters = paragraph.substr(format.start, length);
 
@@ -651,14 +848,36 @@ struct Engine::Impl {
             }
         }
 
+        // Мягкий перенос, стоящий в самой книге, не виден, пока строка на нём
+        // не кончилась; разрыв в этом месте разбивка получит штрафом, как и
+        // всякий другой перенос, а дефис на краю полосы допишет строка. Анализ
+        // помечает его прогоном без вида, и тогда ширина уже снята выше. Если
+        // не пометил — шрифт даёт ему обычный дефис со своей шириной, и
+        // «сло-во» раздвинулось бы посреди строки: ширина снимается здесь. Так
+        // правило «мягкий перенос ширины не имеет» живёт в одном месте при
+        // любом ответе анализа. Только если знак — кластер сам по себе: иначе
+        // ноль достался бы букве, с которой шейпер его склеил.
+        if (!invisible) {
+            for (UINT32 i = 0; i < length; ++i) {
+                if (text[i] != L'\x00AD')
+                    continue;
+
+                const uint16_t glyph = shaped.clusterMap[i];
+                if (i > 0 && shaped.clusterMap[i - 1] == glyph)
+                    continue;
+
+                const auto end = i + 1 < length ? shaped.clusterMap[i + 1] : static_cast<uint16_t>(actualGlyphs);
+                for (uint16_t at = glyph; at < end; ++at)
+                    shaped.advances[at] = 0.0f;
+            }
+        }
+
         // И вертикальный сдвиг над- и подстрочных.
 
         if (format.ascenderOffset != 0.0f)
             for (DWRITE_GLYPH_OFFSET& offset : shaped.offsets)
                 offset.ascenderOffset += format.ascenderOffset;
 
-        const DWRITE_FONT_METRICS& fontMetrics = metricsOf(format.fontFace);
-        const float scale = format.fontSize / static_cast<float>(fontMetrics.designUnitsPerEm);
         shaped.ascent = fontMetrics.ascent * scale;
         shaped.descent = fontMetrics.descent * scale;
 
@@ -714,40 +933,16 @@ struct Engine::Impl {
             formatRuns(text, book.spansOf(paragraph), blockStyle, analysis);
         into.runs.reserve(formats.size());
 
+        TabColumns columns{text,
+                           {into.breakpoints.data(), into.breakpoints.size()},
+                           {analysis.scripts().data(), analysis.scripts().size()}};
         for (const FormatRun& format : formats) {
             // Пустой прогон и прогон без шрифта — не ошибка вёрстки, а следствие
             // того, что разбиений четыре и они не обязаны совпадать. Шейперу такое
             // отдавать нельзя: он отвечает E_INVALIDARG.
             if (format.length == 0 || format.fontFace == nullptr || format.fontSize <= 0.0f)
                 continue;
-            into.runs.push_back(shape(text, format));
-        }
-
-        hideSoftHyphens(into);
-    }
-
-    /// Мягкий перенос, стоящий в самой книге, не виден, пока строка на нём не
-    /// кончилась: шрифт даёт ему обычный дефис, и «сло-во» показало бы его
-    /// посреди строки. Ширину снимаем у глифа здесь, один раз; разрыв в этом
-    /// месте разбивка получит штрафом, как и всякий другой перенос.
-    static void hideSoftHyphens(ShapedParagraph::Data& into) {
-        for (ShapedRun& run : into.runs) {
-            for (uint32_t i = 0; i < run.format.length; ++i) {
-                if (into.breakpoints[run.format.start + i].isSoftHyphen == 0)
-                    continue;
-
-                // Только если знак — кластер сам по себе: иначе ноль достался
-                // бы букве, с которой шейпер его склеил.
-                const uint16_t glyph = run.clusterMap[i];
-                if (i > 0 && run.clusterMap[i - 1] == glyph)
-                    continue;
-
-                const auto end = i + 1 < run.format.length
-                                     ? run.clusterMap[i + 1]
-                                     : static_cast<uint16_t>(run.glyphIndices.size());
-                for (uint16_t at = glyph; at < end; ++at)
-                    run.advances[at] = 0.0f;
-            }
+            into.runs.push_back(shape(text, format, columns));
         }
     }
 
@@ -767,6 +962,12 @@ struct Engine::Impl {
         sta_vector<float> width;
         sta_vector<float> shrink;
 
+        /// Ширина, которую выключка вправе тянуть: у символа прогона без
+        /// видимых глифов (isInvisible) — ноль. Табуляции выключка растяжения
+        /// не даёт (shape), и разбивка, посчитавшая её клей растяжимым, ждала
+        /// бы от строки запаса, которого вывод не отдаст.
+        sta_vector<float> stretchable;
+
         /// Во что обойдётся перенос на этом месте: ширина дефиса того шрифта,
         /// каким набран сам символ. Разбивке она нужна наперёд — штраф на
         /// переломе занимает место только на той строке, где перелом взят.
@@ -777,11 +978,13 @@ struct Engine::Impl {
                                              uint32_t textLength, float scale) {
         CharacterMetrics metrics{sta_vector<float>(textLength, 0.0f),
                                  sta_vector<float>(textLength, 0.0f),
+                                 sta_vector<float>(textLength, 0.0f),
                                  sta_vector<float>(textLength, 0.0f)};
 
         for (const ShapedRun& run : runs) {
             const uint32_t start = run.format.start;
             const uint32_t length = run.format.length;
+            const bool invisible = isInvisible(run.format.script);
 
             for (uint32_t i = 0; i < length; ++i)
                 metrics.hyphen[start + i] = run.hyphenAdvance * scale;
@@ -809,6 +1012,7 @@ struct Engine::Impl {
 
                 metrics.width[start + i] = width * scale;
                 metrics.shrink[start + i] = shrink * scale;
+                metrics.stretchable[start + i] = invisible ? 0.0f : width * scale;
             }
         }
 
@@ -871,6 +1075,7 @@ struct Engine::Impl {
 
         float pending = 0.0f;
         float pendingShrink = 0.0f;
+        float pendingStretchable = 0.0f;
         bool pendingIsGlue = false;
         bool pendingStarted = false;
         uint32_t pendingStart = 0;
@@ -958,7 +1163,10 @@ struct Engine::Impl {
                 //
                 // Свободный правый край делается не здесь, а через lineEndStretch
                 // в настройках разбивки: клей на переломе съедается разрывом.
-                item.stretch = pending * 0.5f;
+                //
+                // Тянется только то, что тянет выключка: табуляция посреди
+                // строки — клей, но растяжимости у неё нет (stretchable).
+                item.stretch = pendingStretchable * 0.5f;
 
                 // Сжимаемость — меньшее из двух: сколько разрешил DirectWrite и
                 // восьмая часть пробела. Второй предел нужен потому, что
@@ -977,6 +1185,7 @@ struct Engine::Impl {
             items.push_back(item);
             pending = 0.0f;
             pendingShrink = 0.0f;
+            pendingStretchable = 0.0f;
         };
 
         for (uint32_t i = 0; i < textLength; ++i) {
@@ -1149,6 +1358,7 @@ struct Engine::Impl {
 
             pending += metrics.width[i];
             pendingShrink += metrics.shrink[i];
+            pendingStretchable += metrics.stretchable[i];
         }
 
         flush(textLength);
@@ -1200,6 +1410,7 @@ struct Engine::Impl {
         into.glyphs.fontSize = run.format.fontSize * scale;
         into.glyphs.bidiLevel = run.format.bidiLevel;
         into.glyphs.style = run.format.style;
+        into.glyphs.invisible = isInvisible(run.format.script);
         into.glyphs.textStart = runStart + localFrom;
         into.glyphs.textLength = localTo - localFrom;
         into.hyphenGlyph = run.hyphenGlyph;
@@ -1385,6 +1596,7 @@ Engine::~Engine() = default;
 
 void Engine::setTextStyle(const TextStyle& style) {
     impl_->style = style;
+    impl_->spaces.clear();
     ++impl_->styleGeneration;
 }
 
@@ -1583,6 +1795,24 @@ sta_vector<Line> Engine::layout(const ShapedParagraph& given, float width,
         // и знаке сноски дефис стоит рядом с ними, а не на базовой линии.
         if (at.kind == BreakItem::Kind::Penalty && at.flagged && at.width > 0.0f &&
             !runs.empty() && runs.back().hyphenGlyph != 0) {
+            // Строка, кончившаяся на мягком переносе (U+00AD), кончается его
+            // прогоном без вида (isInvisible): анализ помечает так этот
+            // форматирующий символ. Глифы такого прогона вывод не рисует, и
+            // дефис встаёт своим прогоном того же шрифта сразу за ним, на
+            // конце его текста.
+            if (runs.back().glyphs.invisible) {
+                const LineRun& before = runs.back();
+                LineRun dash;
+                dash.glyphs.fontFace = before.glyphs.fontFace;
+                dash.glyphs.fontSize = before.glyphs.fontSize;
+                dash.glyphs.bidiLevel = before.glyphs.bidiLevel;
+                dash.glyphs.style = before.glyphs.style;
+                dash.glyphs.textStart = before.glyphs.textStart + before.glyphs.textLength;
+                dash.hyphenGlyph = before.hyphenGlyph;
+                dash.hyphenAdvance = before.hyphenAdvance;
+                dash.hyphenAscenderOffset = before.hyphenAscenderOffset;
+                runs.push_back(std::move(dash));
+            }
             LineRun& last = runs.back();
 
             last.glyphs.glyphIndices.push_back(last.hyphenGlyph);

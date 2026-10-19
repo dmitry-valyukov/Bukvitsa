@@ -37,7 +37,8 @@ struct TextBrushes {
 ///
 /// Подчёркивание и зачёркивание чертятся здесь же по метрикам шрифта и той же
 /// кистью, что глифы: в самом шрифте их нет, а место и толщину знает только
-/// он.
+/// он. У невидимого прогона (GlyphRun::invisible) глифы не рисуются, линейки —
+/// по его ширине.
 void drawGlyphRun(ID2D1DeviceContext* context, const GlyphRun& run, float x, float baseline,
                   const TextBrushes& brushes);
 

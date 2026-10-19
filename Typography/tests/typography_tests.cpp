@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -1602,7 +1603,8 @@ bool endsWithHyphen(const typography::Line& line) {
     if (line.runs.empty()) return false;
 
     const typography::GlyphRun& run = line.runs.back();
-    if (run.glyphIndices.empty() || run.fontFace == nullptr) return false;
+    // Глифы невидимого прогона не рисуются: дефис в нём не напечатан.
+    if (run.glyphIndices.empty() || run.fontFace == nullptr || run.invisible) return false;
 
     for (const UINT32 code : {0x2010u, 0x002Du}) {
         UINT16 glyph = 0;
@@ -2540,6 +2542,29 @@ void testTrailingSpace(typography::Engine& engine) {
     check(inside, "строки за концом текста нет");
 }
 
+/// Ширина пробела того шрифта и кегля, каким набран прогон, — мерка позиции
+/// табуляции, взятая у шрифта мимо вёрстки. -1 — у шрифта пробела нет.
+float spaceWidthOf(const typography::GlyphRun& run) {
+    const UINT32 code = U' ';
+    UINT16 glyph = 0;
+    DWRITE_GLYPH_METRICS space{};
+    if (run.fontFace == nullptr || FAILED(run.fontFace->GetGlyphIndices(&code, 1, &glyph)) || glyph == 0 ||
+        FAILED(run.fontFace->GetDesignGlyphMetrics(&glyph, 1, &space)))
+        return -1.0f;
+
+    DWRITE_FONT_METRICS font{};
+    run.fontFace->GetMetrics(&font);
+    return static_cast<float>(space.advanceWidth) * run.fontSize / static_cast<float>(font.designUnitsPerEm);
+}
+
+/// Прогон строки, набранный ровно из куска [start, start + length) текста
+/// абзаца, или nullptr.
+const typography::GlyphRun* runOf(const typography::Line& line, uint32_t start, uint32_t length) {
+    for (const typography::GlyphRun& run : line.runs)
+        if (run.textStart == start && run.textLength == length) return &run;
+    return nullptr;
+}
+
 /// Сумма шагов первых count глифов строки — по порядку прогонов: так стоит
 /// отступ, у которого на каждый пробел свой глиф.
 float leadingAdvance(const typography::Line& line, size_t count) {
@@ -2596,17 +2621,22 @@ void testIndentAfterBreak(typography::Engine& engine) {
         return indent;
     };
 
-    // Отступ за переводом строки — в 12 табуляций, как у преформата в глубине
+    // Отступ за переводом строки — в 6 табуляций, как у преформата в глубине
     // разметки, в 24 пробела, в 6 неразрывных пробелов и в 2 круглые шпации, —
     // и он же в начале абзаца. За ним — текст на несколько строк: строка с
     // отступом выключается по формату, и выключка его не тянет — он не шире,
     // чем в той же строке на полосе, где ничего не выключается и не сжимается.
+    // Табуляций шесть, а не больше: каждая — позиция в четыре пробела (около
+    // 16 DIP при кегле 17), и шесть — те же 24 пробела, около 100 DIP. С
+    // отступом шире «Предварительно» в полосу 260 уже не входит, строка
+    // остаётся из одного отступа, и выключать в ней нечего — проба ничего бы не
+    // проверяла.
     struct Indent {
         const char* name;
         char32_t code;
         int count;
     };
-    for (const Indent& indent : {Indent{"12 табуляций", U'\t', 12}, Indent{"24 пробела", U' ', 24},
+    for (const Indent& indent : {Indent{"6 табуляций", U'\t', 6}, Indent{"24 пробела", U' ', 24},
                                  Indent{"6 неразрывных пробелов", U'\x00A0', 6},
                                  Indent{"2 круглые шпации", U'\x2003', 2}}) {
         for (const bool afterBreak : {true, false}) {
@@ -2641,12 +2671,14 @@ void testIndentAfterBreak(typography::Engine& engine) {
     // сжатия: DirectWrite сжимает и буквы, и, если отступу сжиматься нельзя,
     // всё переполнение ложится на три буквы слова — на машине они выходили
     // 0,86 своей ширины, а со сжимаемым отступом остаются около 1,0 (замер на машине: 0,996).
-    // Порог — не уже 0,92.
-    {
+    // Порог — не уже 0,92. Отступ — из 60 пробелов и из 15 табуляций той же
+    // ширины: табуляция сжимается как пробел своего шрифта.
+    for (const Indent& indent : {Indent{"60 пробелов", U' ', 60}, Indent{"15 табуляций", U'\t', 15}}) {
         const u16_view shortWord = u"сон";
+        const auto indentGlyphs = static_cast<size_t>(indent.count);
         u16_text spacedText;
         spacedText += u"а\n";
-        spacedText += indentOf(U' ', 60);
+        spacedText += indentOf(indent.code, indent.count);
         spacedText += shortWord;
         const typography::BookText spaced = paragraphOf(spacedText);
         const auto naturalLines = layoutOf(engine, spaced, 10000.0f, ragged);
@@ -2654,7 +2686,8 @@ void testIndentAfterBreak(typography::Engine& engine) {
         const float column = naturalWidth / 1.015f;
         const auto spacedLines = layoutOf(engine, spaced, column, justified);
 
-        // Шаги глифов строки по порядку прогонов: отступ — первые 60, за ними буквы.
+        // Шаги глифов строки по порядку прогонов: сначала отступ — по глифу на
+        // знак, — за ним буквы.
         const auto advancesOf = [](const typography::Line& line) {
             std::vector<float> advances;
             for (const typography::GlyphRun& run : line.runs)
@@ -2667,8 +2700,8 @@ void testIndentAfterBreak(typography::Engine& engine) {
         if (lettersKept) {
             const std::vector<float> squeezed = advancesOf(spacedLines[1]);
             const std::vector<float> natural = advancesOf(naturalLines[1]);
-            lettersKept = squeezed.size() == natural.size() && natural.size() > 60;
-            for (size_t glyph = 60; lettersKept && glyph < natural.size(); ++glyph) {
+            lettersKept = squeezed.size() == natural.size() && natural.size() > indentGlyphs;
+            for (size_t glyph = indentGlyphs; lettersKept && glyph < natural.size(); ++glyph) {
                 if (natural[glyph] <= 0.0f) continue;
                 const float ratio = squeezed[glyph] / natural[glyph];
                 if (ratio < narrowest) {
@@ -2678,16 +2711,20 @@ void testIndentAfterBreak(typography::Engine& engine) {
             }
             lettersKept = lettersKept && narrowest >= 0.92f;
         }
-        std::printf("  отступ почти во всю полосу: строка %.2f на полосе %.2f, строк %zu, буквы — от %.3f своей ширины (шаг %.2f)\n",
-                    naturalWidth, column, spacedLines.size(), narrowest, narrowestAdvance);
+        std::printf("  отступ почти во всю полосу, %s: строка %.2f на полосе %.2f, строк %zu, буквы — от %.3f своей ширины (шаг %.2f)\n",
+                    indent.name, naturalWidth, column, spacedLines.size(), narrowest, narrowestAdvance);
         check(lettersKept && insideColumn(spacedLines, column),
-              "строку с отступом почти во всю полосу сжатие берёт вместе с отступом: буквы не уже 0,92 своей ширины");
+              std::string("строку с отступом почти во всю полосу сжатие берёт вместе с отступом: буквы не уже 0,92 своей ширины — ") +
+                  indent.name);
     }
 
     // Отступ шире полосы рубится, как слово шире полосы, — по буквам. Что он
     // и правда шире, проверяется его естественной шириной: при узкой
-    // табуляции проба прошла бы впустую. Шире полосы — значит, строк не меньше
-    // трёх: «а», хотя бы один кусок отступа и строка, где он кончается.
+    // табуляции проба прошла бы впустую. За переводом строки табуляции идут с
+    // нулевой колонки, и каждая — полная позиция в четыре пробела: 40 позиций
+    // Georgia при кегле 17 — около 650 DIP, вдвое с лишним шире полосы 260.
+    // Шире полосы — значит, строк не меньше трёх: «а», хотя бы один кусок
+    // отступа и строка, где он кончается.
     u16_text wideText;
     wideText += u"а\n";
     wideText += indentOf(U'\t', 40);
@@ -2733,21 +2770,28 @@ void testIndentAfterBreak(typography::Engine& engine) {
     check(linesStartAtLetters(midText, midLines, "знак за пробелом"),
           "строка не начинается со знака, основа которого — пробел на прежней строке");
 
-    // Растягивает ли DirectWrite табуляцию посреди выключенной строки — не
-    // проверка, а сведение для читающего отчёт: у отступа возможности растяжения
-    // сняты, и ответ на нём не виден.
+    // Табуляция посреди строки — не отступ, а клей, и ширина у неё — до
+    // позиции табуляции: «аа» занимают две колонки, табуляция доводит до
+    // четвёртой — два пробела того же шрифта. Выключка по формату её не тянет:
+    // возможностей растяжения у невидимого прогона нет, и запас строки уходит
+    // в пробелы между словами.
     const u16_view tabbedText = u"аа\tбб вв гг дд ее жж зз ии кк лл мм нн оо пп рр сс тт уу фф хх цц чч";
     const typography::BookText tabbed = paragraphOf(tabbedText);
     const auto tabbedJustified = layoutOf(engine, tabbed, 150.0f, justified);
     const auto tabbedRagged = layoutOf(engine, tabbed, 150.0f, ragged);
-    const auto tabWidth = [](std::span<const typography::Line> lines) {
-        if (lines.empty()) return -1.0f;
-        for (const typography::GlyphRun& run : lines.front().runs)
-            if (run.textStart == 2 && run.textLength == 1) return run.width;
-        return -1.0f;
+    const auto tabRun = [](std::span<const typography::Line> lines) -> const typography::GlyphRun* {
+        return lines.empty() ? nullptr : runOf(lines.front(), 2, 1);
     };
-    std::printf("  табуляция посреди первой строки: влево %.2f, по формату %.2f (-1 — не отдельный прогон)\n",
-                tabWidth(tabbedRagged), tabWidth(tabbedJustified));
+    const typography::GlyphRun* raggedTab = tabRun(tabbedRagged);
+    const typography::GlyphRun* justifiedTab = tabRun(tabbedJustified);
+    const float tabStop = raggedTab ? 2.0f * spaceWidthOf(*raggedTab) : -1.0f;
+    std::printf("  табуляция посреди первой строки: влево %.2f, по формату %.2f, позиция %.2f\n",
+                raggedTab ? raggedTab->width : -1.0f, justifiedTab ? justifiedTab->width : -1.0f, tabStop);
+    check(raggedTab && justifiedTab && raggedTab->invisible && justifiedTab->invisible && tabStop > 0.0f &&
+              std::abs(raggedTab->width - tabStop) < 0.01f,
+          "табуляция посреди строки — невидимый прогон шириной до позиции табуляции");
+    check(justifiedTab && tabbedJustified.size() > 1 && justifiedTab->width <= tabStop + 0.01f,
+          "выключка по формату табуляцию не тянет");
 }
 
 /// Строка, кончившаяся обязательным разрывом (`<br/>` свёртка делает
@@ -2794,18 +2838,388 @@ void testLineBeforeForcedBreak(typography::Engine& engine) {
     // Переполненная строка до обязательного разрыва сжимается в полосу: полоса
     // на 0,3 % уже её естественной ширины, и разбивке выгоднее сжать три
     // пробела на доли пикселя, чем рвать раньше и тянуть оставшиеся до края.
+    // Проверяется только эта строка — цела до разрыва и сжата в полосу. Сколько
+    // строк выйдет всего, проба не решает: следующая строка шире такой полосы и
+    // ложится, как ей велят переносы. Строки печатаются — видно разбиение.
     const typography::BookText tight = paragraphOf(u"одно слово два три\nдальше текст абзаца");
+    const u16_view tightText = tight.textOf(onlyParagraph(tight));
     const auto tightNatural = layoutOf(engine, tight, kWidth, ragged);
     const float tightWidth = tightNatural.size() == 2 ? tightNatural[0].width : 0.0f;
     const float tightColumn = tightWidth / 1.003f;
     const auto tightLines = layoutOf(engine, tight, tightColumn, justified);
-    const bool wholeLine = tightNatural.size() == 2 && tightLines.size() == 2 &&
-                           tightLines[1].textStart == tightNatural[1].textStart;
 
-    std::printf("  переполненная: естественная %.2f, полоса %.2f, строк %zu, первая %.2f\n", tightWidth,
-                tightColumn, tightLines.size(), tightLines.empty() ? 0.0f : tightLines[0].width);
+    std::printf("  переполненная: естественная %.2f, полоса %.2f, строк %zu\n", tightWidth, tightColumn,
+                tightLines.size());
+    for (const typography::Line& line : tightLines)
+        std::printf("    %.2f «%s»\n", line.width,
+                    reportedText(tightText.wchars().substr(line.textStart, line.textLength)).c_str());
+
+    const bool wholeLine = tightNatural.size() == 2 && tightLines.size() >= 2 && tightLines[0].textStart == 0 &&
+                           tightLines[0].textLength == tightNatural[0].textLength;
     check(wholeLine && tightLines[0].width <= tightColumn + 0.05f && tightLines[0].width < tightWidth,
-          "переполненная строка до обязательного разрыва сжата в полосу");
+          "переполненная строка до обязательного разрыва цела и сжата в полосу");
+}
+
+/// Управляющий символ Юникода (общая категория Cc).
+bool isCc(char32_t code) { return code <= 0x1F || (code >= 0x7F && code <= 0x9F); }
+
+/// Форматирующий символ (общая категория Cf, Юникод 15) — перечнем: в wxl::core
+/// есть только признак буквы, а пробе нужен этот класс целиком.
+bool isCf(char32_t code) {
+    static constexpr std::pair<char32_t, char32_t> kRanges[] = {
+        {0x00AD, 0x00AD},   {0x0600, 0x0605},   {0x061C, 0x061C},   {0x06DD, 0x06DD},
+        {0x070F, 0x070F},   {0x0890, 0x0891},   {0x08E2, 0x08E2},   {0x180E, 0x180E},
+        {0x200B, 0x200F},   {0x202A, 0x202E},   {0x2060, 0x2064},   {0x2066, 0x206F},
+        {0xFEFF, 0xFEFF},   {0xFFF9, 0xFFFB},   {0x110BD, 0x110BD}, {0x110CD, 0x110CD},
+        {0x13430, 0x1343F}, {0x1BCA0, 0x1BCA3}, {0x1D173, 0x1D17A}, {0xE0001, 0xE0001},
+        {0xE0020, 0xE007F},
+    };
+    for (const auto& [first, last] : kRanges)
+        if (code >= first && code <= last) return true;
+    return false;
+}
+
+/// Источник и приёмник анализа письменности разом — чтобы спросить
+/// DirectWrite напрямую, мимо вёрстки, какие символы он считает не имеющими
+/// вида. Живёт на стеке на время одного вызова; счётчик ссылок формальный.
+class ScriptQuery final : public IDWriteTextAnalysisSource, public IDWriteTextAnalysisSink {
+public:
+    explicit ScriptQuery(std::wstring_view text) : text_(text), shapes_(text.size(), DWRITE_SCRIPT_SHAPES_DEFAULT) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) noexcept override {
+        if (riid == __uuidof(IDWriteTextAnalysisSource) || riid == __uuidof(IUnknown)) {
+            *object = static_cast<IDWriteTextAnalysisSource*>(this);
+            return S_OK;
+        }
+        if (riid == __uuidof(IDWriteTextAnalysisSink)) {
+            *object = static_cast<IDWriteTextAnalysisSink*>(this);
+            return S_OK;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() noexcept override { return 1; }
+    ULONG STDMETHODCALLTYPE Release() noexcept override { return 1; }
+
+    HRESULT STDMETHODCALLTYPE GetTextAtPosition(UINT32 position, const WCHAR** text,
+                                                UINT32* length) noexcept override {
+        const bool inside = position < text_.size();
+        *text = inside ? text_.data() + position : nullptr;
+        *length = inside ? static_cast<UINT32>(text_.size() - position) : 0;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetTextBeforePosition(UINT32 position, const WCHAR** text,
+                                                    UINT32* length) noexcept override {
+        const bool inside = position > 0 && position <= text_.size();
+        *text = inside ? text_.data() : nullptr;
+        *length = inside ? position : 0;
+        return S_OK;
+    }
+    DWRITE_READING_DIRECTION STDMETHODCALLTYPE GetParagraphReadingDirection() noexcept override {
+        return DWRITE_READING_DIRECTION_LEFT_TO_RIGHT;
+    }
+    HRESULT STDMETHODCALLTYPE GetLocaleName(UINT32 position, UINT32* length,
+                                            const WCHAR** locale) noexcept override {
+        *length = static_cast<UINT32>(text_.size() - std::min<size_t>(position, text_.size()));
+        *locale = L"ru-RU";
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetNumberSubstitution(UINT32 position, UINT32* length,
+                                                    IDWriteNumberSubstitution** substitution) noexcept override {
+        *length = static_cast<UINT32>(text_.size() - std::min<size_t>(position, text_.size()));
+        *substitution = nullptr;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetScriptAnalysis(UINT32 position, UINT32 length,
+                                                const DWRITE_SCRIPT_ANALYSIS* analysis) noexcept override {
+        for (UINT32 at = position; at < position + length && at < shapes_.size(); ++at)
+            shapes_[at] = analysis->shapes;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetLineBreakpoints(UINT32, UINT32, const DWRITE_LINE_BREAKPOINT*) noexcept override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetBidiLevel(UINT32, UINT32, UINT8, UINT8) noexcept override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE SetNumberSubstitution(UINT32, UINT32, IDWriteNumberSubstitution*) noexcept override {
+        return S_OK;
+    }
+
+    /// Пометка анализа на каждый символ; nullopt — анализ не удался.
+    std::optional<std::vector<DWRITE_SCRIPT_SHAPES>> analyze(IDWriteFactory* dwrite) {
+        Microsoft::WRL::ComPtr<IDWriteTextAnalyzer> analyzer;
+        if (FAILED(dwrite->CreateTextAnalyzer(&analyzer)) ||
+            FAILED(analyzer->AnalyzeScript(this, 0, static_cast<UINT32>(text_.size()), this)))
+            return std::nullopt;
+        return shapes_;
+    }
+
+private:
+    std::wstring_view text_;
+    std::vector<DWRITE_SCRIPT_SHAPES> shapes_;
+};
+
+/// Сколько пикселей закрасили строки, нарисованные drawLine одна под другой в
+/// белый битмап WIC шириной в полосу — тем же ID2D1DeviceContext, каким
+/// рисуется страница (как в пробе формул). nullopt — не вышло завести битмап
+/// или цель отрисовки.
+std::optional<size_t> inkOf(std::span<const typography::Line> lines, float column) {
+    constexpr float kMargin = 8.0f;
+    float height = 0.0f;
+    for (const typography::Line& line : lines) height += line.height;
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
+    Microsoft::WRL::ComPtr<ID2D1Factory1> d2d;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) ||
+        FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1), nullptr, &d2d)))
+        return std::nullopt;
+
+    const auto width = static_cast<UINT>(column + kMargin * 2);
+    const auto bitmapHeight = static_cast<UINT>(height + kMargin * 2);
+    Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
+    Microsoft::WRL::ComPtr<ID2D1RenderTarget> target;
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext> context;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ink;
+    if (FAILED(wic->CreateBitmap(width, bitmapHeight, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand,
+                                 &bitmap)) ||
+        FAILED(d2d->CreateWicBitmapRenderTarget(
+            bitmap.Get(),
+            D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                                         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                                           D2D1_ALPHA_MODE_PREMULTIPLIED)),
+            &target)) ||
+        FAILED(target.As(&context)) || FAILED(context->CreateSolidColorBrush(rgb(0, 0, 0), &ink)))
+        return std::nullopt;
+
+    auto const brushes = typography::TextBrushes{not_null<ID2D1Brush>{ink.Get()},
+                                                 not_null<ID2D1Brush>{ink.Get()}};
+    context->BeginDraw();
+    context->Clear(rgb(255, 255, 255));
+    float y = kMargin;
+    for (const typography::Line& line : lines) {
+        typography::drawLine(context.Get(), line, kMargin, y + line.ascent, brushes);
+        y += line.height;
+    }
+    if (FAILED(context->EndDraw())) return std::nullopt;
+
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * bitmapHeight * 4);
+    if (FAILED(bitmap->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data())))
+        return std::nullopt;
+    size_t inked = 0;
+    for (size_t at = 0; at < pixels.size(); at += 4)
+        if (pixels[at] != 0xFF || pixels[at + 1] != 0xFF || pixels[at + 2] != 0xFF) ++inked;
+    return inked;
+}
+
+/// Управляющие символы — табуляция, перевод строки, возврат каретки — анализ
+/// DirectWrite помечает как не имеющие вида (DWRITE_SCRIPT_SHAPES_NO_VISUAL),
+/// и это договор с вызывающим: шейпер всё равно даёт им глифы — заглушку
+/// .notdef со своей шириной, — а показывать их нельзя. Вёрстка набирает их
+/// невидимым прогоном: базовым шрифтом, без чернил, перевод строки — без
+/// ширины, табуляция — до позиции табуляции (шаг — четыре пробела того же
+/// шрифта, колонки — от начала исходной строки). Без этого в преформате
+/// Consolas рисовал квадраты, а строка до `<br/>` несла невидимый хвост:
+/// центровка съезжала, при выключке вправо у края оставалась дыра.
+void testInvisibleRuns(typography::Engine& engine, IDWriteFactory* dwrite,
+                       const std::filesystem::path& testdata) {
+    std::printf("\n=== прогон без видимых глифов ===\n");
+
+    // Сам анализ — мимо вёрстки: что эти символы помечает DirectWrite, а не
+    // вёрстка сама решила их спрятать.
+    {
+        constexpr std::wstring_view analyzed = L"аа\tбб\nвв\rгг\x00ADдд\x200Bее";
+        ScriptQuery query(analyzed);
+        const auto shapes = query.analyze(dwrite);
+        bool marked = shapes.has_value();
+        for (size_t at = 0; marked && at < analyzed.size(); ++at) {
+            const wchar_t unit = analyzed[at];
+            const bool control =
+                unit == L'\t' || unit == L'\n' || unit == L'\r' || unit == L'\x00AD' || unit == L'\x200B';
+            const bool noVisual = (static_cast<UINT32>((*shapes)[at]) &
+                                   static_cast<UINT32>(DWRITE_SCRIPT_SHAPES_NO_VISUAL)) != 0;
+            if (noVisual != control) {
+                std::printf("       символ %zu (U+%04X): пометка %d\n", at, static_cast<unsigned>(analyzed[at]),
+                            static_cast<int>((*shapes)[at]));
+                marked = false;
+            }
+        }
+        check(marked, "анализ DirectWrite помечает U+0009, U+000A, U+000D, U+00AD и U+200B как NO_VISUAL, буквы — нет");
+    }
+
+    typography::ParagraphStyle serif;   // Georgia, шрифт книги по умолчанию
+    serif.alignment = typography::Alignment::Left;
+    typography::ParagraphStyle mono;    // как у преформата: моноширинный, влево, 0,9 кегля
+    mono.alignment = typography::Alignment::Left;
+    mono.monospace = true;
+    mono.fontSize = 18.0f;
+    constexpr float kWide = 1000.0f;
+
+    // Ширины: табуляция — до позиции, перевод строки — ноль. Ожидание —
+    // из ширины пробела того шрифта и кегля, каким набран сам прогон
+    // табуляции. В «аа\tбб\nвв» табуляция стоит на второй колонке и доводит до
+    // четвёртой — два пробела. В «аааааа\tб\nв\t\tг» колонки за переводом
+    // строки идут с нуля: первая табуляция строки «в» — на первой колонке,
+    // три пробела, вторая — на четвёртой, полная позиция в четыре; колонки,
+    // продолженные через перевод строки, дали бы один и четыре.
+    for (const auto& [name, style] : {std::pair{"Georgia", serif}, std::pair{"моноширинный", mono}}) {
+        const auto lines = layoutOf(engine, paragraphOf(u"аа\tбб\nвв"), kWide, style);
+        const bool two = lines.size() == 2;
+        const typography::GlyphRun* letters = two ? runOf(lines[0], 0, 2) : nullptr;
+        const typography::GlyphRun* tab = two ? runOf(lines[0], 2, 1) : nullptr;
+        const typography::GlyphRun* after = two ? runOf(lines[0], 3, 2) : nullptr;
+        const typography::GlyphRun* feed = two ? runOf(lines[0], 5, 1) : nullptr;
+        const bool found = letters && tab && after && feed;
+        const float space = found ? spaceWidthOf(*tab) : -1.0f;
+
+        std::printf("  %s: пробел %.2f, табуляция %.2f, перевод строки %.2f, «бб» с %.2f\n", name, space,
+                    found ? tab->width : -1.0f, found ? feed->width : -1.0f, found ? after->originX : -1.0f);
+        check(found && tab->invisible && feed->invisible && !letters->invisible && !after->invisible,
+              std::string(name) + ": табуляция и перевод строки — невидимые прогоны, буквы — видимые");
+        check(found && feed->width == 0.0f, std::string(name) + ": у перевода строки нет ширины");
+        check(found && space > 0.0f && std::abs(tab->width - 2.0f * space) < 0.01f,
+              std::string(name) + ": табуляция со второй колонки — два пробела до позиции");
+        if (style.monospace)
+            check(found && std::abs(after->originX - 4.0f * space) < 0.05f,
+                  "моноширинный: текст за табуляцией — на четвёртой колонке");
+
+        const auto reset = layoutOf(engine, paragraphOf(u"аааааа\tб\nв\t\tг"), kWide, style);
+        const bool resetTwo = reset.size() == 2;
+        const typography::GlyphRun* first = resetTwo ? runOf(reset[0], 6, 1) : nullptr;
+        const typography::GlyphRun* pair = resetTwo ? runOf(reset[1], 10, 2) : nullptr;
+        const typography::GlyphRun* tail = resetTwo ? runOf(reset[1], 12, 1) : nullptr;
+        const float resetSpace = first ? spaceWidthOf(*first) : -1.0f;
+        std::printf("  %s: табуляция с шестой колонки %.2f, две за «в» %.2f, «г» с %.2f\n", name,
+                    first ? first->width : -1.0f, pair ? pair->width : -1.0f, tail ? tail->originX : -1.0f);
+        check(first && pair && resetSpace > 0.0f && std::abs(first->width - 2.0f * resetSpace) < 0.01f &&
+                  std::abs(pair->width - 7.0f * resetSpace) < 0.01f,
+              std::string(name) + ": колонки табуляции идут от начала исходной строки, за переводом — с нуля");
+        if (style.monospace)
+            check(tail && std::abs(tail->originX - 8.0f * resetSpace) < 0.05f,
+                  "моноширинный: текст за двумя табуляциями — на восьмой колонке");
+    }
+
+    // Фантом `<br/>`: строка до перевода строки не шире того же текста без
+    // него — влево, по центру и вправо, — и центрованные строки «слово» стоят
+    // одна под другой.
+    {
+        const float word = layoutOf(engine, paragraphOf(u"слово"), kWide, serif).front().width;
+        const typography::BookText broken = paragraphOf(u"слово\nслово");
+        bool agrees = true;
+        for (const typography::Alignment alignment :
+             {typography::Alignment::Left, typography::Alignment::Center, typography::Alignment::Right}) {
+            typography::ParagraphStyle aligned = serif;
+            aligned.alignment = alignment;
+            const auto lines = layoutOf(engine, broken, kWide, aligned);
+            const bool two = lines.size() == 2 && !lines[0].runs.empty() && !lines[1].runs.empty();
+            const float left0 = two ? lines[0].runs.front().originX : -1.0f;
+            const float left1 = two ? lines[1].runs.front().originX : -1.0f;
+            std::printf("  «слово» %.2f; до перевода строки %.2f с %.2f, за ним %.2f с %.2f\n", word,
+                        two ? lines[0].width : -1.0f, left0, two ? lines[1].width : -1.0f, left1);
+            if (!two || std::abs(lines[0].width - word) >= 0.01f || std::abs(left0 - left1) >= 0.01f)
+                agrees = false;
+        }
+        check(agrees, "строка до `<br/>` — ширины своего текста: центровка и правый край не сдвинуты");
+    }
+
+    // Чернила: строка преформата из одних табуляций и перевода строки и строка
+    // из одного перевода строки не оставляют на битмапе ни пикселя, хотя
+    // глифы в их прогонах есть. Строка с буквами рядом — что битмап вообще
+    // принимает чернила, иначе ноль ничего бы не значил.
+    {
+        const auto controls = layoutOf(engine, paragraphOf(u"\t\t\t\n"), kWide, mono);
+        const auto feed = layoutOf(engine, paragraphOf(u"\n"), kWide, typography::ParagraphStyle{});
+        const auto letters = layoutOf(engine, paragraphOf(u"текст"), kWide, mono);
+        const auto glyphsOf = [](std::span<const typography::Line> lines) {
+            size_t glyphs = 0;
+            for (const typography::Line& line : lines)
+                for (const typography::GlyphRun& run : line.runs) glyphs += run.glyphIndices.size();
+            return glyphs;
+        };
+        const std::optional<size_t> controlsInk = inkOf(controls, kWide);
+        const std::optional<size_t> feedInk = inkOf(feed, kWide);
+        const std::optional<size_t> lettersInk = inkOf(letters, kWide);
+        std::printf("  чернила: табуляции с переводом строки %lld (глифов %zu), перевод строки %lld (глифов %zu), "
+                    "«текст» %lld\n",
+                    controlsInk ? static_cast<long long>(*controlsInk) : -1LL, glyphsOf(controls),
+                    feedInk ? static_cast<long long>(*feedInk) : -1LL, glyphsOf(feed),
+                    lettersInk ? static_cast<long long>(*lettersInk) : -1LL);
+        check(lettersInk && *lettersInk > 50, "строка с буквами оставляет след на битмапе");
+        check(controlsInk && *controlsInk == 0 && glyphsOf(controls) >= 4,
+              "строка преформата из табуляций и перевода строки чернил не оставляет");
+        check(feedInk && *feedInk == 0 && glyphsOf(feed) >= 1, "строка из одного перевода строки чернил не оставляет");
+    }
+
+    // Высота: табуляции набраны базовым шрифтом, а не тем, что фолбэк
+    // подобрал бы управляющему символу, — строка с ними не выше строки без
+    // них. Сравниваются подъём и спуск: высоту строки преформата держит
+    // межстрочный множитель, и чужой шрифт поскромнее в ней бы не показался.
+    {
+        const auto tabbed = layoutOf(engine, paragraphOf(u"\t\tтекст"), kWide, mono);
+        const auto plain = layoutOf(engine, paragraphOf(u"текст"), kWide, mono);
+        const bool one = tabbed.size() == 1 && plain.size() == 1;
+        std::printf("  высота: с табуляциями %.2f (%.2f + %.2f), без них %.2f (%.2f + %.2f)\n",
+                    one ? tabbed[0].height : -1.0f, one ? tabbed[0].ascent : -1.0f, one ? tabbed[0].descent : -1.0f,
+                    one ? plain[0].height : -1.0f, one ? plain[0].ascent : -1.0f, one ? plain[0].descent : -1.0f);
+        check(one && tabbed[0].height == plain[0].height && tabbed[0].ascent == plain[0].ascent &&
+                  tabbed[0].descent == plain[0].descent,
+              "строка «\\t\\tтекст» в преформате — той же высоты, что «текст»");
+    }
+
+    // Книги целиком, с телами сносок: ни один прогон, где есть табуляция,
+    // перевод строки или возврат каретки, не рисуется, а прогон из одних
+    // переводов строки ширины не имеет. И в обратную сторону: в невидимом
+    // прогоне — только управляющие и форматирующие символы (Cc, Cf), в
+    // видимом — ни одного управляющего (Cc). В nightmare_example табуляций и
+    // переводов строки много — преформат и `<br/>`; в «Отцах и детях» их нет, и
+    // проба на них сторожит, что обычный текст не спрятан.
+    for (const char* name : {"nightmare_example.fb3", "Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3"}) {
+        const std::filesystem::path path = testdata / name;
+        if (!std::filesystem::exists(path)) {
+            check(false, std::string(name) + " на месте — на нём проверяются невидимые прогоны");
+            continue;
+        }
+
+        const fb3::Document document(path);
+        const typography::BookText book = typography::flatten(document);
+        size_t controlRuns = 0;
+        size_t drawnControls = 0;
+        size_t wideFeeds = 0;
+        size_t hiddenText = 0;
+        size_t drawnCc = 0;
+        for (const typography::Block& block : book.blocks) {
+            const u16_view text = book.textOf(block.paragraph);
+            for (const typography::Line& line : engine.layout(book, block.paragraph, 426.0f, styleFor(block, 20.0f))) {
+                for (const typography::GlyphRun& run : line.runs) {
+                    bool control = false;
+                    bool tab = false;
+                    bool onlyFormat = true;   // одни Cc и Cf
+                    bool anyCc = false;
+                    for (const char32_t code : unicode::code_points(text.substr(run.textStart, run.textLength))) {
+                        control = control || code == U'\t' || code == U'\n' || code == U'\r';
+                        tab = tab || code == U'\t';
+                        anyCc = anyCc || isCc(code);
+                        onlyFormat = onlyFormat && (isCc(code) || isCf(code));
+                    }
+                    if (run.invisible && !onlyFormat) ++hiddenText;
+                    if (!run.invisible && anyCc) ++drawnCc;
+                    if (!control) continue;
+                    ++controlRuns;
+                    if (!run.invisible) ++drawnControls;
+                    else if (!tab && run.width != 0.0f) ++wideFeeds;
+                }
+            }
+        }
+
+        std::printf("  %s: прогонов с табуляцией и переводом строки %zu, из них рисуются %zu, переводов строки с "
+                    "шириной %zu; невидимых с буквой или знаком %zu, видимых с управляющим %zu\n",
+                    name, controlRuns, drawnControls, wideFeeds, hiddenText, drawnCc);
+        check(drawnControls == 0, std::string(name) + ": прогоны с табуляцией и переводом строки не рисуются");
+        check(wideFeeds == 0, std::string(name) + ": перевод строки ширины не имеет");
+        check(hiddenText == 0, std::string(name) + ": в невидимом прогоне — только управляющие и форматирующие символы");
+        check(drawnCc == 0, std::string(name) + ": в рисуемом прогоне управляющих символов нет");
+        if (std::string_view(name).starts_with("nightmare"))
+            check(controlRuns > 0, "в nightmare_example управляющие символы есть — проверять было что");
+    }
 }
 
 /// Тела сносок настоящих книг в хранилище: лежат за потоком чтения по
@@ -3118,6 +3532,7 @@ int main() {
     testNoteLayout(engine, testdata);
     testNoteBodies(engine, testdata);
     testNotePensInsideColumn(engine, testdata);
+    testInvisibleRuns(engine, dwrite.Get(), testdata);
 
     for (const char* name : {"anathomy_tutorial_example.fb3", "nightmare_example.fb3",
                              "hardcore_file_structure.fb3",

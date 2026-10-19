@@ -49,18 +49,22 @@ void drawGlyphRun(ID2D1DeviceContext* context, const GlyphRun& run, float x,
 
     ID2D1Brush* const brush = brushes.brushFor(run.style.role).get();
 
-    DWRITE_GLYPH_RUN glyphRun{};
-    glyphRun.fontFace = run.fontFace;
-    glyphRun.fontEmSize = run.fontSize;
-    glyphRun.glyphCount = static_cast<UINT32>(run.glyphIndices.size());
-    glyphRun.glyphIndices = run.glyphIndices.data();
-    glyphRun.glyphAdvances = run.advances.data();
-    glyphRun.glyphOffsets = run.offsets.data();
-    glyphRun.isSideways = FALSE;
-    glyphRun.bidiLevel = run.bidiLevel;
+    // Глифы прогона без вида не рисуются (GlyphRun::invisible). Линейки — по
+    // его ширине, как у всех: подчёркнутая табуляция подчёркнута.
+    if (!run.invisible) {
+        DWRITE_GLYPH_RUN glyphRun{};
+        glyphRun.fontFace = run.fontFace;
+        glyphRun.fontEmSize = run.fontSize;
+        glyphRun.glyphCount = static_cast<UINT32>(run.glyphIndices.size());
+        glyphRun.glyphIndices = run.glyphIndices.data();
+        glyphRun.glyphAdvances = run.advances.data();
+        glyphRun.glyphOffsets = run.offsets.data();
+        glyphRun.isSideways = FALSE;
+        glyphRun.bidiLevel = run.bidiLevel;
 
-    context->DrawGlyphRun(D2D1::Point2F(x, baseline), &glyphRun, brush,
-                          DWRITE_MEASURING_MODE_NATURAL);
+        context->DrawGlyphRun(D2D1::Point2F(x, baseline), &glyphRun, brush,
+                              DWRITE_MEASURING_MODE_NATURAL);
+    }
 
     for (const bool strikethrough : {false, true}) {
         if (!(strikethrough ? run.style.strikethrough : run.style.underline))

@@ -52,12 +52,21 @@ struct ParagraphStyle {
     bool monospace = false;
 };
 
-/// Прогон глифов одного шрифта — аргумент DrawGlyphRun в готовом виде.
+/// Прогон глифов одного шрифта — аргумент DrawGlyphRun в готовом виде; прогон
+/// без вида (invisible) не рисуется вовсе.
 struct GlyphRun {
     IDWriteFontFace* fontFace = nullptr;   ///< живёт в Engine
     float fontSize = 0.0f;
     uint8_t bidiLevel = 0;
     FontStyle style;                       ///< подчёркивание, зачёркивание и роль — для вывода
+
+    /// Глифов не рисовать: прогон, который анализ DirectWrite пометил как не
+    /// имеющий вида (DWRITE_SCRIPT_SHAPES_NO_VISUAL) — табуляция, переводы
+    /// строки, мягкий перенос и прочие управляющие и форматирующие символы.
+    /// Глифы в нём — заглушки шрифта: они есть, чтобы прогон, как любой
+    /// другой, связывал строку с текстом. Ширина — ноль, у табуляции — до
+    /// позиции табуляции.
+    bool invisible = false;
 
     sta_vector<uint16_t> glyphIndices;
     sta_vector<float> advances;
