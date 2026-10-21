@@ -2700,8 +2700,9 @@ void testWorkspaceOpenStopsOnStateRead() {
     check(!std::filesystem::exists(ws.libraryPath()) && !std::filesystem::exists(ws.settingsPath()),
           "файлов реестра и настроек открытие не пишет — их пишет вызывающий");
 
-    // Состояние: попросили на его чтении — открытие кончается отменой, а
-    // настройки уже указывают на книгу (так было и прежде). Операция чтения
+    // Состояние: попросили на его чтении — открытие кончается отменой, и
+    // настройки на книгу не указывают: их ставит конец открытия, после
+    // последнего ожидания. Операция чтения
     // уходит рабочему потоку в самом вызове, и свободный поток кончает её раньше
     // отмены: файла состояния нет, и отказ CreateFileW приходит сразу. Оба
     // порядка — порознь и наверняка: чтение, которое держат не начатым, и
@@ -2723,20 +2724,20 @@ void testWorkspaceOpenStopsOnStateRead() {
         HeldWorker heldWorker;
         task<Opened> reopening = ws.openBook(reregistered.entry, reading.token());
         check(!reopening.done(), "открытие стоит на чтении состояния");
+        check(ws.settings.lastBookGuid.empty() && ws.settings.lastBookPath.empty(),
+              "пока открытие стоит на чтении состояния, настройки ещё не указывают на книгу");
         reading.cancel();
         heldWorker.open();
 
         check(canceled(std::move(reopening)), "отмена раньше чтения состояния — открытие кончается отменой");
-        check(ws.settings.lastBookGuid == ws.library.cards()[0]->entry.guid,
-              "отмена раньше чтения состояния: настройки уже указывают на книгу, на полосу она не встаёт");
+        check(ws.settings.lastBookGuid.empty() && ws.settings.lastBookPath.empty(),
+              "отмена раньше чтения состояния: настройки на книгу не указывают — их ставит конец открытия");
     }
 
     // Ответившее: чтение кончилось — «файла нет», чистый лист в обратном
     // канале, — и только потом попросили. Ответ, успевший раньше отмены, —
-    // ответ, но открытие после отмены дальше не идёт; настройки, поставленные
-    // до чтения, уже указывают на книгу.
-    ws.settings.lastBookGuid = u16_text{};
-    ws.settings.lastBookPath.clear();
+    // ответ, но открытие после отмены дальше не идёт, и до настроек оно не
+    // доходит.
     cancellation_source lateStop;
     task<Opened> answeredOpening = openIn(ws, loaded, lateStop.token());
     check(!answeredOpening.done(), "открытие стоит на чтении состояния");
@@ -2745,8 +2746,8 @@ void testWorkspaceOpenStopsOnStateRead() {
     answeredState.deliver();
 
     check(canceled(std::move(answeredOpening)), "чтение ответило раньше отмены — открытие всё равно кончается отменой");
-    check(ws.settings.lastBookGuid == ws.library.cards()[0]->entry.guid && ws.settings.lastBookPath == kBook,
-          "чтение ответило раньше отмены: настройки указывают на книгу — их ставят до чтения");
+    check(ws.settings.lastBookGuid.empty() && ws.settings.lastBookPath.empty(),
+          "чтение ответило раньше отмены: настройки на книгу не указывают — открытие до них не дошло");
 }
 
 /// Листинг каталога ответил раньше отмены — и только потом попросили: обход и

@@ -20,7 +20,6 @@ using namespace wxl;
 
 using wxl::async::cancellation_source;
 using wxl::async::cancellation_token;
-using wxl::async::detached_task;
 using wxl::async::operation_canceled_exception;
 using wxl::async::last_error;
 using wxl::async::task;
@@ -52,7 +51,16 @@ void postUnread(Notices& notices, const std::vector<std::wstring>& unread) {
 /// разбора, не спрашивая диск, — файл ей больше не нужен, даже если его успели
 /// унести. Какую книгу она читает, сверять не надо: пока предзагрузка в поле,
 /// ни одна книга не открывалась, и последняя в настройках — её.
-detached_task App::continueReading() {
+///
+/// Задача — в `continuing_`: второе нажатие останавливает первое на его
+/// ожидании — вместе с предзагрузкой, которую оно забрало, — и идёт обычной
+/// дорогой. Открытие, к которому дорога приходит, с предзагрузкой или без, —
+/// уже не её: оно уходит в поле открытий, где открытие одно.
+void App::continueReading() {
+    continuing_ = reported(runContinueReading());
+}
+
+wxl::async::task<> App::runContinueReading() {
     auto const stop = cancellation_source{stop_.token()};
 
     if (preload_) {
@@ -78,7 +86,7 @@ detached_task App::continueReading() {
         }
 
         if (loaded) {
-            co_await openLoaded(std::move(*loaded), stop.token());
+            startOpeningPreloaded(std::move(*loaded));
             co_return;
         }
     }
@@ -90,15 +98,15 @@ detached_task App::continueReading() {
         co_return;
     }
 
-    open(std::move(path));
+    startOpening(std::move(path));
 }
 
 /// Системный диалог модален, и пока он открыт, читалке всё равно делать
-/// нечего; отказался читатель — ничего и не было.
-detached_task App::chooseBook() {
+/// нечего; отказался читатель — ничего и не было. Ждать здесь нечего:
+/// выбранная книга уходит в поле открытий.
+void App::chooseBook() {
     std::filesystem::path path = askForBook(window_.handle());
-    if (!path.empty()) open(std::move(path));
-    co_return;
+    if (!path.empty()) startOpening(std::move(path));
 }
 
 /// Книга с пометкой «не найдена» открывается той же дорогой, что и всякая:
@@ -107,9 +115,8 @@ detached_task App::chooseBook() {
 /// быть приглушённой; нет — чтение кончается тем же словом читателю, что и
 /// всякий сбой чтения файла. Отдельный вопрос диску «есть ли файл» перед
 /// чтением ничего бы к этому не добавил.
-detached_task App::openBook(u16_text guid) {
-    if (const BookEntry* known = ws_.library.find(guid)) open(known->path);
-    co_return;
+void App::openBook(u16_text guid) {
+    if (const BookEntry* known = ws_.library.find(guid)) startOpening(known->path);
 }
 
 /// Обходит каталог и добавляет из него книги — по одной, на глазах у читателя.
@@ -124,7 +131,14 @@ detached_task App::openBook(u16_text guid) {
 /// обложка, а движок вёрстки с пагинатором книге, которую никто не открывал,
 /// ни к чему (`Workspace::addFolder`). Каталог с этих пор наблюдаемый: каждый
 /// запуск перепроверяет его (`rescanFolders`).
-detached_task App::chooseFolder() {
+///
+/// Задача — в `folderAdditions_`: каталог, добавленный следом, обходится
+/// рядом, а прежний доходит до конца и до записи реестра.
+void App::chooseFolder() {
+    keepUntilDone(folderAdditions_, reported(runChooseFolder()));
+}
+
+wxl::async::task<> App::runChooseFolder() {
     auto const stop = cancellation_source{stop_.token()};
 
     const std::filesystem::path folder = askForFolder(window_.handle());
@@ -168,7 +182,7 @@ detached_task App::chooseFolder() {
 /// читает: каталоги — один за другим, книги — по одной, между двумя
 /// `co_await`. Неизменная книга стоит сверки с листингом, новая встаёт на
 /// полку, пропавшая приглушается — карточки слышат это сами.
-detached_task App::rescanFolders() {
+wxl::async::task<> App::rescanFolders() {
     auto const stop = cancellation_source{stop_.token()};
 
     const ScanReport report = co_await ws_.rescanFolders(stop.token());
@@ -194,17 +208,36 @@ detached_task App::rescanFolders() {
 /// книга, развёрнутая в хранилище, с описанием и обложкой для реестра.
 ///
 /// Задача стартует в этом вызове, как всякая `task`, и остаётся в поле: её
-/// ждёт продолжение чтения, а отменяет владелец — открытие книги. Здесь ничего
+/// ждёт продолжение чтения, а бросает владелец — открытие книги. Здесь ничего
 /// не проверяется и ничего не ждётся.
 void App::preloadBook(std::filesystem::path path) {
     preload_ = ws_.readBook(std::move(path), preloadStop_.token());
 }
 
+/// Все дороги к книге кончаются здесь, и задача у открытий одна: книга,
+/// выбранная следом, останавливает прежнее открытие на его ожидании — до смены
+/// книги на полосе, на которой ожиданий уже нет.
+void App::startOpening(std::filesystem::path path) {
+    opening_ = reported(open(std::move(path)));
+}
+
+void App::startOpeningPreloaded(LoadedBook loaded) {
+    opening_ = reported(openPreloaded(std::move(loaded)));
+}
+
+/// Предзагрузку дождалось продолжение чтения, и книга уже прочитана: остаётся
+/// вторая половина открытия — под своим источником, как у всякого открытия.
+wxl::async::task<> App::openPreloaded(LoadedBook loaded) {
+    auto const stop = cancellation_source{stop_.token()};
+
+    co_await openLoaded(std::move(loaded), stop.token());
+}
+
 /// Порядок здесь — это порядок обязательств. Сначала книга читается и
 /// разбирается (и только если разобралась, старая уступает ей место), потом
 /// (openLoaded) рабочее место регистрирует новую — шагом своей очереди
-/// регистраций: обложка уходит в кэш, реестр меняется в памяти, — затем
-/// настройки и её состояние, и лишь затем книга сменяется на полосе — одним
+/// регистраций: обложка уходит в кэш, реестр меняется в памяти, — затем её
+/// состояние и настройки, и лишь затем книга сменяется на полосе — одним
 /// шагом, без ожиданий: циклы записи будятся на реестр, настройки и место
 /// чтения прежней, места книги и полоса берут новую.
 /// Каждый `co_await` — это выход в цикл сообщений: окно всё это время
@@ -216,9 +249,9 @@ void App::preloadBook(std::filesystem::path path) {
 /// остаётся при прежней.
 ///
 /// Короткая дорога в начале одна: книга уже открыта (читатель вернулся к ней) —
-/// показать. Предзагрузку открытие не берёт, а отменяет: её дорога — только
+/// показать. Предзагрузку открытие не берёт, а бросает: её дорога — только
 /// «Продолжить чтение».
-detached_task App::open(std::filesystem::path path) {
+wxl::async::task<> App::open(std::filesystem::path path) {
     auto const stop = cancellation_source{stop_.token()};
 
     // Эта книга уже открыта — читатель просто вернулся к ней со стартового
@@ -231,21 +264,13 @@ detached_task App::open(std::filesystem::path path) {
     }
 
     // Читатель выбрал книгу, и предзагрузка больше не нужна, какую бы книгу
-    // она ни читала: владелец отменяет её безусловно — и ту, что ещё в поле, и
-    // ту, которую уже ждёт продолжение чтения. Задачу из поля открытие
-    // забирает и дожидается её конца: брошенная на ходу, она ждала бы рабочий
-    // поток в деструкторе, синхронно.
+    // она ни читала: владелец отменяет её безусловно — ту, которую уже ждёт
+    // продолжение чтения, — а ту, что ещё в поле, бросает: брошенная задача
+    // кончается на своём ожидании, а чтение файла, ушедшее в пул, дорабатывает
+    // само и ничего из её кадра не держит. Её ни ждать, ни спрашивать незачем:
+    // книгу открытие читает само.
     preloadStop_.cancel();
-
-    if (preload_) {
-        task<LoadedBook> preload = std::exchange(preload_, {});
-
-        try {
-            static_cast<void>(co_await preload);
-        } catch (const std::exception&) {
-            // Отменена или не удалась — неважно: книгу открытие читает само.
-        }
-    }
+    preload_ = {};
 
     // Пусто, пока книга не прочитана: у прочитанной пустого состояния нет, а
     // читается она под try, чьи обработчики кончают сценарий. Открытие — за
@@ -287,8 +312,8 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
     // Запись — та, что отдал реестр, а не задуманная:
     // её guid — место чтения в books\{guid}.xml и последняя книга в настройках.
     // Сбой шага — запись обложки — приходит отсюда исключением и кончает
-    // открытие тем же путём, что и прежде (on_detached_task_failure): ни
-    // настройки, ни полоса книги не узнают, на полосе остаётся прежняя.
+    // открытие сообщением читателю (reported): ни настройки, ни полоса книги
+    // не узнают, на полосе остаётся прежняя.
     // Описание и обложка уходят в элемент очереди: книге они больше не нужны.
     auto const file = BookFile{.path = loaded.book->path(), .size = loaded.fileSize};
     not_null<intrusive_ptr<QueuedRegistration>> const queued = ws_.queueRegistration(
@@ -380,8 +405,8 @@ void App::registrationRefused(const std::wstring& line) noexcept {
 /// (`BookPlaces::toggleBookmark`); панель идёт за списком закладок сама, а на
 /// диск закладка уходит сразу — вместе с местом чтения, паузы не ждёт:
 /// записать сейчас — то же ожидание цикла, разбуженное владельцем.
-detached_task App::toggleBookmark() {
-    if (!presenter_.isOpen()) co_return;
+void App::toggleBookmark() {
+    if (!presenter_.isOpen()) return;
 
     const uint32_t here = presenter_.position().get();
     places_.toggleBookmark(here, hintAt(presenter_.book()->text(), here));
@@ -396,7 +421,7 @@ detached_task App::toggleBookmark() {
 /// а «прочитано 42%» проступает на каждой, как только её файл прочитан. Полка
 /// с сотней книг не ждёт сотни обращений к диску, чтобы показать первую.
 /// Строка — поле карточки (`ShelfCard::showState`): полка не пересобирается.
-detached_task App::fillProgress() {
+wxl::async::task<> App::fillProgress() {
     auto const stop = cancellation_source{stop_.token()};
 
     // Карточки — копией указателей: пока файлы читаются, обход каталога может

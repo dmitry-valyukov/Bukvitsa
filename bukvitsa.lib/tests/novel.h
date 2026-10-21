@@ -247,9 +247,9 @@ public:
     int idleCalls() const { return idleCalls_; }
 
 private:
-    /// Ожидание в кадре корутины. Кадр досчёта владеет собой и стоящим не
-    /// разрушается — уходит только через ход, — так что указатель в очереди
-    /// живёт, пока ожидание в ней.
+    /// Ожидание в кадре корутины. Кадр может уйти и стоящим — его задачу
+    /// бросил держатель, — и тогда ожидание снимает себя с очереди само: ход,
+    /// пришедший потом, разрушенного кадра не будит.
     struct Parking {
         ParkingIdle& owner;
         std::coroutine_handle<> waiter;
@@ -258,6 +258,8 @@ private:
         explicit Parking(ParkingIdle& scheduler) noexcept : owner(scheduler) {}
         Parking(const Parking&) = delete;
         Parking& operator=(const Parking&) = delete;
+
+        ~Parking() { std::erase(owner.parkedWaits_, this); }
 
         bool await_ready() const noexcept { return false; }
 

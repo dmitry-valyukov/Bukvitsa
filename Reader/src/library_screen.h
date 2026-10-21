@@ -23,26 +23,23 @@
 // Последним: реестр импортирует wxl.core.
 #include "bukvitsa/reader/library.h"
 
-// Импорт — последним: намерения экрана — корутины `detached_task`.
-import wxl.async;
-
 namespace bukvitsa::reader {
 
 /// Витрина. Владеет своим деревом; карточки реестра, галочка настроек и
 /// исполнитель намерений — владельца, живут дольше витрины.
 class LibraryScreen : private noncopyable {
 public:
-    /// Что витрина умеет попросить. Реализует владелец; намерение — корутина:
-    /// ждёт ли дело диска, экрану знать незачем.
+    /// Что витрина умеет попросить. Реализует владелец; ждёт ли дело диска,
+    /// экрану знать незачем: сценарий и его задачу держит владелец.
     class Actions {
     public:
         /// Щелчок по карточке: открыть книгу с этим guid. По значению —
-        /// корутина держит его и после первого ожидания.
-        virtual wxl::async::detached_task openBook(u16_text guid) = 0;
+        /// сценарий держит его и после первого ожидания.
+        virtual void openBook(u16_text guid) = 0;
         /// «Добавить книгу».
-        virtual wxl::async::detached_task chooseBook() = 0;
+        virtual void chooseBook() = 0;
         /// «Назад».
-        virtual wxl::async::detached_task back() = 0;
+        virtual void back() = 0;
 
     protected:
         ~Actions() = default;

@@ -38,23 +38,13 @@ void writeOut(const Notice& notice) {
 
 Notices::Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme,
                  wxl::async::cancellation_token stop)
-    : window_(std::move(window)), screenTheme_(screenTheme), dialogStop_(std::move(stop)) {
-    instance_ = this;
-    previous_ = wxl::async::on_detached_task_failure();
-    wxl::async::on_detached_task_failure() = [](std::exception_ptr error) noexcept {
-        if (instance_) instance_->failed(std::move(error));
-    };
-}
+    : window_(std::move(window)), screenTheme_(screenTheme), dialogStop_(std::move(stop)) {}
 
 Notices::~Notices() {
     // Не вышедшие из очереди — сообщения, которых читатель так и не увидел:
     // экрана не дождались или чужой диалог не закрылся до выхода. Терять их
     // нельзя и здесь.
     for (const Notice& notice : pending_) writeOut(notice);
-
-    if (instance_ != this) return;
-    wxl::async::on_detached_task_failure() = previous_;
-    instance_ = nullptr;
 }
 
 void Notices::post(Notice notice) {
@@ -134,11 +124,11 @@ void Notices::post(Notice notice) {
     // показу сразу, и showDialog отдаёт отказ исключением из вызова. Отказ —
     // не ошибка, а очередь: сообщение выйдет, когда вопрос закроется (flush).
     // Иное исключение — не отказ, и прятать его в очередь нельзя: оно идёт
-    // дальше, а из noexcept-обработчика сбоев это остановка с его текстом.
-    // Ответа диалога ждёт wxl под токеном сообщений: выход этот кадр видит, а
+    // дальше, тому, кто сообщение публикует.
+    // Ответа диалога ждёт задача под токеном сообщений: выход её тело видит, а
     // закрытие окна закрывает диалог.
     try {
-        showDialog(dialog, host, dialogStop_.token());
+        dialogWait_ = showDialog(dialog, host, dialogStop_.token());
     } catch (...) {
         if (failureOf(std::current_exception()).hresult != kAnotherDialogOpen) throw;
         if (!mergeIntoPending(notice)) pending_.push_back(std::move(notice));
@@ -152,11 +142,6 @@ void Notices::flush() {
     std::vector<Notice> waiting = std::move(pending_);
     pending_.clear();
     for (Notice& notice : waiting) post(std::move(notice));
-}
-
-void Notices::failed(std::exception_ptr error) noexcept {
-    // Какими словами — решает модель (`noticeOf`); здесь только показ.
-    post(noticeOf(std::move(error)));
 }
 
 }  // namespace bukvitsa::reader

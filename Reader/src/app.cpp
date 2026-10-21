@@ -10,16 +10,15 @@
 // самый поток. Reader диска не трогает вовсе: файлы читает и пишет рабочее
 // место (`Workspace`) из своих корутин `task<T>`, сбой операции приходит
 // исключением `last_error`. Сценарий ловит то, на что у него есть ответ
-// читателю; остальное всплывает в `on_detached_task_failure` (его ставит
-// `Notices`): читатель видит окно с причиной, сценарий на этом кончается.
+// читателю; остальное уходит из его тела в задачу, а её конец читает
+// `reported`: читатель видит окно с причиной, сценарий на этом кончается.
 //
 // Отмена — не сбой. Сценарий заводит свой источник отмены, дочерний от общего
 // `stop_`, и ждёт под его токеном; закрытие окна отменяет общий, а с ним и все
 // дочерние. Отменённое ожидание кончается `operation_canceled_exception`;
-// непойманная, она кончает сценарий молча — `detached_task` её глотает, до
-// обработчика сбоев она не доходит. Ловить её раньше надо только там, где
-// сценарий ловит всё (`std::exception`) и говорит об этом читателю, — иначе
-// отмена дошла бы до него как ошибка.
+// непойманная, она кончает сценарий молча — `reported` её не показывает.
+// Ловить её раньше надо только там, где сценарий ловит всё (`std::exception`)
+// и говорит об этом читателю, — иначе отмена дошла бы до него как ошибка.
 //
 // Состояние книги, настройки и реестр книг пишут три цикла-корутины,
 // `task<>`-члены writeState, writeSettings и writeLibrary, — по одному
@@ -47,8 +46,8 @@ using namespace std::chrono_literals;
 
 using wxl::async::cancellation_source;
 using wxl::async::cancellation_token;
-using wxl::async::detached_task;
 using wxl::async::last_error;
+using wxl::async::operation_canceled_exception;
 using wxl::async::task;
 
 namespace {
@@ -101,8 +100,8 @@ App::App()
           dsl::onClosed = method(this, &App::close),
       }},
       ws_{standardDataDirectory(), stop_.token()},
-      presenter_{ws_.settings, themes_, idleScheduler_, *this, stop_.token()},
       notices_{window_, screenTheme_, stop_.token()},
+      presenter_{ws_.settings, themes_, idleScheduler_, *this, stop_.token()},
       start_{window_.chromeCompositor(), *this},
       view_{window_, presenter_, ws_.settings, stop_.token()},
       shelf_{ws_.library.cards(), ws_.settings.continueReading, ws_.coverDirectory(), *this},
@@ -175,11 +174,39 @@ App::App()
     // Перетаскивание книги в окно. Пачку из нескольких файлов окно уже свело
     // к первому пути: читалка показывает одну книгу, а добавлять остальные в
     // реестр молча значило бы решать за читателя. Тега у окна для этого нет.
-    window_.acceptFileDrops(method(this, &App::open));
+    window_.acceptFileDrops(method(this, &App::startOpening));
 
     splash_.interval(kSplashHold);
     splash_.isRepeating(false);
     splash_.add_onTick(method(this, &App::revealStart));
+}
+
+void App::start() {
+    starting_ = reported(runStart());
+}
+
+wxl::async::task<> App::reported(wxl::async::task<> scenario) {
+    try {
+        // Как своя, а не присоединением: ожидатель — сама задача в параметре
+        // кадра, а не временный рядом с ней, который разрушался бы раньше
+        // параметра и уносил бы с собой пометку «её ждут».
+        co_await std::move(scenario);
+    } catch (const operation_canceled_exception&) {
+        // Отмена — обычный конец: её приносит владелец или закрытие окна.
+    } catch (...) {
+        // Через noexcept-показ: сбой самого показа уйти отсюда может только в
+        // эту задачу, а её конца никто не читает, — он останавливает процесс.
+        reportFailure(std::current_exception());
+    }
+}
+
+void App::keepUntilDone(std::vector<wxl::async::task<>>& running, wxl::async::task<> started) {
+    std::erase_if(running, [](const wxl::async::task<>& scenario) { return scenario.done(); });
+    running.push_back(std::move(started));
+}
+
+void App::reportFailure(std::exception_ptr failure) noexcept {
+    notices_.post(noticeOf(std::move(failure)));
 }
 
 /// Окно строится пустым и невидимым, а показывается в конце: место, куда его
@@ -187,7 +214,7 @@ App::App()
 /// потом переставить — значит показать читателю прыжок. Ждать при этом нечего:
 /// файл настроек читает рабочий поток, а этот тем временем уже крутит цикл
 /// сообщений.
-detached_task App::start() {
+wxl::async::task<> App::runStart() {
     auto const stop = cancellation_source{stop_.token()};
 
     // Настройки, обложки, реестр — у рабочего места, одной корутиной; что
@@ -201,7 +228,7 @@ detached_task App::start() {
     // его не ждёт, а полка, если читатель её откроет, дополняется и
     // приглушается на глазах. Неизменная книга стоит перепроверке строки
     // листинга, а не чтения файла.
-    rescanFolders();
+    rescanning_ = reported(rescanFolders());
 
     // Запись на диск начинает слушать поля настроек только теперь:
     // прочитанное из файла — не перемена, которую надо записать обратно.
@@ -248,7 +275,7 @@ detached_task App::start() {
     windowMoved();
 
     if (ws_.settings.continueReading.get() && !started.lastBook.empty()) {
-        open(started.lastBook);
+        startOpening(started.lastBook);
     } else {
         show(Screen::Start);
         splash_.start();
@@ -339,31 +366,27 @@ void App::show(Screen next) {
     window_.content(shelf_.root());
     notices_.flush();
 
-    fillProgress();
+    fillingProgress_ = reported(fillProgress());
 }
 
-detached_task App::showLibrary() {
+void App::showLibrary() {
     show(Screen::Library);
-    co_return;
 }
 
-detached_task App::back() {
+void App::back() {
     show(Screen::Start);
-    co_return;
 }
 
 // Отмена стартового экрана — выход из приложения: обычное закрытие окна, со
 // всем, что оно сохраняет по дороге (close).
-detached_task App::quit() {
+void App::quit() {
     window_.close();
-    co_return;
 }
 
 // Правая кнопка по странице открывает ящик. Другой дороги к нему у мыши нет:
 // у страницы книги нет ни полосы меню, ни кнопок — и не должно быть.
-detached_task App::togglePanel() {
+void App::togglePanel() {
     panel_.toggle();
-    co_return;
 }
 
 // Прежний ключ при обложке остаётся как то, куда вернуться, если реестр

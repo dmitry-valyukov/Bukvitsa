@@ -403,27 +403,28 @@ LeafTurnAnimation::LeafTurnAnimation(const Compositor& compositor, const Contain
                                      const DispatcherQueue& windowQueue, SpreadView& spreadView,
                                      const PageFlow& flow,
                                      const async::cancellation_source& readingScope,
-                                     async::cancellation_token stripStop)
+                                     async::cancellation_token stripStop,
+                                     function<void(std::exception_ptr)> failureReceiver)
     : compositor_(compositor),
       leafLayer_(leafLayer),
       spreadView_(spreadView),
       flow_(flow),
       readingScope_(readingScope),
+      failureReceiver_(std::move(failureReceiver)),
       restBrush_(compositor.createColorBrush(rgba(0, 0, 0, 0))),
       turnSeries_(readingScope.token()),
       releaseStop_(std::move(stripStop)),
-      releasePauses_(make_refcounted<ReleasePauses>(windowQueue, releaseStop_.token())) {
+      releasePauses_(windowQueue, releaseStop_.token()) {
     // Отпускание пула — на всю жизнь стратегии: цикл тут же встаёт на долгую
     // паузу и до первой посадки ничего не трогает.
-    releaseIdleLeaves(releasePauses_, releaseStop_.token());
+    releasing_ = releaseIdleLeaves();
 }
 
 LeafTurnAnimation::~LeafTurnAnimation() {
     // Ожидания этой стратегии — концы переворотов и паузы отпускания пула —
     // больше никому не нужны: её сменили или полоса умирает. Отменяет их
-    // владелец — она сама; корутины кончатся отменой ходом очереди и стратегии
-    // уже не тронут, а таймеры, на которых стоит цикл, доживут до конца его
-    // кадра (ReleasePauses).
+    // владелец — она сама, а стоящие корутины останавливают их задачи, уходя
+    // первыми из членов, — раньше таймеров и листов, на которых те стоят.
     turnSeries_.cancel();
     releaseStop_.cancel();
 }
@@ -520,7 +521,12 @@ void LeafTurnAnimation::turnStarted(bool forward) {
     }
 
     leafLayer_.isVisible(true);   // листы — на время переворота
-    flyTurn(startingTurn.leafIndex, forward, startingTurn.bookMode, startingTurn.turnStop.token());
+
+    // Кончившиеся корутины прежних переворотов больше не нужны; бегущей здесь
+    // нет — переворот начинают не из корутины переворота.
+    std::erase_if(flights_, [](const async::task<>& flight) { return flight.done(); });
+    flights_.push_back(
+        flyTurn(startingTurn.leafIndex, forward, startingTurn.bookMode, startingTurn.turnStop.token()));
 }
 
 void LeafTurnAnimation::finishAll() {
@@ -594,27 +600,34 @@ size_t LeafTurnAnimation::turnOfLeaf(size_t leafIndex) const {
 }
 
 // Корутина переворота. Пакет закрывает и остановленная анимация — переворот
-// отменили (встречное, перевёрстка, прыжок, добивание) или стратегию сменили,
-// и конец пакета приходит к листу, который, может быть, уже служит другому
-// перевороту. Своего ли переворота это конец, говорит токен: отменяющий
-// отменил источник раньше, чем остановил анимации, и ожидание кончается
-// operation_canceled_exception, кто бы его ни разбудил, — обычным концом
-// detached_task. Так же оно кончается, когда отменён источник чтения, полосы
-// или приложения: до `this` дело не доходит, кадр стратегию не держит (она не
-// самосчитающая), и знак жизни ему не нужен.
+// отменили (встречное, перевёрстка, прыжок, добивание), и конец пакета
+// приходит к листу, который, может быть, уже служит другому перевороту. Своего
+// ли переворота это конец, говорит токен: отменяющий отменил источник раньше,
+// чем остановил анимации, и ожидание кончается operation_canceled_exception,
+// кто бы его ни разбудил, — обычным концом корутины, без конечного состояния:
+// его навёл отменивший. Так же оно кончается, когда отменён источник чтения,
+// полосы или приложения. Стратегию сменили — её поле задач уносит и стоящую
+// корутину, ход очереди её не застанет.
 //
 // Нормальный конец — внутри обработчика Completed: переворот доиграл, и его
-// конечное состояние наступает тем же ходом.
-async::detached_task LeafTurnAnimation::flyTurn(size_t leafIndex, bool forward, bool bookMode,
-                                                async::cancellation_token turnStop) {
-    CompositionScopedBatch const flightBatch = startFlight(leafIndex, forward, bookMode);
+// конечное состояние наступает тем же ходом. Сбой — не отмену — получателю
+// сбоев: тело бежит только при живой стратегии, она держит его задачу.
+async::task<> LeafTurnAnimation::flyTurn(size_t leafIndex, bool forward, bool bookMode,
+                                         async::cancellation_token turnStop) {
+    try {
+        CompositionScopedBatch const flightBatch = startFlight(leafIndex, forward, bookMode);
 
-    // Подписка — до закрытия пакета: Completed без ждущего пропадает.
-    auto flightEnd = dsl::onCompleted(flightBatch, std::move(turnStop));
-    flightBatch.end();
-    co_await flightEnd;
+        // Подписка — до закрытия пакета: Completed без ждущего пропадает.
+        auto flightEnd = dsl::onCompleted(flightBatch, std::move(turnStop));
+        flightBatch.end();
+        co_await flightEnd;
 
-    finishTurn(turnOfLeaf(leafIndex));
+        finishTurn(turnOfLeaf(leafIndex));
+    } catch (const async::operation_canceled_exception&) {
+        // Отменённый переворот уходит, ничего не тронув.
+    } catch (...) {
+        failureReceiver_(std::current_exception());
+    }
 }
 
 CompositionScopedBatch LeafTurnAnimation::startFlight(size_t leafIndex, bool forward,
@@ -952,7 +965,7 @@ void LeafTurnAnimation::settle() {
     // отпускал по секундам — он вернётся к ней.
     leafLayer_.isVisible(false);
     settledDuringRelease_ = true;
-    releasePauses_->firstPause.restart();
+    releasePauses_.firstPause.restart();
 }
 
 /* ---------------- отпускание пула ---------------- */
@@ -962,34 +975,37 @@ LeafTurnAnimation::ReleasePauses::ReleasePauses(const DispatcherQueue& windowQue
     : firstPause{windowQueue, kLeafReleaseFirst, releaseToken},
       stepPause{windowQueue, kLeafReleaseStep, releaseToken} {}
 
-// Кадр держит паузы сам (параметр releasePauses): стратегию могут сменить, пока
-// он стоит в отменённом ожидании, и таймер, на котором он стоит, должен дожить
-// до хода очереди, который его разбудит. Токен — тоже свой, параметром: после
-// отмены цикл спрашивает его, не трогая `this`.
-async::detached_task LeafTurnAnimation::releaseIdleLeaves(
-    intrusive_ptr<ReleasePauses> releasePauses, async::cancellation_token releaseToken) {
-    for (;;) {
-        // Долгая пауза: её начинает заново каждая посадка всех (settle). Тик,
-        // пришедший, пока цикл отпускал, не теряется — следующее ожидание его
-        // возьмёт и не встанет. Отмена кончает ожидание без исключения, и
-        // токен цикл спрашивает сам.
-        co_await releasePauses->firstPause;
-        if (releaseToken.is_canceled()) co_return;
+// Паузы и источник — стратегии: цикл стоит в её поле и уходит вместе с ней,
+// так что, проснувшись, он находит их на месте.
+async::task<> LeafTurnAnimation::releaseIdleLeaves() {
+    try {
+        for (;;) {
+            // Долгая пауза: её начинает заново каждая посадка всех (settle).
+            // Тик, пришедший, пока цикл отпускал, не теряется — следующее
+            // ожидание его возьмёт и не встанет. Отмена кончает ожидание без
+            // исключения, и источник цикл спрашивает сам.
+            co_await releasePauses_.firstPause;
+            if (releaseStop_.is_canceled()) co_return;
 
-        // Пауза отсчитана от последней посадки — посадки до неё уже учтены.
-        settledDuringRelease_ = false;
+            // Пауза отсчитана от последней посадки — посадки до неё уже учтены.
+            settledDuringRelease_ = false;
 
-        // Дальше — по листу в секунду, пока есть лишние и никто не летит.
-        // Листают снова — цикл увидит это сам, проснувшись, и вернётся ждать
-        // долгую паузу: её начнёт посадка. Листнули и уже сели — то же самое:
-        // посадка перезапустила долгую паузу и оставила признак.
-        while (liveTurns_.empty() && hasSpareLeaves()) {
-            releaseSpareLeaf();
-            releasePauses->stepPause.restart();
-            co_await releasePauses->stepPause;
-            if (releaseToken.is_canceled()) co_return;
-            if (std::exchange(settledDuringRelease_, false)) break;
+            // Дальше — по листу в секунду, пока есть лишние и никто не летит.
+            // Листают снова — цикл увидит это сам, проснувшись, и вернётся ждать
+            // долгую паузу: её начнёт посадка. Листнули и уже сели — то же самое:
+            // посадка перезапустила долгую паузу и оставила признак.
+            while (liveTurns_.empty() && hasSpareLeaves()) {
+                releaseSpareLeaf();
+                releasePauses_.stepPause.restart();
+                co_await releasePauses_.stepPause;
+                if (releaseStop_.is_canceled()) co_return;
+                if (std::exchange(settledDuringRelease_, false)) break;
+            }
         }
+    } catch (const async::operation_canceled_exception&) {
+        // Отмена — обычный конец цикла.
+    } catch (...) {
+        failureReceiver_(std::current_exception());
     }
 }
 

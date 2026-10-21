@@ -18,7 +18,6 @@ using namespace wxl;
 
 using wxl::async::cancellation_source;
 using wxl::async::cancellation_token;
-using wxl::async::detached_task;
 using wxl::async::last_error;
 
 /* ---------------- три дороги в мастер ---------------- */
@@ -40,8 +39,24 @@ using wxl::async::last_error;
 // открыл бы правку под скрытым мастером — полоса осталась бы в предпросмотре,
 // и скрытие его уже не сняло бы, — а новая обложка встала бы поверх полки или
 // заставки, где с открытым мастером клавиши экранов молчат.
+//
+// Задача у трёх дорог одна — `wizardRoad_`: следующая дорога и так отменяет
+// сеанс прежней, а присвоенная поверх ещё и останавливает её тело на
+// ожидании, не дожидаясь, пока отмена дойдёт.
 
-detached_task App::addSkin() {
+void App::addSkin() {
+    wizardRoad_ = reported(runAddSkin());
+}
+
+void App::editSkin(u16_text name) {
+    wizardRoad_ = reported(runEditSkin(std::move(name)));
+}
+
+void App::chooseAnotherImage() {
+    wizardRoad_ = reported(runChooseAnotherImage());
+}
+
+wxl::async::task<> App::runAddSkin() {
     const cancellation_token session = beginWizardSession();
 
     const std::filesystem::path path = askForImage(window_.handle());
@@ -61,7 +76,7 @@ detached_task App::addSkin() {
 
 /// По полному списку тем, а не по реестру: системные обложки живут только в
 /// нём, а шестерёнка есть и у них — правка «на основе».
-detached_task App::editSkin(u16_text name) {
+wxl::async::task<> App::runEditSkin(u16_text name) {
     const cancellation_token session = beginWizardSession();
 
     const std::optional<int> index = themes_.indexOfSkin(name);
@@ -85,7 +100,7 @@ detached_task App::editSkin(u16_text name) {
     reportWarpRefusal();
 }
 
-detached_task App::chooseAnotherImage() {
+wxl::async::task<> App::runChooseAnotherImage() {
     const cancellation_token session = beginWizardSession();
 
     const std::filesystem::path path = askForImage(window_.handle());
@@ -151,10 +166,9 @@ wxl::async::task<DecodedPixels> App::checkImage(std::filesystem::path image, can
     co_return DecodedPixels{};
 }
 
-detached_task App::leaveWizard() {
+void App::leaveWizard() {
     endWizardSession();
     view_.root().focus(FocusState::Programmatic);
-    co_return;
 }
 
 /* ---------------- сохранить и удалить ---------------- */
@@ -172,16 +186,24 @@ detached_task App::leaveWizard() {
 /// сохранить попросили. Правка другая — пока писалось, другой снимок открыл
 /// новую, — или сеанс кончился — читатель вышел, ушёл с полосы или пошёл в
 /// мастер другой дорогой, — и закрывать мастер этому сценарию уже не по праву.
-detached_task App::saveSkin(SkinSave save) {
+///
+/// Задача — в `skinSaves_`: пока сохранение правки идёт, второго та же правка
+/// не просит, но правка, открытая заново, о нём забывает (`saveEnded`), и её
+/// сохранение идёт рядом с прежним.
+void App::saveSkin(SkinSave save) {
+    keepUntilDone(skinSaves_, reported(runSaveSkin(std::move(save))));
+}
+
+wxl::async::task<> App::runSaveSkin(SkinSave save) {
     auto const stop = cancellation_source{stop_.token()};
     const cancellation_token askedSession = wizardSession_.token();
 
     const u16_text skinName = save.skin.name;
 
     // Конец мастеру говорится всегда — удачный, отказ и всякое другое
-    // исключение, уходящее дальше (отмена кончает сценарий, сбой идёт в
-    // обработчик сбоев сценариев): по номеру мастер сам решит, его ли это
-    // сохранение, а конец снова разрешает сохранять.
+    // исключение, уходящее дальше (отмена кончает сценарий, сбой — сообщением
+    // читателю, reported): по номеру мастер сам решит, его ли это сохранение,
+    // а конец снова разрешает сохранять.
     try {
         co_await ws_.saveSkin(std::move(save.skin), save.photo, stop.token());
     } catch (const last_error& failure) {
@@ -219,7 +241,14 @@ detached_task App::saveSkin(SkinSave save) {
 /// за удаляемой сдвигаются, и «остаться на своей» значит найти её заново.
 /// Удалили ту, что была на экране, — читатель возвращается на встроенную
 /// тему, номер которой читалка держит в настройках ровно на этот случай.
-detached_task App::deleteSkin(u16_text name) {
+///
+/// Задача — в `skinDeletions_`: пока реестр пишется, корзина у другой обложки
+/// уже доступна, и её удаление идёт рядом.
+void App::deleteSkin(u16_text name) {
+    keepUntilDone(skinDeletions_, reported(runDeleteSkin(std::move(name))));
+}
+
+wxl::async::task<> App::runDeleteSkin(u16_text name) {
     // Дорога в мастер, начатая раньше вопроса, уже не откроет, что бы читатель
     // ни ответил: открылась бы правка обложки, которую удаляют, и её
     // сохранение вернуло бы удалённую в реестр.
@@ -381,7 +410,7 @@ void App::showBackdrop() {
     // До прихода снимка страница рисуется бумагой темы: прежний снимок ей не
     // годится.
     view_.setBackdrop({});
-    if (!wanted.empty()) loadBackdrop(std::move(wanted), backdropLoad_.token());
+    if (!wanted.empty()) loadingBackdrop_ = reported(loadBackdrop(std::move(wanted), backdropLoad_.token()));
 }
 
 void App::cancelBackdropLoad() {
@@ -397,7 +426,7 @@ void App::cancelBackdropLoad() {
 /// шумом, а молчание прятало бы сбой. Пока читали и раскодировали, могли
 /// захотеть другой — тогда загрузку этого отменил владелец
 /// (cancelBackdropLoad): путь подложки меняется только вместе с отменой.
-detached_task App::loadBackdrop(std::filesystem::path file, cancellation_token stop) {
+wxl::async::task<> App::loadBackdrop(std::filesystem::path file, cancellation_token stop) {
     try {
         DecodedPicture decoded = co_await ws_.probeImageAsync(file, stop);
 

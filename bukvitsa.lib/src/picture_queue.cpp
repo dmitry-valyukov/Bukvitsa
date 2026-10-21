@@ -25,10 +25,12 @@ bool contains(const std::vector<uint32_t>& pictures, uint32_t picture) {
 }  // namespace
 
 PictureQueue::PictureQueue(PageFlow& flow, IdleScheduler& scheduler,
-                           wxl::async::cancellation_token ownerToken, function<void()> shownReceiver)
+                           wxl::async::cancellation_token ownerToken, function<void()> shownReceiver,
+                           function<void(std::exception_ptr)> failureReceiver)
     : flow_(flow),
       scheduler_(scheduler),
       shownReceiver_(std::move(shownReceiver)),
+      failureReceiver_(std::move(failureReceiver)),
       ownerToken_(std::move(ownerToken)),
       stop_(ownerToken_) {}
 
@@ -74,7 +76,7 @@ void PictureQueue::request(WindowMove move) {
     // него (сбой на первом ожидании) и сам опустить знак; поднятый после
     // вызова, знак затёр бы это и остался бы поднятым навсегда.
     running_ = true;
-    loop();
+    loop_ = loop();
 }
 
 void PictureQueue::restart() {
@@ -142,12 +144,11 @@ void PictureQueue::settle(Book& book, uint32_t picture) {
         shownReceiver_();
 }
 
-wxl::async::detached_task PictureQueue::loop() {
+wxl::async::task<> PictureQueue::loop() {
     // Правило кадра: отменённый вместе с очередью, он не трогает ни
     // держателя, ни книгу — к этому ходу очереди у держателя может идти уже
-    // другой кадр (смена книги, уход холста), а сам держатель может быть
-    // разрушен. Отмену очереди кадр узнаёт по копии её токена, взятой здесь
-    // раз и навсегда: источник очереди держатель заменяет при restart(), и
+    // другой кадр (смена книги, уход холста). Отмену очереди кадр узнаёт по
+    // копии её токена, взятой здесь раз и навсегда: источник очереди держатель заменяет при restart(), и
     // токен нового источника о прежнем кадре ничего бы не сказал. Отменено
     // только своё ожидание (простоя или раскодирования) при живом токене
     // очереди — это сделал request(), держатель жив, и кадр идёт дальше. Книга
@@ -204,9 +205,9 @@ wxl::async::detached_task PictureQueue::loop() {
                     co_await decodeImageAsync(book->beginDecoding(*picture), kMaxPictureSide, decodeToken);
             } catch (const wxl::async::operation_canceled_exception&) {
                 // Отменена очередь — уйти, ничего не тронув. Отмена при живом
-                // токене раскодирования — не наша и не «выпадение»: ошибка,
-                // которую нельзя выдать за пропуск картинки, — пусть уходит
-                // дальше, в обработчик сбоев.
+                // токене раскодирования — не наша и не «выпадение»: её нельзя
+                // выдать за пропуск картинки, и кадр кончается на ней, как
+                // отменённый.
                 if (frameToken.is_canceled() || !decodeToken.is_canceled()) throw;
                 // request(): картинка выпала из окна. Тело в пуле осиротело и
                 // доработает до ближайшей полосы, его ответ никому не уйдёт.
@@ -221,21 +222,24 @@ wxl::async::detached_task PictureQueue::loop() {
             book->acceptPicture(*picture, std::move(decodedPicture));
             settle(*book, *picture);
         }
+        running_ = false;
     } catch (const wxl::async::operation_canceled_exception&) {
-        throw;   // отменённый кадр уходит, ничего не тронув
+        // Отменённый кадр уходит, ничего не тронув. Отмена, которую кадр не
+        // отличил от своей (ушла очередь потока, раскодирование отменено не
+        // им), — тоже конец без знаков: её не бывает при живом держателе,
+        // кроме выхода приложения, когда токен владельца уже отменён.
     } catch (...) {
-        // Сбой — не отмена: знаки опускаются, иначе всякий следующий
-        // request() молча выходил бы, и картинки не приходили бы до смены
-        // книги; сам сбой уходит дальше, в обработчик сбоев. Трогать `this`
-        // здесь можно: не-отмену бросает только неотменённый кадр, а
-        // неотменённый кадр — кадр живого держателя.
+        // Сбой — не отмена: сам сбой — получателю сбоев, и знаки опускаются
+        // только после него, иначе всякий следующий request() молча выходил
+        // бы, и картинки не приходили бы до смены книги. Не раньше: пока
+        // поднят знак, request() из получателя задачу под бегущим кадром не
+        // меняет. Трогать `this` здесь можно: не-отмену бросает только
+        // неотменённый кадр, а неотменённый кадр — кадр живого держателя.
+        failureReceiver_(std::current_exception());
         running_ = false;
         awaitingIdle_ = false;
         decodingPicture_.reset();
-        throw;
     }
-
-    running_ = false;
 }
 
 }  // namespace bukvitsa::reader

@@ -465,9 +465,11 @@ void BookView::renderingDeviceReplaced() noexcept {
 std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     std::unique_ptr<TurnAnimation> chosenAnimation;
     if (settings_.animateTurns.get()) {
+        // Сбой корутины переворота — ведущему, а он скажет владельцу.
         chosenAnimation = std::make_unique<LeafTurnAnimation>(
             compositor_, leafLayer_, window_.dispatcherQueue(), spreadView_, presenter_.flow(),
-            readingScope_, stop_.token());
+            readingScope_, stop_.token(),
+            [this](std::exception_ptr failure) { presenter_.reportFailure(std::move(failure)); });
     } else {
         chosenAnimation = std::make_unique<InstantTurnAnimation>(spreadView_);
     }

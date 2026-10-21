@@ -33,9 +33,6 @@
 #include "bukvitsa/reader/book_search.h"
 #include "bukvitsa/reader/theme_list.h"
 
-// Импорт — последним: намерения панели — корутины `detached_task`.
-import wxl.async;
-
 namespace bukvitsa::reader {
 
 /// Два ящика поверх полосы. Владеет своим деревом и анимацией выезда; ведущий
@@ -46,31 +43,32 @@ public:
     /// Вкладки левого ящика. Вид — не вкладка, а правый ящик целиком.
     enum class Tab { Contents, Search, Bookmarks };
 
-    /// Что панель умеет попросить. Реализует владелец; намерение — корутина:
-    /// ждёт ли дело диска или вопроса читателю, панели знать незачем.
+    /// Что панель умеет попросить. Реализует владелец; ждёт ли дело диска или
+    /// вопроса читателю, панели знать незачем: сценарий и его задачу держит
+    /// владелец.
     class Actions {
     public:
         /// «← Моя библиотека»: выбрать другую книгу. Смена книги — дело
         /// приложения, не панели.
-        virtual wxl::async::detached_task showLibrary() = 0;
+        virtual void showLibrary() = 0;
 
         /// «Заложить эту страницу»: поставить закладку на место чтения или
         /// снять ту, что там стоит. Состояние книги — владельца; панель
         /// показывает его, а не меняет.
-        virtual wxl::async::detached_task toggleBookmark() = 0;
+        virtual void toggleBookmark() = 0;
 
         /// «Добавить обложку…». Мастер — оверлей приложения, а не панели: он
         /// ложится поверх всей полосы.
-        virtual wxl::async::detached_task addSkin() = 0;
+        virtual void addSkin() = 0;
 
         /// Шестерёнка у обложки: открыть в мастере правку её кривизны.
-        virtual wxl::async::detached_task editSkin(u16_text name) = 0;
+        virtual void editSkin(u16_text name) = 0;
 
         /// Корзина у обложки: убрать её из реестра. Спросить, точно ли, —
         /// дело приложения: у панели нет ни окна, ни права решать за
-        /// читателя, а удаление необратимо. Имя — по значению: корутина
+        /// читателя, а удаление необратимо. Имя — по значению: сценарий
         /// держит его, пока спрашивает.
-        virtual wxl::async::detached_task deleteSkin(u16_text name) = 0;
+        virtual void deleteSkin(u16_text name) = 0;
 
     protected:
         ~Actions() = default;

@@ -30,27 +30,24 @@
 // заголовок MSVC уже не принимает.
 #include "bukvitsa/reader/skin_editor.h"
 
-// Импорт — последним: намерения мастера — корутины `detached_task`.
-import wxl.async;
-
 namespace bukvitsa::reader {
 
 /// Мастер обложек. Владеет своим деревом, сеткой и моделью правки; исполнитель
 /// намерений — владельца, живёт дольше мастера.
 class SkinWizard : private noncopyable {
 public:
-    /// Что мастер умеет попросить. Реализует владелец; намерение — корутина:
-    /// ждёт ли дело диска, мастеру знать незачем.
+    /// Что мастер умеет попросить. Реализует владелец; ждёт ли дело диска,
+    /// мастеру знать незачем: сценарий и его задачу держит владелец.
     class Actions {
     public:
         /// «Сохранить», имя уже есть и годится. Сохранение одно за раз: следующее
         /// мастер не начнёт, пока владелец не скажет, что это кончилось
         /// (`saveEnded` с его номером), — удачей или отказом.
-        virtual wxl::async::detached_task saveSkin(SkinSave save) = 0;
+        virtual void saveSkin(SkinSave save) = 0;
         /// «Выбрать другое изображение».
-        virtual wxl::async::detached_task chooseAnotherImage() = 0;
+        virtual void chooseAnotherImage() = 0;
         /// «Выйти из мастера обложек» — и Escape.
-        virtual wxl::async::detached_task leaveWizard() = 0;
+        virtual void leaveWizard() = 0;
 
     protected:
         ~Actions() = default;

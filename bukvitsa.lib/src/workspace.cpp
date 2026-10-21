@@ -19,7 +19,6 @@ using wxl::async::async_directory;
 using wxl::async::async_file;
 using wxl::async::cancellation_source;
 using wxl::async::cancellation_token;
-using wxl::async::detached_task;
 using wxl::async::last_error;
 using wxl::async::operation_canceled_exception;
 using wxl::async::task;
@@ -190,10 +189,11 @@ Workspace::Workspace(std::filesystem::path directory, cancellation_token appStop
     : directory_(std::move(directory)), appStop_(std::move(appStop)) {}
 
 Workspace::~Workspace() {
-    // Кадр разборщика держит это рабочее место — ссылкой на него он ставит
-    // книги в реестр, — и уйти раньше разбора значило бы оставить кадр с
-    // висящей ссылкой. Разбор кончается всегда — шагом или отменой общего
-    // токена, — так что застать его здесь — нарушенный порядок выхода.
+    // Разборщик — поле рабочего места, и уход рабочего места посреди разбора
+    // остановил бы его на шаге: книга, чей шаг идёт, и книги за ней итога не
+    // получили бы, а их ждущие не узнали бы ни о книге, ни об отказе. Разбор
+    // кончается всегда — шагом или отменой общего токена, — так что застать
+    // его здесь — нарушенный порядок выхода.
     if (draining_) wxl::core::abort("~Workspace: разбор очереди регистраций ещё идёт");
 }
 
@@ -301,13 +301,13 @@ not_null<intrusive_ptr<QueuedRegistration>> Workspace::queueRegistration(fb3::De
     // и шаг начинается в этом же вызове.
     if (!draining_) {
         draining_ = true;
-        drainRegistrations();
+        drain_ = drainRegistrations();
     }
 
     return queued;
 }
 
-detached_task Workspace::drainRegistrations() {
+task<> Workspace::drainRegistrations() {
     // Свой источник, дочерний от общего: выход приложения кончает разбор, а
     // больше его не кончает никто — шаг ждёт только записи обложки, которой
     // отмена не делит.
@@ -352,8 +352,8 @@ detached_task Workspace::drainRegistrations() {
             // Слова — без выделения: процесс на этом пути кончается, а
             // выделение само может не удаться — нехватка памяти и есть одна из
             // причин, — и его std::bad_alloc ушёл бы из этого обработчика мимо
-            // остановки, в обработчик сбоев detached_task, с той же вставшей
-            // очередью. Текст исключения — строкой wxl как есть, за ним
+            // остановки в задачу разборщика, которую никто не читает, с той же
+            // вставшей очередью. Текст исключения — строкой wxl как есть, за ним
             // остановка с постоянными словами.
             wxl::core::report(failure.what());
             wxl::core::abort("Workspace::drainRegistrations: шаг регистрации кончился не сбоем записи обложки — "
@@ -596,16 +596,11 @@ task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_to
 }
 
 task<Opened> Workspace::openBook(const BookEntry& entry, cancellation_token stop) {
-    // Под отменённым токеном открытие не начинается — настройки не тронуты.
-    // Дальше токен слушает только чтение состояния — само чтение и вопрос
-    // сразу за ним, — и книга, чьё открытие отменили, на полосу не встаёт.
+    // Под отменённым токеном открытие не начинается. Дальше токен слушает
+    // только чтение состояния — само чтение и вопрос сразу за ним, — и книга,
+    // чьё открытие отменили, на полосу не встаёт, а настройки на неё не
+    // указывают.
     stop.throw_if_canceled();
-
-    // Настройки, которые на книгу указывают, — в памяти, и лишь потом её
-    // состояние. Файл настроек пишет цикл приложения, один на файл: запись
-    // отсюда шла бы разом с его записью того же файла.
-    settings.lastBookGuid = entry.guid;
-    settings.lastBookPath = entry.path;
 
     // Состояние — отдельной строкой, а не внутри фигурной инициализации:
     // `co_await` в списке инициализаторов агрегата роняет бэкенд MSVC 14.51
@@ -618,6 +613,15 @@ task<Opened> Workspace::openBook(const BookEntry& entry, cancellation_token stop
     // встала бы на полосу. Тем же правилом токен спрашивают сразу за чтением
     // readBook и saveSkin.
     stop.throw_if_canceled();
+
+    // Настройки, которые на книгу указывают, — в памяти и только после
+    // последнего ожидания: от них до смены книги у вызывающего ожиданий нет,
+    // и открытие, остановленное или отменённое на любом из своих ожиданий,
+    // настроек не трогает — они не укажут на книгу, которой нет на полосе.
+    // Файл настроек пишет цикл приложения, один на файл: запись отсюда шла бы
+    // разом с его записью того же файла.
+    settings.lastBookGuid = entry.guid;
+    settings.lastBookPath = entry.path;
 
     Opened opened{entry, std::move(state)};
 

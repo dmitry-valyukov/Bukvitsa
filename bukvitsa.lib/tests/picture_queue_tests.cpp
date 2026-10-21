@@ -62,7 +62,6 @@ using namespace bukvitsa::reader;
 using namespace bukvitsa::reader::tests;
 using Microsoft::WRL::ComPtr;
 using wxl::async::cancellation_source;
-using wxl::async::detached_task;
 using wxl::async::sta_loop;
 using wxl::async::task;
 
@@ -214,7 +213,8 @@ struct QueueBench {
     cancellation_source ownerSource;
     PageFlow flow;
     int shownReady = 0;
-    std::optional<PictureQueue> queue{std::in_place, flow, idle, ownerSource.token(), [this] { ++shownReady; }};
+    std::optional<PictureQueue> queue{std::in_place, flow, idle, ownerSource.token(), [this] { ++shownReady; },
+                                      [](std::exception_ptr) { check(false, "у очереди не должно было быть сбоя"); }};
 
     /// Книга на этой букве, вид и мера как у ведущего; открытие — как у
     /// ведущего: очередь перезаводится до смены книги, просьба — после
@@ -303,10 +303,12 @@ std::optional<ScoutedSpread> scoutSpread(ScoutWants wants) {
 
 /* ---------------- стенд ведущего ---------------- */
 
-/// Исполнитель намерений, которому нечего делать.
+/// Исполнитель намерений, которому нечего делать; сбой машинерии полосы — провал
+/// пробы.
 class IdleActions final : public BookPresenter::Actions {
 public:
-    detached_task togglePanel() override { co_return; }
+    void togglePanel() override {}
+    void reportFailure(std::exception_ptr) noexcept override { check(false, "у полосы не должно было быть сбоя"); }
 };
 
 /// Холст, который ничего не делает и не рисует. Встаёт под ведущего
@@ -757,6 +759,43 @@ void testQueueDestructorForgets() {
     check(countState(*book, PictureState::Ready) == 0, "ответ тела никому не ушёл");
 }
 
+/// Перезавод очереди (restart, затем request) — и пока картинка в пути, и
+/// пока очередь стоит в простое: новый кадр, присвоенный поверх,
+/// останавливает прежний, и кадры не копятся — их столько же, сколько у одной
+/// очереди. Разрушение очереди уносит и последний.
+void testRestartKeepsOneFrame() {
+    std::printf("\n=== очередь картинок: перезавод — один кадр ===\n");
+    const std::optional<ScoutedSpread> spread = scoutSpread({.shown = true, .forward = true});
+    const intrusive_ptr<Book> book = openPictureBook();
+    if (!spread || !book) return;
+
+    QueueBench bench;
+    {
+        HeldWorker held;
+        const size_t before = wxl::async::live_frames();
+        bench.openAt(as_not_null(book.get()), spread->letter);
+        const size_t oneQueue = wxl::async::live_frames() - before;
+        check(oneQueue > 0 && countState(*book, PictureState::Decoding) == 1, "кадр очереди стоит на раскодировании");
+
+        bench.openAt(as_not_null(book.get()), spread->letter);
+        check(wxl::async::live_frames() - before == oneQueue && countState(*book, PictureState::Decoding) == 1,
+              "перезавод на раскодировании: прежний кадр остановлен, в пути одна картинка");
+        held.open();
+    }
+    drain();
+    check(allSettled(*book, spread->shown) && bench.idle.parked() == 1, "разворот раскодирован, очередь в простое");
+
+    const size_t before = wxl::async::live_frames();
+    bench.openAt(as_not_null(book.get()), spread->letter);
+    drain();
+    check(wxl::async::live_frames() == before && bench.idle.parked() == 1,
+          "перезавод в простое: прежний кадр и его ожидание ушли, новый стоит на своём");
+
+    bench.queue.reset();
+    check(wxl::async::live_frames() < before && bench.idle.parked() == 0,
+          "разрушение очереди уносит её кадр и ожидание простоя");
+}
+
 /* ---------------- проводка ведущего ---------------- */
 
 /// Смена книги отменяет очередь: прежняя книга забывает ушедшее
@@ -925,6 +964,7 @@ void runPictureQueueTests() {
     testDeviceReplacementNotWaitingIdle();
     testAnswerAfterDeviceReplacement();
     testQueueDestructorForgets();
+    testRestartKeepsOneFrame();
     testPresenterBookChangeCancels();
     testPresenterCanvasAndOwnerCancel();
     testPresenterDeviceReplacement();

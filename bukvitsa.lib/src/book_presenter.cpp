@@ -15,7 +15,8 @@ namespace bukvitsa::reader {
 // Досчёт главы — от своего источника: от него же его отменяет деструктор.
 // Получатель «глава досчитана» перерисовывает разворот — «из …» становится
 // «из M»; без холста он не зовётся: досчёт заводит только вёрстка, а верстает
-// ведущий под холстом, и уход холста досчёт отменяет.
+// ведущий под холстом, и уход холста досчёт отменяет. Сбои досчёта и очереди
+// картинок — владельцу: он скажет о них читателю.
 //
 // Настройки вида приходят из модели, а не ставятся снаружи: ведущий верстает
 // по ним с первой минуты, слушает поля и перевёрстывается сам; то же поле
@@ -28,8 +29,10 @@ BookPresenter::BookPresenter(Settings& settings, ThemeList& themes, IdleSchedule
       themes_(themes),
       actions_(actions),
       stop_(std::move(ownerToken)),
-      chapterTail_(flow_, idleScheduler, stop_.token(), [this] { canvas().redraw(); }),
-      pictureQueue_(flow_, idleScheduler, stop_.token(), [this] { canvas().redraw(); }),
+      chapterTail_(flow_, idleScheduler, stop_.token(), [this] { canvas().redraw(); },
+                   [this](std::exception_ptr failure) { actions_.reportFailure(std::move(failure)); }),
+      pictureQueue_(flow_, idleScheduler, stop_.token(), [this] { canvas().redraw(); },
+                    [this](std::exception_ptr failure) { actions_.reportFailure(std::move(failure)); }),
       fontSizeWatch_(settings_.fontSize, *this),
       lineHeightWatch_(settings_.lineHeight, *this),
       marginWatch_(settings_.margin, *this) {
@@ -49,9 +52,9 @@ BookPresenter::~BookPresenter() {
     if (canvas_) wxl::core::abort("BookPresenter: ведущий умирает, а холст под ним остался");
 
     // Ожидание простоя досчёта ведущему больше не нужно: отменяет его
-    // владелец, то есть он сам. Кадр кончится отменой на своём ходу очереди и
-    // ведущего не тронет. Слушатели настроек снимаются сами, первыми из
-    // членов.
+    // владелец, то есть он сам, а стоящие кадры досчёта и очереди картинок
+    // останавливают их держатели, уходя членами. Слушатели настроек снимаются
+    // сами, первыми из членов.
     stop_.cancel();
 }
 

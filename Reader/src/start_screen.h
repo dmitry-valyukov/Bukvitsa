@@ -15,9 +15,6 @@
 #include "Object.h"
 #include "pch.h"
 
-// Импорт — последним: намерения экрана — корутины `detached_task`.
-import wxl.async;
-
 namespace bukvitsa::reader {
 
 /// Стартовый экран. Владеет своим деревом и анимацией проявления; исполнитель
@@ -25,20 +22,20 @@ namespace bukvitsa::reader {
 class StartScreen : private noncopyable {
 public:
     /// Что заставка умеет попросить — по намерению на кнопку. Реализует
-    /// владелец; намерение — корутина: ждёт ли дело диска, экрану знать
-    /// незачем.
+    /// владелец; ждёт ли дело диска, экрану знать незачем: сценарий и его
+    /// задачу держит владелец.
     class Actions {
     public:
         /// «Продолжить чтение» — действие по умолчанию, его же зовёт Enter.
-        virtual wxl::async::detached_task continueReading() = 0;
+        virtual void continueReading() = 0;
         /// «Моя библиотека».
-        virtual wxl::async::detached_task showLibrary() = 0;
+        virtual void showLibrary() = 0;
         /// «Добавить книгу».
-        virtual wxl::async::detached_task chooseBook() = 0;
+        virtual void chooseBook() = 0;
         /// «Добавить каталог».
-        virtual wxl::async::detached_task chooseFolder() = 0;
+        virtual void chooseFolder() = 0;
         /// «Выйти из читалки» — отмена, её же зовёт Escape.
-        virtual wxl::async::detached_task quit() = 0;
+        virtual void quit() = 0;
 
     protected:
         ~Actions() = default;

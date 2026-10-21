@@ -121,7 +121,7 @@ StartScreen::StartScreen(const Compositor& compositor, Actions& actions)
     // отдаёт свой визуал в revealing_ (revealLater) до того, как дерево уедет
     // в конструктор Grid, и проступают они в том порядке, в каком встали.
     // Кнопка зовёт намерение прямо: method() отдаёт член интерфейса как
-    // обработчик, корутина запускается и идёт сама.
+    // обработчик, а сценарий, если он ждёт, держит владелец.
     auto const panel = StackPanel {
         revealLater(Button {
             overlayMainLook,

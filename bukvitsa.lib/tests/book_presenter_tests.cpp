@@ -43,7 +43,6 @@ using namespace bukvitsa;
 using namespace bukvitsa::reader;
 using namespace bukvitsa::reader::tests;
 using wxl::async::cancellation_source;
-using wxl::async::detached_task;
 
 /// Пробы остановки очереди картинок — у её проб (picture_queue_tests.cpp):
 /// дочерний запуск один на исполняемый файл, и разбирает имя он здесь.
@@ -107,10 +106,10 @@ constexpr DWORD kReportPipeBytes = 64 * 1024;
 /// Исполнитель намерений, который их только считает.
 class CountingActions final : public BookPresenter::Actions {
 public:
-    detached_task togglePanel() override {
-        ++panelToggles;
-        co_return;
-    }
+    void togglePanel() override { ++panelToggles; }
+
+    /// Сбой машинерии полосы в этих пробах — провал.
+    void reportFailure(std::exception_ptr) noexcept override { check(false, "у полосы не должно было быть сбоя"); }
 
     int panelToggles = 0;
 };
@@ -550,9 +549,10 @@ void testFontSizeRelayout() {
     check(bench.flow().fontSize() == static_cast<float>(kFontSizeDefault + kFontSizeStep),
           "поток страниц свёрстан новым кеглем");
 
-    // Прежний кадр досчёта отменён, но стоит до своего хода очереди; рядом —
-    // новый: без отмены прежний считал бы новую вёрстку, а нового бы не было.
-    check(bench.idle.parked() == 2, "перевёрстка отменила прежний досчёт и завела новый");
+    // Прежний кадр досчёта отменён, и задача нового, присвоенная поверх,
+    // останавливает его сразу: стоит один — новый. Без отмены прежний считал бы
+    // новую вёрстку, а нового бы не было.
+    check(bench.idle.parked() == 1, "перевёрстка отменила прежний досчёт и завела новый");
 
     bench.canvas.journal.clear();
     bench.presenter.perform(Command::FontSmaller);
