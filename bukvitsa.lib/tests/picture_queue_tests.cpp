@@ -769,31 +769,44 @@ void testRestartKeepsOneFrame() {
     const intrusive_ptr<Book> book = openPictureBook();
     if (!spread || !book) return;
 
+    // Кадры считает только сборка с проверками корутин: в ней проба сверяет и их, в
+    // остальных — одно состояние очереди.
+    constexpr bool framesCounted = wxl::async::detail::checked;
+
     QueueBench bench;
     {
         HeldWorker held;
-        const size_t before = wxl::async::live_frames();
+        size_t before = 0;
+        if constexpr (framesCounted) before = wxl::async::live_frames();
         bench.openAt(as_not_null(book.get()), spread->letter);
-        const size_t oneQueue = wxl::async::live_frames() - before;
-        check(oneQueue > 0 && countState(*book, PictureState::Decoding) == 1, "кадр очереди стоит на раскодировании");
+        size_t oneQueue = 0;
+        if constexpr (framesCounted) {
+            oneQueue = wxl::async::live_frames() - before;
+            check(oneQueue > 0, "кадр очереди жив");
+        }
+        check(countState(*book, PictureState::Decoding) == 1, "кадр очереди стоит на раскодировании");
 
         bench.openAt(as_not_null(book.get()), spread->letter);
-        check(wxl::async::live_frames() - before == oneQueue && countState(*book, PictureState::Decoding) == 1,
-              "перезавод на раскодировании: прежний кадр остановлен, в пути одна картинка");
+        if constexpr (framesCounted)
+            check(wxl::async::live_frames() - before == oneQueue,
+                  "перезавод на раскодировании: прежний кадр остановлен");
+        check(countState(*book, PictureState::Decoding) == 1, "перезавод на раскодировании: в пути одна картинка");
         held.open();
     }
     drain();
     check(allSettled(*book, spread->shown) && bench.idle.parked() == 1, "разворот раскодирован, очередь в простое");
 
-    const size_t before = wxl::async::live_frames();
+    size_t before = 0;
+    if constexpr (framesCounted) before = wxl::async::live_frames();
     bench.openAt(as_not_null(book.get()), spread->letter);
     drain();
-    check(wxl::async::live_frames() == before && bench.idle.parked() == 1,
-          "перезавод в простое: прежний кадр и его ожидание ушли, новый стоит на своём");
+    if constexpr (framesCounted)
+        check(wxl::async::live_frames() == before, "перезавод в простое: прежний кадр и его ожидание ушли");
+    check(bench.idle.parked() == 1, "перезавод в простое: новый кадр стоит на своём");
 
     bench.queue.reset();
-    check(wxl::async::live_frames() < before && bench.idle.parked() == 0,
-          "разрушение очереди уносит её кадр и ожидание простоя");
+    if constexpr (framesCounted) check(wxl::async::live_frames() < before, "разрушение очереди уносит её кадр");
+    check(bench.idle.parked() == 0, "разрушение очереди уносит и ожидание простоя");
 }
 
 /* ---------------- проводка ведущего ---------------- */

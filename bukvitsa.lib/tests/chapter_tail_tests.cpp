@@ -5,9 +5,10 @@
 // кончается отменой, не тронув ни потока страниц, ни получателя, а новый кадр
 // или разрушение держателя останавливают его сразу. Задачу кадра держит
 // держатель, и жив ли кадр, видно по счётчику кадров задач: стоящий досчёт —
-// это два кадра, его и его ожидания простоя. Порция — по времени, и сколько
-// их уйдёт на главу, зависит от машины: пробы смотрят на состояние, не на счёт
-// порций.
+// это два кадра, его и его ожидания простоя. Кадры считает только сборка с
+// проверками корутин; в остальных пробы сверяют одно состояние. Порция — по
+// времени, и сколько их уйдёт на главу, зависит от машины: пробы смотрят на
+// состояние, не на счёт порций.
 
 #include <cstdio>
 #include <exception>
@@ -48,10 +49,23 @@ void setUp(PageFlow& flow, not_null<Book> book) {
     flow.relayout();
 }
 
-/// Сколько кадров задач живо сверх того, что было до пробы.
+/// Сколько кадров задач живо сверх того, что было до пробы. Считает их только
+/// сборка с проверками корутин: в ней проба сверяет и кадры, в остальных счёта
+/// нет, и о кадрах проба не спрашивает — сверяет одно состояние.
 struct FrameCount {
-    size_t before = wxl::async::live_frames();
-    size_t extra() const { return wxl::async::live_frames() - before; }
+    size_t before = 0;
+
+    FrameCount() {
+        if constexpr (wxl::async::detail::checked) before = wxl::async::live_frames();
+    }
+
+    /// Столько ли кадров живо сверх прежнего; без счёта — не спрашивается.
+    bool extraAre(size_t expected) const {
+        if constexpr (wxl::async::detail::checked)
+            return wxl::async::live_frames() - before == expected;
+        else
+            return true;
+    }
 };
 
 /// Кадров у стоящего досчёта: его и его ожидания простоя.
@@ -103,22 +117,22 @@ void testTailRunsToEnd() {
 
     const size_t pagesBefore = flow.pageCount();
     tail.start();
-    check(flow.needsTail() && idle.parked() == 1 && frames.extra() == kWaitingTailFrames,
+    check(flow.needsTail() && idle.parked() == 1 && frames.extraAre(kWaitingTailFrames),
           "досчёт встал в ожидание простоя ещё внутри start()");
     check(flow.pageCount() == pagesBefore && completed == 0, "до хода очереди поток не тронут");
 
     tail.start();
-    check(idle.parkings() == 1 && frames.extra() == kWaitingTailFrames, "идущий досчёт второй раз не заводится");
+    check(idle.parkings() == 1 && frames.extraAre(kWaitingTailFrames), "идущий досчёт второй раз не заводится");
 
     wakeAll(idle);
     check(flow.isComplete() && !flow.needsTail() && flow.status().total == flow.pageCount(),
           "глава досчитана в простое — «из M» известно");
     check(completed == 1, "получатель позван один раз");
-    check(idle.parked() == 0 && frames.extra() == 0, "кадр ушёл сам");
+    check(idle.parked() == 0 && frames.extraAre(0), "кадр ушёл сам");
 
     const int parkings = idle.parkings();
     tail.start();
-    check(idle.parked() == 0 && idle.parkings() == parkings && frames.extra() == 0,
+    check(idle.parked() == 0 && idle.parkings() == parkings && frames.extraAre(0),
           "досчитанной главе досчёт не заводится");
 
     // Прыжок в другую длинную главу: её хвост не досчитан, и start() обязан
@@ -127,10 +141,10 @@ void testTailRunsToEnd() {
     flow.show(flow.columnOf(novel->chapterFirstChar(other)));
     check(flow.needsTail(), "в другой длинной главе хвост ещё не досчитан");
     tail.start();
-    check(idle.parked() == 1 && frames.extra() == kWaitingTailFrames, "знак опущен — в новой главе заведён кадр");
+    check(idle.parked() == 1 && frames.extraAre(kWaitingTailFrames), "знак опущен — в новой главе заведён кадр");
 
     wakeAll(idle);
-    check(flow.isComplete() && completed == 2 && frames.extra() == 0,
+    check(flow.isComplete() && completed == 2 && frames.extraAre(0),
           "и новая глава досчитана до конца");
 }
 
@@ -152,7 +166,7 @@ void testRelayoutCancelsTail() {
 
     tail.start();
     tail.restart();
-    check(idle.parked() == 1 && frames.extra() == kWaitingTailFrames,
+    check(idle.parked() == 1 && frames.extraAre(kWaitingTailFrames),
           "отмена никого не будит: прежний кадр стоит до хода очереди");
 
     // Как перевёрстка полосы: новая мера, глава начисто до разворота, досчёт
@@ -162,13 +176,13 @@ void testRelayoutCancelsTail() {
     flow.relayout();
     const size_t pagesRelaid = flow.pageCount();
     tail.start();
-    check(flow.needsTail() && idle.parked() == 1 && frames.extra() == kWaitingTailFrames,
+    check(flow.needsTail() && idle.parked() == 1 && frames.extraAre(kWaitingTailFrames),
           "после перевёрстки стоит один кадр — новый; прежний остановлен");
     check(flow.pageCount() == pagesRelaid && completed == 0, "прежний не тронул ни потока, ни получателя");
 
     wakeAll(idle);
     check(flow.isComplete() && !flow.needsTail(), "новый кадр досчитал главу по новой мере");
-    check(completed == 1 && frames.extra() == 0, "получатель позван один раз, кадр ушёл сам");
+    check(completed == 1 && frames.extraAre(0), "получатель позван один раз, кадр ушёл сам");
 }
 
 /// Уход владельца: его токен отменён — стоящее ожидание кончается отменой на
@@ -191,11 +205,11 @@ void testOwnerGoneEndsTail() {
     tail.start();
     const size_t pagesBefore = flow.pageCount();
     ownerSource.cancel();
-    check(idle.parked() == 1 && frames.extra() == kWaitingTailFrames,
+    check(idle.parked() == 1 && frames.extraAre(kWaitingTailFrames),
           "отмена никого не будит: ожидание стоит до хода очереди");
 
     idle.wake();
-    check(idle.parked() == 0 && frames.extra() == 0, "ход очереди кончил кадр отменой");
+    check(idle.parked() == 0 && frames.extraAre(0), "ход очереди кончил кадр отменой");
     check(flow.needsTail() && flow.pageCount() == pagesBefore && completed == 0,
           "поток не тронут, получатель не позван");
 
@@ -203,12 +217,12 @@ void testOwnerGoneEndsTail() {
     // держатель его даже не спрашивает: кадр не рождается вовсе.
     const int callsBefore = idle.idleCalls();
     tail.start();
-    check(idle.idleCalls() == callsBefore && frames.extra() == 0,
+    check(idle.idleCalls() == callsBefore && frames.extraAre(0),
           "под отменённым владельцем кадр не заводится");
 
     tail.restart();
     tail.start();
-    check(idle.idleCalls() == callsBefore && frames.extra() == 0 && completed == 0,
+    check(idle.idleCalls() == callsBefore && frames.extraAre(0) && completed == 0,
           "и после перевёрстки: новый источник рождается отменённым");
 }
 
@@ -229,7 +243,7 @@ void testHolderGoneEndsTail() {
         auto tail = ChapterTail{flow, idle, ownerSource.token(), [&completed] { ++completed; }, failureIsAFault()};
         tail.start();
     }
-    check(idle.parked() == 0 && frames.extra() == 0, "кадр ушёл вместе с держателем, и его ожидание снято");
+    check(idle.parked() == 0 && frames.extraAre(0), "кадр ушёл вместе с держателем, и его ожидание снято");
     check(flow.needsTail() && completed == 0, "поток и получатель не тронуты");
 }
 
@@ -265,7 +279,7 @@ void testRestartFromReceiverGoesAnotherRound() {
 
     check(completed == 2 && flow.isComplete() && !flow.needsTail(),
           "из получателя досчёт пошёл на новый круг и досчитал другую главу");
-    check(idle.parked() == 0 && frames.extra() == 0, "кадр ушёл сам");
+    check(idle.parked() == 0 && frames.extraAre(0), "кадр ушёл сам");
 }
 
 /// Перевёрстка из получателя без нового start(): кадр, вернувшись из
@@ -296,13 +310,13 @@ void testRestartFromReceiverWithoutStart() {
     tail.start();
     wakeAll(idle);
     check(completed == 1 && flow.needsTail(), "получатель перевёрстал, другая глава ещё не досчитана");
-    check(idle.parked() == 0 && frames.extra() == 0, "без start() кадр кончился, вернувшись из получателя");
+    check(idle.parked() == 0 && frames.extraAre(0), "без start() кадр кончился, вернувшись из получателя");
 
     tail.start();
-    check(idle.parked() == 1 && frames.extra() == kWaitingTailFrames, "знаки опущены — start() заводит новый кадр");
+    check(idle.parked() == 1 && frames.extraAre(kWaitingTailFrames), "знаки опущены — start() заводит новый кадр");
 
     wakeAll(idle);
-    check(completed == 2 && flow.isComplete() && frames.extra() == 0, "новый кадр досчитал другую главу");
+    check(completed == 2 && flow.isComplete() && frames.extraAre(0), "новый кадр досчитал другую главу");
 }
 
 /// Перевёрстка из получателя сбоев (restart, затем start): тот же кадр идёт на
@@ -331,11 +345,11 @@ void testRestartFromFailureReceiverGoesAnotherRound() {
     tail.start();
     idle.wake(ParkingIdle::Woken::failure);
     check(failed == 1 && completed == 0, "сбой дошёл до получателя сбоев один раз");
-    check(idle.parked() == 1 && frames.extra() == kWaitingTailFrames,
+    check(idle.parked() == 1 && frames.extraAre(kWaitingTailFrames),
           "досчёт, попрошенный из получателя сбоев, — новый круг того же кадра: один кадр, одно ожидание");
 
     wakeAll(idle);
-    check(completed == 1 && flow.isComplete() && frames.extra() == 0, "кадр досчитал главу и ушёл");
+    check(completed == 1 && flow.isComplete() && frames.extraAre(0), "кадр досчитал главу и ушёл");
 }
 
 /// Сбой в цикле досчёта — ошибка программы, а не конец: кадр отдаёт его
@@ -359,15 +373,15 @@ void testLoopFailureLowersMark() {
     tail.start();
     idle.wake(ParkingIdle::Woken::failure);
     check(trap.message() == kIdleFailure, "сбой цикла дошёл до получателя сбоев сразу — тот самый");
-    check(idle.parked() == 0 && frames.extra() == 0 && completed == 0,
+    check(idle.parked() == 0 && frames.extraAre(0) && completed == 0,
           "кадр ушёл, получатель не позван");
 
     tail.start();
-    check(flow.needsTail() && idle.parked() == 1 && frames.extra() == kWaitingTailFrames,
+    check(flow.needsTail() && idle.parked() == 1 && frames.extraAre(kWaitingTailFrames),
           "знак опущен сбоем — start() заводит новый кадр без перевёрстки");
 
     wakeAll(idle);
-    check(flow.isComplete() && completed == 1 && frames.extra() == 0, "новый кадр досчитал главу");
+    check(flow.isComplete() && completed == 1 && frames.extraAre(0), "новый кадр досчитал главу");
 }
 
 /// Сбой получателя уходит из кадра сразу получателю сбоев, ничего не копя.
@@ -391,7 +405,7 @@ void testReceiverFailureGoesToHandler() {
     check(flow.isComplete(), "глава досчитана, получатель упал");
     check(trap.message() == kReceiverFailure,
           "сбой получателя дошёл до получателя сбоев сразу — тот самый");
-    check(idle.parked() == 0 && frames.extra() == 0, "кадр ушёл");
+    check(idle.parked() == 0 && frames.extraAre(0), "кадр ушёл");
 }
 
 }  // namespace
