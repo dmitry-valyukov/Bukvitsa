@@ -56,8 +56,8 @@ auto drawerLook(HorizontalAlignment side) {
         // Ящик — не страница: щелчок и колесо по его пустому месту здесь и
         // кончаются, иначе они всплыли бы к полосе, и та листала бы книгу под
         // открытой панелью и закрывала её правой кнопкой.
-        onPointerPressed = [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
-        onPointerWheelChanged = [](Object const&, PointerRoutedEventArgs& args) {
+        onPointerPressed += [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
+        onPointerWheelChanged += [](Object const&, PointerRoutedEventArgs& args) {
             args.handled(true);
         },
     };
@@ -194,7 +194,7 @@ void ReaderPanel::buildTree() {
         fontSize = 14,
         Margin{12, 12, 12, 0},
         Padding{12, 8},
-        onClick = method(&actions_, &Actions::showLibrary),
+        onClick += method(&actions_, &Actions::showLibrary),
     };
 
     // Вкладки. Открытую отмечает showTab() — заливкой, по кнопкам из
@@ -213,7 +213,7 @@ void ReaderPanel::buildTree() {
             fontSize = 14,
             Margin{0, 0, 6, 0},
             Padding{12, 6},
-            onClick = [this, tab = tab](Object const&, RoutedEventArgs&) { open(tab); },
+            onClick += [this, tab = tab](Object const&, RoutedEventArgs&) { open(tab); },
         };
         tabButtons_.push_back(button);
         strip.children().append(button);
@@ -228,7 +228,7 @@ void ReaderPanel::buildTree() {
         navigation_,
         drawerLook(HorizontalAlignment::Left),
         child = Grid {
-            rowDefinitions = u"auto,auto,*",
+            RowDefinitions<u"auto,auto,*">,
             shelf,
             strip,
             pages_,
@@ -248,7 +248,7 @@ void ReaderPanel::buildTree() {
         background = colors.transparent,
         navigation_,
         settings_,
-        onPointerPressed = method(this, &ReaderPanel::canvasPressed),
+        onPointerPressed += method(this, &ReaderPanel::canvasPressed),
     };
 
     showTab(Tab::Contents);
@@ -305,7 +305,7 @@ UIElement ReaderPanel::buildContents() {
                     Margin{std::min<float>(heading.level, 4) * 14.0f, 0, 0, 0},
                 };
             }},
-            onItemClick = method(this, &ReaderPanel::headingClicked),
+            onItemClick += method(this, &ReaderPanel::headingClicked),
         },
     };
 }
@@ -323,14 +323,14 @@ UIElement ReaderPanel::buildSearch() {
         placeholderText = u"Что искать",
         Margin{0, 0, 0, 8},
         text = Bind{search_.query},
-        onKeyDown = method(this, &ReaderPanel::searchKeyDown),
+        onKeyDown += method(this, &ReaderPanel::searchKeyDown),
     };
 
     // Находки — список, привязанный к находкам модели: новый поиск — один
     // сброс, и строятся только строки на экране, а не все двести; Enter и
     // стрелки по строкам даёт сам список.
     return Grid {
-        rowDefinitions = u"auto,auto,*",
+        RowDefinitions<u"auto,auto,*">,
         searchBox_,
         TextBlock{drawerNoteLook, row = 1, text = BindOutput{search_.status()}},
         ListView {
@@ -339,7 +339,7 @@ UIElement ReaderPanel::buildSearch() {
             itemsSource = BindOutput {search_.hits(), [](SearchHit const& hit) {
                 return TextBlock{tabRowTextLook, hit.context, automationName = hit.context};
             }},
-            onItemClick = method(this, &ReaderPanel::hitClicked),
+            onItemClick += method(this, &ReaderPanel::hitClicked),
         },
     };
 }
@@ -348,7 +348,7 @@ UIElement ReaderPanel::buildBookmarks() {
     using namespace wxl::dsl;
 
     return Grid {
-        rowDefinitions = u"auto,auto,*",
+        RowDefinitions<u"auto,auto,*">,
         Button {
             drawerButtonLook,
             row = 0,
@@ -356,7 +356,7 @@ UIElement ReaderPanel::buildBookmarks() {
             hAlign.stretch,
             Margin{0, 0, 0, 8},
             background = kChromeActive,
-            onClick = method(&actions_, &Actions::toggleBookmark),
+            onClick += method(&actions_, &Actions::toggleBookmark),
         },
         TextBlock {
             drawerNoteLook,
@@ -373,7 +373,7 @@ UIElement ReaderPanel::buildBookmarks() {
                 zstring_view const said = mark.hint.empty() ? zstring_view{u"Закладка"} : zstring_view{mark.hint};
                 return TextBlock{tabRowTextLook, said, automationName = said};
             }},
-            onItemClick = method(this, &ReaderPanel::bookmarkClicked),
+            onItemClick += method(this, &ReaderPanel::bookmarkClicked),
         },
     };
 }
@@ -433,7 +433,7 @@ UIElement ReaderPanel::buildSettings() {
                 itemsSource = BindOutput {themes_.choices(), [&actions = actions_](ThemeChoice const& choice) {
                     return Grid {
                         automationName = choice.name,
-                        columnDefinitions = u"*,auto,auto",
+                        ColumnDefinitions<u"*,auto,auto">,
                         TextBlock {
                             choice.name,
                             column = 0,
@@ -449,7 +449,7 @@ UIElement ReaderPanel::buildSettings() {
                             toolTip = core::format(u"Настроить подложку «{}»", choice.name),
                             visibility = choice.skin ? Visibility::Visible : Visibility::Collapsed,
                             Margin{6, 0, 0, 0},
-                            onClick = [&actions, skinName = choice.name] { actions.editSkin(skinName); },
+                            onClick += [&actions, skinName = choice.name] { actions.editSkin(skinName); },
                         },
                         Button {
                             glyphButtonLook,
@@ -458,7 +458,7 @@ UIElement ReaderPanel::buildSettings() {
                             toolTip = core::format(u"Удалить обложку «{}»", choice.name),
                             visibility = choice.removable ? Visibility::Visible : Visibility::Collapsed,
                             Margin{6, 0, 0, 0},
-                            onClick = [&actions, skinName = choice.name] { actions.deleteSkin(skinName); },
+                            onClick += [&actions, skinName = choice.name] { actions.deleteSkin(skinName); },
                         },
                     };
                 }},
@@ -474,7 +474,7 @@ UIElement ReaderPanel::buildSettings() {
                 fontSize = 13,
                 Margin{0, 6, 0, 0},
                 Padding{12, 6},
-                onClick = method(&actions_, &Actions::addSkin),
+                onClick += method(&actions_, &Actions::addSkin),
             },
 
             setting(u"Кегль", kFontSizeMin, kFontSizeMax, kFontSizeStep, prefs_.fontSize),

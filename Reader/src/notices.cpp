@@ -37,8 +37,8 @@ void writeOut(const Notice& notice) {
 }  // namespace
 
 Notices::Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme,
-                 wxl::async::cancellation_token stop)
-    : window_(std::move(window)), screenTheme_(screenTheme), dialogStop_(std::move(stop)) {}
+                 wxl::async::cancellation_token token)
+    : window_(std::move(window)), screenTheme_(screenTheme), dialogStop_(std::move(token)) {}
 
 Notices::~Notices() {
     // Не вышедшие из очереди — сообщения, которых читатель так и не увидел:
@@ -113,7 +113,7 @@ void Notices::post(Notice notice) {
         content = lines,
         closeButtonText = u"Закрыть",
         defaultButton = ContentDialogButton::Close,
-        onClosed = [this](ContentDialog const&) {
+        onClosed += [this](ContentDialog const&) {
             lines_ = nullptr;
             lastHeadline_.clear();
         },

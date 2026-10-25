@@ -15,7 +15,7 @@ namespace bukvitsa::reader::detail {
 /// между полосами, без опроса. Тело может пережить ожидание: то, на что
 /// ссылается `afterBand`, проба держит, пока сирота не вернётся.
 wxl::async::task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide,
-                                                  wxl::async::cancellation_token stop,
+                                                  wxl::async::cancellation_token token,
                                                   std::function<void(uint32_t band)> afterBand);
 
 }  // namespace bukvitsa::reader::detail

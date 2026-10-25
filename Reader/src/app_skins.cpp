@@ -135,14 +135,14 @@ void App::endWizardSession() {
 /// раскодировали бы его дважды. Не годится — читателю говорится, что именно
 /// не так: не картинка или картинка больше бюджета памяти — с её размером из
 /// заголовка, чтобы было видно, во что её уменьшить.
-wxl::async::task<DecodedPixels> App::checkImage(std::filesystem::path image, cancellation_token stop) {
+wxl::async::task<DecodedPixels> App::checkImage(std::filesystem::path image, cancellation_token token) {
     try {
-        DecodedPicture probed = co_await ws_.probeImageAsync(image, stop);
+        DecodedPicture probed = co_await ws_.probeImageAsync(image, token);
 
         // Снимок, раскодированный раньше отмены, — ответ операции, но сеанс,
         // который его ждал, кончен: ни слов читателю, ни снимка дороге — она
         // кончается здесь же, отменой.
-        stop.throw_if_canceled();
+        token.throw_if_canceled();
 
         const PictureVerdict& verdict = probed.verdict;
         switch (verdict.refusal) {
@@ -287,7 +287,7 @@ wxl::async::task<> App::runDeleteSkin(u16_text name) {
             primaryButtonText = u"Удалить",
             closeButtonText = u"Отмена",
             defaultButton = ContentDialogButton::Close,
-            onClosed = method(&notices_, &Notices::flush),
+            onClosed += method(&notices_, &Notices::flush),
         };
         if (co_await dialog.showAsync(stop.token()) != ContentDialogResult::Primary) co_return;
     }
@@ -426,13 +426,13 @@ void App::cancelBackdropLoad() {
 /// шумом, а молчание прятало бы сбой. Пока читали и раскодировали, могли
 /// захотеть другой — тогда загрузку этого отменил владелец
 /// (cancelBackdropLoad): путь подложки меняется только вместе с отменой.
-wxl::async::task<> App::loadBackdrop(std::filesystem::path file, cancellation_token stop) {
+wxl::async::task<> App::loadBackdrop(std::filesystem::path file, cancellation_token token) {
     try {
-        DecodedPicture decoded = co_await ws_.probeImageAsync(file, stop);
+        DecodedPicture decoded = co_await ws_.probeImageAsync(file, token);
 
         // Раскодированное раньше отмены — ответ операции, но снимок, ставший
         // ненужным (другой путь, выход), полосе не отдаётся.
-        stop.throw_if_canceled();
+        token.throw_if_canceled();
 
         const PictureRefusal refusal = decoded.verdict.refusal;
         view_.setBackdrop(std::move(decoded.pixels));

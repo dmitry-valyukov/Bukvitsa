@@ -83,9 +83,9 @@ NotePopup::NotePopup(const Compositor& compositor)
         // сюда доходит, только когда прокрутке листать нечего — сноска
         // короткая или докручена, — и у полосы оно перелистнуло бы страницу,
         // спрятав сноску, а с Ctrl сменило бы кегль.
-        onPointerPressed = [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
-        onPointerReleased = [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
-        onPointerWheelChanged = [](Object const&, PointerRoutedEventArgs& args) {
+        onPointerPressed += [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
+        onPointerReleased += [](Object const&, PointerRoutedEventArgs& args) { args.handled(true); },
+        onPointerWheelChanged += [](Object const&, PointerRoutedEventArgs& args) {
             args.handled(true);
         },
 
@@ -93,7 +93,7 @@ NotePopup::NotePopup(const Compositor& compositor)
             horizontalScrollBarVisibility = ScrollBarVisibility::Disabled,
             verticalScrollBarVisibility = ScrollBarVisibility::Auto,
             verticalOffset = Bind{scrollTop_},
-            onViewChanging = method(this, &NotePopup::viewChanging),
+            onViewChanging += method(this, &NotePopup::viewChanging),
             content = paper_,
         },
     };

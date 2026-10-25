@@ -41,9 +41,9 @@ public:
     /// @param queue очередь потока, на которой тикает таймер и просыпается цикл.
     /// @param quiet пауза после последней перемены.
     /// @param parent токен владельца: его отмена — отмена и этого цикла.
-    /// @param start `start(timer, stop)` — корутина владельца `task<>`: ждёт
+    /// @param start `start(timer, token)` — корутина владельца `task<>`: ждёт
     ///        `timer`, пишет и выходит после записи, начатой под отменённым
-    ///        `stop`.
+    ///        `token`.
     template <class Start>
     DeferredWrite(wxl::DispatcherQueue const& queue, std::chrono::milliseconds quiet,
                   wxl::async::cancellation_token parent, Start start)

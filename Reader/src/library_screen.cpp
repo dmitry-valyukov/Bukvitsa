@@ -100,12 +100,12 @@ LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& ca
         requestedTheme = ElementTheme::Light,
 
         background = kPaper,
-        rowDefinitions = u"auto,*",
+        RowDefinitions<u"auto,*">,
 
         Grid {
             row = 0,
             Margin{40, 32, 40, 8},
-            columnDefinitions = u"*,auto,auto,auto",
+            ColumnDefinitions<u"*,auto,auto,auto">,
             columnSpacing = 12,
 
             TextBlock {
@@ -129,12 +129,12 @@ LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& ca
             Button {
                 u"Добавить книгу",
                 column = 2,
-                onClick = method(&actions_, &Actions::chooseBook),
+                onClick += method(&actions_, &Actions::chooseBook),
             },
             Button {
                 u"Назад",
                 column = 3,
-                onClick = method(&actions_, &Actions::back),
+                onClick += method(&actions_, &Actions::back),
             },
         },
 
@@ -156,7 +156,7 @@ LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& ca
                     // повторяла бы то, что и так на карточке, — поэтому имя
                     // отдельно, не toolTip.
                     automationName = book.title,
-                    columnDefinitions = u"auto,*",
+                    ColumnDefinitions<u"auto,*">,
                     columnSpacing = 16,
                     Margin{12},
                     // Пометка «не найдена» — поле карточки, как и прогресс:
@@ -209,7 +209,7 @@ LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& ca
                     },
                 };
             }},
-            onItemClick = method(this, &LibraryScreen::cardClicked),
+            onItemClick += method(this, &LibraryScreen::cardClicked),
         },
 
         TextBlock {
@@ -221,7 +221,7 @@ LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& ca
             visibility = BindOutput{cards.count(), shownWhenEmpty},
         },
 
-        onLoaded = method(this, &LibraryScreen::loaded),
+        onLoaded += method(this, &LibraryScreen::loaded),
     };
 }
 

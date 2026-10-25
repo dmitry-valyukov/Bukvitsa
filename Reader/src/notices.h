@@ -42,10 +42,10 @@ class Notices {
 public:
     /// @param screenTheme тема показанного экрана: диалог не в его дереве и
     ///        сам её не наследует. Поле владельца, живёт дольше сообщений.
-    /// @param stop токен общего источника приложения: от него — свой
+    /// @param token токен общего источника приложения: от него — свой
     ///        источник сообщений, и его отмена закрывает открытое.
     Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme,
-            wxl::async::cancellation_token stop);
+            wxl::async::cancellation_token token);
 
     ~Notices();
 

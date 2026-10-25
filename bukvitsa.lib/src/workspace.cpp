@@ -482,7 +482,7 @@ std::filesystem::path Workspace::skinImagePath(const Skin& skin) const {
 
 // ---- запуск ---------------------------------------------------------------
 
-task<Started> Workspace::start(cancellation_token stop) {
+task<Started> Workspace::start(cancellation_token token) {
     Started started;
 
     // Три файла по одной дороге: нет — первый запуск, молча; не читается —
@@ -559,22 +559,22 @@ task<Started> Workspace::start(cancellation_token stop) {
         co_await keepBrokenCopy(libraryPath(), std::move(libraryXmlText));
     }
 
-    started.lastBook = co_await lastBookPath(std::move(stop));
+    started.lastBook = co_await lastBookPath(std::move(token));
 
     co_return started;
 }
 
 // ---- книги ----------------------------------------------------------------
 
-task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_token stop) {
+task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_token token) {
     // Не const: байты уходят в документ перемещением. Разбор — здесь, на потоке
     // вызова: память разбора берётся из STA-пула, а он чужого потока не терпит.
-    std::string bytes = co_await async_file::read_all(poolPath(path), stop);
+    std::string bytes = co_await async_file::read_all(poolPath(path), token);
 
     // Чтение, успевшее кончиться, отвечает байтами, даже если просьба пришла,
     // пока они ехали обратно: отмену после ответа сценарий спрашивает сам. Разбор
     // дорогой, а книгу уже не ждут.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
     const uint64_t fileSize = bytes.size();
 
@@ -595,24 +595,24 @@ task<LoadedBook> Workspace::readBook(std::filesystem::path path, cancellation_to
     co_return LoadedBook{std::move(book), std::move(description), std::move(cover), fileSize};
 }
 
-task<Opened> Workspace::openBook(const BookEntry& entry, cancellation_token stop) {
+task<Opened> Workspace::openBook(const BookEntry& entry, cancellation_token token) {
     // Под отменённым токеном открытие не начинается. Дальше токен слушает
     // только чтение состояния — само чтение и вопрос сразу за ним, — и книга,
     // чьё открытие отменили, на полосу не встаёт, а настройки на неё не
     // указывают.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
     // Состояние — отдельной строкой, а не внутри фигурной инициализации:
     // `co_await` в списке инициализаторов агрегата роняет бэкенд MSVC 14.51
     // (C1001).
-    BookState state = co_await readState(entry.guid, stop);
+    BookState state = co_await readState(entry.guid, token);
 
     // Чтение, успевшее кончиться, отвечает состоянием и под отменой, пришедшей
     // на обратном пути, — ответ, успевший раньше отмены, — ответ, — но тот, кто
     // отменил, открытия больше не ждёт, что бы чтение ни ответило: дальше книга
     // встала бы на полосу. Тем же правилом токен спрашивают сразу за чтением
     // readBook и saveSkin.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
     // Настройки, которые на книгу указывают, — в памяти и только после
     // последнего ожидания: от них до смены книги у вызывающего ожиданий нет,
@@ -628,11 +628,11 @@ task<Opened> Workspace::openBook(const BookEntry& entry, cancellation_token stop
     co_return opened;
 }
 
-task<ScanReport> Workspace::scanFolder(std::filesystem::path folder, cancellation_token stop) {
+task<ScanReport> Workspace::scanFolder(std::filesystem::path folder, cancellation_token token) {
     std::vector<async_directory::listed_entry> listing;
 
     try {
-        listing = co_await async_directory::list(poolPath(folder / L"*.fb3"), stop);
+        listing = co_await async_directory::list(poolPath(folder / L"*.fb3"), token);
     } catch (const last_error& failure) {
         // Каталога нет — нет и его книг: съёмный диск не вставлен, каталог
         // унесли или переименовали. Пустой листинг помечает все его записи, а
@@ -644,31 +644,31 @@ task<ScanReport> Workspace::scanFolder(std::filesystem::path folder, cancellatio
 
     // Листинг, успевший кончиться, отвечает и под отменой, пришедшей на
     // обратном пути; обход спрашивает её сам: дальше пометки меняют реестр.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
-    co_return co_await scanListing(std::move(folder), std::move(listing), std::move(stop));
+    co_return co_await scanListing(std::move(folder), std::move(listing), std::move(token));
 }
 
-task<ScanReport> Workspace::addFolder(std::filesystem::path folder, cancellation_token stop) {
+task<ScanReport> Workspace::addFolder(std::filesystem::path folder, cancellation_token token) {
     std::vector<async_directory::listed_entry> listing =
-        co_await async_directory::list(poolPath(folder / L"*.fb3"), stop);
+        co_await async_directory::list(poolPath(folder / L"*.fb3"), token);
 
     // Листинг, успевший кончиться, отвечает и под отменой; её добавление
     // спрашивает само, до первой перемены реестра — как у перепроверки.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
     // Наблюдаемым каталог становится, когда перечислился: каталог, которого не
     // прочесть, реестр не запоминает — каждый запуск спотыкался бы о него
     // снова.
     library.addFolder(folder);
 
-    co_return co_await scanListing(std::move(folder), std::move(listing), std::move(stop));
+    co_return co_await scanListing(std::move(folder), std::move(listing), std::move(token));
 }
 
-task<ScanReport> Workspace::rescanFolders(cancellation_token stop) {
+task<ScanReport> Workspace::rescanFolders(cancellation_token token) {
     // Под отменённым токеном перепроверка не начинается — и без каталогов,
     // где ждать нечего.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
     ScanReport total;
 
@@ -679,7 +679,7 @@ task<ScanReport> Workspace::rescanFolders(cancellation_token stop) {
 
     for (const std::filesystem::path& folder : folders) {
         try {
-            ScanReport part = co_await scanFolder(folder, stop);
+            ScanReport part = co_await scanFolder(folder, token);
             addUp(total, std::move(part));
         } catch (const last_error& failure) {
             // Каталог есть, но не перечислился: сеть не отвечает, доступа нет.
@@ -694,7 +694,7 @@ task<ScanReport> Workspace::rescanFolders(cancellation_token stop) {
 
 task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
                                         std::vector<async_directory::listed_entry> listing,
-                                        cancellation_token stop) {
+                                        cancellation_token token) {
     ScanReport report;
 
     // Книги каталога — путями, с размером и временем правки: путь сводит
@@ -746,7 +746,7 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
         std::string bytes;
 
         try {
-            bytes = co_await async_file::read_all(poolPath(book.path), stop);
+            bytes = co_await async_file::read_all(poolPath(book.path), token);
         } catch (const last_error& failure) {
             // Файлы, которые не прочитались, называются вызывающему разом в
             // конце: каталог с сотней книг не должен спотыкаться об один файл,
@@ -759,7 +759,7 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
         // на обратном пути; её обход спрашивает сам: разбор дорогой, а книга,
         // начатая после отмены, встала бы в очередь и в реестр в памяти мимо
         // его последней записи — ту вызывающий делает, когда отменяет.
-        stop.throw_if_canceled();
+        token.throw_if_canceled();
 
         // Размер — прочитанных байт: запись описывает то, что разобрано. Время
         // — из листинга, то есть не позже чтения: файл, сменившийся между ними,
@@ -821,29 +821,29 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
     co_return report;
 }
 
-task<std::filesystem::path> Workspace::lastBookPath(cancellation_token stop) {
+task<std::filesystem::path> Workspace::lastBookPath(cancellation_token token) {
     // Путь в настройках — копия того, что в реестре, ради быстрой дороги;
     // протух — спрашиваем реестр по guid.
     std::filesystem::path last = settings.lastBookPath;
 
-    if (!last.empty() && !co_await async_file::exists(poolPath(last), stop)) last.clear();
+    if (!last.empty() && !co_await async_file::exists(poolPath(last), token)) last.clear();
 
     if (last.empty()) {
         if (const BookEntry* entry = library.find(settings.lastBookGuid)) {
             last = entry->path;
 
-            if (!co_await async_file::exists(poolPath(last), stop)) last.clear();
+            if (!co_await async_file::exists(poolPath(last), token)) last.clear();
         }
     }
 
     co_return last;
 }
 
-task<BookState> Workspace::readState(u16_view guid, cancellation_token stop) {
+task<BookState> Workspace::readState(u16_view guid, cancellation_token token) {
     // Состояния у книги может и не быть: её только что добавили, или место
     // чтения ещё не записывалось. Это не ошибка, а чистый лист.
     try {
-        co_return parseBookState(co_await async_file::read_all(poolPath(statePath(guid)), std::move(stop)));
+        co_return parseBookState(co_await async_file::read_all(poolPath(statePath(guid)), std::move(token)));
     } catch (const last_error& failure) {
         if (!absent(failure)) throw;
         co_return BookState{};
@@ -870,19 +870,19 @@ task<> Workspace::saveLibrary() {
 
 // ---- обложки читателя -----------------------------------------------------
 
-task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_token stop) {
+task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_token token) {
     // Под отменённым токеном сохранение не начинается — и у правки, где читать
     // нечего. Токен слушает только чтение снимка и спрашивается сразу за ним, до
     // записей: копия снимка без строки реестра — файл, на который никто не
     // ссылается, и с первой записи сохранение доходит до конца.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
     if (skin.image.empty()) {
-        std::string bytes = co_await async_file::read_all(poolPath(photo), stop);
+        std::string bytes = co_await async_file::read_all(poolPath(photo), token);
 
         // Чтение, успевшее кончиться, отвечает снимком и под отменой, пришедшей
         // на обратном пути; её сценарий спрашивает сам.
-        stop.throw_if_canceled();
+        token.throw_if_canceled();
 
         // Расширение — от файла снимка, то есть от файловой системы: имя файла
         // Windows не обязано быть правильным UTF-16, потому чинится.
@@ -924,11 +924,11 @@ task<> Workspace::saveSkin(Skin skin, std::filesystem::path photo, cancellation_
     }
 }
 
-task<> Workspace::deleteSkin(u16_view name, cancellation_token stop) {
+task<> Workspace::deleteSkin(u16_view name, cancellation_token token) {
     // Под отменённым токеном удаление не начинается: реестр в памяти не тронут.
     // Дальше токен не спрашивается — чтений нет, а строка, убранная из реестра
     // в памяти, должна уйти и с диска: иначе следующий запуск вернул бы её.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
     const std::vector<Skin>& list = skins.list();
     const auto found = std::find_if(list.begin(), list.end(), [name](const Skin& skin) { return skin.name == name; });
@@ -950,14 +950,14 @@ task<> Workspace::deleteSkin(u16_view name, cancellation_token stop) {
     }
 }
 
-task<DecodedPicture> Workspace::probeImageAsync(std::filesystem::path image, cancellation_token stop) {
+task<DecodedPicture> Workspace::probeImageAsync(std::filesystem::path image, cancellation_token token) {
     // Не const: байты уходят телу раскодирования перемещением.
-    std::string bytes = co_await async_file::read_all(poolPath(image), stop);
+    std::string bytes = co_await async_file::read_all(poolPath(image), token);
 
     // Чтение, успевшее кончиться раньше просьбы, отвечает байтами; под
     // отменённым токеном раскодирование не начинается и кончается отменой —
     // своего вопроса здесь не нужно.
-    co_return co_await decodeImageAsync(std::move(bytes), kMaxPictureSide, std::move(stop));
+    co_return co_await decodeImageAsync(std::move(bytes), kMaxPictureSide, std::move(token));
 }
 
 // ---- общее ----------------------------------------------------------------

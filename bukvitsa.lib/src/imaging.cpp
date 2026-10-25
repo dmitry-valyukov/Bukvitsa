@@ -300,7 +300,7 @@ namespace {
 /// уходят одни пиксели. Ожидание стоит под токеном вызывающего: отменённое,
 /// оно кончается отменой сразу, а тело сиротеет — доживает в пуле одно до
 /// ближайшей полосы, и пиксели, которых никто не ждёт, отпускаются там же.
-task<DecodedPicture> decodeInPool(std::string bytes, uint32_t maxSide, cancellation_token stop,
+task<DecodedPicture> decodeInPool(std::string bytes, uint32_t maxSide, cancellation_token token,
                                   std::function<void(uint32_t)> afterBand) {
     requireSideLimit(maxSide);
 
@@ -312,21 +312,21 @@ task<DecodedPicture> decodeInPool(std::string bytes, uint32_t maxSide, cancellat
         return decodeWith(wic.Get(), bytes, maxSide, &state, afterBand);
     };
 
-    return sta_loop::async_call(orphanable, std::move(decoding), std::move(stop));
+    return sta_loop::async_call(orphanable, std::move(decoding), std::move(token));
 }
 
 }  // namespace
 
-task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide, cancellation_token stop) {
-    return decodeInPool(std::move(bytes), maxSide, std::move(stop), {});
+task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide, cancellation_token token) {
+    return decodeInPool(std::move(bytes), maxSide, std::move(token), {});
 }
 
 // Ступень проб: объявлена в заголовке проб библиотеки, читалке её не видно.
 namespace detail {
 
-task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide, cancellation_token stop,
+task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide, cancellation_token token,
                                       std::function<void(uint32_t band)> afterBand) {
-    return decodeInPool(std::move(bytes), maxSide, std::move(stop), std::move(afterBand));
+    return decodeInPool(std::move(bytes), maxSide, std::move(token), std::move(afterBand));
 }
 
 }  // namespace detail

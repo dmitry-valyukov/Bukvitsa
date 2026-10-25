@@ -298,10 +298,10 @@ wxl::async::task<> App::open(std::filesystem::path path) {
 
 /// Вторая половина открытия — общая для открытия и продолжения чтения с
 /// предзагрузки: книга прочитана и разобрана, дальше — рабочее место и полоса.
-wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
+wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token token) {
     // Под отменённым токеном открытие не начинается: книга не ставится и в
     // очередь регистраций.
-    stop.throw_if_canceled();
+    token.throw_if_canceled();
 
     // Регистрация — шагом очереди рабочего места: та же книга, которую в этот
     // миг регистрирует перепроверка каталога, второй раз не ставится, и
@@ -327,7 +327,7 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
     // кончился шаг раньше или его дождались, источник один, — а ответ
     // отбрасывается явно.
     if (!queued->done()) {
-        static_cast<void>(co_await on_event(queued->ended(), stop));
+        static_cast<void>(co_await on_event(queued->ended(), token));
     }
     const RegistrationOutcome& outcome = queued->outcome();
     if (!outcome) std::rethrow_exception(outcome.error());
@@ -341,7 +341,7 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token stop) {
     // панели (панель идёт за списками сама), — и сигналы циклам записи.
     // Настройки уже укажут на новую книгу, а на полосе пока прежняя, и её
     // место пишется под guid её мест — их открытие не трогает.
-    Opened opened = co_await ws_.openBook(registered.entry, std::move(stop));
+    Opened opened = co_await ws_.openBook(registered.entry, std::move(token));
 
     // Отсюда и до конца — ни одного ожидания: книга сменяется одним шагом.
     //

@@ -32,7 +32,7 @@
 // wxl.core: заголовок, включённый после импорта, MSVC уже не принимает.
 #include "keys.h"
 
-#include "ApplicationFolder.h"
+#include "Application.h"
 #include "app.h"
 
 // Импорт последним, после всех обычных заголовков.
@@ -71,7 +71,7 @@ constexpr auto kPositionQuiet = 1500ms;
 
 /// Задник окна под заставкой и полкой.
 std::filesystem::path splashImage() {
-    return applicationFolder() / L"Assets/splash-screen-1k.png";
+    return Application::folder() / L"Assets/splash-screen-1k.png";
 }
 
 }  // namespace
@@ -97,7 +97,7 @@ App::App()
           // Закрытие отменяет сценарии и пишет отложенное, пока окно ещё есть:
           // Teardown приходит уже без него, и места окна было бы не у кого
           // спросить.
-          dsl::onClosed = method(this, &App::close),
+          dsl::onClosed += method(this, &App::close),
       }},
       ws_{standardDataDirectory(), stop_.token()},
       notices_{window_, screenTheme_, stop_.token()},
@@ -109,16 +109,16 @@ App::App()
       panel_{window_.chromeCompositor(), presenter_, view_.root(), ws_.settings, places_, themes_,
              search_, *this},
       stateWrite_{window_.dispatcherQueue(), kPositionQuiet, stop_.token(),
-                  [this](WaitableTimer& timer, cancellation_token stop) {
-                      return writeState(timer, std::move(stop));
+                  [this](WaitableTimer& timer, cancellation_token token) {
+                      return writeState(timer, std::move(token));
                   }},
       settingsWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
-                     [this](WaitableTimer& timer, cancellation_token stop) {
-                         return writeSettings(timer, std::move(stop));
+                     [this](WaitableTimer& timer, cancellation_token token) {
+                         return writeSettings(timer, std::move(token));
                      }},
       libraryWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
-                    [this](WaitableTimer& timer, cancellation_token stop) {
-                        return writeLibrary(timer, std::move(stop));
+                    [this](WaitableTimer& timer, cancellation_token token) {
+                        return writeLibrary(timer, std::move(token));
                     }},
       splash_{window_.dispatcherQueue().createTimer()},
       // Место чтения — отложенно, как и место окна: перелистывание — самое
@@ -267,7 +267,7 @@ wxl::async::task<> App::runStart() {
     // оставили. Размер по умолчанию выше — перемена наша, а не читателя:
     // место, снятое с неё, затёрло бы в настройках запомненное прежде, чем
     // его поставят.
-    geometryWatch_.attach(window_, *this);
+    geometryWatch_ = std::make_unique<GeometryWatch>(window_, *this);
 
     // Место, где окно встало, — в настройки сразу, как всякая перемена: окно
     // могло подогнаться под сегодняшние мониторы, а испорченный файл
@@ -417,7 +417,7 @@ void App::revealStart() {
 /// то, что уже записано. Пишется под guid книги на полосе — его знают её
 /// места (`BookPlaces::guid`), — а не последней книги из настроек: те при
 /// открытии меняются раньше полосы.
-task<> App::writeState(WaitableTimer& timer, cancellation_token stop) {
+task<> App::writeState(WaitableTimer& timer, cancellation_token token) {
     for (;;) {
         co_await timer;
 
@@ -425,7 +425,7 @@ task<> App::writeState(WaitableTimer& timer, cancellation_token stop) {
         // записи — ещё один круг: перемена или «сейчас», заставшие запись,
         // иначе не записались бы вовсе, а под отменённым токеном ожидание не
         // приостанавливается.
-        bool const last = stop.is_canceled();
+        bool const last = token.is_canceled();
 
         if (presenter_.isOpen()) {
             // Путь — для слов читателю, и снят до записи: пока она идёт, на
@@ -446,12 +446,12 @@ task<> App::writeState(WaitableTimer& timer, cancellation_token stop) {
 
 /// Настройки целиком: вид, тема, место окна. Текст рабочее место собирает в
 /// момент вызова, до ожидания, — на диск уходит то, что в полях к этому часу.
-task<> App::writeSettings(WaitableTimer& timer, cancellation_token stop) {
+task<> App::writeSettings(WaitableTimer& timer, cancellation_token token) {
     for (;;) {
         co_await timer;
 
         // Отмена посреди записи — ещё один круг, как у места чтения.
-        bool const last = stop.is_canceled();
+        bool const last = token.is_canceled();
 
         try {
             co_await ws_.saveSettings();
@@ -466,12 +466,12 @@ task<> App::writeSettings(WaitableTimer& timer, cancellation_token stop) {
 /// Реестр книг целиком. Текст рабочее место собирает в момент вызова, до
 /// ожидания: «сейчас» будит ждущий цикл внутри своего вызова, и на диск уходит
 /// реестр этого мига.
-task<> App::writeLibrary(WaitableTimer& timer, cancellation_token stop) {
+task<> App::writeLibrary(WaitableTimer& timer, cancellation_token token) {
     for (;;) {
         co_await timer;
 
         // Отмена посреди записи — ещё один круг, как у места чтения.
-        bool const last = stop.is_canceled();
+        bool const last = token.is_canceled();
 
         try {
             co_await ws_.saveLibrary();
@@ -489,13 +489,15 @@ task<> App::writeLibrary(WaitableTimer& timer, cancellation_token stop) {
 /// остаётся одна запись на диск — с паузой: ползунок шлёт перемену на каждый
 /// сдвиг, а файл переписывается целиком.
 void App::watchSettings() {
-    Settings& settings = ws_.settings;
-    fontSizeWatch_.attach(settings.fontSize, *this);
-    lineHeightWatch_.attach(settings.lineHeight, *this);
-    marginWatch_.attach(settings.margin, *this);
-    continueReadingWatch_.attach(settings.continueReading, *this);
-    animateTurnsWatch_.attach(settings.animateTurns, *this);
+    settingsWatches_ = std::make_unique<SettingsWatches>(ws_.settings, *this);
 }
+
+App::SettingsWatches::SettingsWatches(Settings& settings, App& app)
+    : fontSize{settings.fontSize, app},
+      lineHeight{settings.lineHeight, app},
+      margin{settings.margin, app},
+      continueReading{settings.continueReading, app},
+      animateTurns{settings.animateTurns, app} {}
 
 /// Место отдаётся строкой WinRT; к нам она приходит чужим текстом и
 /// проверенным становится так же, как любой другой чужой. Снимается оно в миг

@@ -996,14 +996,14 @@ Registered registerFrom(Workspace& ws, const fb3::Document& document, const std:
 /// приостановления корутины: так её и зовут — сверху, не из петли. Reader ждёт
 /// его ожиданием wxl.ui под токеном сценария (`on_event`), и вне Windows это
 /// ожидание не проверяется.
-task<Opened> openIn(Workspace& ws, const LoadedBook& loaded, cancellation_token stop) {
-    stop.throw_if_canceled();
+task<Opened> openIn(Workspace& ws, const LoadedBook& loaded, cancellation_token token) {
+    token.throw_if_canceled();
 
     const Registered registered =
         endOf(ws.queueRegistration(loaded.description, loaded.book->characterCount(), loaded.cover,
                                    BookFile{.path = loaded.book->path(), .size = loaded.fileSize}));
 
-    Opened opened = co_await ws.openBook(registered.entry, std::move(stop));
+    Opened opened = co_await ws.openBook(registered.entry, std::move(token));
     co_return opened;
 }
 
@@ -1021,11 +1021,11 @@ struct Scanned : ScanReport {
 
 Scanned scanned(Workspace& ws, task<ScanReport> work) {
     Scanned result;
-    const cookie_t registeredWatch = ws.bookRegistered().on_change([&result](const Registered& registered) noexcept {
+    event_token registeredWatch = ws.bookRegistered().on_change([&result](const Registered& registered) noexcept {
         ++result.registered;
         if (registered.isNew) ++result.added;
     });
-    const cookie_t refusedWatch = ws.registrationRefused().on_change(
+    event_token refusedWatch = ws.registrationRefused().on_change(
         [&result](const std::wstring& line) noexcept { result.refused.push_back(line); });
     const auto unwatch = [&] {
         ws.bookRegistered().remove_change(registeredWatch);
@@ -1726,7 +1726,7 @@ void testWorkspaceAddsFolder() {
 
     // Полка слышит обход сама: карточка за карточкой, по мере разбора.
     std::vector<list_change> heard;
-    const cookie_t watch = ws.library.cards().on_change(
+    event_token watch = ws.library.cards().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); });
 
     const Scanned first = scanned(ws, ws.addFolder(folder, never));
@@ -1882,7 +1882,7 @@ void testWorkspaceRescansFolders() {
     std::filesystem::last_write_time(cover, aged);
 
     std::vector<list_change> heard;
-    const cookie_t watch = ws.library.cards().on_change(
+    event_token watch = ws.library.cards().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); });
 
     const Scanned same = scanned(ws, ws.rescanFolders(never));
@@ -1978,7 +1978,7 @@ void testWorkspaceCoverBeforeCard() {
 
     uint32_t heard = 0;
     uint32_t ready = 0;
-    const cookie_t watch = ws.library.cards().on_change([&](const list_change& change) noexcept {
+    event_token watch = ws.library.cards().on_change([&](const list_change& change) noexcept {
         if (change.kind != list_change::inserted && change.kind != list_change::replaced) return;
 
         const BookEntry& entry = ws.library.cards()[change.at]->entry;
@@ -2142,7 +2142,7 @@ void testWorkspaceRescanTellsReplacedBook() {
     cardAt(ws.library, book)->showState(read);
 
     std::vector<list_change> heard;
-    const cookie_t watch = ws.library.cards().on_change(
+    event_token watch = ws.library.cards().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); });
 
     std::filesystem::copy_file(kThirdBook, book, std::filesystem::copy_options::overwrite_existing);
@@ -2609,22 +2609,22 @@ void testWorkspaceReadsStopOnRequest() {
 
     cancellation_source source;
     source.cancel();
-    const cancellation_token stop = source.token();
+    const cancellation_token token = source.token();
 
     const std::filesystem::path missing = box.root / L"missing.fb3";
 
-    check(canceled(ws.readBook(missing, stop)), "книга: не начинается — отмена, а не «файла нет»");
-    check(canceled(ws.probeImageAsync(missing, stop)), "снимок: не начинается");
-    check(canceled(ws.addFolder(box.root / L"missing", stop)), "каталог: не начинается — отмена, а не «нет каталога»");
-    check(canceled(ws.scanFolder(box.root / L"missing", stop)),
+    check(canceled(ws.readBook(missing, token)), "книга: не начинается — отмена, а не «файла нет»");
+    check(canceled(ws.probeImageAsync(missing, token)), "снимок: не начинается");
+    check(canceled(ws.addFolder(box.root / L"missing", token)), "каталог: не начинается — отмена, а не «нет каталога»");
+    check(canceled(ws.scanFolder(box.root / L"missing", token)),
           "перепроверка каталога: не начинается — отмена, а не «каталога нет»");
-    check(canceled(ws.rescanFolders(stop)), "перепроверка всех каталогов: не начинается — и когда их нет");
+    check(canceled(ws.rescanFolders(token)), "перепроверка всех каталогов: не начинается — и когда их нет");
 
     const u16_text guid = newGuid();
-    check(canceled(ws.readState(guid, stop)), "состояние: не начинается — отмена, а не чистый лист");
+    check(canceled(ws.readState(guid, token)), "состояние: не начинается — отмена, а не чистый лист");
 
     ws.settings.lastBookPath = missing;
-    check(canceled(ws.lastBookPath(stop)), "последняя книга: не начинается — отмена, а не «продолжать нечего»");
+    check(canceled(ws.lastBookPath(token)), "последняя книга: не начинается — отмена, а не «продолжать нечего»");
 
     cancellation_source later;
     task<LoadedBook> reading = ws.readBook(kBook, later.token());
@@ -3032,9 +3032,9 @@ void testWorkspaceFolderKeepsWhatShelfShowed() {
     // отмены встаёт: шаги очереди отмена обхода не трогает.
     cancellation_source source;
     uint32_t registered = 0;
-    const cookie_t watch =
+    event_token watch =
         ws.library.cards().on_change([&source](const list_change&) noexcept { source.cancel(); });
-    const cookie_t registeredWatch =
+    event_token registeredWatch =
         ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
 
     check(canceled(ws.addFolder(folder, source.token())), "обход кончился отменой");
@@ -3077,9 +3077,9 @@ void testWorkspaceRescanKeepsWhatShelfShowed() {
     // выше): вторая не ставится. Под пулом Reader порядок может быть иным.
     cancellation_source source;
     uint32_t registered = 0;
-    const cookie_t watch =
+    event_token watch =
         ws.library.cards().on_change([&source](const list_change&) noexcept { source.cancel(); });
-    const cookie_t registeredWatch =
+    event_token registeredWatch =
         ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
 
     check(canceled(ws.rescanFolders(source.token())), "перепроверка кончилась отменой");
@@ -3141,7 +3141,7 @@ void testQueueChangedBookOnce() {
     const auto later = std::chrono::file_clock::now();
 
     std::vector<list_change> heard;
-    const cookie_t watch = ws.library.cards().on_change(
+    event_token watch = ws.library.cards().on_change(
         [&heard](const list_change& change) noexcept { heard.push_back(change); });
 
     const not_null<intrusive_ptr<QueuedRegistration>> rescanned = queueFrom(ws, document, kBook, bytes.size(), later);
@@ -3276,7 +3276,7 @@ void testQueueBothOrders() {
 
         const not_null<intrusive_ptr<QueuedRegistration>> ahead = queueFrom(ws, other, kOtherBook, otherBytes.size());
         const not_null<intrusive_ptr<QueuedRegistration>> opened = queueFrom(ws, document, f2, bytes.size());
-        const cookie_t waiting = opened->ended().add([](const RegistrationOutcome&) noexcept {});
+        event_token waiting = opened->ended().add([](const RegistrationOutcome&) noexcept {});
         const not_null<intrusive_ptr<QueuedRegistration>> scanned =
             queueFrom(ws, document, f1, bytes.size(), std::chrono::file_clock::now());
         check(!ahead->done() && scanned.get() != opened.get(),
@@ -3378,10 +3378,10 @@ void testQueueTwoBooksInOrder() {
 
     // Ожидание конца стоящего в очереди элемента — подпиской на его событие.
     std::vector<u16_text> ended;
-    const cookie_t firstWatch = first->ended().add([&ended](const RegistrationOutcome& outcome) noexcept {
+    event_token firstWatch = first->ended().add([&ended](const RegistrationOutcome& outcome) noexcept {
         ended.push_back(outcome ? outcome->entry.guid : u16_text{});
     });
-    const cookie_t secondWatch = second->ended().add([&ended](const RegistrationOutcome& outcome) noexcept {
+    event_token secondWatch = second->ended().add([&ended](const RegistrationOutcome& outcome) noexcept {
         ended.push_back(outcome ? outcome->entry.guid : u16_text{});
     });
 
@@ -3411,7 +3411,7 @@ void testQueueOutcomeWithoutWaiting() {
 
     const not_null<intrusive_ptr<QueuedRegistration>> queued = queueFrom(ws, document, kBook, bytes.size());
     bool heard = false;
-    const cookie_t watch = queued->ended().add([&heard](const RegistrationOutcome&) noexcept { heard = true; });
+    event_token watch = queued->ended().add([&heard](const RegistrationOutcome&) noexcept { heard = true; });
     check(queued->ended().remove(watch), "подписка снята, пока шаг идёт");
 
     endOf(queued);
@@ -3421,7 +3421,7 @@ void testQueueOutcomeWithoutWaiting() {
     // и элемент возвращается кончившимся; реестр не переменился — и события
     // о нём нет.
     uint32_t registeredHeard = 0;
-    const cookie_t registeredWatch =
+    event_token registeredWatch =
         ws.bookRegistered().on_change([&registeredHeard](const Registered&) noexcept { ++registeredHeard; });
     const not_null<intrusive_ptr<QueuedRegistration>> same = queueFrom(ws, document, kBook, bytes.size());
     ws.bookRegistered().remove_change(registeredWatch);
@@ -3431,7 +3431,7 @@ void testQueueOutcomeWithoutWaiting() {
           "шаг кончился раньше подписки — итог в элементе, очередь пуста");
 
     bool late = false;
-    const cookie_t lateWatch = same->ended().add([&late](const RegistrationOutcome&) noexcept { late = true; });
+    event_token lateWatch = same->ended().add([&late](const RegistrationOutcome&) noexcept { late = true; });
     sta_loop::run_until([&] { return !ws.registering(); });
     check(!late, "подписавшийся после конца события не дождётся — и ждать ему не надо");
     same->ended().remove(lateWatch);
@@ -3508,7 +3508,7 @@ void testQueueGoesOnAfterFailure() {
     std::filesystem::create_directories(cover);
 
     std::vector<std::wstring> refusals;
-    const cookie_t refusedWatch = ws.registrationRefused().on_change(
+    event_token refusedWatch = ws.registrationRefused().on_change(
         [&refusals](const std::wstring& line) noexcept { refusals.push_back(line); });
 
     // Итог ждёт подписчик: отказ его, и рабочее место о нём не говорит.
@@ -3516,7 +3516,7 @@ void testQueueGoesOnAfterFailure() {
         queueFrom(ws, document, kBook, bytes.size(), std::chrono::file_clock::now());
     const not_null<intrusive_ptr<QueuedRegistration>> next = queueFrom(ws, other, kOtherBook, otherBytes.size());
     bool heardFailure = false;
-    const cookie_t failingWatch = failing->ended().add(
+    event_token failingWatch = failing->ended().add(
         [&heardFailure](const RegistrationOutcome& outcome) noexcept { heardFailure = !outcome; });
 
     bool refused = false;
@@ -3570,7 +3570,7 @@ void testQueueRefusalAtExit() {
     std::filesystem::create_directories(cover);
 
     std::vector<std::wstring> refusals;
-    const cookie_t refusedWatch = ws.registrationRefused().on_change(
+    event_token refusedWatch = ws.registrationRefused().on_change(
         [&refusals](const std::wstring& line) noexcept { refusals.push_back(line); });
 
     // Подписчик — как ожидание wxl под токеном сценария: под отменённым
@@ -3579,7 +3579,7 @@ void testQueueRefusalAtExit() {
     const not_null<intrusive_ptr<QueuedRegistration>> failing =
         queueFrom(ws, document, kBook, bytes.size(), std::chrono::file_clock::now());
     bool handed = false;
-    const cookie_t failingWatch = failing->ended().add([&scenario, &handed](const RegistrationOutcome&) noexcept {
+    event_token failingWatch = failing->ended().add([&scenario, &handed](const RegistrationOutcome&) noexcept {
         if (!scenario.is_canceled()) handed = true;
     });
     check(!failing->done(), "шаг стоит на записи обложки, итога ждёт подписчик");
