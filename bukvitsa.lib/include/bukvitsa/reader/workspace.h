@@ -27,7 +27,7 @@
 // в кэше — шаг очереди регистраций (`queueRegistration`), и только для новой
 // или изменённой записи.
 //
-// Отмена — токеном вызывающего, последним параметром (`stop`): его берут
+// Отмена — токеном вызывающего, последним параметром (`token`): его берут
 // чтения, задачи, в которых есть чтение, и удаление обложки — перемена реестра
 // в памяти перед его записью. Чтение под отменённым токеном не начинается,
 // начатое кончается `operation_canceled_exception`. Записи токена не берут:
@@ -176,11 +176,14 @@ public:
     using changed_event = event<void(Argument) noexcept>;
 
     template <class F>
-    cookie_t on_change(F&& callback) {
+    event_token on_change(F&& callback) {
         return event_.add(std::forward<F>(callback));
     }
 
-    bool remove_change(cookie_t cookie) { return event_.remove(cookie); }
+    bool remove_change(event_token& token) { return event_.remove(token); }
+
+    // Снятие держателя, встроенного в подписчика, — по его узлу: так снимает себя change_watch.
+    bool remove_change(typename changed_event::func_t& node) { return event_.remove(node); }
 
 private:
     friend class Workspace;
@@ -280,7 +283,7 @@ public:
     /// моделей, которые они наполняют, потом пишется всё — настройки и при
     /// закрытии окна, — и недочитанная модель легла бы на диск умолчаниями
     /// поверх файлов читателя.
-    wxl::async::task<Started> start(wxl::async::cancellation_token stop);
+    wxl::async::task<Started> start(wxl::async::cancellation_token token);
 
     // ---- книги ----
 
@@ -289,7 +292,7 @@ public:
     /// попросили остановиться до разбора — отмена, и книга не разбирается.
     /// Документ разбора живёт только здесь: описание и копию обложки чтение
     /// снимает с него для регистрации, остальное нужное забирает книга.
-    wxl::async::task<LoadedBook> readBook(std::filesystem::path path, wxl::async::cancellation_token stop);
+    wxl::async::task<LoadedBook> readBook(std::filesystem::path path, wxl::async::cancellation_token token);
 
     /// Ставит книгу в очередь регистраций и отдаёт её элемент. Та же книга —
     /// по правилу реестра (`sameBook`, тем же порядком: сперва UUID по всей
@@ -367,7 +370,7 @@ public:
     ///
     /// Запись — ссылкой: её держит кадр ждущего, а тот стоит на `co_await`
     /// этой корутины до её конца.
-    wxl::async::task<Opened> openBook(const BookEntry& entry, wxl::async::cancellation_token stop);
+    wxl::async::task<Opened> openBook(const BookEntry& entry, wxl::async::cancellation_token token);
 
     /// Перепроверяет наблюдаемый каталог (из `library.folders()`); подкаталоги
     /// не обходятся. Листинг `*.fb3` с размером и временем правки сводится с
@@ -405,7 +408,7 @@ public:
     /// восстановимое и ни к чему не обязывает; обязывает реестр в памяти,
     /// который полка уже показала: его книги, зарегистрированные до отмены,
     /// вызывающий пишет и после неё.
-    wxl::async::task<ScanReport> scanFolder(std::filesystem::path folder, wxl::async::cancellation_token stop);
+    wxl::async::task<ScanReport> scanFolder(std::filesystem::path folder, wxl::async::cancellation_token token);
 
     /// «Добавить каталог»: каталог становится наблюдаемым
     /// (`library.addFolder`), и его книги обходятся, как перепроверкой
@@ -413,21 +416,21 @@ public:
     /// каталог, которого не прочесть, — `last_error`, и реестр его не
     /// запоминает; отмена — так же, как у перепроверки: отменённого на
     /// листинге каталога реестр тоже не запоминает.
-    wxl::async::task<ScanReport> addFolder(std::filesystem::path folder, wxl::async::cancellation_token stop);
+    wxl::async::task<ScanReport> addFolder(std::filesystem::path folder, wxl::async::cancellation_token token);
 
     /// Перепроверяет наблюдаемые каталоги — все, что были в
     /// `library.folders()` к началу, один за другим (`scanFolder`); отчёт —
     /// сумма. Каталог, который не перечислился, — строкой в `unread`, и
     /// перепроверка идёт к следующему. Под отменённым токеном не начинается,
     /// отменённая кончается на ближайшем чтении, как обход одного каталога.
-    wxl::async::task<ScanReport> rescanFolders(wxl::async::cancellation_token stop);
+    wxl::async::task<ScanReport> rescanFolders(wxl::async::cancellation_token token);
 
     /// Книга, которую можно продолжить читать: путь из настроек, если файл на
     /// месте, иначе по guid из реестра. Пусто — нечего.
-    wxl::async::task<std::filesystem::path> lastBookPath(wxl::async::cancellation_token stop);
+    wxl::async::task<std::filesystem::path> lastBookPath(wxl::async::cancellation_token token);
 
     /// Состояние книги; нет файла — чистый лист, это не ошибка.
-    wxl::async::task<BookState> readState(u16_view guid, wxl::async::cancellation_token stop);
+    wxl::async::task<BookState> readState(u16_view guid, wxl::async::cancellation_token token);
     wxl::async::task<> saveState(u16_text guid, BookState state);
 
     /// Текст настроек и реестра собирается в момент вызова, до ожидания: на
@@ -449,7 +452,7 @@ public:
     /// ссылается. Реестр не записался — сбой (`last_error`), и реестр в
     /// памяти тот же, что до вызова, если под этим именем за время записи
     /// ничего нового не легло; копия снимка остаётся лежать.
-    wxl::async::task<> saveSkin(Skin skin, std::filesystem::path photo, wxl::async::cancellation_token stop);
+    wxl::async::task<> saveSkin(Skin skin, std::filesystem::path photo, wxl::async::cancellation_token token);
 
     /// Убирает обложку из реестра и пишет его; не было — ничего. Снимок
     /// остаётся в `skins\`: копия не принадлежит одной обложке — мастер, открыв
@@ -459,7 +462,7 @@ public:
     /// Чтений нет: под отменённым токеном удаление не начинается — реестр не
     /// тронут, — а начатое доходит до записи реестра. Не записался — сбой
     /// (`last_error`), и обложка снова в реестре в памяти, на прежнем месте.
-    wxl::async::task<> deleteSkin(u16_view name, wxl::async::cancellation_token stop);
+    wxl::async::task<> deleteSkin(u16_view name, wxl::async::cancellation_token token);
 
     /// Снимок из файла — или почему его нет: байты операцией, раскодирование
     /// целиком в системном пуле (`decodeImageAsync`), так что снимок, битый в
@@ -472,7 +475,7 @@ public:
     /// отменой, на раскодировании — тоже сразу, а тело раскодирования
     /// сиротеет и доживает в пуле до ближайшей полосы.
     wxl::async::task<DecodedPicture> probeImageAsync(std::filesystem::path image,
-                                                     wxl::async::cancellation_token stop);
+                                                     wxl::async::cancellation_token token);
 
     // ---- общее ----
 
@@ -487,7 +490,7 @@ private:
     /// общая часть перепроверки и добавления каталога.
     wxl::async::task<ScanReport> scanListing(std::filesystem::path folder,
                                              std::vector<wxl::async::async_directory::listed_entry> listing,
-                                             wxl::async::cancellation_token stop);
+                                             wxl::async::cancellation_token token);
 
     /// Разборщик очереди регистраций: шаг головы, затем следующей, пока
     /// очередь не пуста; кончилась — кончается и он. Один на рабочее место —

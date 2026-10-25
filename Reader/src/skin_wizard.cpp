@@ -92,18 +92,18 @@ void SkinWizard::buildTree() {
             translucent(Button {
                 overlayMainLook,
                 u"Сохранить",
-                onClick = method(this, &SkinWizard::saveRequested),
+                onClick += method(this, &SkinWizard::saveRequested),
             }),
             translucent(Button {
                 overlayButtonLook,
                 u"Выбрать другое изображение",
-                onClick = method(&actions_, &Actions::chooseAnotherImage),
+                onClick += method(&actions_, &Actions::chooseAnotherImage),
             }),
             translucent(Button {
                 overlayButtonLook,
                 cancelFaceLook(),
                 u"Выйти из мастера обложек",
-                onClick = method(&actions_, &Actions::leaveWizard),
+                onClick += method(&actions_, &Actions::leaveWizard),
             }),
         },
     };
@@ -145,12 +145,12 @@ void SkinWizard::buildTree() {
                     u"ОК",
                     Padding{18, 6},
                     Margin{0, 0, 8, 0},
-                    onClick = method(this, &SkinWizard::confirmName),
+                    onClick += method(this, &SkinWizard::confirmName),
                 },
                 Button {
                     u"Отмена",
                     Padding{18, 6},
-                    onClick = method(this, &SkinWizard::cancelName),
+                    onClick += method(this, &SkinWizard::cancelName),
                 },
             },
         },
@@ -168,11 +168,11 @@ void SkinWizard::buildTree() {
         namePanel,
 
         // На пути вниз, чтобы клавиши работали при любом фокусе.
-        onPreviewKeyDown = method(this, &SkinWizard::keyDown),
-        onSizeChanged = method(this, &SkinWizard::sizeChanged),
-        onPointerPressed = method(this, &SkinWizard::pointerPressed),
-        onPointerMoved = method(this, &SkinWizard::pointerMoved),
-        onPointerReleased = method(this, &SkinWizard::pointerReleased),
+        onPreviewKeyDown += method(this, &SkinWizard::keyDown),
+        onSizeChanged += method(this, &SkinWizard::sizeChanged),
+        onPointerPressed += method(this, &SkinWizard::pointerPressed),
+        onPointerMoved += method(this, &SkinWizard::pointerMoved),
+        onPointerReleased += method(this, &SkinWizard::pointerReleased),
     };
 }
 

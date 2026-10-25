@@ -168,8 +168,8 @@ void BookView::buildTree() {
 
         // Указатель над знаком сноски — рукой, как над ссылкой: щелчок по
         // знаку откроет сноску, и это видно до щелчка.
-        onPointerMoved = method(this, &BookView::pointerMoved),
-        onPointerExited = method(this, &BookView::pointerExited),
+        onPointerMoved += method(this, &BookView::pointerMoved),
+        onPointerExited += method(this, &BookView::pointerExited),
     };
 
     Apply {
@@ -195,14 +195,14 @@ void BookView::buildTree() {
         pageLayer_,
         note_.root(),
 
-        onLoaded = method(this, &BookView::loaded),
+        onLoaded += method(this, &BookView::loaded),
 
         // Клавиш здесь нет: их разбирает приложение у этого же корня, на
         // пути вниз, по карте клавиш, а команды полосы отдаёт ведущему
         // (perform). Колесо и щелчок полоса ловит сама и отдаёт ведущему:
         // щелчку нужна сноска, которой карта не знает.
-        onPointerWheelChanged = method(this, &BookView::wheelTurned),
-        onPointerPressed = method(this, &BookView::pressed),
+        onPointerWheelChanged += method(this, &BookView::wheelTurned),
+        onPointerPressed += method(this, &BookView::pressed),
     };
 }
 

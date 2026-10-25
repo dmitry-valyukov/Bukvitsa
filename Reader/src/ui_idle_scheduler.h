@@ -16,7 +16,7 @@ class UiIdleScheduler final : public IdleScheduler {
 public:
     /// Звать на потоке окна: ожидание встаёт в его очередь низким приоритетом,
     /// и ввод, разметка и отрисовка берутся раньше.
-    wxl::async::task<> idle(wxl::async::cancellation_token stop) override;
+    wxl::async::task<> idle(wxl::async::cancellation_token token) override;
 };
 
 }  // namespace bukvitsa::reader

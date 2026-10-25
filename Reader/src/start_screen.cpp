@@ -129,9 +129,9 @@ StartScreen::StartScreen(const Compositor& compositor, Actions& actions)
             minHeight = BindOutput{bookTitle_, heightWithBook},
             horizontalContentAlignment = BindOutput{bookTitle_, alignedWithBook},
             automationName = BindOutput{bookTitle_, saidWithBook},
-            onClick = method(&actions_, &Actions::continueReading),
+            onClick += method(&actions_, &Actions::continueReading),
             content = Grid {
-                columnDefinitions = u"auto,*",
+                ColumnDefinitions<u"auto,*">,
                 Image {
                     source = BindOutput{bookCover_, coverSource},
                     visibility = BindOutput{bookCover_, shownWithCover},
@@ -145,26 +145,26 @@ StartScreen::StartScreen(const Compositor& compositor, Actions& actions)
             overlayButtonLook,
             hAlign.stretch,
             u"Моя библиотека",
-            onClick = method(&actions_, &Actions::showLibrary),
+            onClick += method(&actions_, &Actions::showLibrary),
         }),
         revealLater(Button {
             overlayButtonLook,
             hAlign.stretch,
             u"Добавить книгу",
-            onClick = method(&actions_, &Actions::chooseBook),
+            onClick += method(&actions_, &Actions::chooseBook),
         }),
         revealLater(Button {
             overlayButtonLook,
             hAlign.stretch,
             u"Добавить каталог",
-            onClick = method(&actions_, &Actions::chooseFolder),
+            onClick += method(&actions_, &Actions::chooseFolder),
         }),
         revealLater(Button {
             overlayButtonLook,
             cancelFaceLook(),
             hAlign.stretch,
             u"Выйти из читалки",
-            onClick = method(&actions_, &Actions::quit),
+            onClick += method(&actions_, &Actions::quit),
         }),
     };
 
@@ -208,11 +208,11 @@ StartScreen::StartScreen(const Compositor& compositor, Actions& actions)
 
         cardShell_,
 
-        onLoaded = method(this, &StartScreen::loaded),
+        onLoaded += method(this, &StartScreen::loaded),
 
         // На пути вниз, чтобы клавиша работала независимо от того, на какой
         // кнопке стоит фокус.
-        onPreviewKeyDown = method(this, &StartScreen::keyDown),
+        onPreviewKeyDown += method(this, &StartScreen::keyDown),
     };
 }
 

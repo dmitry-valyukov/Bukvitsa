@@ -173,7 +173,7 @@ private:
     /// Вторая половина открытия: прочитанная книга — в рабочее место и на
     /// полосу. Ждёт под токеном открытия, которое её позвало (open,
     /// openPreloaded).
-    wxl::async::task<> openLoaded(LoadedBook loaded, wxl::async::cancellation_token stop);
+    wxl::async::task<> openLoaded(LoadedBook loaded, wxl::async::cancellation_token token);
 
     /// Начинает предзагрузку книги под кнопкой «Продолжить чтение», пока
     /// читатель смотрит на заставку: задача уходит в `preload_`, здесь ничего
@@ -190,7 +190,7 @@ private:
     /// Приносит полосе снимок подложки, который ей теперь нужен: файл
     /// читается и раскодируется в пуле. Ждёт под токеном загрузки подложки
     /// (`backdropLoad_`): ставший ненужным снимок отменяет владелец.
-    wxl::async::task<> loadBackdrop(std::filesystem::path file, wxl::async::cancellation_token stop);
+    wxl::async::task<> loadBackdrop(std::filesystem::path file, wxl::async::cancellation_token token);
 
     /// Отменяет загрузку подложки, которая ещё идёт, и заводит источник для
     /// следующей: каждая смена нужного снимка идёт через неё.
@@ -202,7 +202,7 @@ private:
     /// токеном сценария, который его позвал: отменить шаг — дело его
     /// владельца; отменённый кончается отменой, а не ответом, — и после
     /// ожидания тоже, так что дороге спрашивать сеанс ещё раз незачем.
-    wxl::async::task<DecodedPixels> checkImage(std::filesystem::path image, wxl::async::cancellation_token stop);
+    wxl::async::task<DecodedPixels> checkImage(std::filesystem::path image, wxl::async::cancellation_token token);
 
     /// Начинает сеанс мастера обложек — дорогу в него (добавить, править,
     /// другой снимок): прежний сеанс отменён. Отдаёт токен нового — под ним
@@ -217,14 +217,14 @@ private:
 
     /// Цикл записи состояния книги на полосе — места чтения и закладок — под
     /// её guid. Его держит stateWrite_.
-    wxl::async::task<> writeState(wxl::WaitableTimer& timer, wxl::async::cancellation_token stop);
+    wxl::async::task<> writeState(wxl::WaitableTimer& timer, wxl::async::cancellation_token token);
 
     /// Цикл записи настроек: вид, тема, место окна, последняя книга. Его
     /// держит settingsWrite_.
-    wxl::async::task<> writeSettings(wxl::WaitableTimer& timer, wxl::async::cancellation_token stop);
+    wxl::async::task<> writeSettings(wxl::WaitableTimer& timer, wxl::async::cancellation_token token);
 
     /// Цикл записи реестра книг. Его держит libraryWrite_.
-    wxl::async::task<> writeLibrary(wxl::WaitableTimer& timer, wxl::async::cancellation_token stop);
+    wxl::async::task<> writeLibrary(wxl::WaitableTimer& timer, wxl::async::cancellation_token token);
 
     /// Настройки прочитаны — с этих пор их перемены пишутся. Раньше незачем:
     /// прочитанное из файла — не перемена, которую надо записать обратно.
@@ -450,8 +450,10 @@ private:
     // слушатели будят циклы записи, а держатели циклов умирают раньше окна,
     // полосы и настроек — перемена, пришедшая после них, будила бы мёртвое.
 
-    /// Место окна; пусто, пока окно не поставлено на место из настроек (start).
-    wxl::WindowWatch<wxl::EventKey::GeometryChanged, &App::windowMoved> geometryWatch_;
+    /// Место окна; появляется, когда окно поставлено на место из настроек (start):
+    /// перемены до того — наши, а не читателя.
+    using GeometryWatch = wxl::WindowWatch<wxl::EventKey::GeometryChanged, &App::windowMoved>;
+    std::unique_ptr<GeometryWatch> geometryWatch_;
     /// Место чтения (поле ведущего).
     change_watch<observable<uint32_t const>, &App::positionChanged> positionWatch_;
     /// Тема полосы (поле ведущего).
@@ -462,13 +464,18 @@ private:
     change_watch<WorkspaceEvent<const Registered&>, &App::bookRegistered> registeredWatch_;
     change_watch<WorkspaceEvent<const std::wstring&>, &App::registrationRefused> refusedWatch_;
 
-    /// Поля настроек — пустые держатели, пока настройки не прочитаны
+    /// Поля настроек — держатели появляются вместе, когда настройки прочитаны
     /// (watchSettings).
-    change_watch<observable<double const>, &App::styleChanged> fontSizeWatch_;
-    change_watch<observable<double const>, &App::styleChanged> lineHeightWatch_;
-    change_watch<observable<double const>, &App::styleChanged> marginWatch_;
-    change_watch<observable<bool const>, &App::flagChanged> continueReadingWatch_;
-    change_watch<observable<bool const>, &App::flagChanged> animateTurnsWatch_;
+    struct SettingsWatches {
+        SettingsWatches(Settings& settings, App& app);
+
+        change_watch<observable<double const>, &App::styleChanged> fontSize;
+        change_watch<observable<double const>, &App::styleChanged> lineHeight;
+        change_watch<observable<double const>, &App::styleChanged> margin;
+        change_watch<observable<bool const>, &App::flagChanged> continueReading;
+        change_watch<observable<bool const>, &App::flagChanged> animateTurns;
+    };
+    std::unique_ptr<SettingsWatches> settingsWatches_;
 
     // Источники отмены сценариев и предзагрузка — ниже всего, что трогают
     // ждущие под ними тела, и выше задач, которые под ними ждут.
