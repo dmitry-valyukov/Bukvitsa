@@ -110,7 +110,9 @@ jobs:
             preset: x64-release
     name: build (${{ matrix.config }})
     runs-on: windows-2025
-    # Одна wxl собирается здесь 47 минут, Буквица идёт сверх того.
+    # Одна wxl в её собственной проверке собирается 47 минут. Здесь из её дерева
+    # собирается только winui-srcgen, но wxl.ui компилируется внутри сборки
+    # Буквицы, и сама Буквица идёт сверх того.
     timeout-minutes: 120
     env:
       DEVCMD: C:\BuildToolsInsiders\Common7\Tools\VsDevCmd.bat
@@ -203,11 +205,17 @@ jobs:
         run: build\x64\wxl.gen\${{ matrix.config }}\winui-srcgen.exe --profile wxl.gen\profiles\full.json
 
       # Без сайта: его машинерия ходила бы в сеть за Doxygen уже при настройке.
+      # Версии и кодовая страница Ninja — в журнал: Reader/src/Assets/Брошюра.png
+      # идёт через правило Ninja с кириллицей в имени, ANSI-страница машины —
+      # 1252, и уже первый журнал должен показать, пишет ли Ninja в UTF-8.
       - name: Configure
         shell: cmd
         working-directory: Bukvitsa
         run: |
           call "%DEVCMD%" -arch=x64 -host_arch=x64 %VCVARS%
+          cmake --version
+          ninja --version
+          ninja -t wincodepage
           cmake --preset x64 -DVCPKG_ROOT=C:/vcpkg -DBUKVITSA_BUILD_DOCS=OFF
 
       # -k 0: все ошибки компиляции правки сразу, а не только первая.
@@ -238,6 +246,8 @@ jobs:
         working-directory: wxl
         run: pwsh -NoProfile -File tools/install-runtime.ps1
 
+      # Процесс оконный, и отказ wxl уходит в stderr и OutputDebugString, которых
+      # журнал не видит: потоки читалки перенаправлены в файлы и печатаются.
       - name: Start the reader
         if: (success() || failure()) && steps.build.outcome == 'success'
         shell: pwsh
@@ -246,14 +256,32 @@ jobs:
           $exe = "build\x64\Reader\${{ matrix.config }}\Reader.exe"
           if (-not (Test-Path $exe)) { throw "$exe was not built" }
           $exe = Get-Item $exe
-          $p = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
+          $out = Join-Path $env:RUNNER_TEMP 'reader.out'
+          $err = Join-Path $env:RUNNER_TEMP 'reader.err'
+          function Show-ReaderOutput {
+            foreach ($file in $out, $err) {
+              if (Test-Path $file) {
+                "---- $file"
+                Get-Content $file
+              }
+            }
+          }
+          $p = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
           Start-Sleep -Seconds 20
           $p.Refresh()
-          if ($p.HasExited) { throw "Reader exited within 20 s, code $($p.ExitCode)" }
+          if ($p.HasExited) {
+            Show-ReaderOutput
+            throw "Reader exited within 20 s, code $($p.ExitCode)"
+          }
           $window = $p.MainWindowHandle
           "running after 20 s; main window handle $window, title '$($p.MainWindowTitle)'"
           Stop-Process -Id $p.Id
-          if ($window -eq 0) { throw 'Reader runs but shows no main window' }
+          if ($window -eq 0) {
+            Show-ReaderOutput
+            throw 'Reader runs but shows no main window'
+          }
+          Show-ReaderOutput
 
       - name: Test logs
         if: failure()
@@ -263,4 +291,5 @@ jobs:
           path: |
             Bukvitsa/build/x64/Testing/Temporary/
             Bukvitsa/build/x64/ctest.xml
+            Bukvitsa/build/x64/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: ignore
