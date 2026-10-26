@@ -1,0 +1,266 @@
+# Проверка пул-реквеста: всё дерево Буквицы, читалка с её окном включительно,
+# собранное и проверенное тестами на Windows-машине GitHub, Debug и Release
+# рядом, с флагами самого дерева и ничем сверх них.
+#
+# Буквица собирается только вместе с wxl: корневой CMakeLists берёт её модули
+# из соседнего дерева. Здесь это дерево — wxl ровно на том коммите, который
+# назван в tools/wxl.json, а не текущая голова её main: проверяется то
+# сочетание, которое потом окажется в main Буквицы.
+#
+# Тулсет — MSVC 14.53 из Build Tools канала Insiders, он ставится на каждом
+# запуске, по той же причине, что у wxl (её .github/workflows/ci.yml): 14.51 из
+# образа неверно компилирует корутину, чей final_suspend() возвращает
+# suspend_never, в оптимизированном коде с /EHsc.
+#
+# wxl.ui нужно то, чего в репозитории wxl нет: закреплённые пакеты NuGet,
+# проекция cppwinrt в generated/ и обёртки, которые winui-srcgen пишет в
+# wxl.ui/src/wxl. Задание делает их так же, как свежий клон wxl: восстанавливает
+# пакеты, строит проекцию, заводит каталог обёрток с пустым CMakeLists.txt,
+# собирает генератор и запускает его с профилем full. Скрипты для этого берутся
+# из самого дерева wxl, своих копий у Буквицы нет.
+name: ci
+
+# merge_group: ветка-кандидат очереди слияния, main плюс стоящие в очереди
+# пул-реквесты, проверяемая до того, как стать main.
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Новый пуш в тот же пул-реквест делает старый запуск ненужным.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # main Буквицы собирается только с теми коммитами wxl, что уже в main wxl.
+  # Пул-реквест, чья пара в wxl ещё не влита, остаётся красным на этой проверке,
+  # пока её не вольют; сборка ниже от неё не зависит и отвечает сама.
+  wxl-revision:
+    name: wxl-revision
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Bukvitsa
+          persist-credentials: false
+
+      # Репозиторий в файле сверяется, а не берётся из него: иначе правка файла
+      # уводила бы проверку в чужой репозиторий, где «main» значит что угодно.
+      - name: Read the wxl pin
+        id: pin
+        run: |
+          pin=Bukvitsa/tools/wxl.json
+          if ! repository=$(jq -er '.repository' "$pin"); then
+            echo "::error::$pin has no repository"
+            exit 1
+          fi
+          if ! revision=$(jq -er '.revision' "$pin"); then
+            echo "::error::$pin has no revision"
+            exit 1
+          fi
+          if [ "$repository" != "wxl-project/wxl" ]; then
+            echo "::error::$pin names $repository, not wxl-project/wxl"
+            exit 1
+          fi
+          if ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::$pin: revision is not a full SHA"
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      # Вся история: закреплённый коммит ищется в ней.
+      - uses: actions/checkout@v4
+        with:
+          repository: wxl-project/wxl
+          ref: main
+          path: wxl
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check that the pinned revision is on wxl's main
+        working-directory: wxl
+        env:
+          REVISION: ${{ steps.pin.outputs.revision }}
+        run: |
+          if ! git cat-file -e "$REVISION^{commit}" 2>/dev/null; then
+            echo "::error::wxl has no commit $REVISION"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$REVISION" origin/main; then
+            echo "::error::wxl commit $REVISION is not on wxl's main"
+            exit 1
+          fi
+          echo "wxl $REVISION is on main"
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - config: Debug
+            preset: x64-debug
+          - config: Release
+            preset: x64-release
+    name: build (${{ matrix.config }})
+    runs-on: windows-2025
+    # Одна wxl собирается здесь 47 минут, Буквица идёт сверх того.
+    timeout-minutes: 120
+    env:
+      DEVCMD: C:\BuildToolsInsiders\Common7\Tools\VsDevCmd.bat
+      VCVARS: -vcvars_ver=14.53
+      # Скрипты wxl, CMake и winui-srcgen читают эту переменную первой.
+      NUGET_PACKAGES: C:\nuget-packages
+    steps:
+      # Оба дерева — соседние каталоги рабочей области, Bukvitsa и wxl, так что
+      # BUKVITSA_WXL_ROOT по умолчанию (../wxl) указывает куда надо и не
+      # задаётся.
+      - uses: actions/checkout@v4
+        with:
+          path: Bukvitsa
+
+      - name: Read the wxl pin
+        id: pin
+        shell: pwsh
+        run: |
+          $pin = Get-Content Bukvitsa/tools/wxl.json -Raw | ConvertFrom-Json
+          if ($pin.repository -cne 'wxl-project/wxl') { throw "tools/wxl.json names $($pin.repository), not wxl-project/wxl" }
+          if ($pin.revision -cnotmatch '^[0-9a-f]{40}$') { throw 'tools/wxl.json: revision is not a full SHA' }
+          "revision=$($pin.revision)" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+        with:
+          repository: wxl-project/wxl
+          ref: ${{ steps.pin.outputs.revision }}
+          path: wxl
+          persist-credentials: false
+
+      # 3010 — «установлено, ждёт перезагрузки»: компилятор годен и так.
+      - name: Install MSVC 14.53
+        shell: pwsh
+        run: |
+          $boot = Join-Path $env:RUNNER_TEMP 'vs_buildtools.exe'
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/insiders/vs_buildtools.exe' -OutFile $boot -UseBasicParsing
+          $p = Start-Process -FilePath $boot -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru -ArgumentList @(
+            '--installPath', 'C:\BuildToolsInsiders',
+            '--add', 'Microsoft.VisualStudio.Component.VC.Preview.Tools.x86.x64',
+            '--quiet', '--wait', '--norestart', '--nocache')
+          "exit code $($p.ExitCode)"
+          Get-ChildItem 'C:\BuildToolsInsiders\VC\Tools\MSVC' | ForEach-Object { $_.Name }
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "Build Tools install failed: $($p.ExitCode)" }
+
+      - name: vcpkg port (cppwinrt)
+        shell: pwsh
+        run: vcpkg install cppwinrt:x64-windows-static-md
+
+      - name: Restore NuGet packages
+        shell: pwsh
+        working-directory: wxl
+        run: pwsh -NoProfile -File tools/restore-packages.ps1
+
+      # projection.ps1 находит cppwinrt.exe через VCPKG_ROOT, когда собственного
+      # файла пути vcpkg нет, как на этой машине.
+      - name: cppwinrt projection
+        shell: pwsh
+        working-directory: wxl
+        env:
+          VCPKG_ROOT: C:\vcpkg
+        run: pwsh -NoProfile -File tools/projection.ps1
+
+      - name: Seed the wrapper directory
+        shell: pwsh
+        working-directory: wxl
+        run: |
+          New-Item -ItemType Directory -Force wxl.ui\src\wxl | Out-Null
+          New-Item -ItemType File wxl.ui\src\wxl\CMakeLists.txt | Out-Null
+
+      # Дерево wxl настраивается ради одного генератора. Одна оболочка на
+      # окружение разработчика и вызов CMake: VsDevCmd кладёт в PATH тулсет и
+      # Ninja, как tools/build.ps1 делает дома.
+      - name: Configure wxl
+        shell: cmd
+        working-directory: wxl
+        run: |
+          call "%DEVCMD%" -arch=x64 -host_arch=x64 %VCVARS%
+          cmake --preset x64 -DVCPKG_ROOT=C:/vcpkg -DWXL_BUILD_DOCS=OFF
+
+      - name: Build winui-srcgen
+        shell: cmd
+        working-directory: wxl
+        run: |
+          call "%DEVCMD%" -arch=x64 -host_arch=x64 %VCVARS%
+          cmake --build build\x64 --config ${{ matrix.config }} --target winui-srcgen
+
+      - name: Generate the wrappers
+        shell: cmd
+        working-directory: wxl
+        run: build\x64\wxl.gen\${{ matrix.config }}\winui-srcgen.exe --profile wxl.gen\profiles\full.json
+
+      # Без сайта: его машинерия ходила бы в сеть за Doxygen уже при настройке.
+      - name: Configure
+        shell: cmd
+        working-directory: Bukvitsa
+        run: |
+          call "%DEVCMD%" -arch=x64 -host_arch=x64 %VCVARS%
+          cmake --preset x64 -DVCPKG_ROOT=C:/vcpkg -DBUKVITSA_BUILD_DOCS=OFF
+
+      # -k 0: все ошибки компиляции правки сразу, а не только первая.
+      - name: Build
+        id: build
+        shell: cmd
+        working-directory: Bukvitsa
+        run: |
+          call "%DEVCMD%" -arch=x64 -host_arch=x64 %VCVARS%
+          cmake --build build\x64 --config ${{ matrix.config }} -- -k 0
+
+      - name: Test
+        shell: cmd
+        working-directory: Bukvitsa
+        run: |
+          call "%DEVCMD%" -arch=x64 -host_arch=x64 %VCVARS%
+          ctest --preset ${{ matrix.preset }} --output-on-failure --timeout 300 --output-junit ctest.xml
+
+      # Окна WinUI не открывает ни один тест, его открывает читалка. Сначала
+      # экспериментальная среда Windows App Runtime, которой просят обёртки,
+      # потом читалка на двадцать секунд: без книги она показывает заставку, и
+      # главное окно должно появиться на рабочем столе машины. После красных
+      # тестов тоже — это разные вопросы, — но не после красной сборки: запускать
+      # нечего.
+      - name: Install the experimental Windows App Runtime
+        if: (success() || failure()) && steps.build.outcome == 'success'
+        shell: pwsh
+        working-directory: wxl
+        run: pwsh -NoProfile -File tools/install-runtime.ps1
+
+      - name: Start the reader
+        if: (success() || failure()) && steps.build.outcome == 'success'
+        shell: pwsh
+        working-directory: Bukvitsa
+        run: |
+          $exe = "build\x64\Reader\${{ matrix.config }}\Reader.exe"
+          if (-not (Test-Path $exe)) { throw "$exe was not built" }
+          $exe = Get-Item $exe
+          $p = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
+          Start-Sleep -Seconds 20
+          $p.Refresh()
+          if ($p.HasExited) { throw "Reader exited within 20 s, code $($p.ExitCode)" }
+          $window = $p.MainWindowHandle
+          "running after 20 s; main window handle $window, title '$($p.MainWindowTitle)'"
+          Stop-Process -Id $p.Id
+          if ($window -eq 0) { throw 'Reader runs but shows no main window' }
+
+      - name: Test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs-${{ matrix.config }}
+          path: |
+            Bukvitsa/build/x64/Testing/Temporary/
+            Bukvitsa/build/x64/ctest.xml
+          if-no-files-found: ignore
