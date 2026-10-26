@@ -31,6 +31,12 @@ ctest --preset x64-debug
 Генератор — Ninja Multi-Config: генераторы Visual Studio не собирают
 `import std;`.
 
+Пул-реквесты проверяет GitHub Actions (`.github/workflows/ci.yml`): на
+Windows-машине дерево собирается в Debug и Release, проходит тесты, и читалка
+должна открыть своё окно. wxl для этого берётся на том коммите, который назван
+в `tools/wxl.json`; правка, которой нужна более новая wxl, передвигает его,
+когда та уже влита в `main` wxl.
+
 ## Читалка
 
 ```
