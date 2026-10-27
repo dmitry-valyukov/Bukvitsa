@@ -245,6 +245,16 @@ task<Registered>& Workspace::startHeldStep(async_mutex::guard held, fb3::Descrip
     // ещё присоединён ждущий, среди кончившихся нет: ждущий просыпается и
     // забирает итог в самом конце шага.
     std::erase_if(registrations_, [](const task<Registered>& registration) { return registration.done(); });
+
+    // Место — раньше шага: шаг стартует в вызове и встаёт на записи обложки,
+    // и `push_back`, не сумевший вырасти уже после, уронил бы его задачу —
+    // а с ней и шаг посреди записи. Отказ здесь — до шага, и ничего не начато.
+    registrations_.reserve(registrations_.size() + 1);
+
+    // Шаг, который кончается, не приостановившись (обложку писать не надо —
+    // её нет или запись та же), доходит до конца ещё в этом вызове, раньше,
+    // чем встанет в список, и `registering()` его не видит; от этого никто не
+    // зависит — ждущий получит итог и так.
     task<Registered> step =
         registerHeld(std::move(held), std::move(description), characterCount, std::move(cover), std::move(file));
     registrations_.push_back(std::move(step));
@@ -278,7 +288,9 @@ task<Registered> Workspace::registerHeld([[maybe_unused]] async_mutex::guard hel
     // тот же файл, и переписывать его незачем. Запись токена не берёт:
     // оборванная запись есть файл, которому не верят. Сбой записи — о нём
     // рабочее место говорит само, здесь и один раз, ждёт шага кто-то или уже
-    // нет, — и отдаёт его ждущему дальше: реестр книги не узнаёт.
+    // нет, — и ждущему отдаётся отказ своим типом (`RegistrationRefused`):
+    // реестр книги не узнаёт, а сказано о нём уже всё. Свой тип — чтобы
+    // ждущий, молча проходя мимо отказа, не прошёл молча мимо иного сбоя.
     const BookEntry planned = library.entryFor(description, characterCount, cover, file, remembered);
 
     if (const BookEntry* stored = library.find(planned.guid); !stored || *stored != planned) {
@@ -288,7 +300,7 @@ task<Registered> Workspace::registerHeld([[maybe_unused]] async_mutex::guard hel
                                                std::string(cached.bytes));
             } catch (const last_error& failure) {
                 registrationRefused_.event_(unreadLine(file.path, failure));
-                throw;
+                throw RegistrationRefused{};
             }
         }
     }
@@ -320,7 +332,7 @@ task<> Workspace::registerScanned(fb3::Description description, uint32_t charact
         // `bookRegistered`, которое шаг уже сказал.
         static_cast<void>(co_await registerBook(std::move(description), characterCount, std::move(cover),
                                                 std::move(file), std::move(token)));
-    } catch (const last_error&) {
+    } catch (const RegistrationRefused&) {
         // Обложка не записалась — книга в реестр не встала, и об этом уже
         // сказал сам шаг (`registrationRefused`): второй раз не говорится.
     } catch (const operation_canceled_exception&) {

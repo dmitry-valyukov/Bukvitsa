@@ -315,17 +315,18 @@ wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token token) 
     // в настройках. Описание и обложка уходят в регистрацию: книге они больше
     // не нужны; токен — копией: он нужен и открытию записи.
     //
-    // Сбой шага — запись обложки — кончает открытие тихо: читателю о нём уже
-    // сказало рабочее место (`registrationRefused`), и сказало бы, даже если
-    // бы открытие ушло раньше; ни реестр, ни настройки, ни полоса книги не
-    // узнают, на полосе остаётся прежняя. Отмена идёт дальше, как прежде.
+    // Отказ шага — обложка не записалась (`RegistrationRefused`) — кончает
+    // открытие тихо: читателю о нём уже сказало рабочее место
+    // (`registrationRefused`), и сказало бы, даже если бы открытие ушло
+    // раньше; ни реестр, ни настройки, ни полоса книги не узнают, на полосе
+    // остаётся прежняя. Отмена и всякий иной сбой идут дальше, как прежде.
     // Пусто, пока шаг не кончился: у кончившегося значение есть.
     auto const file = BookFile{.path = loaded.book->path(), .size = loaded.fileSize};
     std::optional<Registered> registered;
     try {
         registered.emplace(co_await ws_.registerBook(std::move(loaded.description), loaded.book->characterCount(),
                                                      std::move(loaded.cover), file, token));
-    } catch (const last_error&) {
+    } catch (const RegistrationRefused&) {
         co_return;
     }
 

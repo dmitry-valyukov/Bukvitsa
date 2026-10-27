@@ -998,13 +998,13 @@ task<Opened> openIn(Workspace& ws, const LoadedBook& loaded, cancellation_token 
     co_return opened;
 }
 
-/// Кончилась ли регистрация сбоем записи обложки — не значением и не другим
-/// сбоем.
+/// Кончилась ли регистрация отказом шага (`RegistrationRefused`) — не
+/// значением и не другим сбоем.
 bool coverRefused(task<Registered> registration) {
     sta_loop::run_until([&] { return registration.done(); });
     try {
         static_cast<void>(registration.result());
-    } catch (const last_error&) {
+    } catch (const RegistrationRefused&) {
         return true;
     } catch (...) {
     }
@@ -3317,9 +3317,9 @@ void testLockHeldStepIgnoresToken() {
 }
 
 /// Обложка не записалась — на месте каталога обложек файл: прямая регистрация
-/// кончается `last_error`, реестр книги не узнаёт, рабочее место называет
-/// отказ событием один раз — ждущему повторять его незачем, — а замок после
-/// неё свободен.
+/// кончается отказом шага (`RegistrationRefused`), реестр книги не узнаёт,
+/// рабочее место называет отказ событием один раз — ждущему повторять его
+/// незачем, — а замок после неё свободен.
 void testLockCoverRefused() {
     std::printf("\n=== замок регистраций: обложка не записалась ===\n");
 
@@ -3339,7 +3339,7 @@ void testLockCoverRefused() {
 
     task<Registered> failing = registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()});
     check(!failing.done(), "шаг стоит на записи обложки");
-    check(coverRefused(std::move(failing)), "обложка не записалась — регистрация кончается last_error");
+    check(coverRefused(std::move(failing)), "обложка не записалась — регистрация кончается отказом шага");
     check(ws.library.cards().empty() && refusals.size() == 1 && holds(refusals[0], kBook.wstring()),
           "реестр книги не узнал, отказ назван событием один раз, строкой с путём");
 
@@ -3449,11 +3449,11 @@ void testLockScanTellsOutcomes() {
 
 /// Регистрации книг обхода ждут замка под общим токеном приложения, а не под
 /// токеном обхода: источник обхода живёт в его сценарии и уходит вместе с
-/// ним, а отданные книги должны встать. Отмена источника обхода, пока его
-/// регистрация ждёт замка за чужим шагом, её не трогает — книга встаёт.
-/// Выход приложения кончает ожидание отменой — книга не встаёт, и рабочее
-/// место ничего не говорит, — а шаг, взявший замок, доходит до реестра, и
-/// `registering()` опускается, только когда он кончится.
+/// ним, а отданные книги должны встать. Отмена источника обхода, когда обход
+/// отдал книгу, а замок держит чужой шаг, её регистрацию не трогает — книга
+/// встаёт. Выход приложения в то же время — книга не встаёт, и рабочее место
+/// ничего не говорит; шаг обхода, взявший замок до выхода, доходит до
+/// реестра, и `registering()` опускается, только когда он кончится.
 void testLockScanStops() {
     std::printf("\n=== замок регистраций: отмена обхода и выход ===\n");
 
@@ -3474,8 +3474,8 @@ void testLockScanStops() {
         check(!going.done(), "чужой шаг взял замок и стоит на записи обложки");
 
         sta_loop::run_until([&] { return scan.done(); });
-        check(run(std::move(scan)).queued == 1 && ws.registering() && !going.done(),
-              "обход кончился, регистрация его книги ждёт замка");
+        check(run(std::move(scan)).queued == 1 && !going.done(),
+              "обход кончился, отдав книгу регистрации, а чужой шаг ещё держит замок");
         return going;
     };
 
@@ -3530,7 +3530,7 @@ void testLockScanStops() {
         check(std::filesystem::exists(ws.coverDirectory() / moved->cover.wchars()), "обложка записана");
     }
     {
-        // Выход, пока регистрация книги обхода ждёт замка.
+        // Выход, когда обход отдал книгу, а замок держит чужой шаг.
         std::filesystem::create_directories(box.root / L"exit");
         cancellation_source application;
         Workspace ws(box.root / L"exit", application.token());
@@ -3553,7 +3553,7 @@ void testLockScanStops() {
         ws.bookRegistered().remove_change(registeredWatch);
         ws.registrationRefused().remove_change(refusedWatch);
 
-        check(held.isNew && registered == 1 && refusals.empty(), "отмена ожидания — не отказ: рабочее место молчит");
+        check(held.isNew && registered == 1 && refusals.empty(), "выход — не отказ: рабочее место молчит");
         check(ws.library.cards().size() == 1 && !ws.library.findFile(folder / kOtherBook.filename()),
               "книга обхода не встала");
     }
@@ -3580,7 +3580,8 @@ bool isWorkspaceStopProbe(std::string_view probeName) {
 /// Рабочий поток занят до конца пробы, и запись до диска не доходит: каталога
 /// рабочего места нет и не будет, и проба ничего после себя не оставляет.
 /// Остановилась — сюда не вернулась; не остановилась — кончается сразу
-/// (_Exit), ничего не разрушая, и родитель засчитает провал.
+/// (_Exit), не дожидаясь занятого рабочего потока, и родитель засчитает
+/// провал.
 int runWorkspaceStopProbe(std::string_view) {
     sta_loop::start("bukvitsa.lib tests: stop probe I/O");
 
@@ -3701,6 +3702,7 @@ int main(int argc, char* argv[]) {
     testLockWaitEndsWithToken();
     testLockHeldStepIgnoresToken();
     testLockCoverRefused();
+    testLockDroppedCallerStepGoesOn();
     testLockScanTellsOutcomes();
     testLockScanStops();
     testWorkspaceStopsWhileRegistering();
