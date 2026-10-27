@@ -275,8 +275,8 @@ private:
     /// запись реестра отодвигается.
     void bookRegistered(const Registered& registered) noexcept;
 
-    /// Не удалась регистрация книги, найденной обходом каталога, — её шага
-    /// обход не ждёт, — строкой в сообщение «Не удалось прочитать».
+    /// Шаг регистрации не удался — обход это или открытие, о нём говорит
+    /// только рабочее место, — строкой в сообщение «Не удалось прочитать».
     void registrationRefused(const std::wstring& line) noexcept;
 
     /// Поле вида или флажок настроек («продолжать чтение», «анимация
@@ -459,9 +459,9 @@ private:
     change_watch<observable<uint32_t const>, &App::positionChanged> positionWatch_;
     /// Тема полосы (поле ведущего).
     change_watch<observable<int const>, &App::themeChanged> themeWatch_;
-    /// Регистрации книг в рабочем месте: перемены реестра и отказы шагов,
-    /// которых никто не ждёт, — книги перепроверки и добавленного каталога:
-    /// их обход шагов не ждёт.
+    /// Регистрации книг в рабочем месте: перемены реестра и отказы шагов —
+    /// всех: и книг перепроверки и добавленного каталога, чьих шагов обход не
+    /// ждёт, и открытия.
     change_watch<WorkspaceEvent<const Registered&>, &App::bookRegistered> registeredWatch_;
     change_watch<WorkspaceEvent<const std::wstring&>, &App::registrationRefused> refusedWatch_;
 

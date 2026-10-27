@@ -49,6 +49,10 @@ using wxl::async::cancellation_source;
 bool isPictureStopProbe(std::string_view probeName);
 int runPictureStopProbe(std::string_view probeName);
 
+/// Пробы остановки рабочего места — у его проб (lib_tests.cpp).
+bool isWorkspaceStopProbe(std::string_view probeName);
+int runWorkspaceStopProbe(std::string_view probeName);
+
 namespace {
 
 using Column = PageFlow::Column;
@@ -1378,6 +1382,7 @@ int runStopProbeChild(std::string_view probeName) {
 #endif
 
     if (isPictureStopProbe(probeName)) return runPictureStopProbe(probeName);
+    if (isWorkspaceStopProbe(probeName)) return runWorkspaceStopProbe(probeName);
 
     const bool knownProbe =
         probeName == kStartWithoutBook || probeName == kEndWithoutBook ||

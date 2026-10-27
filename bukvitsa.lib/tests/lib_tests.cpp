@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
@@ -42,6 +43,9 @@ using namespace bukvitsa;
 using namespace bukvitsa::reader;
 using bukvitsa::reader::tests::check;
 using bukvitsa::reader::tests::failures;
+
+/// Общий запуск проб остановки — у проб ведущего (book_presenter_tests.cpp).
+void checkStopProbe(std::string_view probeName, std::string_view expectedReport);
 
 namespace {
 
@@ -3261,6 +3265,12 @@ void testLockWaitEndsWithToken() {
     const std::string otherBytes = onDisk(kOtherBook);
     const fb3::Document other{std::string(otherBytes)};
 
+    cancellation_source before;
+    before.cancel();
+    check(canceled(registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()}, before.token())) &&
+              ws.library.cards().empty() && !std::filesystem::exists(ws.coverDirectory()),
+          "под отменённым токеном регистрация не начинается: реестр пуст, кэша нет");
+
     cancellation_source waiting;
     task<Registered> going = registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()});
     task<Registered> behind =
@@ -3307,8 +3317,9 @@ void testLockHeldStepIgnoresToken() {
 }
 
 /// Обложка не записалась — на месте каталога обложек файл: прямая регистрация
-/// кончается `last_error`, реестр книги не узнаёт, отказом рабочее место не
-/// говорит — исход у ждущего, — а замок после неё свободен.
+/// кончается `last_error`, реестр книги не узнаёт, рабочее место называет
+/// отказ событием один раз — ждущему повторять его незачем, — а замок после
+/// неё свободен.
 void testLockCoverRefused() {
     std::printf("\n=== замок регистраций: обложка не записалась ===\n");
 
@@ -3329,16 +3340,77 @@ void testLockCoverRefused() {
     task<Registered> failing = registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()});
     check(!failing.done(), "шаг стоит на записи обложки");
     check(coverRefused(std::move(failing)), "обложка не записалась — регистрация кончается last_error");
-    check(ws.library.cards().empty() && refusals.empty(),
-          "реестр книги не узнал, события отказа нет — отказ у того, кто ждал");
+    check(ws.library.cards().empty() && refusals.size() == 1 && holds(refusals[0], kBook.wstring()),
+          "реестр книги не узнал, отказ назван событием один раз, строкой с путём");
 
     std::filesystem::remove(ws.coverDirectory());
     const Registered registered = registerFrom(ws, document, kBook, bytes.size());
     ws.registrationRefused().remove_change(refusedWatch);
 
-    check(registered.isNew && ws.library.cards().size() == 1 && refusals.empty() &&
+    check(registered.isNew && ws.library.cards().size() == 1 && refusals.size() == 1 &&
               filesIn(ws.coverDirectory()) == 1,
           "замок свободен: следующая регистрация встаёт со своей обложкой");
+}
+
+/// Ждущий шага ушёл — его задачу сбросили, пока шаг стоит на записи обложки
+/// (так новое открытие сбрасывает прежнее): шаг — задача рабочего места, он
+/// доходит до реестра, обложка записана, и `registering()` опускается только
+/// после него. Отказ шага, которого уже никто не ждёт, рабочее место называет
+/// один раз.
+void testLockDroppedCallerStepGoesOn() {
+    std::printf("\n=== замок регистраций: ждущий ушёл, шаг идёт ===\n");
+
+    Sandbox box("lock-dropped");
+    Workspace ws(box.root, never);
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document{std::string(bytes)};
+
+    std::vector<std::wstring> refusals;
+    event_token refusedWatch = ws.registrationRefused().on_change(
+        [&refusals](const std::wstring& line) noexcept { refusals.push_back(line); });
+
+    {
+        HeldWorker heldWorker;
+        task<Registered> caller = registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()});
+        check(!caller.done() && ws.registering(), "шаг стоит на записи обложки за занятым потоком, ждущий ждёт его");
+        caller = {};
+        check(ws.registering(), "ждущий ушёл, а шаг остался у рабочего места");
+        heldWorker.open();
+    }
+    sta_loop::run_until([&] { return !ws.registering(); });
+
+    const BookEntry* entry = ws.library.findFile(kBook);
+    const u16_text guid = entry ? entry->guid : u16_text{};
+    check(entry && !entry->cover.empty() && std::filesystem::exists(ws.coverDirectory() / entry->cover.wchars()) &&
+              refusals.empty(),
+          "шаг дошёл до реестра: книга встала со своей обложкой, отказа нет");
+
+    const Registered again = registerFrom(ws, document, kBook, bytes.size());
+    check(!again.isNew && !again.isChanged && again.entry.guid == guid, "та же книга снова — та же запись");
+
+    // Отказ шага, которого никто не ждёт: копия книги с другого пути — та же
+    // книга, запись другая, и шаг пишет обложку, а на месте каталога обложек
+    // файл.
+    const std::filesystem::path copy = box.root / L"copy.fb3";
+    std::filesystem::copy_file(kBook, copy);
+    std::filesystem::remove_all(ws.coverDirectory());
+    putOnDisk(ws.coverDirectory(), "");
+    {
+        HeldWorker heldWorker;
+        task<Registered> caller = registrationOf(ws, document, BookFile{.path = copy, .size = bytes.size()});
+        check(!caller.done(), "шаг копии стоит на записи обложки");
+        caller = {};
+        heldWorker.open();
+    }
+    sta_loop::run_until([&] { return !ws.registering(); });
+    ws.registrationRefused().remove_change(refusedWatch);
+
+    check(refusals.size() == 1 && holds(refusals[0], copy.wstring()),
+          "отказ шага, которого никто не ждёт, назван один раз, строкой с путём");
+    check(ws.library.findFile(kBook) && !ws.library.findFile(copy), "запись книги прежняя");
+
+    std::filesystem::remove(ws.coverDirectory());
 }
 
 /// Регистраций своих книг обход не ждёт, и их исходы говорят события
@@ -3426,7 +3498,6 @@ void testLockScanStops() {
         cancellation_source scanStop;
         task<Registered> going = scanBehindStep(ws, folder, scanStop.token());
         scanStop.cancel();
-        check(ws.registering(), "отмена обхода регистрацию его книги, ждущую замка, не кончает");
 
         const Registered held = run(std::move(going));
         sta_loop::run_until([&] { return !ws.registering(); });
@@ -3476,10 +3547,9 @@ void testLockScanStops() {
 
         task<Registered> going = scanBehindStep(ws, folder, never);
         application.cancel();
-        sta_loop::run_until([&] { return !ws.registering(); });
-        check(!going.done(), "отменённое выходом ожидание кончилось, не дожидаясь шага впереди");
 
         const Registered held = run(std::move(going));
+        sta_loop::run_until([&] { return !ws.registering(); });
         ws.bookRegistered().remove_change(registeredWatch);
         ws.registrationRefused().remove_change(refusedWatch);
 
@@ -3489,7 +3559,45 @@ void testLockScanStops() {
     }
 }
 
+/// Проба остановки рабочего места: уйти, пока шаг регистрации идёт.
+constexpr std::string_view kWorkspaceDiesRegistering = "workspace-dies-registering";
+
+/// Рабочее место, ушедшее посреди регистрации, — остановка своей строкой. Сама
+/// проба — в дочернем запуске (`runWorkspaceStopProbe`).
+void testWorkspaceStopsWhileRegistering() {
+    std::printf("\n=== рабочее место: уход посреди регистрации — остановка ===\n");
+    checkStopProbe(kWorkspaceDiesRegistering, "~Workspace: регистрация книги ещё идёт");
+}
+
 }  // namespace
+
+bool isWorkspaceStopProbe(std::string_view probeName) {
+    return probeName == kWorkspaceDiesRegistering;
+}
+
+/// Дочерний запуск пробы: рабочее место под токеном, которого никто не
+/// отменит, уходит, пока его шаг регистрации стоит на записи обложки.
+/// Рабочий поток занят до конца пробы, и запись до диска не доходит: каталога
+/// рабочего места нет и не будет, и проба ничего после себя не оставляет.
+/// Остановилась — сюда не вернулась; не остановилась — кончается сразу
+/// (_Exit), ничего не разрушая, и родитель засчитает провал.
+int runWorkspaceStopProbe(std::string_view) {
+    sta_loop::start("bukvitsa.lib tests: stop probe I/O");
+
+    const std::string bytes = onDisk(kBook);
+    const fb3::Document document{std::string(bytes)};
+    const std::filesystem::path nowhere =
+        std::filesystem::temp_directory_path() /
+        (L"bukvitsa-lib-tests-stop-probe-" + std::to_wstring(::GetCurrentProcessId()));
+
+    HeldWorker heldWorker;
+    {
+        Workspace ws(nowhere, never);
+        task<Registered> registration = registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()});
+        if (registration.done() || !ws.registering()) std::_Exit(0);
+    }
+    std::_Exit(0);
+}
 
 // Тесты других слоёв модели — каждый в своём файле.
 void runSkinEditorTests();
@@ -3595,6 +3703,7 @@ int main(int argc, char* argv[]) {
     testLockCoverRefused();
     testLockScanTellsOutcomes();
     testLockScanStops();
+    testWorkspaceStopsWhileRegistering();
 
     runPiecesTests();
     // Поток страниц верстает настоящую книгу: DirectWrite и WIC — после COM.
