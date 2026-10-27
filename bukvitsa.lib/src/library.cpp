@@ -76,11 +76,6 @@ bool samePlace(u16_view oneBookId, const std::filesystem::path& onePath, u16_vie
     return (oneBookId.empty() || otherBookId.empty()) && samePath(onePath, otherPath);
 }
 
-bool sameBook(u16_view oneBookId, const std::filesystem::path& onePath, u16_view otherBookId,
-              const std::filesystem::path& otherPath) {
-    return sameBookId(oneBookId, otherBookId) || samePlace(oneBookId, onePath, otherBookId, otherPath);
-}
-
 ShelfCard::ShelfCard(BookEntry book)
     : entry(std::move(book)), progress(entry.characterCount == 0 ? progressLine(0, 0) : u16_text{}) {}
 

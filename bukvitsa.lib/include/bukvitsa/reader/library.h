@@ -301,11 +301,6 @@ bool sameBookId(u16_view one, u16_view other);
 bool samePlace(u16_view oneBookId, const std::filesystem::path& onePath, u16_view otherBookId,
                const std::filesystem::path& otherPath);
 
-/// Та же книга — по UUID или по пути (шапка, «у книги две личности»): то же
-/// правило, по которому её узнаёт реестр (`Library::findSame`, `add`).
-bool sameBook(u16_view oneBookId, const std::filesystem::path& onePath, u16_view otherBookId,
-              const std::filesystem::path& otherPath);
-
 /// Новый guid записи реестра, в фигурных скобках, как их пишет Windows.
 u16_text newGuid();
 

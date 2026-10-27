@@ -1292,7 +1292,7 @@ void testWorkspaceStartsEmpty() {
     std::printf("\n=== рабочее место: первый запуск ===\n");
 
     Sandbox box("empty");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const Started started = run(ws.start(never));
 
@@ -1316,7 +1316,7 @@ void testWorkspaceKeepsBrokenFiles() {
     const std::string brokenLibrary = "<library><book authors=\"Фрэнк";
 
     {
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         putOnDisk(ws.settingsPath(), brokenSettings);
         putOnDisk(ws.skinsPath(), brokenSkins);
         putOnDisk(ws.libraryPath(), brokenLibrary);
@@ -1347,7 +1347,7 @@ void testWorkspaceKeepsBrokenFiles() {
 
     const std::string brokenAgain = "<settings version=\"4\"><view margin=\"0.0";
     {
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         putOnDisk(ws.settingsPath(), brokenAgain);
 
         run(ws.start(never));
@@ -1448,7 +1448,7 @@ void testWorkspaceNamesCorrectedSkins() {
 
     {
         Sandbox box("corrected");
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         putOnDisk(ws.skinsPath(), xml);
 
         const Started started = run(ws.start(never));
@@ -1514,7 +1514,7 @@ void testWorkspaceNamesCorrectedSkins() {
         std::string incompleteXml = incompleteRegistry.toXml();
         check(handEditCurve(incompleteXml, "<top>", {1}, 1) && handEditCurve(incompleteXml, "<bottom>", {2, 3}, 2),
               "реестр поправлен руками: высоты стёрты, лишние точки дописаны");
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         putOnDisk(ws.skinsPath(), incompleteXml);
 
         const Started started = run(ws.start(never));
@@ -1536,7 +1536,7 @@ void testWorkspaceNamesCorrectedSkins() {
         Skins oneEdited;
         oneEdited.put(good);
         oneEdited.put(folded);
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         putOnDisk(ws.skinsPath(), oneEdited.toXml());
 
         const Started started = run(ws.start(never));
@@ -1556,7 +1556,7 @@ void testWorkspaceNamesCorrectedSkins() {
         Skins onlySkipped;
         onlySkipped.put(good);
         onlySkipped.put(imageless);
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         putOnDisk(ws.skinsPath(), onlySkipped.toXml());
 
         const Started started = run(ws.start(never));
@@ -1575,7 +1575,7 @@ void testWorkspaceNamesCorrectedSkins() {
         Sandbox box("corrected-none");
         Skins clean;
         clean.put(good);
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         putOnDisk(ws.skinsPath(), clean.toXml());
 
         const Started started = run(ws.start(never));
@@ -1590,7 +1590,7 @@ void testWorkspaceRegistersBook() {
     std::printf("\n=== рабочее место: регистрация книги ===\n");
 
     Sandbox box("register");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -1622,7 +1622,7 @@ void testWorkspaceKeepsLastBookGuid() {
     std::printf("\n=== рабочее место: guid последней книги ===\n");
 
     Sandbox box("remembered");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -1652,7 +1652,7 @@ void testWorkspaceOpensBook() {
     std::printf("\n=== рабочее место: открытие книги ===\n");
 
     Sandbox box("open");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const LoadedBook loaded = run(ws.readBook(kBook, never));
 
@@ -1703,7 +1703,7 @@ void testWorkspaceOpensBook() {
     check(reopened.state.charOffset == 12345, "повторное открытие — то же место");
     check(run(ws.lastBookPath(never)) == kBook, "последняя книга — она");
 
-    Workspace later(box.root);
+    Workspace later(box.root, never);
     const Started started = run(later.start(never));
     check(started.notices.empty() && started.lastBook == kBook, "следующий запуск продолжит её");
 }
@@ -1715,7 +1715,7 @@ void testWorkspaceAddsFolder() {
     std::printf("\n=== рабочее место: обход каталога ===\n");
 
     Sandbox box("folder");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::filesystem::path folder = box.root / L"shelf";
     std::filesystem::create_directories(folder);
@@ -1798,7 +1798,7 @@ void testWorkspaceScanNamesBrokenBooks() {
     std::printf("\n=== рабочее место: битые книги в обходе ===\n");
 
     Sandbox box("broken-books");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     // Обложка романа — его миниатюра fb3/img/cover.jpg, она же img1 тела.
     const std::string brokenCover = withBrokenPart(onDisk(kBook), "fb3/img/cover.jpg");
@@ -1850,7 +1850,7 @@ void testWorkspaceRescansFolders() {
     const std::filesystem::path otherBook = folder / kOtherBook.filename();
 
     {
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
 
         const Scanned added = scanned(ws, ws.addFolder(folder, never));
         check(added.listed == 2 && added.queued == 2 && added.added == 2 && added.marked == 0 && added.unread.empty(),
@@ -1869,7 +1869,7 @@ void testWorkspaceRescansFolders() {
 
     // Новый запуск — по файлу реестра: каталог, время и место книг пережили
     // запись.
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
     const Started started = run(ws.start(never));
     check(started.notices.empty() && ws.library.folders().size() == 1 && ws.library.cards().size() == 2,
           "запуск: каталог и книги — из файла");
@@ -1974,7 +1974,7 @@ void testWorkspaceCoverBeforeCard() {
 
     Sandbox box("cover-first");
     const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     uint32_t heard = 0;
     uint32_t ready = 0;
@@ -2022,7 +2022,7 @@ void testWorkspaceReadsLibraryV1() {
     std::string v1;
     u16_text guid;
     {
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         const std::string bytes = onDisk(book);
         const fb3::Document document{std::string(bytes)};
         guid = registerFrom(ws, document, book, bytes.size()).entry.guid;
@@ -2038,7 +2038,7 @@ void testWorkspaceReadsLibraryV1() {
               occurrences(v1, " folder=") == 0 && occurrences(v1, "<folders>") == 0,
           "файл первой версии: ни каталогов, ни времени");
 
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
     putOnDisk(ws.libraryPath(), v1);
 
     const Started started = run(ws.start(never));
@@ -2088,7 +2088,7 @@ void testWorkspaceRescanSeesSize() {
     const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
     const std::filesystem::path book = folder / kBook.filename();
 
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
     scanned(ws, ws.addFolder(folder, never));
 
     const u16_text guid = ws.library.findFile(book)->guid;
@@ -2131,7 +2131,7 @@ void testWorkspaceRescanTellsReplacedBook() {
     const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
     const std::filesystem::path book = folder / kBook.filename();
 
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
     scanned(ws, ws.addFolder(folder, never));
 
     // У прежней книги — место чтения и строка прогресса на карточке.
@@ -2177,7 +2177,7 @@ void testWorkspaceRescanAdoptsStrayEntry() {
     // — настоящие.
     std::string xml;
     {
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         scanned(ws, ws.addFolder(folder, never));
         xml = ws.library.toXml();
     }
@@ -2186,7 +2186,7 @@ void testWorkspaceRescanAdoptsStrayEntry() {
     if (const size_t at = xml.find(own); at != std::string::npos) xml.replace(at, own.size(), stray);
     check(occurrences(xml, own) == 1 && occurrences(xml, stray) == 1, "у одной книги каталог чужой");
 
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
     putOnDisk(ws.libraryPath(), xml);
     run(ws.start(never));
 
@@ -2206,7 +2206,7 @@ void testWorkspaceFindsLastBook() {
     std::printf("\n=== рабочее место: последняя книга ===\n");
 
     Sandbox box("last");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -2256,7 +2256,7 @@ void testWorkspaceTellsImages() {
     std::printf("\n=== рабочее место: снимок ===\n");
 
     Sandbox box("image");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const DecodedPicture photo = run(ws.probeImageAsync(kPhoto, never));
     check(photo.verdict.refusal == PictureRefusal::None && sized(photo.pixels, 800, 507),
@@ -2547,7 +2547,7 @@ void testProbeDecodesOnce() {
     std::printf("\n=== проба снимка: один проход раскодирования ===\n");
 
     Sandbox box("probe-once");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const size_t before = sta_loop::outstanding();
     task<DecodedPicture> probing = ws.probeImageAsync(kPhoto, never);
@@ -2573,7 +2573,7 @@ void testStateGoesUnderPlacesGuid() {
     std::printf("\n=== место чтения — под guid мест книги ===\n");
 
     Sandbox box("places");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const LoadedBook first = run(ws.readBook(kBook, never));
     Opened firstOpened = run(openIn(ws, first, never));
@@ -2605,7 +2605,7 @@ void testWorkspaceReadsStopOnRequest() {
     std::printf("\n=== отмена: чтения ===\n");
 
     Sandbox box("stop-reads");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     cancellation_source source;
     source.cancel();
@@ -2641,14 +2641,14 @@ void testWorkspaceStartReadsModelsWhole() {
     Sandbox box("stop-start");
 
     {
-        Workspace ws(box.root);
+        Workspace ws(box.root, never);
         ws.settings.fontSize.set(31.0);
         ws.settings.lastBookGuid = newGuid();
         ws.settings.lastBookPath = kBook;
         run(ws.saveSettings());
     }
 
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     cancellation_source source;
     source.cancel();
@@ -2668,7 +2668,7 @@ void testWorkspaceOpenStopsOnStateRead() {
     std::printf("\n=== отмена: открытие книги ===\n");
 
     Sandbox box("stop-open");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const LoadedBook loaded = run(ws.readBook(kBook, never));
 
@@ -2753,7 +2753,7 @@ void testWorkspaceScanStopsAfterListing() {
 
     Sandbox box("stop-listing");
     const std::filesystem::path folder = shelfOf(box, {kBook});
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
     scanned(ws, ws.addFolder(folder, never));
 
     // Файл ушёл — перепроверка пометила бы его запись «не найдена».
@@ -2795,7 +2795,7 @@ void testWorkspaceSaveSkinStopsBeforeWrites() {
     std::printf("\n=== отмена: сохранение обложки ===\n");
 
     Sandbox box("stop-skin");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::filesystem::path photo = testdata / L"bg_paper2.jpg";
 
@@ -2843,7 +2843,7 @@ void testWorkspaceDeleteSkinStopsBeforeChange() {
     std::printf("\n=== отмена: удаление обложки ===\n");
 
     Sandbox box("stop-delete-skin");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     Skin skin = defaultSkin();
     skin.name = u16_text{u"Бумага"};
@@ -2880,7 +2880,7 @@ void testWorkspaceSkinsWriteRefused() {
     std::printf("\n=== отказ записи реестра обложек ===\n");
 
     Sandbox box("refused-skins");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     for (const u16_view name : {u16_view{u"Alpha"}, u16_view{u"Beta"}, u16_view{u"Gamma"}, u16_view{u"Delta"}}) {
         Skin skin = defaultSkin();
@@ -2985,7 +2985,7 @@ void testWorkspaceReadsStopWithParent() {
     std::printf("\n=== отмена: дерево источников ===\n");
 
     Sandbox box("stop-tree");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     cancellation_source parent;
     auto const child = cancellation_source{parent.token()};
@@ -3011,7 +3011,7 @@ void testWorkspaceFolderKeepsWhatShelfShowed() {
     std::printf("\n=== отмена: обход каталога ===\n");
 
     Sandbox box("stop-folder");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::filesystem::path folder = box.root / L"shelf";
     std::filesystem::create_directories(folder);
@@ -3023,9 +3023,8 @@ void testWorkspaceFolderKeepsWhatShelfShowed() {
     // петле проб рабочий поток один, и его каналы — очереди по порядку: запись
     // обложки кончается раньше чтения, карточка встаёт, отмена приходит, и
     // прочитанное после неё регистрации не отдаётся. Под очередью окна Reader
-    // операции идут в пул системы, и там порядок может быть иным: шаг,
-    // взявший замок до отмены, доходит до реестра, а регистрация, ждущая
-    // замка, кончается отменой обхода.
+    // операции идут в пул системы, и там порядок может быть иным — отданное
+    // до отмены встаёт: регистрации отданных книг отмена обхода не трогает.
     cancellation_source source;
     uint32_t registered = 0;
     event_token watch =
@@ -3060,7 +3059,7 @@ void testWorkspaceRescanKeepsWhatShelfShowed() {
 
     Sandbox box("stop-rescan");
     const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook});
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
     scanned(ws, ws.addFolder(folder, never));
 
     // Обе изменились — обе пошли бы на чтение.
@@ -3125,7 +3124,7 @@ void testLockSameBookAtOnce() {
     std::printf("\n=== замок регистраций: одна книга дважды разом ===\n");
 
     Sandbox box("lock-same");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -3159,7 +3158,7 @@ void testLockNewBookFromTwoPaths() {
     std::printf("\n=== замок регистраций: новая книга с двух путей разом ===\n");
 
     Sandbox box("lock-two-paths");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -3190,7 +3189,7 @@ void testLockScanThenOpen() {
     std::printf("\n=== замок регистраций: обход, затем открытие того же файла ===\n");
 
     Sandbox box("lock-scan-open");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -3219,7 +3218,7 @@ void testLockKeepsOrder() {
     std::printf("\n=== замок регистраций: по порядку прихода ===\n");
 
     Sandbox box("lock-order");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -3255,7 +3254,7 @@ void testLockWaitEndsWithToken() {
     std::printf("\n=== замок регистраций: отмена на ожидании замка ===\n");
 
     Sandbox box("lock-wait-stop");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -3286,7 +3285,7 @@ void testLockHeldStepIgnoresToken() {
     std::printf("\n=== замок регистраций: отмена после того, как шаг взял замок ===\n");
 
     Sandbox box("lock-held");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -3314,7 +3313,7 @@ void testLockCoverRefused() {
     std::printf("\n=== замок регистраций: обложка не записалась ===\n");
 
     Sandbox box("lock-refused");
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
@@ -3351,7 +3350,7 @@ void testLockScanTellsOutcomes() {
 
     Sandbox box("lock-scan");
     const std::filesystem::path folder = shelfOf(box, {kBook, kOtherBook, kThirdBook});
-    Workspace ws(box.root);
+    Workspace ws(box.root, never);
 
     const Scanned added = scanned(ws, ws.addFolder(folder, never));
     check(added.queued == 3 && added.registered == 3 && added.added == 3 && added.refused.empty() &&
@@ -3376,73 +3375,118 @@ void testLockScanTellsOutcomes() {
     std::filesystem::remove(cover);
 }
 
-/// Отмена обхода, когда регистрация его книги ждёт замка за чужим шагом:
-/// ожидание кончается отменой, книга не встаёт, и рабочее место ничего не
-/// говорит. Регистрация обхода, взявшая замок, отмену не слушает: книга
-/// встаёт, а `registering()` опускается, только когда кончится её шаг.
+/// Регистрации книг обхода ждут замка под общим токеном приложения, а не под
+/// токеном обхода: источник обхода живёт в его сценарии и уходит вместе с
+/// ним, а отданные книги должны встать. Отмена источника обхода, пока его
+/// регистрация ждёт замка за чужим шагом, её не трогает — книга встаёт.
+/// Выход приложения кончает ожидание отменой — книга не встаёт, и рабочее
+/// место ничего не говорит, — а шаг, взявший замок, доходит до реестра, и
+/// `registering()` опускается, только когда он кончится.
 void testLockScanStops() {
-    std::printf("\n=== замок регистраций: отмена обхода ===\n");
+    std::printf("\n=== замок регистраций: отмена обхода и выход ===\n");
 
     Sandbox box("lock-scan-stop");
-    const std::filesystem::path folder = shelfOf(box, {kOtherBook});
-    Workspace ws(box.root);
-
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
-
-    std::vector<std::wstring> refusals;
-    uint32_t registered = 0;
-    event_token refusedWatch = ws.registrationRefused().on_change(
-        [&refusals](const std::wstring& line) noexcept { refusals.push_back(line); });
-    event_token registeredWatch =
-        ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
 
     // Каталог в реестре — знак, что листинг сведён и чтение книги ушло
     // рабочему потоку: добавление делает и то и другое одним ходом. Чужой шаг
     // берёт замок следом, и его запись обложки уходит потоку после чтения:
     // регистрация книги обхода застаёт замок занятым.
-    cancellation_source scanStop;
-    task<ScanReport> scan = ws.addFolder(folder, scanStop.token());
-    sta_loop::run_until([&] { return !ws.library.folders().empty(); });
-    task<Registered> going = registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()});
-    check(!going.done(), "чужой шаг взял замок и стоит на записи обложки");
+    const auto scanBehindStep = [&](Workspace& ws, const std::filesystem::path& folder,
+                                    cancellation_token scanToken) {
+        task<ScanReport> scan = ws.addFolder(folder, std::move(scanToken));
+        sta_loop::run_until(
+            [&] { return !ws.library.folders().empty() && samePath(ws.library.folders().back(), folder); });
+        task<Registered> going = registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()});
+        check(!going.done(), "чужой шаг взял замок и стоит на записи обложки");
 
-    sta_loop::run_until([&] { return scan.done(); });
-    check(ws.registering() && !going.done(), "обход кончился, регистрация его книги ждёт замка");
+        sta_loop::run_until([&] { return scan.done(); });
+        check(run(std::move(scan)).queued == 1 && ws.registering() && !going.done(),
+              "обход кончился, регистрация его книги ждёт замка");
+        return going;
+    };
 
-    scanStop.cancel();
-    sta_loop::run_until([&] { return !ws.registering(); });
-    check(!going.done(), "отменённое ожидание кончилось, не дожидаясь шага впереди");
+    {
+        // Отмена источника обхода — то же, что его уход со сценарием.
+        std::filesystem::create_directories(box.root / L"scan-source");
+        cancellation_source application;
+        Workspace ws(box.root / L"scan-source", application.token());
+        const std::filesystem::path folder = box.root / L"shelf-one";
+        std::filesystem::create_directories(folder);
+        std::filesystem::copy_file(kOtherBook, folder / kOtherBook.filename());
 
-    const Registered held = run(std::move(going));
-    check(run(std::move(scan)).queued == 1 && held.isNew && registered == 1 && refusals.empty(),
-          "отмена ожидания — не отказ: рабочее место молчит");
-    check(ws.library.cards().size() == 1 && !ws.library.findFile(folder / kOtherBook.filename()),
-          "книга обхода не встала");
+        std::vector<std::wstring> refusals;
+        uint32_t registered = 0;
+        event_token refusedWatch = ws.registrationRefused().on_change(
+            [&refusals](const std::wstring& line) noexcept { refusals.push_back(line); });
+        event_token registeredWatch =
+            ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
 
-    // Шаг, взявший замок: копия книги с полки другого каталога — та же книга,
-    // запись другая, и шаг пишет обложку; обход кончился раньше записи.
-    const std::filesystem::path anotherFolder = box.root / L"another";
-    std::filesystem::create_directories(anotherFolder);
-    std::filesystem::copy_file(kBook, anotherFolder / kBook.filename());
+        cancellation_source scanStop;
+        task<Registered> going = scanBehindStep(ws, folder, scanStop.token());
+        scanStop.cancel();
+        check(ws.registering(), "отмена обхода регистрацию его книги, ждущую замка, не кончает");
 
-    cancellation_source secondStop;
-    task<ScanReport> second = ws.addFolder(anotherFolder, secondStop.token());
-    sta_loop::run_until([&] { return second.done(); });
-    check(ws.registering(), "обход кончился, шаг его книги стоит на записи обложки");
+        const Registered held = run(std::move(going));
+        sta_loop::run_until([&] { return !ws.registering(); });
+        check(held.isNew && ws.library.findFile(folder / kOtherBook.filename()) && registered == 2 &&
+                  refusals.empty(),
+              "дождавшись замка, книга обхода встала");
 
-    secondStop.cancel();
-    check(ws.registering(), "отмена обхода шаг, взявший замок, не кончает");
-    sta_loop::run_until([&] { return !ws.registering(); });
+        // Шаг, взявший замок: копия книги с полки другого каталога — та же
+        // книга, запись другая, и шаг пишет обложку; обход кончился раньше
+        // записи, и тогда выходит приложение.
+        const std::filesystem::path anotherFolder = box.root / L"shelf-two";
+        std::filesystem::create_directories(anotherFolder);
+        std::filesystem::copy_file(kBook, anotherFolder / kBook.filename());
 
-    ws.bookRegistered().remove_change(registeredWatch);
-    ws.registrationRefused().remove_change(refusedWatch);
+        task<ScanReport> second = ws.addFolder(anotherFolder, never);
+        sta_loop::run_until([&] { return second.done(); });
+        check(ws.registering(), "обход кончился, шаг его книги стоит на записи обложки");
 
-    const BookEntry* moved = ws.library.findFile(anotherFolder / kBook.filename());
-    check(run(std::move(second)).queued == 1 && moved && moved->guid == held.entry.guid && registered == 2 &&
-              refusals.empty(),
-          "шаг дошёл до реестра: книга перешла к файлу второго каталога под прежним guid");
-    check(std::filesystem::exists(ws.coverDirectory() / moved->cover.wchars()), "обложка записана");
+        application.cancel();
+        check(ws.registering(), "выход шаг, взявший замок, не кончает");
+        sta_loop::run_until([&] { return !ws.registering(); });
+
+        ws.bookRegistered().remove_change(registeredWatch);
+        ws.registrationRefused().remove_change(refusedWatch);
+
+        const BookEntry* moved = ws.library.findFile(anotherFolder / kBook.filename());
+        check(run(std::move(second)).queued == 1 && moved && moved->guid == held.entry.guid && registered == 3 &&
+                  refusals.empty(),
+              "шаг дошёл до реестра: книга перешла к файлу второго каталога под прежним guid");
+        check(std::filesystem::exists(ws.coverDirectory() / moved->cover.wchars()), "обложка записана");
+    }
+    {
+        // Выход, пока регистрация книги обхода ждёт замка.
+        std::filesystem::create_directories(box.root / L"exit");
+        cancellation_source application;
+        Workspace ws(box.root / L"exit", application.token());
+        const std::filesystem::path folder = box.root / L"shelf-three";
+        std::filesystem::create_directories(folder);
+        std::filesystem::copy_file(kOtherBook, folder / kOtherBook.filename());
+
+        std::vector<std::wstring> refusals;
+        uint32_t registered = 0;
+        event_token refusedWatch = ws.registrationRefused().on_change(
+            [&refusals](const std::wstring& line) noexcept { refusals.push_back(line); });
+        event_token registeredWatch =
+            ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
+
+        task<Registered> going = scanBehindStep(ws, folder, never);
+        application.cancel();
+        sta_loop::run_until([&] { return !ws.registering(); });
+        check(!going.done(), "отменённое выходом ожидание кончилось, не дожидаясь шага впереди");
+
+        const Registered held = run(std::move(going));
+        ws.bookRegistered().remove_change(registeredWatch);
+        ws.registrationRefused().remove_change(refusedWatch);
+
+        check(held.isNew && registered == 1 && refusals.empty(), "отмена ожидания — не отказ: рабочее место молчит");
+        check(ws.library.cards().size() == 1 && !ws.library.findFile(folder / kOtherBook.filename()),
+              "книга обхода не встала");
+    }
 }
 
 }  // namespace

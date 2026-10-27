@@ -99,7 +99,7 @@ App::App()
           // спросить.
           dsl::onClosed += method(this, &App::close),
       }},
-      ws_{standardDataDirectory()},
+      ws_{standardDataDirectory(), stop_.token()},
       notices_{window_, screenTheme_, stop_.token()},
       presenter_{ws_.settings, themes_, idleScheduler_, *this, stop_.token()},
       start_{window_.chromeCompositor(), *this},

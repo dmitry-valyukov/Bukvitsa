@@ -184,14 +184,15 @@ std::filesystem::path standardDataDirectory() {
     return path / L"Bukvitsa" / L"Reader";
 }
 
-Workspace::Workspace(std::filesystem::path directory) : directory_(std::move(directory)) {}
+Workspace::Workspace(std::filesystem::path directory, cancellation_token appStop)
+    : directory_(std::move(directory)), appStop_(std::move(appStop)) {}
 
 Workspace::~Workspace() {
     // Регистрации обходов — поле рабочего места, и уход рабочего места посреди
     // такой регистрации остановил бы её на шаге или на ожидании замка: книга
     // не встала бы, а о том, что не встала, никто бы не узнал. Регистрация
-    // кончается всегда — шагом или отменой токена обхода, — так что застать
-    // её здесь — нарушенный порядок выхода.
+    // кончается всегда — шагом или отменой общего токена, которую приносит
+    // выход, — так что застать её здесь — нарушенный порядок выхода.
     if (registering()) wxl::core::abort("~Workspace: регистрация книги обхода ещё идёт");
 }
 
@@ -275,8 +276,8 @@ task<> Workspace::registerScanned(fb3::Description description, uint32_t charact
         // ждёт, и сказать об отказе, кроме рабочего места, некому.
         registrationRefused_.event_(unreadLine(path, failure));
     } catch (const operation_canceled_exception&) {
-        // Отмена — не отказ: обход отменил тот, кто его ждёт, и ему о книгах,
-        // которые так и не встали, говорить незачем.
+        // Отмена — не отказ: её приносит выход приложения, и книга, не
+        // дождавшаяся замка, просто не встаёт — говорить о ней уже некому.
     } catch (const std::exception& failure) {
         // Всё прочее — не исход шага: шаг обещает только сбой записи обложки,
         // а иное (нехватка памяти и подобное) — нарушенное обещание. Задачу
@@ -578,11 +579,10 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
             ++report.marked;
     }
 
-    // Отмена кончает обход на чтении следующей книги, а с ним и регистрации
-    // его книг, которые ещё ждут замка: они идут под токеном обхода. Шаг,
-    // взявший замок, доходит до реестра, и реестр в памяти его книгу узнает;
-    // файл реестра отсюда не пишется — его пишет вызывающий, и после отмены
-    // тоже.
+    // Отмена кончает обход на чтении следующей книги. Книги, отданные до неё,
+    // регистрируются — их регистрации отмена обхода не трогает, — и реестр в
+    // памяти их узнает; файл реестра отсюда не пишется — его пишет
+    // вызывающий, и после отмены тоже.
     for (const BookFile& book : books) {
         // Тот же файл не читается вовсе: запись этого каталога с тем же
         // размером и тем же временем правки — тот же файл, и ни чтение, ни
@@ -668,9 +668,14 @@ task<ScanReport> Workspace::scanListing(std::filesystem::path folder,
         // этой: что встало и что не встало, говорят события рабочего места, а
         // задачу регистрации держит рабочее место. Кончившиеся выметаются
         // перед новой: список не длиннее регистраций, которые идут.
+        //
+        // Токен — общий, приложения, а не обхода: источник обхода живёт в его
+        // сценарии и уходит вместе с ним, как только обход вернётся, — а
+        // регистрации, ещё ждущие замка, кончились бы его уходом, и их книги
+        // пропали бы с полки молча. Их ожидание кончает только выход.
         std::erase_if(scanRegistrations_, [](const task<>& registration) { return registration.done(); });
         task<> registration =
-            registerScanned(std::move(description), characterCount, std::move(cover), std::move(file), token);
+            registerScanned(std::move(description), characterCount, std::move(cover), std::move(file), appStop_);
         scanRegistrations_.push_back(std::move(registration));
         ++report.queued;
     }
