@@ -22,6 +22,9 @@ set(BUKVITSA_WXL_DOCS_URL "../../wxl/html/" CACHE STRING
 # Сайт wxl, собранный рядом. Не копия её собственной цели `docs`, а та же самая
 # машинерия с теми же входами: дерево wxl одно, и собирать её сайт из дерева
 # Буквицы дешевле, чем требовать двух настроенных деревьев ради одной ссылки.
+# Входы, исключения и каталоги картинок даёт сама wxl: своя копия списка
+# отставала от её дерева, и сайт останавливался на входе, которого уже нет.
+wxl_doxygen_tree_inputs(_wxl_input _wxl_exclude _wxl_images "${BUKVITSA_WXL_ROOT}")
 wxl_add_doxygen_site(docs_wxl
     PROJECT_NAME "wxl"
     BRIEF        "базовая библиотека Буквицы"
@@ -30,34 +33,9 @@ wxl_add_doxygen_site(docs_wxl
     MAINPAGE     "${BUKVITSA_WXL_ROOT}/docs/index.md"
     OUTPUT       "${CMAKE_BINARY_DIR}/docs/wxl"
     TAGFILE      "${CMAKE_BINARY_DIR}/docs/wxl.tag"
-    # Список повторяет INPUT из wxl/docs/CMakeLists.txt и обязан за ним следовать:
-    # новый модуль там, забытый здесь, роняет сборку сайта не отсутствием страниц,
-    # а неразрешимой ссылкой на них из index.md -- и только у Буквицы; каталог,
-    # убранный там и оставшийся здесь, останавливает Doxygen предупреждением о
-    # несуществующем входе.
-    INPUT
-        "${BUKVITSA_WXL_ROOT}/docs"
-        "${BUKVITSA_WXL_ROOT}/wxl.core/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.core/readme.md"
-        "${BUKVITSA_WXL_ROOT}/wxl.fmt/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.fmt/doc"
-        "${BUKVITSA_WXL_ROOT}/wxl.fmt/README.md"
-        "${BUKVITSA_WXL_ROOT}/wxl.async/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.logging/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.xml/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.json/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.html/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.bb/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.rsdn/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.highlight/src"
-        "${BUKVITSA_WXL_ROOT}/wxl.ui/src"
-    EXCLUDE
-        "*/tests/*"
-        "*/test/*"
-        "*/bench/*"
-        "*/benchmarks/*"
-        "*/packaging/*"
-        "*/tools/*"
+    INPUT        ${_wxl_input}
+    EXCLUDE      ${_wxl_exclude}
+    IMAGES       ${_wxl_images}
 )
 
 # Сайт Буквицы: API из заголовков и статьи из Reader/doc.
