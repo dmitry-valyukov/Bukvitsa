@@ -16,13 +16,10 @@
 # как успешное.
 name: commits
 
-# merge_group: ветка-кандидат очереди слияния, main плюс стоящие в очереди
-# пул-реквесты, проверяемая до того, как стать main. edited: новые заголовок
-# или описание пул-реквеста.
+# edited: новые заголовок или описание пул-реквеста.
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
-  merge_group:
 
 permissions:
   contents: read
@@ -31,12 +28,15 @@ permissions:
 # ненужным. Группы concurrency общие на весь репозиторий, поэтому имя у
 # группы своё: с группой ci.yml запуск этой проверки отменял бы сборку.
 concurrency:
-  group: commits-${{ github.event.pull_request.number || github.ref }}
+  group: commits-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   commits:
     name: commits
+    # edited приходит и для закрытого или уже влитого пул-реквеста: его
+    # проверять незачем.
+    if: github.event.pull_request.state == 'open'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -61,8 +61,8 @@ jobs:
       - name: Check the commits
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
@@ -97,12 +97,10 @@ jobs:
             fi
           }
 
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            where="pull request"
-            title=${PR_TITLE//$'\r'/ }
-            echo "pull request ${title//$'\n'/ }"
-            check_message "$PR_TITLE"$'\n\n'"$PR_BODY" "the title or the description"
-          fi
+          where="pull request"
+          title=${PR_TITLE//$'\r'/ }
+          echo "pull request ${title//$'\n'/ }"
+          check_message "$PR_TITLE"$'\n\n'"$PR_BODY" "the title or the description"
 
           # Скрытые записи, которые дерево хранит (правило 3).
           declare -A tracked_hidden=([.clatexmath-res_root]=1 [.github]=1 [.gitignore]=1)
