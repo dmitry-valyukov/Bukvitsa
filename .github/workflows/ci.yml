@@ -18,6 +18,9 @@
 # пакеты, строит проекцию, заводит каталог обёрток с пустым CMakeLists.txt,
 # собирает генератор и запускает его с профилем full. Скрипты для этого берутся
 # из самого дерева wxl, своих копий у Буквицы нет.
+#
+# Коммиты пул-реквеста, его заголовок и описание проверяет отдельный workflow,
+# commits.yml: он отвечает и на правку описания, а эта сборка — нет.
 name: ci
 
 # merge_group: ветка-кандидат очереди слияния, main плюс стоящие в очереди
@@ -98,159 +101,6 @@ jobs:
             exit 1
           fi
           echo "wxl $REVISION is on main"
-
-  # Каждый коммит, который приносит пул-реквест или кандидат очереди слияния,
-  # проверяется по правилам из CONTRIBUTING.md, под теми же номерами. Те же
-  # проверки сопровождающие делают ещё до пуша, так что эта — последний
-  # рубеж, а не единственный. Сборки она не ждёт: ей хватает истории,
-  # и отвечает она за секунды; разрешения contents: read ей достаточно.
-  commits:
-    name: commits
-    # У ручного запуска нет диапазона коммитов, проверять нечего.
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        shell: bash
-    steps:
-      # Вся история: диапазон начинается с основания, до которого неглубокий
-      # клон merge-ссылки пул-реквеста не достаёт. Задание ничего не пушит,
-      # так что токену в .git оставаться незачем.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      # Значения события приходят через env, а не подставляются в текст
-      # скрипта, и сверяются до того, как ими кто-то воспользуется. Строка
-      # коммита начинается с короткого SHA: тема, начатая с «::», печатается,
-      # а не принимается за команду раннеру.
-      - name: Check the commits
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-        run: |
-          for sha in "$BASE_SHA" "$HEAD_SHA"; do
-            if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
-              echo "::error::'$sha' is not a commit of this repository"
-              exit 1
-            fi
-          done
-
-          # Текст аннотации раннер раскодирует как URL: %, CR и LF
-          # экранируются, чтобы имя или путь не оборвали её и не начали новую.
-          faults=0
-          fault() {
-            local text="rule $1: $2"
-            text=${text//'%'/'%25'}
-            text=${text//$'\r'/'%0D'}
-            text=${text//$'\n'/'%0A'}
-            echo "::error title=commit $short::$text"
-            faults=$((faults + 1))
-          }
-
-          # Скрытые записи, которые дерево хранит (правило 3).
-          declare -A tracked_hidden=([.clatexmath-res_root]=1 [.github]=1 [.gitignore]=1)
-
-          commits=$(git rev-list --reverse "$BASE_SHA..$HEAD_SHA")
-          count=0
-          for sha in $commits; do
-            count=$((count + 1))
-            short=$(git rev-parse --short "$sha")
-            subject=$(git log -1 --format=%s "$sha")
-            echo "$short ${subject//$'\r'/ }"
-
-            # 5. История main линейная; у слияния остальные правила не
-            # проверяются: его всё равно не будет.
-            read -ra parents <<< "$(git rev-list --parents -n 1 "$sha")"
-            if [ "${#parents[@]}" -gt 2 ]; then
-              fault 5 "a merge commit; the history of main is linear"
-              continue
-            fi
-
-            # Подпись — поле заголовка объекта: заголовок кончается первой
-            # пустой строкой, и строка сообщения, начатая с gpgsig, подписью
-            # не считается. Объект читается целиком, без конвейера: под
-            # pipefail ранний выход grep оборвал бы git.
-            object=$(git cat-file commit "$sha")
-            signed=false
-            if grep -q '^gpgsig' <<< "${object%%$'\n\n'*}"; then
-              signed=true
-            fi
-
-            # 1. Адреса автора и коммиттера — noreply-адреса GitHub; совпадать
-            # они не обязаны: rebase при вливании через GitHub ставит
-            # коммиттером того, кто нажал кнопку, и не подписывает. Коммиттер
-            # GitHub <noreply@github.com> допустим только с подписью, которую
-            # правило 4 сверяет с GitHub: без неё назваться GitHub может
-            # каждый. %an и %ae, не %aN и %aE: личность как записана, без
-            # .mailmap посередине.
-            {
-              IFS= read -r author_email
-              IFS= read -r committer_name
-              IFS= read -r committer_email
-            } < <(git log -1 --format='%ae%n%cn%n%ce' "$sha")
-            if [[ "$author_email" != *@users.noreply.github.com ]]; then
-              fault 1 "author <$author_email> is not a @users.noreply.github.com address"
-            fi
-            if [ "$committer_name" = "GitHub" ] && [ "$committer_email" = "noreply@github.com" ]; then
-              if [ "$signed" != true ]; then
-                fault 1 "committer GitHub <noreply@github.com> on a commit without a signature"
-              fi
-            elif [[ "$committer_email" != *@users.noreply.github.com ]]; then
-              fault 1 "committer <$committer_email> is not a @users.noreply.github.com address"
-            fi
-
-            # 2. Строки-трейлеры: Co-Authored-By (у коммита один автор),
-            # строки-баннеры и строки-трейлеры со ссылкой. С начала строки и
-            # в том регистре, каким их пишут; ссылка в обычной фразе
-            # сообщения трейлером не считается.
-            message=$(git log -1 --format=%B "$sha")
-            if grep -qE '^(Co-Authored-By:|Co-authored-by:|🤖|Generated with \[)|^[A-Za-z]+(-[A-Za-z]+)*: https?://' <<< "$message"; then
-              fault 2 "the message carries a trailer line the rules exclude"
-            fi
-
-            # 3. Скрытые записи (компонент пути с точки) в дерево не входят,
-            # кроме перечисленных выше — ровно тех, что дерево хранит; новая
-            # добавляется в список сознательно. Проверяется каждый компонент
-            # пути, так что скрытый каталог не проходит ни на какой глубине. -z: путь приходит как есть, без кавычек git; --root:
-            # пути коммита без родителя тоже.
-            while IFS= read -r -d '' path; do
-              rest=$path
-              while :; do
-                part=${rest%%/*}
-                if [[ "$part" == .* ]] && [ -z "${tracked_hidden[$part]:-}" ]; then
-                  fault 3 "$path: the hidden entry $part is not one the tree keeps"
-                  break
-                fi
-                [[ "$rest" == */* ]] || break
-                rest=${rest#*/}
-              done
-            done < <(git diff-tree --no-commit-id --name-only -r -z --root "$sha")
-
-            # 4. Подпись, если она есть, должен признать GitHub: только он
-            # знает, чьи ключи привязаны к учётной записи. Неподписанный
-            # коммит проходит; отказ API — отдельная ошибка, а не «не признана».
-            if [ "$signed" = true ]; then
-              if ! verified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq .commit.verification.verified); then
-                fault 4 "signed, and GitHub could not be asked whether it verifies the signature"
-              elif [ "$verified" != "true" ]; then
-                fault 4 "signed with a signature GitHub does not verify"
-              fi
-            fi
-          done
-
-          if [ "$count" -eq 0 ]; then
-            echo "::error::no commits in $BASE_SHA..$HEAD_SHA"
-            exit 1
-          fi
-          if [ "$faults" -ne 0 ]; then
-            echo "::error::$faults fault(s) in $count commit(s); the rules are in CONTRIBUTING.md"
-            exit 1
-          fi
-          echo "$count commit(s), no faults"
 
   build:
     strategy:
