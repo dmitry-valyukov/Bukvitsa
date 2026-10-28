@@ -1,0 +1,248 @@
+# Проверка истории пул-реквеста: каждый коммит, который он приносит в main,
+# проверяется по правилам из CONTRIBUTING.md, под теми же номерами, а его
+# заголовок и описание — по правилу 2. Пул-реквест вливается объединением в
+# один коммит (squash): заголовок становится темой этого коммита, описание —
+# его телом, и нарушение в них лучше найти до вливания. Те же проверки
+# сопровождающие делают ещё до пуша, так что эта — последний рубеж, а не
+# единственный. Сборки она не ждёт: ей хватает истории, и отвечает она за
+# секунды; разрешения contents: read ей достаточно.
+#
+# Отдельный workflow, а не задание ci.yml, ради события edited: новые
+# заголовок и описание проверяются заново, а сборка на Windows не
+# повторяется. В ci.yml запуск по edited отменил бы идущую сборку той же
+# группы concurrency, а сборка, пропущенная условием, легла бы на тот же
+# коммит последним запуском проверки с тем же именем и заменила бы её
+# результат: пропущенное задание GitHub засчитывает обязательной проверке
+# как успешное.
+name: commits
+
+# merge_group: ветка-кандидат очереди слияния, main плюс стоящие в очереди
+# пул-реквесты, проверяемая до того, как стать main. edited: новые заголовок
+# или описание пул-реквеста.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  merge_group:
+
+permissions:
+  contents: read
+
+# Новый пуш или новая правка того же пул-реквеста делает старый запуск
+# ненужным. Группы concurrency общие на весь репозиторий, поэтому имя у
+# группы своё: с группой ci.yml запуск этой проверки отменял бы сборку.
+concurrency:
+  group: commits-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commits:
+    name: commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Вся история всех веток: диапазон начинается с основания и с main, до
+      # которых неглубокий клон merge-ссылки пул-реквеста не достаёт. Задание
+      # ничего не пушит, так что токену в .git оставаться незачем.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Значения события приходят через env, а не подставляются в текст
+      # скрипта, и сверяются до того, как ими кто-то воспользуется. Строка
+      # коммита начинается с короткого SHA, а заголовок пул-реквеста
+      # печатается после слова и с переводами строк, заменёнными пробелами:
+      # тема или заголовок, начатые с «::», печатаются, а не принимаются за
+      # команду раннеру. Команда git, вывод которой читает цикл, дожидается
+      # через wait: её отказ не принимается за пустой список.
+      - name: Check the commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              echo "::error::'$sha' is not a commit of this repository"
+              exit 1
+            fi
+          done
+
+          # Текст аннотации раннер раскодирует как URL: %, CR и LF
+          # экранируются, чтобы имя или путь не оборвали её и не начали новую.
+          faults=0
+          fault() {
+            local text="rule $1: $2"
+            text=${text//'%'/'%25'}
+            text=${text//$'\r'/'%0D'}
+            text=${text//$'\n'/'%0A'}
+            echo "::error title=$where::$text"
+            faults=$((faults + 1))
+          }
+
+          # 2. Строки-трейлеры: Co-Authored-By (у коммита один автор),
+          # строки-баннеры и строки-трейлеры со ссылкой. С начала строки и
+          # в том регистре, каким их пишут; ссылка в обычной фразе
+          # сообщения трейлером не считается. Так читается и сообщение
+          # коммита, и то, из чего составится сообщение коммита squash:
+          # заголовок пул-реквеста и его описание.
+          check_message() {
+            if grep -qE '^(Co-Authored-By:|Co-authored-by:|🤖|Generated with \[)|^[A-Za-z]+(-[A-Za-z]+)*: https?://' <<< "$1"; then
+              fault 2 "$2 carries a trailer line the rules exclude"
+            fi
+          }
+
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            where="pull request"
+            title=${PR_TITLE//$'\r'/ }
+            echo "pull request ${title//$'\n'/ }"
+            check_message "$PR_TITLE"$'\n\n'"$PR_BODY" "the title or the description"
+          fi
+
+          # Скрытые записи, которые дерево хранит (правило 3).
+          declare -A tracked_hidden=([.clatexmath-res_root]=1 [.github]=1 [.gitignore]=1)
+
+          # main — та, что получил checkout (fetch-depth: 0 приносит все
+          # ветки), а не основание из события: ничто не обещает, что
+          # основание в событии pull_request не старше той main, которую
+          # ветка в себя влила, а main только движется вперёд, и checkout
+          # идёт после пуша, так что в полученной main есть любой коммит,
+          # который ветка могла влить. Коммиты main, которые приносит
+          # слияние, из диапазона исключены: в main они уже есть.
+          if ! main_tip=$(git rev-parse --verify -q 'refs/remotes/origin/main^{commit}'); then
+            echo "::error::main is not fetched"
+            exit 1
+          fi
+
+          commits=$(git rev-list --reverse "$HEAD_SHA" --not "$BASE_SHA" "$main_tip")
+          count=0
+          for sha in $commits; do
+            count=$((count + 1))
+            short=$(git rev-parse --short "$sha")
+            where="commit $short"
+            subject=$(git log -1 --format=%s "$sha")
+            echo "$short ${subject//$'\r'/ }"
+
+            # 5. Слияние допустимо одно — main в ветку: ровно два родителя,
+            # второй из них — коммит main. Так догоняет main ветка, которая
+            # от неё отстала или с ней конфликтует: кнопкой «Update with
+            # merge commit», в редакторе «Resolve conflicts» или слиянием
+            # вручную, с конфликтом, разрешённым в нём. Слияние другой
+            # ветки, коммита, которого в main нет, или больше двух родителей
+            # — нарушение. Правила 1–4 для слияния те же, что для любого
+            # коммита. Пул-реквест вливается объединением в один коммит, так
+            # что в main слияние не попадает и её история остаётся линейной.
+            # Строка rev-list — сам коммит, за ним его родители.
+            parent_line=$(git rev-list --parents -n 1 "$sha")
+            read -ra parents <<< "$parent_line"
+            merge=false
+            if [ "${#parents[@]}" -gt 2 ]; then
+              merge=true
+            fi
+            if [ "${#parents[@]}" -gt 3 ]; then
+              fault 5 "a merge of $((${#parents[@]} - 1)) parents; only main is merged into a branch"
+            elif [ "$merge" = true ]; then
+              # 1 — не предок; всё, кроме 0 и 1, — git ответить не смог.
+              ancestor=0
+              git merge-base --is-ancestor "${parents[2]}" "$main_tip" || ancestor=$?
+              if [ "$ancestor" -eq 1 ]; then
+                fault 5 "a merge of ${parents[2]}, which main does not have; only main is merged into a branch"
+              elif [ "$ancestor" -ne 0 ]; then
+                fault 5 "a merge of ${parents[2]}; git merge-base failed to tell whether main has it"
+              fi
+            fi
+
+            # Подпись — поле заголовка объекта: заголовок кончается первой
+            # пустой строкой, и строка сообщения, начатая с gpgsig, подписью
+            # не считается. Объект читается целиком, без конвейера: под
+            # pipefail ранний выход grep оборвал бы git.
+            object=$(git cat-file commit "$sha")
+            signed=false
+            if grep -q '^gpgsig' <<< "${object%%$'\n\n'*}"; then
+              signed=true
+            fi
+
+            # 1. Адреса автора и коммиттера — noreply-адреса GitHub; совпадать
+            # они не обязаны. Коммит, который GitHub делает сам, — слияние
+            # кнопкой «Update with merge commit» или из редактора «Resolve
+            # conflicts», — несёт коммиттера GitHub <noreply@github.com> и
+            # подпись GitHub. Такой коммиттер допустим только с подписью,
+            # которую правило 4 сверяет с GitHub: без неё назваться GitHub
+            # может каждый, а коммит GitHub, пришедший без подписи, здесь
+            # отклоняется, а не проходит незамеченным. %an и %ae, не %aN и
+            # %aE: личность как записана, без .mailmap посередине.
+            mapfile -t identity < <(git log -1 --format='%ae%n%cn%n%ce' "$sha")
+            wait $! || { echo "::error::git log failed on commit $short"; exit 1; }
+            author_email=${identity[0]-}
+            committer_name=${identity[1]-}
+            committer_email=${identity[2]-}
+            if [[ "$author_email" != *@users.noreply.github.com ]]; then
+              fault 1 "author <$author_email> is not a @users.noreply.github.com address"
+            fi
+            if [ "$committer_name" = "GitHub" ] && [ "$committer_email" = "noreply@github.com" ]; then
+              if [ "$signed" != true ]; then
+                fault 1 "committer GitHub <noreply@github.com> on a commit without a signature"
+              fi
+            elif [[ "$committer_email" != *@users.noreply.github.com ]]; then
+              fault 1 "committer <$committer_email> is not a @users.noreply.github.com address"
+            fi
+
+            message=$(git log -1 --format=%B "$sha")
+            check_message "$message" "the message"
+
+            # 3. Скрытые записи (компонент пути с точки) в дерево не входят,
+            # кроме перечисленных выше — ровно тех, что дерево хранит; новая
+            # добавляется в список сознательно. Проверяется каждый компонент
+            # пути, так что скрытый каталог не проходит ни на какой глубине.
+            # Читаются только пути, которые коммит добавляет или меняет
+            # (--diff-filter=d): скрытую запись, которую он удаляет, дерево
+            # хранить перестаёт. Слияние читается против первого родителя,
+            # ветки: пути, пришедшие из main, она уже хранит, а скрытая
+            # запись, которую добавило разрешение конфликта, не проходит.
+            # -z: путь приходит как есть, без кавычек git; --root: пути
+            # коммита без родителя тоже.
+            if [ "$merge" = true ]; then
+              changed=(git diff-tree --no-commit-id --name-only -r -z --diff-filter=d "${parents[1]}" "$sha")
+            else
+              changed=(git diff-tree --no-commit-id --name-only -r -z --diff-filter=d --root "$sha")
+            fi
+            while IFS= read -r -d '' path; do
+              rest=$path
+              while :; do
+                part=${rest%%/*}
+                if [[ "$part" == .* ]] && [ -z "${tracked_hidden[$part]:-}" ]; then
+                  fault 3 "$path: the hidden entry $part is not one the tree keeps"
+                  break
+                fi
+                [[ "$rest" == */* ]] || break
+                rest=${rest#*/}
+              done
+            done < <("${changed[@]}")
+            wait $! || { echo "::error::git diff-tree failed on commit $short"; exit 1; }
+
+            # 4. Подпись, если она есть, должен признать GitHub: только он
+            # знает, чьи ключи привязаны к учётной записи. Неподписанный
+            # коммит проходит; отказ API — отдельная ошибка, а не «не признана».
+            if [ "$signed" = true ]; then
+              if ! verified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq .commit.verification.verified); then
+                fault 4 "signed, and GitHub could not be asked whether it verifies the signature"
+              elif [ "$verified" != "true" ]; then
+                fault 4 "signed with a signature GitHub does not verify"
+              fi
+            fi
+          done
+
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no commits in $BASE_SHA..$HEAD_SHA that main does not have"
+            exit 1
+          fi
+          if [ "$faults" -ne 0 ]; then
+            echo "::error::$faults fault(s), $count commit(s) checked; the rules are in CONTRIBUTING.md"
+            exit 1
+          fi
+          echo "$count commit(s), no faults"
