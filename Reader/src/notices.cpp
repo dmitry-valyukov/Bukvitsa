@@ -66,10 +66,10 @@ void Notices::post(Notice notice) {
         // рода сходятся под ним.
         if (notice.headline != lastHeadline_) {
             lines_.value().children().append(
-                TextBlock{notice.headline, FontWeight{600}, Margin{0, 12, 0, 0}, textWrapping.wrap});
+                TextBlock{notice.headline, FontWeight{600}, Margin{0, 12, 0, 0}, textWrap.simple});
             lastHeadline_ = notice.headline;
             if (!notice.details.empty())
-                lines_.value().children().append(TextBlock{notice.details, textWrapping.wrap});
+                lines_.value().children().append(TextBlock{notice.details, textWrap.simple});
             return;
         }
 
@@ -77,7 +77,7 @@ void Notices::post(Notice notice) {
         // бывают сами из нескольких строк («путь», пустая, «причина»), и
         // соседние без зазора слились бы в одно.
         if (!notice.details.empty())
-            lines_.value().children().append(TextBlock{notice.details, Margin{0, 12, 0, 0}, textWrapping.wrap});
+            lines_.value().children().append(TextBlock{notice.details, Margin{0, 12, 0, 0}, textWrap.simple});
         return;
     }
 
@@ -106,7 +106,7 @@ void Notices::post(Notice notice) {
     }
 
     auto lines = StackPanel{};
-    if (!notice.details.empty()) lines.children().append(TextBlock{notice.details, textWrapping.wrap});
+    if (!notice.details.empty()) lines.children().append(TextBlock{notice.details, textWrap.simple});
 
     auto dialog = ContentDialog {
         title = notice.headline,

@@ -283,7 +283,7 @@ wxl::async::task<> App::runDeleteSkin(u16_text name) {
             requestedTheme = screenTheme_.get(),
             title = L"Удалить обложку «" + std::wstring(name.wchars()) + L"»?",
             content = TextBlock{u"Расставленные по снимку точки пропадут; сам снимок останется.",
-                                textWrapping.wrap},
+                                textWrap.simple},
             primaryButtonText = u"Удалить",
             closeButtonText = u"Отмена",
             defaultButton = ContentDialogButton::Close,
