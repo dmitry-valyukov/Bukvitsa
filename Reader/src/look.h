@@ -88,7 +88,7 @@ inline auto cancelFaceLook() {
 /// Подпись не длиннее двух строк, с многоточием в конце, — заголовок строки
 /// в списках панели и название книги на полке.
 inline constexpr auto twoLinesLook = wxl::Preset {
-    wxl::dsl::textWrapping.wrap,
+    wxl::dsl::textWrap.wrap,
     wxl::dsl::maxLines = 2,
     wxl::dsl::textTrimming.characterEllipsis,
 };

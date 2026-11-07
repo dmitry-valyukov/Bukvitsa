@@ -104,7 +104,7 @@ constexpr auto groupCaptionLook = Preset {
 constexpr auto drawerNoteLook = Preset {
     dsl::fontSize = 13,
     dsl::foreground = kChromeDim,
-    dsl::textWrapping.wrap,
+    dsl::textWrap.wrap,
 };
 
 /// Строка списка вкладки — оглавления, находок, закладок — как её контейнер:
@@ -498,7 +498,7 @@ UIElement ReaderPanel::buildSettings() {
                 fontSize = 12,
                 foreground = kChromeDim,
                 Margin{0, 16, 0, 0},
-                textWrapping.wrap,
+                textWrap.wrap,
             },
         },
     };
