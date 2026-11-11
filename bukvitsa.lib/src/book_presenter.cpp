@@ -24,7 +24,7 @@ namespace bukvitsa::reader {
 // узнаёт о них так же. Интерлиньяж и поля в модели в процентах, у потока
 // страниц — множитель и доля.
 BookPresenter::BookPresenter(Settings& settings, ThemeList& themes, IdleScheduler& idleScheduler,
-                             Actions& actions, wxl::async::cancellation_token ownerToken)
+                             Actions& actions, wxl::async::stop_token ownerToken)
     : settings_(settings),
       themes_(themes),
       actions_(actions),
@@ -55,7 +55,7 @@ BookPresenter::~BookPresenter() {
     // владелец, то есть он сам, а стоящие кадры досчёта и очереди картинок
     // останавливают их держатели, уходя членами. Слушатели настроек снимаются
     // сами, первыми из членов.
-    stop_.cancel();
+    stop_.request_stop();
 }
 
 /* ---------------- холст ---------------- */

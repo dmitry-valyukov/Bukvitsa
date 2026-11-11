@@ -17,8 +17,8 @@ namespace bukvitsa::reader {
 
 using namespace wxl;
 
-using wxl::async::cancellation_source;
-using wxl::async::cancellation_token;
+using wxl::async::stop_source;
+using wxl::async::stop_token;
 using wxl::async::operation_canceled_exception;
 using wxl::async::last_error;
 using wxl::async::task;
@@ -60,7 +60,7 @@ void App::continueReading() {
 }
 
 wxl::async::task<> App::runContinueReading() {
-    auto const stop = cancellation_source{stop_.token()};
+    auto const stop = stop_source{stop_.token()};
 
     if (preload_) {
         // Задача переходит в кадр сценария до ожидания: дождаться её может
@@ -138,7 +138,7 @@ void App::chooseFolder() {
 }
 
 wxl::async::task<> App::runChooseFolder() {
-    auto const stop = cancellation_source{stop_.token()};
+    auto const stop = stop_source{stop_.token()};
 
     const std::filesystem::path folder = askForFolder(window_.handle());
     if (folder.empty()) co_return;
@@ -182,7 +182,7 @@ wxl::async::task<> App::runChooseFolder() {
 /// `co_await`. Неизменная книга стоит сверки с листингом, новая встаёт на
 /// полку, пропавшая приглушается — карточки слышат это сами.
 wxl::async::task<> App::rescanFolders() {
-    auto const stop = cancellation_source{stop_.token()};
+    auto const stop = stop_source{stop_.token()};
 
     const ScanReport report = co_await ws_.rescanFolders(stop.token());
 
@@ -227,7 +227,7 @@ void App::startOpeningPreloaded(LoadedBook loaded) {
 /// Предзагрузку дождалось продолжение чтения, и книга уже прочитана: остаётся
 /// вторая половина открытия — под своим источником, как у всякого открытия.
 wxl::async::task<> App::openPreloaded(LoadedBook loaded) {
-    auto const stop = cancellation_source{stop_.token()};
+    auto const stop = stop_source{stop_.token()};
 
     co_await openLoaded(std::move(loaded), stop.token());
 }
@@ -251,7 +251,7 @@ wxl::async::task<> App::openPreloaded(LoadedBook loaded) {
 /// показать. Предзагрузку открытие не берёт, а бросает: её дорога — только
 /// «Продолжить чтение».
 wxl::async::task<> App::open(std::filesystem::path path) {
-    auto const stop = cancellation_source{stop_.token()};
+    auto const stop = stop_source{stop_.token()};
 
     // Эта книга уже открыта — читатель просто вернулся к ней со стартового
     // экрана или с полки. Ни читать, ни разбирать заново нечего: полоса держит
@@ -268,7 +268,7 @@ wxl::async::task<> App::open(std::filesystem::path path) {
     // кончается на своём ожидании, а чтение файла, ушедшее в пул, дорабатывает
     // само и ничего из её кадра не держит. Её ни ждать, ни спрашивать незачем:
     // книгу открытие читает само.
-    preloadStop_.cancel();
+    preloadStop_.request_stop();
     preload_ = {};
 
     // Пусто, пока книга не прочитана: у прочитанной пустого состояния нет, а
@@ -297,9 +297,9 @@ wxl::async::task<> App::open(std::filesystem::path path) {
 
 /// Вторая половина открытия — общая для открытия и продолжения чтения с
 /// предзагрузки: книга прочитана и разобрана, дальше — рабочее место и полоса.
-wxl::async::task<> App::openLoaded(LoadedBook loaded, cancellation_token token) {
+wxl::async::task<> App::openLoaded(LoadedBook loaded, stop_token token) {
     // Под отменённым токеном открытие не начинается: книга не регистрируется.
-    token.throw_if_canceled();
+    token.throw_if_stop_requested();
 
     // Регистрация — шагом под замком рабочего места: регистрации идут по
     // одной, и та же книга, которую в этот миг регистрирует перепроверка
@@ -376,7 +376,7 @@ void App::bookRegistered(const Registered&) noexcept {
     // Последнюю запись реестра закрытие уже попросило; перемена, пришедшая
     // после неё, на диск не попадёт, и файл, чью запись она несла, следующая
     // перепроверка прочтёт заново.
-    if (stop_.is_canceled()) return;
+    if (stop_.stop_requested()) return;
 
     libraryWrite_.restart();
 }
@@ -415,7 +415,7 @@ void App::toggleBookmark() {
 /// с сотней книг не ждёт сотни обращений к диску, чтобы показать первую.
 /// Строка — поле карточки (`ShelfCard::showState`): полка не пересобирается.
 wxl::async::task<> App::fillProgress() {
-    auto const stop = cancellation_source{stop_.token()};
+    auto const stop = stop_source{stop_.token()};
 
     // Карточки — копией указателей: пока файлы читаются, обход каталога может
     // дополнить полку, а карточку, которую читают, держит сама копия.

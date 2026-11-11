@@ -6,7 +6,7 @@
 
 namespace bukvitsa::reader {
 
-wxl::async::task<> UiIdleScheduler::idle(wxl::async::cancellation_token token) {
+wxl::async::task<> UiIdleScheduler::idle(wxl::async::stop_token token) {
     // Под отменой ожидание кончается operation_canceled_exception: стоящее —
     // на ближайшем ходу очереди, начатое под отменённым токеном — сразу, не
     // вставая. Уход окна кончает его так же.

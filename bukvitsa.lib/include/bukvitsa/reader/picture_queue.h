@@ -87,7 +87,7 @@ public:
     ///        готова» — у владельца холст рисует разворот заново.
     /// @param failureReceiver получатель сбоя кадра — не отмены. У владельца о
     ///        сбое узнаёт читатель.
-    PictureQueue(PageFlow& flow, IdleScheduler& scheduler, wxl::async::cancellation_token ownerToken,
+    PictureQueue(PageFlow& flow, IdleScheduler& scheduler, wxl::async::stop_token ownerToken,
                  function<void()> shownReceiver, function<void(std::exception_ptr)> failureReceiver);
 
     /// Отменяет источник и говорит книге, что ушедшего раскодирования больше
@@ -150,20 +150,20 @@ private:
 
     /// Токен владельца: от него — и первый источник очереди, и каждый новый
     /// после `restart()`.
-    wxl::async::cancellation_token ownerToken_;
-    wxl::async::cancellation_source stop_;
+    wxl::async::stop_token ownerToken_;
+    wxl::async::stop_source stop_;
 
     /// Источник стоящего ожидания простоя — дочерний от токена кадра;
     /// заводит его кадр перед ожиданием, отменяет `request()`. До первого
     /// ожидания — пустышка вне дерева отмены: её отмена (request() зовёт её
     /// только при `awaitingIdle_`) никого не касается.
-    wxl::async::cancellation_source idleWait_;
+    wxl::async::stop_source idleWait_;
 
     /// Источник идущего раскодирования — дочерний от токена кадра; заводит
     /// его кадр на каждую картинку, отменяет `request()`, когда она выпала из
     /// окна. До первого раскодирования — пустышка вне дерева отмены
     /// (request() зовёт её только при `decodingPicture_`).
-    wxl::async::cancellation_source decodeWait_;
+    wxl::async::stop_source decodeWait_;
 
     /// Картинка, которую раскодируют сейчас; пусто — кадр не в пуле.
     std::optional<uint32_t> decodingPicture_;

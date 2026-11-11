@@ -46,7 +46,7 @@ public:
     ///        `token`.
     template <class Start>
     DeferredWrite(wxl::DispatcherQueue const& queue, std::chrono::milliseconds quiet,
-                  wxl::async::cancellation_token parent, Start start)
+                  wxl::async::stop_token parent, Start start)
         : stop_{std::move(parent)},
           timer_{queue, quiet, stop_.token()},
           loop_{start(timer_, stop_.token())} {}
@@ -62,7 +62,7 @@ public:
     /// сюда доходит лишь то, на что у него ответа нет. Деструктор noexcept, и
     /// такое исключение останавливает процесс — а не теряется.
     ~DeferredWrite() {
-        stop_.cancel();
+        stop_.request_stop();
         wxl::async::sta_loop::run_until(loop_);
     }
 
@@ -75,7 +75,7 @@ public:
     void signal() { timer_.signal(); }
 
 private:
-    wxl::async::cancellation_source stop_;
+    wxl::async::stop_source stop_;
     wxl::WaitableTimer timer_;
     wxl::async::task<> loop_;
 };

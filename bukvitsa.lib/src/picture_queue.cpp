@@ -25,7 +25,7 @@ bool contains(const std::vector<uint32_t>& pictures, uint32_t picture) {
 }  // namespace
 
 PictureQueue::PictureQueue(PageFlow& flow, IdleScheduler& scheduler,
-                           wxl::async::cancellation_token ownerToken, function<void()> shownReceiver,
+                           wxl::async::stop_token ownerToken, function<void()> shownReceiver,
                            function<void(std::exception_ptr)> failureReceiver)
     : flow_(flow),
       scheduler_(scheduler),
@@ -35,7 +35,7 @@ PictureQueue::PictureQueue(PageFlow& flow, IdleScheduler& scheduler,
       stop_(ownerToken_) {}
 
 PictureQueue::~PictureQueue() {
-    stop_.cancel();
+    stop_.request_stop();
 
     // Книга живёт дольше очереди (её держат и поток страниц, и прочитанная
     // книга у владельца): раскодирование, которого больше никто не ждёт, она
@@ -44,7 +44,7 @@ PictureQueue::~PictureQueue() {
 }
 
 void PictureQueue::request(WindowMove move) {
-    if (stop_.is_canceled()) return;   // владелец ушёл
+    if (stop_.stop_requested()) return;   // владелец ушёл
 
     Book* const book = flow_.book();
     if (!book || !book->picturesInFlow()) return;
@@ -63,12 +63,12 @@ void PictureQueue::request(WindowMove move) {
 
     // Отмены — когда окно уже новое: ожидание, отменённое здесь, кончается на
     // ходу очереди, и кадр, проснувшись, читает окно заново.
-    if (dropDecoding) decodeWait_.cancel();
+    if (dropDecoding) decodeWait_.request_stop();
 
     if (running_) {
         // Показанные не ждут простоя: кадр, стоящий за соседями, будится
         // отменой своего ожидания и берёт их.
-        if (awaitingIdle_ && nextPicture(*book)) idleWait_.cancel();
+        if (awaitingIdle_ && nextPicture(*book)) idleWait_.request_stop();
         return;
     }
 
@@ -83,11 +83,11 @@ void PictureQueue::restart() {
     // Отменить до замены обязательно: замена источника старого не отменяет, и
     // прежний кадр отдал бы книге ответ, которого она уже не ждёт. Источники
     // ожидания и раскодирования — дочерние, отменяются с ним.
-    stop_.cancel();
+    stop_.request_stop();
     running_ = false;
     awaitingIdle_ = false;
     decodingPicture_.reset();
-    stop_ = wxl::async::cancellation_source{ownerToken_};
+    stop_ = wxl::async::stop_source{ownerToken_};
 
     if (Book* const book = flow_.book()) book->abandonDecoding();
     shownPictures_.clear();
@@ -153,7 +153,7 @@ wxl::async::task<> PictureQueue::loop() {
     // только своё ожидание (простоя или раскодирования) при живом токене
     // очереди — это сделал request(), держатель жив, и кадр идёт дальше. Книга
     // та же, что при заводе кадра: её смену держатель встречает отменой.
-    const wxl::async::cancellation_token frameToken = stop_.token();
+    const wxl::async::stop_token frameToken = stop_.token();
     try {
         for (;;) {
             Book* const book = flow_.book();
@@ -169,8 +169,8 @@ wxl::async::task<> PictureQueue::loop() {
                 // даровая: при растяжке окна она повторяется после каждой
                 // перевёрстки, как только поток свободен. Узнав соседей —
                 // отпустить всё вне окна.
-                idleWait_ = wxl::async::cancellation_source{frameToken};
-                const wxl::async::cancellation_token idleToken = idleWait_.token();
+                idleWait_ = wxl::async::stop_source{frameToken};
+                const wxl::async::stop_token idleToken = idleWait_.token();
                 awaitingIdle_ = true;
                 bool idleCame = true;
                 try {
@@ -178,7 +178,7 @@ wxl::async::task<> PictureQueue::loop() {
                 } catch (const wxl::async::operation_canceled_exception&) {
                     // Отменена очередь — уйти, ничего не тронув; ушла очередь
                     // потока при живых токенах (выход приложения) — тоже.
-                    if (frameToken.is_canceled() || !idleToken.is_canceled()) throw;
+                    if (frameToken.stop_requested() || !idleToken.stop_requested()) throw;
                     idleCame = false;   // request(): у показанных есть работа
                 }
                 awaitingIdle_ = false;
@@ -195,8 +195,8 @@ wxl::async::task<> PictureQueue::loop() {
             // Копия байтов — телу в пуле: оно может пережить и ожидание, и
             // книгу. Предел — общий; слабому устройству битмап уменьшит
             // deviceBitmapOf при рисунке.
-            decodeWait_ = wxl::async::cancellation_source{frameToken};
-            const wxl::async::cancellation_token decodeToken = decodeWait_.token();
+            decodeWait_ = wxl::async::stop_source{frameToken};
+            const wxl::async::stop_token decodeToken = decodeWait_.token();
             decodingPicture_ = *picture;
             DecodedPicture decodedPicture;
             bool droppedFromWindow = false;
@@ -208,7 +208,7 @@ wxl::async::task<> PictureQueue::loop() {
                 // токене раскодирования — не наша и не «выпадение»: её нельзя
                 // выдать за пропуск картинки, и кадр кончается на ней, как
                 // отменённый.
-                if (frameToken.is_canceled() || !decodeToken.is_canceled()) throw;
+                if (frameToken.stop_requested() || !decodeToken.stop_requested()) throw;
                 // request(): картинка выпала из окна. Тело в пуле осиротело и
                 // доработает до ближайшей полосы, его ответ никому не уйдёт.
                 droppedFromWindow = true;

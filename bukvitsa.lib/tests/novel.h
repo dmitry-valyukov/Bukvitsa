@@ -213,14 +213,14 @@ public:
         }
     }
 
-    wxl::async::task<> idle(wxl::async::cancellation_token token) override {
+    wxl::async::task<> idle(wxl::async::stop_token token) override {
         // Счёт — до всякой проверки: по нему видно, спрашивал ли держатель
         // простоя вообще.
         ++idleCalls_;
-        token.throw_if_canceled();
+        token.throw_if_stop_requested();
         auto const woken = co_await Parking{*this};
         if (woken == Woken::closing) throw wxl::async::operation_canceled_exception{};
-        token.throw_if_canceled();
+        token.throw_if_stop_requested();
         if (woken == Woken::failure) throw std::runtime_error(kIdleFailure);
     }
 
