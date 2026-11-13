@@ -214,7 +214,7 @@ jobs:
         shell: pwsh
         working-directory: Bukvitsa
         run: |
-          & .\build\x64\wxl\winxl\winxl.exe runtime install --packages build\x64\wxl\wxl.packages\restored-packages.json
+          & .\build\x64\wxl\winxl\winxl.exe runtime install --packages build\x64\wxl.packages\restored-packages.json
 
       # Процесс оконный, и отказ wxl уходит в stderr и OutputDebugString, которых
       # журнал не видит: потоки читалки перенаправлены в файлы и печатаются.
