@@ -15,8 +15,6 @@
 // После своих заголовков: document.h тянет import wxl.core, а стандартный
 // заголовок после импорта MSVC уже не принимает.
 import wxl.core;
-import wxl.fmt;
-import wxl.xml;
 
 namespace bukvitsa::reader {
 namespace {

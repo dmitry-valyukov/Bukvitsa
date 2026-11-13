@@ -24,13 +24,12 @@
 #include "novel.h"
 #include "bukvitsa/reader/chapter_tail.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;
 using namespace bukvitsa::reader;
 using namespace bukvitsa::reader::tests;
-using wxl::async::cancellation_source;
+using wxl::async::stop_source;
 
 namespace {
 
@@ -110,7 +109,7 @@ void testTailRunsToEnd() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     int completed = 0;
     auto tail = ChapterTail{flow, idle, ownerSource.token(), [&completed] { ++completed; }, failureIsAFault()};
     auto const frames = FrameCount{};
@@ -159,7 +158,7 @@ void testRelayoutCancelsTail() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     int completed = 0;
     auto tail = ChapterTail{flow, idle, ownerSource.token(), [&completed] { ++completed; }, failureIsAFault()};
     auto const frames = FrameCount{};
@@ -197,14 +196,14 @@ void testOwnerGoneEndsTail() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     int completed = 0;
     auto tail = ChapterTail{flow, idle, ownerSource.token(), [&completed] { ++completed; }, failureIsAFault()};
     auto const frames = FrameCount{};
 
     tail.start();
     const size_t pagesBefore = flow.pageCount();
-    ownerSource.cancel();
+    ownerSource.request_stop();
     check(idle.parked() == 1 && frames.extraAre(kWaitingTailFrames),
           "отмена никого не будит: ожидание стоит до хода очереди");
 
@@ -236,7 +235,7 @@ void testHolderGoneEndsTail() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     int completed = 0;
     auto const frames = FrameCount{};
     {
@@ -258,7 +257,7 @@ void testRestartFromReceiverGoesAnotherRound() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     int completed = 0;
     ChapterTail* holder = nullptr;
     const size_t other = longestChapter(*novel, novel->currentChapter());
@@ -292,7 +291,7 @@ void testRestartFromReceiverWithoutStart() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     int completed = 0;
     ChapterTail* holder = nullptr;
     const size_t other = longestChapter(*novel, novel->currentChapter());
@@ -329,7 +328,7 @@ void testRestartFromFailureReceiverGoesAnotherRound() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     int completed = 0;
     int failed = 0;
     ChapterTail* holder = nullptr;
@@ -364,7 +363,7 @@ void testLoopFailureLowersMark() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     int completed = 0;
     auto trap = FailureTrap{};
     auto tail = ChapterTail{flow, idle, ownerSource.token(), [&completed] { ++completed; }, trap.receiver()};
@@ -393,7 +392,7 @@ void testReceiverFailureGoesToHandler() {
     PageFlow flow;
     setUp(flow, as_not_null(novel.get()));
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     auto trap = FailureTrap{};
     auto tail = ChapterTail{flow, idle, ownerSource.token(),
                             [] { throw std::runtime_error(kReceiverFailure); }, trap.receiver()};

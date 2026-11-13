@@ -36,13 +36,12 @@
 #include "novel.h"
 #include "bukvitsa/reader/book_presenter.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;
 using namespace bukvitsa::reader;
 using namespace bukvitsa::reader::tests;
-using wxl::async::cancellation_source;
+using wxl::async::stop_source;
 
 /// Пробы остановки очереди картинок — у её проб (picture_queue_tests.cpp):
 /// дочерний запуск один на исполняемый файл, и разбирает имя он здесь.
@@ -279,7 +278,7 @@ struct Bench {
     Settings settings;
     ThemeList themes{std::vector<Skin>{}};   // встроенные темы и системные обложки
     CountingActions actions;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     BookPresenter presenter{settings, themes, idle, actions, ownerSource.token()};
     RecordingCanvas canvas{presenter};
 
@@ -606,7 +605,7 @@ void testStyleFromSettings() {
     settings.margin.set(kWideMargin);
     ThemeList themes;
     CountingActions actions;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     const BookPresenter presenter{settings, themes, idle, actions, ownerSource.token()};
 
     check(presenter.flow().fontSize() == static_cast<float>(kLargeFontSize) &&
@@ -729,7 +728,7 @@ void testTailEndsWithCanvas() {
     Settings settings;
     ThemeList themes;
     CountingActions actions;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     BookPresenter presenter{settings, themes, idle, actions, ownerSource.token()};
     std::optional<RecordingCanvas> stripCanvas;
     stripCanvas.emplace(presenter);
@@ -1035,7 +1034,7 @@ void testPointsAtNoteMark() {
     Settings loneSettings;
     auto loneThemes = ThemeList{std::vector<Skin>{}};
     CountingActions loneActions;
-    cancellation_source loneSource;
+    stop_source loneSource;
     auto const canvaslessPresenter =
         BookPresenter{loneSettings, loneThemes, loneIdle, loneActions, loneSource.token()};
     check(!canvaslessPresenter.pointsAtNoteMark(*markPoint),
@@ -1399,7 +1398,7 @@ int runStopProbeChild(std::string_view probeName) {
     Settings settings;
     ThemeList themes;
     CountingActions actions;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     std::optional<BookPresenter> presenter;
     presenter.emplace(settings, themes, idle, actions, ownerSource.token());
 

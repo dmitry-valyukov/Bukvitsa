@@ -52,7 +52,7 @@
 
 // Импорт — последним: источник отмены полосы — родитель тех, под которыми
 // стратегия переворота ждёт концы пакетов.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -73,7 +73,7 @@ public:
     ///        источник для своих ожиданий. Отменяет их сама полоса, умирая, а
     ///        закрытие приложения — вместе со всеми.
     BookView(const wxl::CompositionWindow& window, BookPresenter& presenter, Settings& settings,
-             wxl::async::cancellation_token parent);
+             wxl::async::stop_token parent);
     ~BookView();
 
     /// Корень, который отдаётся окну как содержимое.
@@ -299,7 +299,7 @@ private:
     /// пула листов у стратегии. Конец пакета может прийти позже, чем полосу
     /// разрушат, — деструктор отменяет источник, и ожидание кончается отменой,
     /// больше не трогая ни полосы, ни стратегии.
-    wxl::async::cancellation_source stop_;
+    wxl::async::stop_source stop_;
 
     /// Источник чтения, дочерний от источника полосы: всё, что ждёт, пока
     /// полоса — текущий экран (концы переворотов), стоит под ним; отпускание
@@ -307,7 +307,7 @@ private:
     /// Заводится входом в чтение, отменяется уходом; отменённый не
     /// переиспользуется — следующий вход заводит новый. До первого входа
     /// отменён: вне чтения ждать нечего.
-    wxl::async::cancellation_source readingScope_;
+    wxl::async::stop_source readingScope_;
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> statusFormat_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> invitationFormat_;

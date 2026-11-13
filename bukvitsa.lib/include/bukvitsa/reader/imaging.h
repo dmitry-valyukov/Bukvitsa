@@ -39,7 +39,7 @@
 struct IWICImagingFactory;
 
 // Импорт — последним: задача раскодирования в пуле — тип wxl.async.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -113,7 +113,7 @@ DecodedPicture decodeImage(IWICImagingFactory* wic, std::string_view bytes, uint
 /// посреди не обрывается). Пока сирота в пуле, петля её считает
 /// (`sta_loop::outstanding`).
 wxl::async::task<DecodedPicture> decodeImageAsync(std::string bytes, uint32_t maxSide,
-                                                  wxl::async::cancellation_token token);
+                                                  wxl::async::stop_token token);
 
 /// Бюджет кадра по заголовку — до всякого раскодирования, в байтах: декодер
 /// может держать полный кадр в его собственном формате (чересстрочный PNG —

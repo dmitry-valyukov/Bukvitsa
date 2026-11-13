@@ -51,7 +51,7 @@
 
 // Импорт — последним: переворот и отпускание пула — корутины `task<>` под
 // своими источниками отмены.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -61,7 +61,6 @@ class LeafTurnAnimation final : public TurnAnimation {
 public:
     /// @param leafLayer контейнер листов над страницами: листы вешаются в него
     ///        и прячутся вместе с ним.
-    /// @param windowQueue очередь потока окна: на ней таймеры отпускания пула.
     /// @param spreadView разворот: его страницы перелистываются, его растры
     ///        листы носят.
     /// @param flow поток страниц: мера полосы, число колонок и корешок.
@@ -73,9 +72,8 @@ public:
     /// @param failureReceiver получатель сбоя корутины стратегии — не отмены:
     ///        у полосы о нём узнаёт читатель. Не бросает.
     LeafTurnAnimation(const wxl::Compositor& compositor, const wxl::ContainerVisual& leafLayer,
-                      const wxl::DispatcherQueue& windowQueue, SpreadView& spreadView,
-                      const PageFlow& flow, const wxl::async::cancellation_source& readingScope,
-                      wxl::async::cancellation_token stripStop,
+                      SpreadView& spreadView, const PageFlow& flow, const wxl::async::stop_source& readingScope,
+                      wxl::async::stop_token stripStop,
                       function<void(std::exception_ptr)> failureReceiver);
     ~LeafTurnAnimation() override;
 
@@ -187,7 +185,7 @@ private:
 
         /// Дочерний от источника серии: его отменяют вместе с серией или одного
         /// (добивание старейшего), и ожидание конца пакета кончается отменой.
-        wxl::async::cancellation_source turnStop;
+        wxl::async::stop_source turnStop;
 
         /// Растры, которые лист носит в полёте; пока он летит, они не
         /// свободны. В газете уходящий — бывший осевший: старый разворот уже
@@ -227,7 +225,7 @@ private:
     /// кончается отменой — обычным концом корутины, — и до конечного
     /// состояния дело не доходит: его уже навёл отменивший.
     wxl::async::task<> flyTurn(size_t leafIndex, bool forward, bool bookMode,
-                               wxl::async::cancellation_token turnStop);
+                               wxl::async::stop_token turnStop);
 
     /// Пускает анимации листа: подъём книжного листа — выражениями вне
     /// пакета, всё остальное — ключевыми кадрами в пакете, который и
@@ -264,8 +262,7 @@ private:
     /// перезапускает долгую паузу, цикл отпускания ждёт обе; стоит он в поле
     /// стратегии ниже пауз и уходит раньше них.
     struct ReleasePauses {
-        ReleasePauses(const wxl::DispatcherQueue& windowQueue,
-                      wxl::async::cancellation_token releaseToken);
+        explicit ReleasePauses(wxl::async::stop_token releaseToken);
 
         wxl::WaitableTimer firstPause;
         wxl::WaitableTimer stepPause;
@@ -296,7 +293,7 @@ private:
     wxl::ContainerVisual leafLayer_;   ///< слой листов полосы — над страницами
     SpreadView& spreadView_;
     const PageFlow& flow_;
-    const wxl::async::cancellation_source& readingScope_;
+    const wxl::async::stop_source& readingScope_;
 
     /// Получатель сбоя корутины — полосы: у неё о сбое узнаёт читатель.
     function<void(std::exception_ptr)> failureReceiver_;
@@ -321,12 +318,12 @@ private:
     /// Источник серии — переворотов в одну сторону, дочерний от источника
     /// чтения. Заводит его первый переворот серии, отменяет finishAll; после
     /// отмены он не переиспользуется — следующая серия заведёт новый.
-    wxl::async::cancellation_source turnSeries_;
+    wxl::async::stop_source turnSeries_;
 
     /// Источник отпускания пула, дочерний от источника полосы: отпускание
     /// живёт, пока жива стратегия, и в чтении, и вне его. Деструктор
     /// стратегии его отменяет.
-    wxl::async::cancellation_source releaseStop_;
+    wxl::async::stop_source releaseStop_;
 
     /// Паузы отпускания (см. ReleasePauses).
     ReleasePauses releasePauses_;

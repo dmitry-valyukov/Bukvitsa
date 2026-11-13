@@ -19,14 +19,13 @@
 #include "bukvitsa/reader/imaging.h"
 #include "imaging_probe.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa::reader;
 using bukvitsa::reader::tests::check;
 using bukvitsa::reader::tests::failures;
-using wxl::async::cancellation_source;
-using wxl::async::cancellation_token;
+using wxl::async::stop_source;
+using wxl::async::stop_token;
 using wxl::async::operation_canceled_exception;
 using wxl::async::sta_loop;
 using wxl::async::task;
@@ -64,13 +63,13 @@ void decodesInPool() {
     const std::string photo = onDisk(testdata / L"bg_paper2.jpg");
     const std::string book = onDisk(testdata / L"Turgenev_I._Spisokshkolnoy._Otcyi_I_Deti.fb3");
 
-    const DecodedPicture decoded = run(decodeImageAsync(photo, kMaxPictureSide, cancellation_token{}));
+    const DecodedPicture decoded = run(decodeImageAsync(photo, kMaxPictureSide, stop_token{}));
     std::printf("pool: photo %ux%u\n", decoded.pixels.width, decoded.pixels.height);
     check(decoded.verdict.refusal == PictureRefusal::None && !decoded.pixels.empty() &&
               decoded.pixels.width == 800 && decoded.pixels.height == 507,
           "пул: jpeg — картинка 800×507");
 
-    const DecodedPicture refused = run(decodeImageAsync(book, kMaxPictureSide, cancellation_token{}));
+    const DecodedPicture refused = run(decodeImageAsync(book, kMaxPictureSide, stop_token{}));
     check(refused.verdict.refusal == PictureRefusal::NotAnImage && refused.pixels.empty(), "пул: книга — не картинка");
 }
 
@@ -88,7 +87,7 @@ void stopsBetweenBandsInPool() {
     std::binary_semaphore mayGoOn{0};
     DWORD bodyThread = 0;
     uint32_t bandsSeen = 0;
-    cancellation_source source;
+    stop_source source;
     task<DecodedPicture> decoding = bukvitsa::reader::detail::decodeImageAsync(
         photo, kMaxPictureSide, source.token(), [&](uint32_t band) {
             ++bandsSeen;
@@ -101,7 +100,7 @@ void stopsBetweenBandsInPool() {
     // Отмена кладёт ожидающего в ход петли: один проход, который ничего не
     // ждёт, кончает ожидание, тело ещё стоит.
     firstBandCopied.acquire();
-    source.cancel();
+    source.request_stop();
     sta_loop::run_pending();
     const bool endedAtOnce = decoding.done();
     check(endedAtOnce && canceled(std::move(decoding)),

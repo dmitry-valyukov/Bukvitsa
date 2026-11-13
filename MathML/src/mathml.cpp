@@ -12,7 +12,6 @@ module bukvitsa.mathml;
 
 import std;
 import wxl.core;
-import wxl.xml;
 
 namespace bukvitsa::mathml {
 

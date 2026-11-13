@@ -6,7 +6,6 @@
 #include "bukvitsa/reader/book_search.h"
 
 import wxl.core;
-import wxl.fmt;
 
 namespace bukvitsa::reader {
 namespace {

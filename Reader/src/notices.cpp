@@ -9,7 +9,6 @@
 // стандартный заголовок MSVC уже не принимает.
 #include "bukvitsa/reader/notice.h"
 
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {
@@ -37,7 +36,7 @@ void writeOut(const Notice& notice) {
 }  // namespace
 
 Notices::Notices(wxl::CompositionWindow window, observable<wxl::ElementTheme const>& screenTheme,
-                 wxl::async::cancellation_token token)
+                 wxl::async::stop_token token)
     : window_(std::move(window)), screenTheme_(screenTheme), dialogStop_(std::move(token)) {}
 
 Notices::~Notices() {
@@ -54,7 +53,7 @@ void Notices::post(Notice notice) {
     // токеном и не показался бы, — а терять нельзя: это сбой, отказ последней
     // записи или сценарий, упавший на выходе, и процесс выйдет с кодом 0.
     // Заголовок и подробности — строкой в stderr и в вывод отладчика.
-    if (dialogStop_.is_canceled()) {
+    if (dialogStop_.stop_requested()) {
         writeOut(notice);
         return;
     }

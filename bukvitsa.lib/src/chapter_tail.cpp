@@ -22,7 +22,7 @@ constexpr auto kSlice = std::chrono::milliseconds{50};
 }  // namespace
 
 ChapterTail::ChapterTail(PageFlow& flow, IdleScheduler& scheduler,
-                         wxl::async::cancellation_token ownerToken, function<void()> completionReceiver,
+                         wxl::async::stop_token ownerToken, function<void()> completionReceiver,
                          function<void(std::exception_ptr)> failureReceiver)
     : flow_(flow),
       scheduler_(scheduler),
@@ -32,11 +32,11 @@ ChapterTail::ChapterTail(PageFlow& flow, IdleScheduler& scheduler,
       stop_(ownerToken_) {}
 
 ChapterTail::~ChapterTail() {
-    stop_.cancel();
+    stop_.request_stop();
 }
 
 void ChapterTail::start() {
-    if (running_ || stop_.is_canceled()) return;   // идёт — возьмёт и эту главу; или владелец ушёл
+    if (running_ || stop_.stop_requested()) return;   // идёт — возьмёт и эту главу; или владелец ушёл
     if (!flow_.needsTail()) return;
 
     // Знак — до вызова: кадр может кончиться ещё внутри него и сам опустить
@@ -56,10 +56,10 @@ void ChapterTail::start() {
 }
 
 void ChapterTail::restart() {
-    stop_.cancel();
+    stop_.request_stop();
     running_ = false;
     startAgain_ = false;
-    stop_ = wxl::async::cancellation_source{ownerToken_};
+    stop_ = wxl::async::stop_source{ownerToken_};
 }
 
 wxl::async::task<> ChapterTail::loop() {

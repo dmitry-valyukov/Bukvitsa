@@ -12,7 +12,7 @@ wxl_add_module_library(bukvitsa_fb3 STATIC
     PRIVATE
         # Внутренняя кухня разбора: первичный интерфейс её не переэкспортирует,
         # и потребителю модуля она не видна. `internal.ixx` — ещё и то место,
-        # где живёт wxl::xml, о которой публичный вид FB3 не знает.
+        # где подключается разбор XML, о котором публичный вид FB3 не знает.
         src/parse_helpers.ixx
         src/internal.ixx
     SRC
@@ -24,14 +24,11 @@ wxl_add_module_library(bukvitsa_fb3 STATIC
 )
 add_library(bukvitsa::fb3 ALIAS bukvitsa_fb3)
 
-# PUBLIC, в отличие от прежнего PRIVATE: модель книги отвечает
-# wxl::core::u8_view, то есть тип из wxl.core стоит в интерфейсе модуля, и
-# компилировать его импорт приходится всякому, кто импортирует FB3.
+# PUBLIC: модель книги отвечает wxl::core::u8_view, то есть тип из wxl.core
+# стоит в интерфейсе модуля, и компилировать его импорт приходится всякому, кто
+# импортирует FB3. XML-разбор — область того же модуля: его импортирует
+# партиция :internal, которую первичный интерфейс не переэкспортирует.
 target_link_libraries(bukvitsa_fb3 PUBLIC wxl::core)
-
-# wxl::xml — только внутри: её импортирует партиция :internal, которую
-# первичный интерфейс не переэкспортирует.
-target_link_libraries(bukvitsa_fb3 PRIVATE wxl::xml)
 
 if(WIN32)
     target_link_libraries(bukvitsa_fb3 PRIVATE ole32 oleaut32)  # Packaging API

@@ -65,7 +65,7 @@
 #include "bukvitsa/reader/workspace.h"
 
 // Импорт — последним: сценарии — корутины wxl.async.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -173,7 +173,7 @@ private:
     /// Вторая половина открытия: прочитанная книга — в рабочее место и на
     /// полосу. Ждёт под токеном открытия, которое её позвало (open,
     /// openPreloaded).
-    wxl::async::task<> openLoaded(LoadedBook loaded, wxl::async::cancellation_token token);
+    wxl::async::task<> openLoaded(LoadedBook loaded, wxl::async::stop_token token);
 
     /// Начинает предзагрузку книги под кнопкой «Продолжить чтение», пока
     /// читатель смотрит на заставку: задача уходит в `preload_`, здесь ничего
@@ -190,7 +190,7 @@ private:
     /// Приносит полосе снимок подложки, который ей теперь нужен: файл
     /// читается и раскодируется в пуле. Ждёт под токеном загрузки подложки
     /// (`backdropLoad_`): ставший ненужным снимок отменяет владелец.
-    wxl::async::task<> loadBackdrop(std::filesystem::path file, wxl::async::cancellation_token token);
+    wxl::async::task<> loadBackdrop(std::filesystem::path file, wxl::async::stop_token token);
 
     /// Отменяет загрузку подложки, которая ещё идёт, и заводит источник для
     /// следующей: каждая смена нужного снимка идёт через неё.
@@ -202,12 +202,12 @@ private:
     /// токеном сценария, который его позвал: отменить шаг — дело его
     /// владельца; отменённый кончается отменой, а не ответом, — и после
     /// ожидания тоже, так что дороге спрашивать сеанс ещё раз незачем.
-    wxl::async::task<DecodedPixels> checkImage(std::filesystem::path image, wxl::async::cancellation_token token);
+    wxl::async::task<DecodedPixels> checkImage(std::filesystem::path image, wxl::async::stop_token token);
 
     /// Начинает сеанс мастера обложек — дорогу в него (добавить, править,
     /// другой снимок): прежний сеанс отменён. Отдаёт токен нового — под ним
     /// дорога ждёт снимка.
-    [[nodiscard]] wxl::async::cancellation_token beginWizardSession();
+    [[nodiscard]] wxl::async::stop_token beginWizardSession();
 
     /// Кончает сеанс мастера — выход из него и уход с полосы: дорога, которая
     /// ещё ждёт снимка, мастера не откроет, а показанный скрыт.
@@ -217,14 +217,14 @@ private:
 
     /// Цикл записи состояния книги на полосе — места чтения и закладок — под
     /// её guid. Его держит stateWrite_.
-    wxl::async::task<> writeState(wxl::WaitableTimer& timer, wxl::async::cancellation_token token);
+    wxl::async::task<> writeState(wxl::WaitableTimer& timer, wxl::async::stop_token token);
 
     /// Цикл записи настроек: вид, тема, место окна, последняя книга. Его
     /// держит settingsWrite_.
-    wxl::async::task<> writeSettings(wxl::WaitableTimer& timer, wxl::async::cancellation_token token);
+    wxl::async::task<> writeSettings(wxl::WaitableTimer& timer, wxl::async::stop_token token);
 
     /// Цикл записи реестра книг. Его держит libraryWrite_.
-    wxl::async::task<> writeLibrary(wxl::WaitableTimer& timer, wxl::async::cancellation_token token);
+    wxl::async::task<> writeLibrary(wxl::WaitableTimer& timer, wxl::async::stop_token token);
 
     /// Настройки прочитаны — с этих пор их перемены пишутся. Раньше незачем:
     /// прочитанное из файла — не перемена, которую надо записать обратно.
@@ -314,7 +314,7 @@ private:
     /// не ждёт. Отменяет его закрытие окна (close), один раз на жизнь
     /// приложения: обратно отмену не взять. Раньше рабочего места — оно берёт
     /// его токен.
-    wxl::async::cancellation_source stop_;
+    wxl::async::stop_source stop_;
 
     /// Рабочее место: настройки, реестр, обложки и все файлы. Пустое: его
     /// наполнит запуск, и наполнит асинхронно — в этом потоке к диску не
@@ -485,14 +485,14 @@ private:
     /// когда открывает книгу, — любую, не спрашивая какую, — а закрытие окна
     /// отменяет вместе со всеми. Предзагрузка одна на запуск, и источник ей
     /// один.
-    wxl::async::cancellation_source preloadStop_{stop_.token()};
+    wxl::async::stop_source preloadStop_{stop_.token()};
 
     /// Сеанс мастера обложек, дочерний от общего: от начала дороги в мастер до
     /// выхода из него, ухода с полосы или следующей дороги — каждая заводит
     /// свой (beginWizardSession), а отменяет его владелец (endWizardSession и
     /// следующая дорога). Под ним дорога ждёт снимка; по нему сохранение
     /// решает, закрывать ли мастер.
-    wxl::async::cancellation_source wizardSession_{stop_.token()};
+    wxl::async::stop_source wizardSession_{stop_.token()};
 
     /// Загрузка снимка подложки, дочерняя от общего: под ним loadBackdrop ждёт
     /// чтения и раскодирования. Отменяет его владелец, когда полосе нужен уже
@@ -502,7 +502,7 @@ private:
     /// ступени до них — декодер, заголовок). Прогрессивный JPEG и
     /// чересстрочные PNG и GIF декодер раскодирует целиком на первой полосе,
     /// и при частой смене темы (T) такие сироты идут в пуле одновременно.
-    wxl::async::cancellation_source backdropLoad_{stop_.token()};
+    wxl::async::stop_source backdropLoad_{stop_.token()};
 
     /// Предзагрузка — задача, которую держит владелец: чтение книги под
     /// кнопкой «Продолжить чтение», начатое при запуске. Её забирает

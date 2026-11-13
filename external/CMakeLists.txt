@@ -21,10 +21,15 @@ target_include_directories(microtex SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/M
 target_include_directories(microtex PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tinyxml2")
 
 # C++17 — родной стандарт MicroTeX под MSVC; двадцать третий всего дерева ему
-# не нужен, а BMI это не касается — модулей у него нет.
+# не нужен. Модулей у него нет, поэтому и `import std;`, и сканирование на
+# импорты, которые корневой CMakeLists включает на всё дерево, здесь выключены:
+# с ними CMake собрал бы для цели модуль `std` по семнадцатому стандарту и
+# остановил настройку.
 set_target_properties(microtex PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
+    CXX_MODULE_STD OFF
+    CXX_SCAN_FOR_MODULES OFF
 )
 
 # Чужой код с чужими предупреждениями: они не адресованы этой сборке, как и

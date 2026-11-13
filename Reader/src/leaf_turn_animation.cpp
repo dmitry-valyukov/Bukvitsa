@@ -400,10 +400,9 @@ void LeafTurnAnimation::Leaf::detach(const ContainerVisual& leafLayer) const {
 /* ---------------- перевороты ---------------- */
 
 LeafTurnAnimation::LeafTurnAnimation(const Compositor& compositor, const ContainerVisual& leafLayer,
-                                     const DispatcherQueue& windowQueue, SpreadView& spreadView,
-                                     const PageFlow& flow,
-                                     const async::cancellation_source& readingScope,
-                                     async::cancellation_token stripStop,
+                                     SpreadView& spreadView, const PageFlow& flow,
+                                     const async::stop_source& readingScope,
+                                     async::stop_token stripStop,
                                      function<void(std::exception_ptr)> failureReceiver)
     : compositor_(compositor),
       leafLayer_(leafLayer),
@@ -414,7 +413,7 @@ LeafTurnAnimation::LeafTurnAnimation(const Compositor& compositor, const Contain
       restBrush_(compositor.createColorBrush(rgba(0, 0, 0, 0))),
       turnSeries_(readingScope.token()),
       releaseStop_(std::move(stripStop)),
-      releasePauses_(windowQueue, releaseStop_.token()) {
+      releasePauses_(releaseStop_.token()) {
     // Отпускание пула — на всю жизнь стратегии: цикл тут же встаёт на долгую
     // паузу и до первой посадки ничего не трогает.
     releasing_ = releaseIdleLeaves();
@@ -425,8 +424,8 @@ LeafTurnAnimation::~LeafTurnAnimation() {
     // больше никому не нужны: её сменили или полоса умирает. Отменяет их
     // владелец — она сама, а стоящие корутины останавливают их задачи, уходя
     // первыми из членов, — раньше таймеров и листов, на которых те стоят.
-    turnSeries_.cancel();
-    releaseStop_.cancel();
+    turnSeries_.request_stop();
+    releaseStop_.request_stop();
 }
 
 void LeafTurnAnimation::turnStarting(bool forward) {
@@ -435,7 +434,7 @@ void LeafTurnAnimation::turnStarting(bool forward) {
     // кончилось бы отменой, и переворот остался бы в liveTurns_ навсегда —
     // лист в воздухе, пул и отпускание стоят. Сегодня так не бывает, но
     // нарушение не должно проходить молча.
-    if (readingScope_.is_canceled()) core::abort("LeafTurnAnimation: переворот вне чтения");
+    if (readingScope_.stop_requested()) core::abort("LeafTurnAnimation: переворот вне чтения");
 
     // Встречное листание сперва доводит до конца всё, что летит, — в обоих
     // режимах: серия — перевороты в одну сторону. В книге бумага снимается с
@@ -449,7 +448,7 @@ void LeafTurnAnimation::turnStarting(bool forward) {
 
     // Первый переворот серии заводит её источник — под нынешним источником
     // чтения: тот полоса заводит заново при каждом входе.
-    if (liveTurns_.empty()) turnSeries_ = async::cancellation_source{readingScope_.token()};
+    if (liveTurns_.empty()) turnSeries_ = async::stop_source{readingScope_.token()};
 
     // Отпускание пула таймеров не трогает: цикл, проснувшись, сам увидит, что
     // листают, и не отпустит ничего, пока все не сядут.
@@ -469,7 +468,7 @@ void LeafTurnAnimation::turnStarting(bool forward) {
         .leafIndex = leafIndex,
         .turnsForward = forward,
         .bookMode = bookMode,
-        .turnStop = async::cancellation_source{turnSeries_.token()},
+        .turnStop = async::stop_source{turnSeries_.token()},
         .outgoingRaster =
             bookMode ? spreadView_.pageRaster(flippingSide) : spreadView_.settledRaster(),
     });
@@ -533,7 +532,7 @@ void LeafTurnAnimation::finishAll() {
     // Серия кончается вся: её источник отменён и больше не нужен — следующая
     // заведёт свой. Отмена кончает ожидания корутин ходом очереди, а покой и
     // посадка нужны сейчас, в этой строке: на них стоит следующая.
-    turnSeries_.cancel();
+    turnSeries_.request_stop();
     if (liveTurns_.empty()) {
         settle();
         return;
@@ -613,7 +612,7 @@ size_t LeafTurnAnimation::turnOfLeaf(size_t leafIndex) const {
 // конечное состояние наступает тем же ходом. Сбой — не отмену — получателю
 // сбоев: тело бежит только при живой стратегии, она держит его задачу.
 async::task<> LeafTurnAnimation::flyTurn(size_t leafIndex, bool forward, bool bookMode,
-                                         async::cancellation_token turnStop) {
+                                         async::stop_token turnStop) {
     try {
         CompositionScopedBatch const flightBatch = startFlight(leafIndex, forward, bookMode);
 
@@ -930,7 +929,7 @@ void LeafTurnAnimation::finishTurn(size_t newestFinished) {
     // в покой — тем же ходом, что сокрытие листа, без промежуточного кадра.
     for (size_t turnIndex = 0; turnIndex <= newestFinished; ++turnIndex) {
         Turn& finishedTurn = liveTurns_[turnIndex];
-        finishedTurn.turnStop.cancel();
+        finishedTurn.turnStop.request_stop();
         leafPool_[finishedTurn.leafIndex].stop();
     }
 
@@ -970,10 +969,9 @@ void LeafTurnAnimation::settle() {
 
 /* ---------------- отпускание пула ---------------- */
 
-LeafTurnAnimation::ReleasePauses::ReleasePauses(const DispatcherQueue& windowQueue,
-                                                async::cancellation_token releaseToken)
-    : firstPause{windowQueue, kLeafReleaseFirst, releaseToken},
-      stepPause{windowQueue, kLeafReleaseStep, releaseToken} {}
+LeafTurnAnimation::ReleasePauses::ReleasePauses(async::stop_token releaseToken)
+    : firstPause{kLeafReleaseFirst, releaseToken},
+      stepPause{kLeafReleaseStep, releaseToken} {}
 
 // Паузы и источник — стратегии: цикл стоит в её поле и уходит вместе с ней,
 // так что, проснувшись, он находит их на месте.
@@ -985,7 +983,7 @@ async::task<> LeafTurnAnimation::releaseIdleLeaves() {
             // ожидание его возьмёт и не встанет. Отмена кончает ожидание без
             // исключения, и источник цикл спрашивает сам.
             co_await releasePauses_.firstPause;
-            if (releaseStop_.is_canceled()) co_return;
+            if (releaseStop_.stop_requested()) co_return;
 
             // Пауза отсчитана от последней посадки — посадки до неё уже учтены.
             settledDuringRelease_ = false;
@@ -998,7 +996,7 @@ async::task<> LeafTurnAnimation::releaseIdleLeaves() {
                 releaseSpareLeaf();
                 releasePauses_.stepPause.restart();
                 co_await releasePauses_.stepPause;
-                if (releaseStop_.is_canceled()) co_return;
+                if (releaseStop_.stop_requested()) co_return;
                 if (std::exchange(settledDuringRelease_, false)) break;
             }
         }

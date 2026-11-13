@@ -1,7 +1,7 @@
 add_executable(fb3_tests fb3_tests.cpp)
 
-# wxl::core, а не wxl::xml: тесту нужен только STA-пул (`import wxl.core;`),
-# разбор XML он видит через FB3.
+# wxl::core: тесту нужен STA-пул (`import wxl.core;`), разбор XML он видит
+# через FB3.
 target_link_libraries(fb3_tests PRIVATE bukvitsa::fb3 wxl::core)
 bukvitsa_consumes_wxl(fb3_tests)
 

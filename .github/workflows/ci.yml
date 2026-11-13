@@ -13,11 +13,12 @@
 # suspend_never, в оптимизированном коде с /EHsc.
 #
 # wxl.ui нужно то, чего в репозитории wxl нет: закреплённые пакеты NuGet,
-# проекция cppwinrt в generated/ и обёртки, которые winui-srcgen пишет в
-# wxl.ui/src/wxl. Задание делает их так же, как свежий клон wxl: восстанавливает
-# пакеты, строит проекцию, заводит каталог обёрток с пустым CMakeLists.txt,
-# собирает генератор и запускает его с профилем full. Скрипты для этого берутся
-# из самого дерева wxl, своих копий у Буквицы нет.
+# проекция cppwinrt и обёртки, которые пишет winui-srcgen. Всё это делает сама
+# wxl, и отдельных шагов для него нет: настройка Буквицы восстанавливает пакеты
+# и строит проекцию в своём каталоге сборки (MSBuild той установки Build Tools,
+# в которой есть компонент C++ WinUI; версии берутся из файла блокировки wxl,
+# отсюда RestoreLockedMode), а сборка запускает ею же построенный генератор и
+# компилирует обёртки вместе с читалкой.
 #
 # Коммиты пул-реквеста, его заголовок и описание проверяет отдельный workflow,
 # commits.yml: он отвечает и на правку описания, а эта сборка — нет.
@@ -114,14 +115,20 @@ jobs:
     name: build (${{ matrix.config }})
     runs-on: windows-2025
     # Одна wxl в её собственной проверке собирается 47 минут. Здесь из её дерева
-    # собирается только winui-srcgen, но wxl.ui компилируется внутри сборки
+    # собираются генератор и wxl.ui, которая компилируется внутри сборки
     # Буквицы, и сама Буквица идёт сверх того.
     timeout-minutes: 120
     env:
       DEVCMD: C:\BuildToolsInsiders\Common7\Tools\VsDevCmd.bat
       VCVARS: -vcvars_ver=14.53
-      # Скрипты wxl, CMake и winui-srcgen читают эту переменную первой.
+      # Куда настройка кладёт восстановленные пакеты; winui-srcgen и winxl
+      # находят их по списку, который она пишет.
       NUGET_PACKAGES: C:\nuget-packages
+      # MSBuild читает переменные среды как свойства: восстановление идёт в
+      # режиме блокировки, по версиям из tools/packages.lock.json wxl, и файл
+      # блокировки, не совпавший с закреплёнными версиями, останавливает
+      # настройку, а не переписывается.
+      RestoreLockedMode: true
     steps:
       # Оба дерева — соседние каталоги рабочей области, Bukvitsa и wxl, так что
       # BUKVITSA_WXL_ROOT по умолчанию (../wxl) указывает куда надо и не
@@ -146,8 +153,10 @@ jobs:
           path: wxl
           persist-credentials: false
 
-      # 3010 — «установлено, ждёт перезагрузки»: компилятор годен и так.
-      - name: Install MSVC 14.53
+      # 3010 — «установлено, ждёт перезагрузки»: компилятор годен и так. Одна
+      # установка на тулсет и на сборочные средства WinUI: VsDevCmd даёт из неё и
+      # MSVC 14.53, и MSBuild, которым настройка восстанавливает пакеты.
+      - name: Install MSVC 14.53 and the WinUI build tools
         shell: pwsh
         run: |
           $boot = Join-Path $env:RUNNER_TEMP 'vs_buildtools.exe'
@@ -155,59 +164,16 @@ jobs:
           $p = Start-Process -FilePath $boot -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru -ArgumentList @(
             '--installPath', 'C:\BuildToolsInsiders',
             '--add', 'Microsoft.VisualStudio.Component.VC.Preview.Tools.x86.x64',
+            '--add', 'Microsoft.VisualStudio.Workload.UniversalBuildTools',
+            '--add', 'Microsoft.VisualStudio.ComponentGroup.WindowsAppDevelopment.VC.BuildTools',
             '--quiet', '--wait', '--norestart', '--nocache')
           "exit code $($p.ExitCode)"
           Get-ChildItem 'C:\BuildToolsInsiders\VC\Tools\MSVC' | ForEach-Object { $_.Name }
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "Build Tools install failed: $($p.ExitCode)" }
 
-      - name: vcpkg port (cppwinrt)
-        shell: pwsh
-        run: vcpkg install cppwinrt:x64-windows-static-md
-
-      - name: Restore NuGet packages
-        shell: pwsh
-        working-directory: wxl
-        run: pwsh -NoProfile -File tools/restore-packages.ps1
-
-      # projection.ps1 находит cppwinrt.exe через VCPKG_ROOT, когда собственного
-      # файла пути vcpkg нет, как на этой машине.
-      - name: cppwinrt projection
-        shell: pwsh
-        working-directory: wxl
-        env:
-          VCPKG_ROOT: C:\vcpkg
-        run: pwsh -NoProfile -File tools/projection.ps1
-
-      - name: Seed the wrapper directory
-        shell: pwsh
-        working-directory: wxl
-        run: |
-          New-Item -ItemType Directory -Force wxl.ui\src\wxl | Out-Null
-          New-Item -ItemType File wxl.ui\src\wxl\CMakeLists.txt | Out-Null
-
-      # Дерево wxl настраивается ради одного генератора. Одна оболочка на
-      # окружение разработчика и вызов CMake: VsDevCmd кладёт в PATH тулсет и
-      # Ninja, как tools/build.ps1 делает дома.
-      - name: Configure wxl
-        shell: cmd
-        working-directory: wxl
-        run: |
-          call "%DEVCMD%" -arch=x64 -host_arch=x64 %VCVARS%
-          cmake --preset x64 -DVCPKG_ROOT=C:/vcpkg -DWXL_BUILD_DOCS=OFF
-
-      - name: Build winui-srcgen
-        shell: cmd
-        working-directory: wxl
-        run: |
-          call "%DEVCMD%" -arch=x64 -host_arch=x64 %VCVARS%
-          cmake --build build\x64 --config ${{ matrix.config }} --target winui-srcgen
-
-      - name: Generate the wrappers
-        shell: cmd
-        working-directory: wxl
-        run: build\x64\wxl.gen\${{ matrix.config }}\winui-srcgen.exe --profile wxl.gen\profiles\full.json
-
       # Без сайта: его машинерия ходила бы в сеть за Doxygen уже при настройке.
+      # WXL_WINXL — утилита winxl, которая ставит читалке экспериментальную среду
+      # Windows App Runtime (нужен .NET SDK 10, он есть в образе раннера).
       # Версии и кодовая страница Ninja — в журнал: Reader/src/Assets/Брошюра.png
       # идёт через правило Ninja с кириллицей в имени, ANSI-страница машины —
       # 1252, и уже первый журнал должен показать, пишет ли Ninja в UTF-8.
@@ -219,7 +185,7 @@ jobs:
           cmake --version
           ninja --version
           ninja -t wincodepage
-          cmake --preset x64 -DVCPKG_ROOT=C:/vcpkg -DBUKVITSA_BUILD_DOCS=OFF
+          cmake --preset x64 -DBUKVITSA_BUILD_DOCS=OFF -DWXL_WINXL=ON
 
       # -k 0: все ошибки компиляции правки сразу, а не только первая.
       - name: Build
@@ -246,8 +212,9 @@ jobs:
       - name: Install the experimental Windows App Runtime
         if: (success() || failure()) && steps.build.outcome == 'success'
         shell: pwsh
-        working-directory: wxl
-        run: pwsh -NoProfile -File tools/install-runtime.ps1
+        working-directory: Bukvitsa
+        run: |
+          & .\build\x64\wxl\winxl\winxl.exe runtime install --packages build\x64\wxl.packages\restored-packages.json
 
       # Процесс оконный, и отказ wxl уходит в stderr и OutputDebugString, которых
       # журнал не видит: потоки читалки перенаправлены в файлы и печатаются.

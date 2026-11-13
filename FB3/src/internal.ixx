@@ -6,7 +6,7 @@
 // а о ней публичный вид FB3 не знает и знать не должен.
 export module bukvitsa.fb3:internal;
 
-import wxl.xml;
+import wxl.core;
 
 import :description;
 

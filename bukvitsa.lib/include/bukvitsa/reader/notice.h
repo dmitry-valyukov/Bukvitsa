@@ -7,7 +7,7 @@
 #include <string>
 
 // Последним: `last_error` живёт в wxl.async.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 

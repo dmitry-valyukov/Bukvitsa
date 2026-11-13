@@ -36,7 +36,6 @@
 #include "imaging_probe.h"
 #include "bukvitsa/reader/workspace.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;
@@ -800,15 +799,15 @@ void testSkinsReadSeparateLeaves() {
 // она встала на первом ожидании, и просьба кончиться, сделанная тут же, —
 // просьба посреди этого ожидания.
 
-using wxl::async::cancellation_source;
-using wxl::async::cancellation_token;
+using wxl::async::stop_source;
+using wxl::async::stop_token;
 using wxl::async::last_error;
 using wxl::async::operation_canceled_exception;
 using wxl::async::sta_loop;
 using wxl::async::task;
 
 /// Токен, которого никто не отменит, — для проб без отмены.
-const auto never = cancellation_token{};
+const auto never = stop_token{};
 
 const std::filesystem::path testdata = BUKVITSA_TESTDATA_DIR;
 
@@ -974,7 +973,7 @@ const BookEntry& addTo(Library& library, const fb3::Document& document, const st
 /// число знаков, копия обложки. Задача стартует в вызове: свободный замок шаг
 /// берёт сразу и встаёт на записи обложки до хода петли, а занятого — ждёт.
 task<Registered> registrationOf(Workspace& ws, const fb3::Document& document, BookFile file,
-                                cancellation_token token = never) {
+                                stop_token token = never) {
     return ws.registerBook(document.description(), document.characterCount(), copyCover(document), std::move(file),
                            std::move(token));
 }
@@ -987,8 +986,8 @@ Registered registerFrom(Workspace& ws, const fb3::Document& document, const std:
 
 /// Открытие тем же порядком, что у Reader: прочитанная книга — в регистрацию
 /// под токеном открытия, затем открытие записи, какой её отдал реестр.
-task<Opened> openIn(Workspace& ws, const LoadedBook& loaded, cancellation_token token) {
-    token.throw_if_canceled();
+task<Opened> openIn(Workspace& ws, const LoadedBook& loaded, stop_token token) {
+    token.throw_if_stop_requested();
 
     const Registered registered =
         co_await ws.registerBook(loaded.description, loaded.book->characterCount(), loaded.cover,
@@ -2345,13 +2344,13 @@ void testDecodeAsyncStopsOnRequest() {
     const std::string photo = onDisk(kPhoto);
     const size_t before = sta_loop::outstanding();
 
-    cancellation_source already;
-    already.cancel();
+    stop_source already;
+    already.request_stop();
     task<DecodedPicture> refused = decodeImageAsync(photo, kMaxPictureSide, already.token());
     check(refused.done() && sta_loop::outstanding() == before, "под отменённым токеном рабочему потоку ничего не ушло");
     check(canceled(std::move(refused)), "под отменённым токеном — отмена, а не снимок");
 
-    cancellation_source later;
+    stop_source later;
     HeldWorker heldWorker;
     const size_t held = sta_loop::outstanding();
     task<DecodedPicture> decoding = decodeImageAsync(photo, kMaxPictureSide, later.token());
@@ -2359,7 +2358,7 @@ void testDecodeAsyncStopsOnRequest() {
 
     // Отмена кладёт ожидающего в ход петли: один проход, который ничего не
     // ждёт, кончает ожидание, ворота ещё закрыты.
-    later.cancel();
+    later.request_stop();
     sta_loop::run_pending();
     const bool endedAtOnce = decoding.done();
     check(endedAtOnce && canceled(std::move(decoding)),
@@ -2520,7 +2519,7 @@ void testDecodeStopsBetweenBands() {
     std::vector<uint32_t> orphanBands;
     std::binary_semaphore firstBandCopied{0};
     std::binary_semaphore mayGoOn{0};
-    cancellation_source source;
+    stop_source source;
     task<DecodedPicture> decoding = bukvitsa::reader::detail::decodeImageAsync(
         png, kMaxPictureSide, source.token(), [&orphanBands, &firstBandCopied, &mayGoOn](uint32_t band) {
             orphanBands.push_back(band);
@@ -2530,7 +2529,7 @@ void testDecodeStopsBetweenBands() {
         });
 
     firstBandCopied.acquire();
-    source.cancel();
+    source.request_stop();
     sta_loop::run_pending();
     const bool endedAtOnce = decoding.done();
     check(endedAtOnce && canceled(std::move(decoding)),
@@ -2611,9 +2610,9 @@ void testWorkspaceReadsStopOnRequest() {
     Sandbox box("stop-reads");
     Workspace ws(box.root, never);
 
-    cancellation_source source;
-    source.cancel();
-    const cancellation_token token = source.token();
+    stop_source source;
+    source.request_stop();
+    const stop_token token = source.token();
 
     const std::filesystem::path missing = box.root / L"missing.fb3";
 
@@ -2630,10 +2629,10 @@ void testWorkspaceReadsStopOnRequest() {
     ws.settings.lastBookPath = missing;
     check(canceled(ws.lastBookPath(token)), "последняя книга: не начинается — отмена, а не «продолжать нечего»");
 
-    cancellation_source later;
+    stop_source later;
     task<LoadedBook> reading = ws.readBook(kBook, later.token());
     check(!reading.done(), "чтение книги ушло к диску");
-    later.cancel();
+    later.request_stop();
     check(canceled(std::move(reading)), "попросили посреди чтения — отмена, а не книга");
 }
 
@@ -2654,8 +2653,8 @@ void testWorkspaceStartReadsModelsWhole() {
 
     Workspace ws(box.root, never);
 
-    cancellation_source source;
-    source.cancel();
+    stop_source source;
+    source.request_stop();
 
     check(canceled(ws.start(source.token())), "запуск кончился отменой — на поиске книги");
     check(ws.settings.fontSize.get() == 31.0 && ws.settings.lastBookPath == kBook,
@@ -2676,8 +2675,8 @@ void testWorkspaceOpenStopsOnStateRead() {
 
     const LoadedBook loaded = run(ws.readBook(kBook, never));
 
-    cancellation_source before;
-    before.cancel();
+    stop_source before;
+    before.request_stop();
 
     check(canceled(openIn(ws, loaded, before.token())), "под отменённым токеном — отмена");
     check(ws.library.cards().empty() && ws.settings.lastBookGuid.empty(),
@@ -2689,10 +2688,10 @@ void testWorkspaceOpenStopsOnStateRead() {
     // Шаг регистрации, взявший замок, отмена открытия не делит: попросили,
     // пока пишется обложка, — книга встаёт в реестр, а открытие записи под
     // отменённым токеном не начинается и настроек не трогает.
-    cancellation_source during;
+    stop_source during;
     task<Opened> opening = openIn(ws, loaded, during.token());
     check(!opening.done() && ws.library.cards().empty(), "шаг регистрации открытия стоит на записи обложки");
-    during.cancel();
+    during.request_stop();
 
     check(canceled(std::move(opening)), "попросили на записи обложки — открытие кончается отменой");
     check(ws.library.cards().size() == 1 && ws.settings.lastBookGuid.empty(),
@@ -2713,7 +2712,7 @@ void testWorkspaceOpenStopsOnStateRead() {
     // исполняется и отвечает отменой. Поток занимают, когда шаг регистрации
     // уже кончился: шаг с записью обложки ждал бы её за занятым потоком, и
     // конец шага не пришёл бы.
-    cancellation_source reading;
+    stop_source reading;
     {
         const Registered reregistered =
             run(ws.registerBook(loaded.description, loaded.book->characterCount(), loaded.cover,
@@ -2725,7 +2724,7 @@ void testWorkspaceOpenStopsOnStateRead() {
         check(!reopening.done(), "открытие стоит на чтении состояния");
         check(ws.settings.lastBookGuid.empty() && ws.settings.lastBookPath.empty(),
               "пока открытие стоит на чтении состояния, настройки ещё не указывают на книгу");
-        reading.cancel();
+        reading.request_stop();
         heldWorker.open();
 
         check(canceled(std::move(reopening)), "отмена раньше чтения состояния — открытие кончается отменой");
@@ -2737,11 +2736,11 @@ void testWorkspaceOpenStopsOnStateRead() {
     // канале, — и только потом попросили. Ответ, успевший раньше отмены, —
     // ответ, но открытие после отмены дальше не идёт, и до настроек оно не
     // доходит.
-    cancellation_source lateStop;
+    stop_source lateStop;
     task<Opened> answeredOpening = openIn(ws, loaded, lateStop.token());
     check(!answeredOpening.done(), "открытие стоит на чтении состояния");
     AnsweredWorker answeredState;
-    lateStop.cancel();
+    lateStop.request_stop();
     answeredState.deliver();
 
     check(canceled(std::move(answeredOpening)), "чтение ответило раньше отмены — открытие всё равно кончается отменой");
@@ -2763,12 +2762,12 @@ void testWorkspaceScanStopsAfterListing() {
     // Файл ушёл — перепроверка пометила бы его запись «не найдена».
     std::filesystem::remove(folder / kBook.filename());
 
-    cancellation_source rescanStop;
+    stop_source rescanStop;
     task<ScanReport> pendingRescan = ws.scanFolder(folder, rescanStop.token());
     check(!pendingRescan.done(), "перепроверка стоит на листинге");
     {
         AnsweredWorker answeredListing;
-        rescanStop.cancel();
+        rescanStop.request_stop();
         answeredListing.deliver();
     }
     check(canceled(std::move(pendingRescan)), "листинг ответил раньше отмены — перепроверка кончается отменой");
@@ -2779,12 +2778,12 @@ void testWorkspaceScanStopsAfterListing() {
     std::filesystem::create_directories(anotherFolder);
     std::filesystem::copy_file(kOtherBook, anotherFolder / kOtherBook.filename());
 
-    cancellation_source addingStop;
+    stop_source addingStop;
     task<ScanReport> pendingAddition = ws.addFolder(anotherFolder, addingStop.token());
     check(!pendingAddition.done(), "добавление стоит на листинге");
     {
         AnsweredWorker answeredListing;
-        addingStop.cancel();
+        addingStop.request_stop();
         answeredListing.deliver();
     }
     check(canceled(std::move(pendingAddition)), "листинг ответил раньше отмены — добавление кончается отменой");
@@ -2811,26 +2810,26 @@ void testWorkspaceSaveSkinStopsBeforeWrites() {
                !std::filesystem::exists(ws.skinDirectory());
     };
 
-    cancellation_source before;
-    before.cancel();
+    stop_source before;
+    before.request_stop();
     check(canceled(ws.saveSkin(skin, photo, before.token())), "под отменённым токеном — отмена");
     check(nothingWritten(), "под отменённым токеном ничего не записано");
 
-    cancellation_source reading;
+    stop_source reading;
     task<> onRead = ws.saveSkin(skin, photo, reading.token());
-    reading.cancel();
+    reading.request_stop();
     check(canceled(std::move(onRead)), "попросили на чтении снимка — отмена");
     check(nothingWritten(), "на чтении снимка ничего не записано");
 
     // Один ход петли — пришло чтение снимка, и сохранение встало на записи
     // его копии. Других операций в полёте нет: каждая проба выше дождалась
     // своих.
-    cancellation_source writing;
+    stop_source writing;
     task<> onWrite = ws.saveSkin(skin, photo, writing.token());
     while (!sta_loop::run_one()) {
     }
     check(!onWrite.done(), "снимок прочитан, копия пишется");
-    writing.cancel();
+    writing.request_stop();
 
     check(!canceled(std::move(onWrite)), "попросили на записи — сохранение дошло до конца");
     check(ws.skins.list().size() == 1 && !ws.skins.list()[0].image.empty(), "обложка в реестре и с копией снимка");
@@ -2857,8 +2856,8 @@ void testWorkspaceDeleteSkinStopsBeforeChange() {
     const std::string written = ws.skins.toXml();
     putOnDisk(ws.skinsPath(), written);
 
-    cancellation_source before;
-    before.cancel();
+    stop_source before;
+    before.request_stop();
     check(canceled(ws.deleteSkin(u"Бумага", before.token())), "под отменённым токеном — отмена");
     check(ws.skins.find(u"Бумага") != nullptr && onDisk(ws.skinsPath()) == written,
           "под отменённым токеном реестр обложек не тронут — ни в памяти, ни на диске");
@@ -2991,21 +2990,21 @@ void testWorkspaceReadsStopWithParent() {
     Sandbox box("stop-tree");
     Workspace ws(box.root, never);
 
-    cancellation_source parent;
-    auto const child = cancellation_source{parent.token()};
+    stop_source parent;
+    auto const child = stop_source{parent.token()};
 
     task<LoadedBook> reading = ws.readBook(kBook, child.token());
     check(!reading.done(), "чтение книги под дочерним токеном ушло к диску");
-    parent.cancel();
-    check(child.is_canceled(), "отмена родителя отменяет дочерний источник");
+    parent.request_stop();
+    check(child.stop_requested(), "отмена родителя отменяет дочерний источник");
     check(canceled(std::move(reading)), "отмена родителя кончает чтение под дочерним токеном");
 
-    check(cancellation_source{parent.token()}.is_canceled(), "под отменённым родителем источник отменён с рождения");
+    check(stop_source{parent.token()}.stop_requested(), "под отменённым родителем источник отменён с рождения");
 
-    cancellation_source owner;
-    auto piece = cancellation_source{owner.token()};
-    piece.cancel();
-    check(piece.is_canceled() && !owner.is_canceled(), "отмена дочернего не отменяет родителя");
+    stop_source owner;
+    auto piece = stop_source{owner.token()};
+    piece.request_stop();
+    check(piece.stop_requested() && !owner.stop_requested(), "отмена дочернего не отменяет родителя");
 }
 
 /// Обход каталога, которому сказали кончиться на первой книге: дальше он не
@@ -3029,10 +3028,10 @@ void testWorkspaceFolderKeepsWhatShelfShowed() {
     // прочитанное после неё регистрации не отдаётся. Под очередью окна Reader
     // операции идут в пул системы, и там порядок может быть иным — отданное
     // до отмены встаёт: регистрации отданных книг отмена обхода не трогает.
-    cancellation_source source;
+    stop_source source;
     uint32_t registered = 0;
     event_token watch =
-        ws.library.cards().on_change([&source](const list_change&) noexcept { source.cancel(); });
+        ws.library.cards().on_change([&source](const list_change&) noexcept { source.request_stop(); });
     event_token registeredWatch =
         ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
 
@@ -3075,10 +3074,10 @@ void testWorkspaceRescanKeepsWhatShelfShowed() {
     // обложки первой кончается раньше чтения второй (как в пробе обхода
     // выше): вторая регистрации не отдаётся. Под пулом Reader порядок может
     // быть иным.
-    cancellation_source source;
+    stop_source source;
     uint32_t registered = 0;
     event_token watch =
-        ws.library.cards().on_change([&source](const list_change&) noexcept { source.cancel(); });
+        ws.library.cards().on_change([&source](const list_change&) noexcept { source.request_stop(); });
     event_token registeredWatch =
         ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
 
@@ -3265,19 +3264,19 @@ void testLockWaitEndsWithToken() {
     const std::string otherBytes = onDisk(kOtherBook);
     const fb3::Document other{std::string(otherBytes)};
 
-    cancellation_source before;
-    before.cancel();
+    stop_source before;
+    before.request_stop();
     check(canceled(registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()}, before.token())) &&
               ws.library.cards().empty() && !std::filesystem::exists(ws.coverDirectory()),
           "под отменённым токеном регистрация не начинается: реестр пуст, кэша нет");
 
-    cancellation_source waiting;
+    stop_source waiting;
     task<Registered> going = registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()});
     task<Registered> behind =
         registrationOf(ws, other, BookFile{.path = kOtherBook, .size = otherBytes.size()}, waiting.token());
     check(!going.done() && !behind.done(), "первая стоит на записи обложки, вторая ждёт замка");
 
-    waiting.cancel();
+    waiting.request_stop();
     check(canceled(std::move(behind)), "отменённое ожидание замка кончается отменой");
 
     const Registered registered = run(std::move(going));
@@ -3300,13 +3299,13 @@ void testLockHeldStepIgnoresToken() {
     const std::string bytes = onDisk(kBook);
     const fb3::Document document{std::string(bytes)};
 
-    cancellation_source source;
+    stop_source source;
     HeldWorker heldWorker;
     task<Registered> registration =
         registrationOf(ws, document, BookFile{.path = kBook, .size = bytes.size()}, source.token());
     check(!registration.done(), "шаг взял замок, а запись обложки стоит за занятым потоком");
 
-    source.cancel();
+    source.request_stop();
     heldWorker.open();
 
     const Registered registered = run(std::move(registration));
@@ -3466,7 +3465,7 @@ void testLockScanStops() {
     // берёт замок следом, и его запись обложки уходит потоку после чтения:
     // регистрация книги обхода застаёт замок занятым.
     const auto scanBehindStep = [&](Workspace& ws, const std::filesystem::path& folder,
-                                    cancellation_token scanToken) {
+                                    stop_token scanToken) {
         task<ScanReport> scan = ws.addFolder(folder, std::move(scanToken));
         sta_loop::run_until(
             [&] { return !ws.library.folders().empty() && samePath(ws.library.folders().back(), folder); });
@@ -3482,7 +3481,7 @@ void testLockScanStops() {
     {
         // Отмена источника обхода — то же, что его уход со сценарием.
         std::filesystem::create_directories(box.root / L"scan-source");
-        cancellation_source application;
+        stop_source application;
         Workspace ws(box.root / L"scan-source", application.token());
         const std::filesystem::path folder = box.root / L"shelf-one";
         std::filesystem::create_directories(folder);
@@ -3495,9 +3494,9 @@ void testLockScanStops() {
         event_token registeredWatch =
             ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
 
-        cancellation_source scanStop;
+        stop_source scanStop;
         task<Registered> going = scanBehindStep(ws, folder, scanStop.token());
-        scanStop.cancel();
+        scanStop.request_stop();
 
         const Registered held = run(std::move(going));
         sta_loop::run_until([&] { return !ws.registering(); });
@@ -3516,7 +3515,7 @@ void testLockScanStops() {
         sta_loop::run_until([&] { return second.done(); });
         check(ws.registering(), "обход кончился, шаг его книги стоит на записи обложки");
 
-        application.cancel();
+        application.request_stop();
         check(ws.registering(), "выход шаг, взявший замок, не кончает");
         sta_loop::run_until([&] { return !ws.registering(); });
 
@@ -3532,7 +3531,7 @@ void testLockScanStops() {
     {
         // Выход, когда обход отдал книгу, а замок держит чужой шаг.
         std::filesystem::create_directories(box.root / L"exit");
-        cancellation_source application;
+        stop_source application;
         Workspace ws(box.root / L"exit", application.token());
         const std::filesystem::path folder = box.root / L"shelf-three";
         std::filesystem::create_directories(folder);
@@ -3546,7 +3545,7 @@ void testLockScanStops() {
             ws.bookRegistered().on_change([&registered](const Registered&) noexcept { ++registered; });
 
         task<Registered> going = scanBehindStep(ws, folder, never);
-        application.cancel();
+        application.request_stop();
 
         const Registered held = run(std::move(going));
         sta_loop::run_until([&] { return !ws.registering(); });

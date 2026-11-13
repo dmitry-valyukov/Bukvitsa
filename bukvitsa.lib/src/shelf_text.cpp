@@ -2,7 +2,6 @@
 #include "bukvitsa/reader/shelf_text.h"
 
 import wxl.core;
-import wxl.fmt;
 
 namespace bukvitsa::reader {
 

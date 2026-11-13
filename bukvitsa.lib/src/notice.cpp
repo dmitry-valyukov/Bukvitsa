@@ -2,7 +2,6 @@
 // принимает.
 #include "bukvitsa/reader/notice.h"
 
-import wxl.async;
 import wxl.core;
 
 using wxl::async::last_error;

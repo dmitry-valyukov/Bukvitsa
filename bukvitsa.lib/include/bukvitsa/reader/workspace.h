@@ -70,7 +70,7 @@
 #include "skins.h"
 #include "store.h"
 
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -183,7 +183,7 @@ public:
     ///        обхода живёт в его сценарии и уходит вместе с ним, а отданные
     ///        обходом книги ещё должны встать; эти ожидания кончает только
     ///        выход приложения.
-    Workspace(std::filesystem::path directory, wxl::async::cancellation_token appStop);
+    Workspace(std::filesystem::path directory, wxl::async::stop_token appStop);
 
     /// Регистрация ещё идёт (`registering`) — её кадр держит это рабочее
     /// место, и уйти раньше неё — остановка.
@@ -231,7 +231,7 @@ public:
     /// моделей, которые они наполняют, потом пишется всё — настройки и при
     /// закрытии окна, — и недочитанная модель легла бы на диск умолчаниями
     /// поверх файлов читателя.
-    wxl::async::task<Started> start(wxl::async::cancellation_token token);
+    wxl::async::task<Started> start(wxl::async::stop_token token);
 
     // ---- книги ----
 
@@ -240,7 +240,7 @@ public:
     /// попросили остановиться до разбора — отмена, и книга не разбирается.
     /// Документ разбора живёт только здесь: описание и копию обложки чтение
     /// снимает с него для регистрации, остальное нужное забирает книга.
-    wxl::async::task<LoadedBook> readBook(std::filesystem::path path, wxl::async::cancellation_token token);
+    wxl::async::task<LoadedBook> readBook(std::filesystem::path path, wxl::async::stop_token token);
 
     /// Регистрирует книгу — шагом под замком регистраций рабочего места. Замок
     /// один на рабочее место и отдаётся по порядку прихода: регистрация,
@@ -286,7 +286,7 @@ public:
     /// @param file путь и размер; время правки и каталог — у обхода каталога.
     wxl::async::task<Registered> registerBook(fb3::Description description, uint32_t characterCount,
                                               std::optional<BookCover> cover, BookFile file,
-                                              wxl::async::cancellation_token token);
+                                              wxl::async::stop_token token);
 
     /// Шаг регистрации поставил книгу в реестр или переменил её запись
     /// (новая, другая, вернувшаяся из «не найдена»): реестр в памяти
@@ -324,7 +324,7 @@ public:
     ///
     /// Запись — ссылкой: её держит кадр ждущего, а тот стоит на `co_await`
     /// этой корутины до её конца.
-    wxl::async::task<Opened> openBook(const BookEntry& entry, wxl::async::cancellation_token token);
+    wxl::async::task<Opened> openBook(const BookEntry& entry, wxl::async::stop_token token);
 
     /// Перепроверяет наблюдаемый каталог (из `library.folders()`); подкаталоги
     /// не обходятся. Листинг `*.fb3` с размером и временем правки сводится с
@@ -365,7 +365,7 @@ public:
     /// тогда. Обложка в кэше — восстановимое и ни к чему не обязывает;
     /// обязывает реестр в памяти, который полка уже показала: его книги,
     /// зарегистрированные до отмены, вызывающий пишет и после неё.
-    wxl::async::task<ScanReport> scanFolder(std::filesystem::path folder, wxl::async::cancellation_token token);
+    wxl::async::task<ScanReport> scanFolder(std::filesystem::path folder, wxl::async::stop_token token);
 
     /// «Добавить каталог»: каталог становится наблюдаемым
     /// (`library.addFolder`), и его книги обходятся, как перепроверкой
@@ -373,21 +373,21 @@ public:
     /// каталог, которого не прочесть, — `last_error`, и реестр его не
     /// запоминает; отмена — так же, как у перепроверки: отменённого на
     /// листинге каталога реестр тоже не запоминает.
-    wxl::async::task<ScanReport> addFolder(std::filesystem::path folder, wxl::async::cancellation_token token);
+    wxl::async::task<ScanReport> addFolder(std::filesystem::path folder, wxl::async::stop_token token);
 
     /// Перепроверяет наблюдаемые каталоги — все, что были в
     /// `library.folders()` к началу, один за другим (`scanFolder`); отчёт —
     /// сумма. Каталог, который не перечислился, — строкой в `unread`, и
     /// перепроверка идёт к следующему. Под отменённым токеном не начинается,
     /// отменённая кончается на ближайшем чтении, как обход одного каталога.
-    wxl::async::task<ScanReport> rescanFolders(wxl::async::cancellation_token token);
+    wxl::async::task<ScanReport> rescanFolders(wxl::async::stop_token token);
 
     /// Книга, которую можно продолжить читать: путь из настроек, если файл на
     /// месте, иначе по guid из реестра. Пусто — нечего.
-    wxl::async::task<std::filesystem::path> lastBookPath(wxl::async::cancellation_token token);
+    wxl::async::task<std::filesystem::path> lastBookPath(wxl::async::stop_token token);
 
     /// Состояние книги; нет файла — чистый лист, это не ошибка.
-    wxl::async::task<BookState> readState(u16_view guid, wxl::async::cancellation_token token);
+    wxl::async::task<BookState> readState(u16_view guid, wxl::async::stop_token token);
     wxl::async::task<> saveState(u16_text guid, BookState state);
 
     /// Текст настроек и реестра собирается в момент вызова, до ожидания: на
@@ -409,7 +409,7 @@ public:
     /// ссылается. Реестр не записался — сбой (`last_error`), и реестр в
     /// памяти тот же, что до вызова, если под этим именем за время записи
     /// ничего нового не легло; копия снимка остаётся лежать.
-    wxl::async::task<> saveSkin(Skin skin, std::filesystem::path photo, wxl::async::cancellation_token token);
+    wxl::async::task<> saveSkin(Skin skin, std::filesystem::path photo, wxl::async::stop_token token);
 
     /// Убирает обложку из реестра и пишет его; не было — ничего. Снимок
     /// остаётся в `skins\`: копия не принадлежит одной обложке — мастер, открыв
@@ -419,7 +419,7 @@ public:
     /// Чтений нет: под отменённым токеном удаление не начинается — реестр не
     /// тронут, — а начатое доходит до записи реестра. Не записался — сбой
     /// (`last_error`), и обложка снова в реестре в памяти, на прежнем месте.
-    wxl::async::task<> deleteSkin(u16_view name, wxl::async::cancellation_token token);
+    wxl::async::task<> deleteSkin(u16_view name, wxl::async::stop_token token);
 
     /// Снимок из файла — или почему его нет: байты операцией, раскодирование
     /// целиком в системном пуле (`decodeImageAsync`), так что снимок, битый в
@@ -432,7 +432,7 @@ public:
     /// отменой, на раскодировании — тоже сразу, а тело раскодирования
     /// сиротеет и доживает в пуле до ближайшей полосы.
     wxl::async::task<DecodedPicture> probeImageAsync(std::filesystem::path image,
-                                                     wxl::async::cancellation_token token);
+                                                     wxl::async::stop_token token);
 
     // ---- общее ----
 
@@ -447,7 +447,7 @@ private:
     /// общая часть перепроверки и добавления каталога.
     wxl::async::task<ScanReport> scanListing(std::filesystem::path folder,
                                              std::vector<wxl::async::async_directory::listed_entry> listing,
-                                             wxl::async::cancellation_token token);
+                                             wxl::async::stop_token token);
 
     /// Регистрация книги, найденной обходом, — для обхода, который её не
     /// ждёт: исходы, которых никто не ждёт, становятся событиями рабочего
@@ -456,7 +456,7 @@ private:
     /// приложения; иное — нарушенное обещание шага, остановка.
     wxl::async::task<> registerScanned(fb3::Description description, uint32_t characterCount,
                                        std::optional<BookCover> cover, BookFile file,
-                                       wxl::async::cancellation_token token);
+                                       wxl::async::stop_token token);
 
     /// Шаг регистрации под взятым замком: запись, обложка, реестр. Замок
     /// отдаёт уход `held` — с кадром шага, в конце. Сбой записи обложки шаг
@@ -475,7 +475,7 @@ private:
     std::filesystem::path directory_;
 
     /// Общий токен приложения: под ним регистрации обходов ждут замка.
-    wxl::async::cancellation_token appStop_;
+    wxl::async::stop_token appStop_;
 
     WorkspaceEvent<const Registered&> bookRegistered_;
     WorkspaceEvent<const std::wstring&> registrationRefused_;

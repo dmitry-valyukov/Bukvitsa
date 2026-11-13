@@ -2,7 +2,6 @@ module bukvitsa.fb3;
 
 import std;
 import wxl.core;
-import wxl.xml;
 
 import :description;
 import :internal;

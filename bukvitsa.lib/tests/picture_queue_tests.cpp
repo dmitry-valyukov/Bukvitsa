@@ -54,14 +54,13 @@
 #include "bukvitsa/reader/picture_queue.h"
 #include "bukvitsa/reader/imaging.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;
 using namespace bukvitsa::reader;
 using namespace bukvitsa::reader::tests;
 using Microsoft::WRL::ComPtr;
-using wxl::async::cancellation_source;
+using wxl::async::stop_source;
 using wxl::async::sta_loop;
 using wxl::async::task;
 
@@ -210,7 +209,7 @@ ComPtr<ID2D1DeviceContext> softwareContext() {
 /// последним; очередь — необязательная, чтобы проба могла её разрушить.
 struct QueueBench {
     ParkingIdle idle;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     PageFlow flow;
     int shownReady = 0;
     std::optional<PictureQueue> queue{std::in_place, flow, idle, ownerSource.token(), [this] { ++shownReady; },
@@ -342,7 +341,7 @@ struct PresenterBench {
     Settings settings;
     ThemeList themes{std::vector<Skin>{}};
     IdleActions actions;
-    cancellation_source ownerSource;
+    stop_source ownerSource;
     BookPresenter presenter{settings, themes, idle, actions, ownerSource.token()};
     std::optional<SilentCanvas> canvas{std::in_place, presenter};
 
@@ -869,7 +868,7 @@ void testPresenterCanvasAndOwnerCancel() {
             HeldWorker held;
             bench.openAt(as_not_null(secondBook.get()), spread->letter);
             check(countState(*secondBook, PictureState::Decoding) == 1, "картинка в пути");
-            bench.ownerSource.cancel();
+            bench.ownerSource.request_stop();
             held.open();
         }
         const int redrawsBefore = bench.canvas->redraws;

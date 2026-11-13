@@ -22,7 +22,7 @@
 #include "bukvitsa/typography/glyph_painter.h"
 #include "bukvitsa/typography/system_failure.h"
 
-import wxl.fmt;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -53,7 +53,7 @@ PointerButton buttonOf(PointerPoint const& point) {
 }  // namespace
 
 BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Settings& settings,
-                   async::cancellation_token parent)
+                   async::stop_token parent)
     : window_(window),
       presenter_(presenter),
       settings_(settings),
@@ -100,7 +100,7 @@ BookView::BookView(const CompositionWindow& window, BookPresenter& presenter, Se
     // Полоса ещё не экран: под источником чтения ждать нечему, пока
     // activate(true) не заведёт новый. Серия стратегии, заведённая под ним
     // выше, отменяется вместе с ним.
-    readingScope_.cancel();
+    readingScope_.request_stop();
 
     buildTree();
 
@@ -278,7 +278,7 @@ BookView::~BookView() {
     // кончатся отменой на своём ожидании и ни полосы, ни стратегии уже не
     // тронут. Холст уходит из-под ведущего и подписки снимаются сами —
     // первыми из членов.
-    stop_.cancel();
+    stop_.request_stop();
 }
 
 void BookView::addOverlay(const UIElement& element) {
@@ -321,8 +321,8 @@ void BookView::activate(bool entersReading) {
         // Новое чтение — новый источник: прежний отменён уходом, а если полоса
         // уже была экраном, отменяется здесь; отменённый источник не
         // переиспользуется. Серии под прежним уже нет — её кончил finishAll.
-        readingScope_.cancel();
-        readingScope_ = async::cancellation_source{stop_.token()};
+        readingScope_.request_stop();
+        readingScope_ = async::stop_source{stop_.token()};
 
         window_.clearBackground();
     } else {
@@ -336,7 +336,7 @@ void BookView::activate(bool entersReading) {
         // источник чтения: ожидания концов переворотов кончатся ходом очереди,
         // а корутины ничего не тронут.
         turnAnimation_->finishAll();
-        readingScope_.cancel();
+        readingScope_.request_stop();
 
         // Задник берёт осевший растр — после посадки нынешний разворот живёт
         // в нём.
@@ -467,8 +467,7 @@ std::unique_ptr<TurnAnimation> BookView::makeTurnAnimation() {
     if (settings_.animateTurns.get()) {
         // Сбой корутины переворота — ведущему, а он скажет владельцу.
         chosenAnimation = std::make_unique<LeafTurnAnimation>(
-            compositor_, leafLayer_, window_.dispatcherQueue(), spreadView_, presenter_.flow(),
-            readingScope_, stop_.token(),
+            compositor_, leafLayer_, spreadView_, presenter_.flow(), readingScope_, stop_.token(),
             [this](std::exception_ptr failure) { presenter_.reportFailure(std::move(failure)); });
     } else {
         chosenAnimation = std::make_unique<InstantTurnAnimation>(spreadView_);

@@ -8,16 +8,14 @@
 #include "app.h"
 
 // Импорт последним, после всех обычных заголовков.
-import wxl.async;
 import wxl.core;
-import wxl.fmt;
 
 namespace bukvitsa::reader {
 
 using namespace wxl;
 
-using wxl::async::cancellation_source;
-using wxl::async::cancellation_token;
+using wxl::async::stop_source;
+using wxl::async::stop_token;
 using wxl::async::last_error;
 
 /* ---------------- три дороги в мастер ---------------- */
@@ -57,7 +55,7 @@ void App::chooseAnotherImage() {
 }
 
 wxl::async::task<> App::runAddSkin() {
-    const cancellation_token session = beginWizardSession();
+    const stop_token session = beginWizardSession();
 
     const std::filesystem::path path = askForImage(window_.handle());
     if (path.empty()) co_return;
@@ -77,7 +75,7 @@ wxl::async::task<> App::runAddSkin() {
 /// По полному списку тем, а не по реестру: системные обложки живут только в
 /// нём, а шестерёнка есть и у них — правка «на основе».
 wxl::async::task<> App::runEditSkin(u16_text name) {
-    const cancellation_token session = beginWizardSession();
+    const stop_token session = beginWizardSession();
 
     const std::optional<int> index = themes_.indexOfSkin(name);
     const Skin* known = index ? themes_.skinAt(*index) : nullptr;
@@ -101,7 +99,7 @@ wxl::async::task<> App::runEditSkin(u16_text name) {
 }
 
 wxl::async::task<> App::runChooseAnotherImage() {
-    const cancellation_token session = beginWizardSession();
+    const stop_token session = beginWizardSession();
 
     const std::filesystem::path path = askForImage(window_.handle());
 
@@ -115,16 +113,16 @@ wxl::async::task<> App::runChooseAnotherImage() {
     wizard_.openNew(path);
 }
 
-cancellation_token App::beginWizardSession() {
-    wizardSession_.cancel();
-    wizardSession_ = cancellation_source{stop_.token()};
+stop_token App::beginWizardSession() {
+    wizardSession_.request_stop();
+    wizardSession_ = stop_source{stop_.token()};
     return wizardSession_.token();
 }
 
 // Предпросмотр снимает и подложку темы приносит слушатель (preview): скрытие
 // мастера опустошает то, что тот показывает полосе.
 void App::endWizardSession() {
-    wizardSession_.cancel();
+    wizardSession_.request_stop();
     wizard_.hide();
 }
 
@@ -135,14 +133,14 @@ void App::endWizardSession() {
 /// раскодировали бы его дважды. Не годится — читателю говорится, что именно
 /// не так: не картинка или картинка больше бюджета памяти — с её размером из
 /// заголовка, чтобы было видно, во что её уменьшить.
-wxl::async::task<DecodedPixels> App::checkImage(std::filesystem::path image, cancellation_token token) {
+wxl::async::task<DecodedPixels> App::checkImage(std::filesystem::path image, stop_token token) {
     try {
         DecodedPicture probed = co_await ws_.probeImageAsync(image, token);
 
         // Снимок, раскодированный раньше отмены, — ответ операции, но сеанс,
         // который его ждал, кончен: ни слов читателю, ни снимка дороге — она
         // кончается здесь же, отменой.
-        token.throw_if_canceled();
+        token.throw_if_stop_requested();
 
         const PictureVerdict& verdict = probed.verdict;
         switch (verdict.refusal) {
@@ -195,8 +193,8 @@ void App::saveSkin(SkinSave save) {
 }
 
 wxl::async::task<> App::runSaveSkin(SkinSave save) {
-    auto const stop = cancellation_source{stop_.token()};
-    const cancellation_token askedSession = wizardSession_.token();
+    auto const stop = stop_source{stop_.token()};
+    const stop_token askedSession = wizardSession_.token();
 
     const u16_text skinName = save.skin.name;
 
@@ -225,7 +223,7 @@ wxl::async::task<> App::runSaveSkin(SkinSave save) {
     // (themeChanged): смена темы здесь ничем не отличается от смены клавишей T.
     applySkins(themes_.afterSave(skinName, presenter_.theme().get()));
 
-    if (sameEdit && !askedSession.is_canceled()) leaveWizard();
+    if (sameEdit && !askedSession.stop_requested()) leaveWizard();
 }
 
 /// Убрать обложку из реестра и из полосы тем.
@@ -252,9 +250,9 @@ wxl::async::task<> App::runDeleteSkin(u16_text name) {
     // Дорога в мастер, начатая раньше вопроса, уже не откроет, что бы читатель
     // ни ответил: открылась бы правка обложки, которую удаляют, и её
     // сохранение вернуло бы удалённую в реестр.
-    wizardSession_.cancel();
+    wizardSession_.request_stop();
 
-    auto const stop = cancellation_source{stop_.token()};
+    auto const stop = stop_source{stop_.token()};
 
     if (!ws_.skins.find(name)) co_return;   // реестр успел перемениться под руками
 
@@ -294,7 +292,7 @@ wxl::async::task<> App::runDeleteSkin(u16_text name) {
 
     // Ответ, успевший раньше отмены, — ответ, но удаление после отмены не
     // начинается, каким бы он ни был.
-    if (stop.is_canceled()) co_return;
+    if (stop.stop_requested()) co_return;
 
     if (!ws_.skins.find(name)) co_return;   // реестр мог перемениться, пока спрашивали
 
@@ -414,8 +412,8 @@ void App::showBackdrop() {
 }
 
 void App::cancelBackdropLoad() {
-    backdropLoad_.cancel();
-    backdropLoad_ = cancellation_source{stop_.token()};
+    backdropLoad_.request_stop();
+    backdropLoad_ = stop_source{stop_.token()};
 }
 
 /// Файл читает операция wxl, раскодирует его системный пул — не поток окна,
@@ -426,13 +424,13 @@ void App::cancelBackdropLoad() {
 /// шумом, а молчание прятало бы сбой. Пока читали и раскодировали, могли
 /// захотеть другой — тогда загрузку этого отменил владелец
 /// (cancelBackdropLoad): путь подложки меняется только вместе с отменой.
-wxl::async::task<> App::loadBackdrop(std::filesystem::path file, cancellation_token token) {
+wxl::async::task<> App::loadBackdrop(std::filesystem::path file, stop_token token) {
     try {
         DecodedPicture decoded = co_await ws_.probeImageAsync(file, token);
 
         // Раскодированное раньше отмены — ответ операции, но снимок, ставший
         // ненужным (другой путь, выход), полосе не отдаётся.
-        token.throw_if_canceled();
+        token.throw_if_stop_requested();
 
         const PictureRefusal refusal = decoded.verdict.refusal;
         view_.setBackdrop(std::move(decoded.pixels));

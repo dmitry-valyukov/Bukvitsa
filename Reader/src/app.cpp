@@ -36,7 +36,6 @@
 #include "app.h"
 
 // Импорт последним, после всех обычных заголовков.
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {
@@ -44,8 +43,8 @@ namespace bukvitsa::reader {
 using namespace wxl;
 using namespace std::chrono_literals;
 
-using wxl::async::cancellation_source;
-using wxl::async::cancellation_token;
+using wxl::async::stop_source;
+using wxl::async::stop_token;
 using wxl::async::last_error;
 using wxl::async::operation_canceled_exception;
 using wxl::async::task;
@@ -108,16 +107,16 @@ App::App()
       wizard_{window_.chromeCompositor(), *this},
       panel_{window_.chromeCompositor(), presenter_, view_.root(), ws_.settings, places_, themes_,
              search_, *this},
-      stateWrite_{window_.dispatcherQueue(), kPositionQuiet, stop_.token(),
-                  [this](WaitableTimer& timer, cancellation_token token) {
+      stateWrite_{kPositionQuiet, stop_.token(),
+                  [this](WaitableTimer& timer, stop_token token) {
                       return writeState(timer, std::move(token));
                   }},
-      settingsWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
-                     [this](WaitableTimer& timer, cancellation_token token) {
+      settingsWrite_{kSaveQuiet, stop_.token(),
+                     [this](WaitableTimer& timer, stop_token token) {
                          return writeSettings(timer, std::move(token));
                      }},
-      libraryWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
-                    [this](WaitableTimer& timer, cancellation_token token) {
+      libraryWrite_{kSaveQuiet, stop_.token(),
+                    [this](WaitableTimer& timer, stop_token token) {
                         return writeLibrary(timer, std::move(token));
                     }},
       splash_{window_.dispatcherQueue().createTimer()},
@@ -215,7 +214,7 @@ void App::reportFailure(std::exception_ptr failure) noexcept {
 /// файл настроек читает рабочий поток, а этот тем временем уже крутит цикл
 /// сообщений.
 wxl::async::task<> App::runStart() {
-    auto const stop = cancellation_source{stop_.token()};
+    auto const stop = stop_source{stop_.token()};
 
     // Настройки, обложки, реестр — у рабочего места, одной корутиной; что
     // при этом не удалось, читатель узнаёт словами, а запуск идёт дальше с
@@ -298,7 +297,7 @@ void App::close() {
     // проснувшийся до неё цикл записал бы и пошёл на круг ещё раз. Цикл,
     // который в этот миг пишет прежнее, допишет и запишет снова — уже
     // последний раз. Дожидаются циклов их держатели, умирая с приложением.
-    stop_.cancel();
+    stop_.request_stop();
     stateWrite_.signal();
     settingsWrite_.signal();
     libraryWrite_.signal();
@@ -417,7 +416,7 @@ void App::revealStart() {
 /// то, что уже записано. Пишется под guid книги на полосе — его знают её
 /// места (`BookPlaces::guid`), — а не последней книги из настроек: те при
 /// открытии меняются раньше полосы.
-task<> App::writeState(WaitableTimer& timer, cancellation_token token) {
+task<> App::writeState(WaitableTimer& timer, stop_token token) {
     for (;;) {
         co_await timer;
 
@@ -425,7 +424,7 @@ task<> App::writeState(WaitableTimer& timer, cancellation_token token) {
         // записи — ещё один круг: перемена или «сейчас», заставшие запись,
         // иначе не записались бы вовсе, а под отменённым токеном ожидание не
         // приостанавливается.
-        bool const last = token.is_canceled();
+        bool const last = token.stop_requested();
 
         if (presenter_.isOpen()) {
             // Путь — для слов читателю, и снят до записи: пока она идёт, на
@@ -446,12 +445,12 @@ task<> App::writeState(WaitableTimer& timer, cancellation_token token) {
 
 /// Настройки целиком: вид, тема, место окна. Текст рабочее место собирает в
 /// момент вызова, до ожидания, — на диск уходит то, что в полях к этому часу.
-task<> App::writeSettings(WaitableTimer& timer, cancellation_token token) {
+task<> App::writeSettings(WaitableTimer& timer, stop_token token) {
     for (;;) {
         co_await timer;
 
         // Отмена посреди записи — ещё один круг, как у места чтения.
-        bool const last = token.is_canceled();
+        bool const last = token.stop_requested();
 
         try {
             co_await ws_.saveSettings();
@@ -466,12 +465,12 @@ task<> App::writeSettings(WaitableTimer& timer, cancellation_token token) {
 /// Реестр книг целиком. Текст рабочее место собирает в момент вызова, до
 /// ожидания: «сейчас» будит ждущий цикл внутри своего вызова, и на диск уходит
 /// реестр этого мига.
-task<> App::writeLibrary(WaitableTimer& timer, cancellation_token token) {
+task<> App::writeLibrary(WaitableTimer& timer, stop_token token) {
     for (;;) {
         co_await timer;
 
         // Отмена посреди записи — ещё один круг, как у места чтения.
-        bool const last = token.is_canceled();
+        bool const last = token.stop_requested();
 
         try {
             co_await ws_.saveLibrary();

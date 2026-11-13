@@ -17,7 +17,7 @@
 #include "pch.h"
 
 // Импорт — последним: задача цикла, источник отмены и петля — wxl.async.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -38,17 +38,17 @@ class DeferredWrite : private noncopyable {
 public:
     /// Заводит цикл: он тут же встаёт на ожидание таймера и до первой
     /// перемены, «сейчас» или отмены ничего не трогает.
-    /// @param queue очередь потока, на которой тикает таймер и просыпается цикл.
+    /// Строится на потоке окна: таймер тикает на очереди этого потока, и на ней
+    /// же просыпается цикл.
     /// @param quiet пауза после последней перемены.
     /// @param parent токен владельца: его отмена — отмена и этого цикла.
     /// @param start `start(timer, token)` — корутина владельца `task<>`: ждёт
     ///        `timer`, пишет и выходит после записи, начатой под отменённым
     ///        `token`.
     template <class Start>
-    DeferredWrite(wxl::DispatcherQueue const& queue, std::chrono::milliseconds quiet,
-                  wxl::async::cancellation_token parent, Start start)
+    DeferredWrite(std::chrono::milliseconds quiet, wxl::async::stop_token parent, Start start)
         : stop_{std::move(parent)},
-          timer_{queue, quiet, stop_.token()},
+          timer_{quiet, stop_.token()},
           loop_{start(timer_, stop_.token())} {}
 
     /// Отменяет источник и докручивает цикл синхронно (`sta_loop::run_until`):
@@ -62,7 +62,7 @@ public:
     /// сюда доходит лишь то, на что у него ответа нет. Деструктор noexcept, и
     /// такое исключение останавливает процесс — а не теряется.
     ~DeferredWrite() {
-        stop_.cancel();
+        stop_.request_stop();
         wxl::async::sta_loop::run_until(loop_);
     }
 
@@ -75,7 +75,7 @@ public:
     void signal() { timer_.signal(); }
 
 private:
-    wxl::async::cancellation_source stop_;
+    wxl::async::stop_source stop_;
     wxl::WaitableTimer timer_;
     wxl::async::task<> loop_;
 };

@@ -21,7 +21,6 @@
 // `function` из wxl.core.
 #include "bukvitsa/reader/idle_scheduler.h"
 
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {
@@ -64,7 +63,7 @@ public:
     ///        `completionReceiver_`.
     /// @param failureReceiver получатель сбоя кадра — не отмены: порции или
     ///        получателя «глава досчитана». У владельца о сбое узнаёт читатель.
-    ChapterTail(PageFlow& flow, IdleScheduler& scheduler, wxl::async::cancellation_token ownerToken,
+    ChapterTail(PageFlow& flow, IdleScheduler& scheduler, wxl::async::stop_token ownerToken,
                 function<void()> completionReceiver, function<void(std::exception_ptr)> failureReceiver);
 
     /// Отменяет источник; кадр, стоящий в ожидании, останавливает поле задачи,
@@ -115,8 +114,8 @@ private:
 
     /// Токен владельца: от него — и первый источник досчёта, и каждый новый
     /// после перевёрстки.
-    wxl::async::cancellation_token ownerToken_;
-    wxl::async::cancellation_source stop_;
+    wxl::async::stop_token ownerToken_;
+    wxl::async::stop_source stop_;
 
     /// Кадр заведён под нынешним источником и не отменён. Поднимает `start()`;
     /// опускают `restart()` и сам кадр — досчитав главу, упав или кончившись
