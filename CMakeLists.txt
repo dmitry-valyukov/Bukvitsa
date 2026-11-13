@@ -1,6 +1,6 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 4.3)
 
-# ---- wxl: базовая библиотека Буквицы, соседнее дерево ----
+# ---- wxl: соседнее дерево ----
 #
 # Задаётся здесь, а не в FB3/, по одной причине: wxl собирается с `import std;`,
 # а экспериментальный шлюз CMake для него открывается только в самом верхнем
@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.28)
 # привязанный к версии CMake, — включаем его оттуда, чтобы не заводить второе
 # место, где этот UUID придётся обновлять.
 set(BUKVITSA_WXL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../wxl" CACHE PATH
-    "Корень дерева wxl (даёт wxl::core и wxl::xml)")
+    "Корень дерева wxl (даёт wxl::core и wxl::ui.full)")
 
 if(NOT EXISTS "${BUKVITSA_WXL_ROOT}/cmake/wxl_import_std_gate.cmake")
     message(FATAL_ERROR
@@ -16,36 +16,19 @@ if(NOT EXISTS "${BUKVITSA_WXL_ROOT}/cmake/wxl_import_std_gate.cmake")
         "Задайте -DBUKVITSA_WXL_ROOT=<путь к дереву wxl>.")
 endif()
 
-set(BUKVITSA_WXL_CMAKE_DIR "${BUKVITSA_WXL_ROOT}/cmake")
-
-# vcpkg — ради cppwinrt, из которого собрана проекция WinUI 3 под wxl.ui.
-# Тоже до project(), потому что ставит CMAKE_TOOLCHAIN_FILE, а его после
-# первого project() уже никто не читает. Манифеста у Буквицы нет: из всего
-# пакета берётся он один, и тот по требованию wxl, а не её собственному.
-# fmt wxl.fmt приносит сама, модулем из своих исходников (FetchContent), —
-# поэтому первая настройка дерева ходит в сеть.
-include("${BUKVITSA_WXL_CMAKE_DIR}/vcpkg_bootstrap.cmake")
-
-include("${BUKVITSA_WXL_CMAKE_DIR}/wxl_import_std_gate.cmake")
+include("${BUKVITSA_WXL_ROOT}/cmake/wxl_import_std_gate.cmake")
 
 project(Bukvitsa
     VERSION 0.1.0
     DESCRIPTION "Bukvitsa: home reading ecosystem (FB3 + Typography + Reader)"
     LANGUAGES CXX)
 
-# C++23, хотя сама Буквица обходится двадцатым: модуль std CMake собирает по
-# стандарту всего проекта, а wxl требует от своих потребителей двадцать третьего.
-# Разойдясь, они дают C5050 «mismatched C++ versions» на каждый импорт и падение
-# на компоновке — то есть далеко от места, где стоит настоящая причина.
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 # ---- Оптимизация Release ----
 #
-# Задаётся здесь, до add_subdirectory(wxl...), чтобы одинаково накрыть и wxl:
+# Задаётся здесь, до add_subdirectory(wxl), чтобы одинаково накрыть и wxl:
 # смешивать в одной программе объекты с /GL и без него можно, но тогда LTO
-# видит только половину картины, а именно в wxl.xml лежит разбор, который
-# Буквица зовёт чаще всего.
+# видит только половину картины, а именно в разборе XML wxl.core лежит то,
+# что Буквица зовёт чаще всего.
 #
 # /O2 уже включает /Oi /Ot /Gy /GF /Oy — их не дублируем. Добавляем то, чего
 # в нём нет:
@@ -84,104 +67,62 @@ endif()
 # вместо машинного кода, отчего microtex.lib идёт 233 МБ вместо 31, а
 # wxl.ui.lib — 1.67 ГБ вместо 26.
 
-# Ключи, задающие язык, — до подключения wxl и для всего дерева сразу.
+# ---- Язык: до подключения wxl и для всего дерева сразу ----
+#
+# Тот же набор, что у самой wxl (`cmake/wxl_language.cmake` в её дереве): CMake
+# считает BMI годным только там, где язык настроен так же, а цель с другим
+# набором получает не общий BMI, а свой — собственную копию модуля `std` и
+# интерфейса wxl.core. Подключаемая wxl набор не задаёт, а проверяет и
+# останавливает настройку, называя недостающие строки: ключи каталога дошли бы
+# только до целей, созданных после них, и менять остальные цели проекта за его
+# спиной она не вправе.
+#
+# C++23, хотя сама Буквица обходится двадцатым: модуль std CMake собирает по
+# стандарту всего проекта, а wxl требует от своих потребителей двадцать третьего.
 #
 # /utf-8 определяет _UTF8, а MSVC сверяет макросы при импорте модуля и ругается
-# C5050 на каждый импорт, если BMI собран с другим набором.
+# C5050 на каждый импорт, если BMI собран с другим набором. /Zc:throwingNew
+# сообщает компилятору, что функции выделения следуют стандарту: operator new
+# без noexcept никогда не возвращает null, пул wxl при нехватке памяти
+# останавливает процесс. Ключ стоит здесь, на всю программу, а не на цели: ключ
+# цели делит отпечаток, по которому CMake собирает `import std`, и у единиц
+# трансляции с ним и без него std собирается дважды.
 #
-# /permissive- и /Zc:__cplusplus здесь по причине потяжелее. CMake считает BMI
-# годным только там, где язык настроен так же: цель с другим набором получает
-# не общий BMI, а свой — CMake заводит синтетическую цель `<цель>@synth_N` и
-# пересобирает в ней интерфейсы wxl.core и wxl.xml. Пока модули были
-# только у wxl, это стоило лишь времени сборки; с тех пор как модулем стал FB3,
-# обе копии встречаются в одной цели, и сборка падает с «Disagreement of the
-# location of the module». Одинаковые ключи снимают и то, и другое: копия
-# ровно одна.
+# /Zc:__cplusplus — Буквицы: настоящее значение __cplusplus в её заголовках. Он
+# стоит на каталоге рядом с остальными по той же причине: на цели он разделил бы
+# отпечаток.
 #
-# /W4 сюда не входит намеренно — и потому, что уровень предупреждений на
-# годность BMI не влияет (проверено: синтетических целей от него не заводится),
-# и потому, что предупреждения wxl — её дело, а не шум в сборке читалки. Он
-# стоит ниже, вместе с определениями, и накрывает только код Буквицы.
-#
-# /Zc:throwingNew сообщает компилятору, что функции выделения следуют
-# стандарту: operator new без noexcept никогда не возвращает null, пул wxl при
-# нехватке памяти останавливает процесс. Измеримого выигрыша на MSVC 14.53 нет,
-# ключ записывает намерение. Он стоит здесь, на всю программу, а не приходит от
-# wxl::core: ключ на уровне цели делит отпечаток, по которому CMake собирает
-# `import std`, и у единиц трансляции с ним и без него std собирается дважды.
-#
-# wxl собирает себя с /permissive-, /utf-8 и /Zc:throwingNew
-# (`cmake/config.cmake`), так что это не навязывание чужому проекту, а
-# совпадение с его собственной настройкой.
+# /W4 сюда не входит намеренно: уровень предупреждений на годность BMI не
+# влияет, а предупреждения wxl — её дело, а не шум в сборке читалки. Он стоит
+# ниже, вместе с определениями, и накрывает только код Буквицы.
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_MODULE_STD 1)
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 if(MSVC)
-    add_compile_options(/utf-8 /permissive- /Zc:__cplusplus /Zc:throwingNew)
+    add_compile_options(/permissive- /utf-8 /Zc:throwingNew /Zc:__cplusplus)
 endif()
 
 # ---- Подключение wxl ----
 #
-# Берём два подкаталога с исходниками, а не корневые CMakeLists модулей: те
-# устроены как самостоятельные проекты и тянут vcpkg, Boost, GTest, cppwinrt и
-# FetchContent winmd — всё это нужно генератору wxl.ui и не нужно читалке.
-# wxl.core/src и wxl.xml/src обходятся своими скриптами-помощниками.
+# Корень дерева целиком, как велит её раздел «Подключение wxl» (docs/building.md):
+# модули по отдельности не подключаются. Читалка получает бэкенд WinUI вместе с
+# генератором, которым собираются обёртки (WXL_UI, WXL_TOOLS), и не получает
+# ни примеров, ни песочницы, ни сайта, ни тестов wxl. Из-за генератора первая
+# настройка восстанавливает пакеты NuGet и строит проекцию cppwinrt (MSBuild
+# окружения разработчика, компонент C++ WinUI), поэтому ходит в сеть.
 #
-# EXCLUDE_FROM_ALL: собирается только то, что действительно связывается с
-# Буквицей.
-include("${BUKVITSA_WXL_CMAKE_DIR}/wxl_helpers.cmake")
+# Цели, которые линкует Буквица: wxl::core — ядро одним модулем `wxl.core` со
+# всеми областями (fmt, async, logging, xml, json, html), wxl::ui.full — окно
+# и контролы.
+add_subdirectory("${BUKVITSA_WXL_ROOT}" wxl)
 
-if(NOT TARGET wxl::core)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.core/src" "${CMAKE_BINARY_DIR}/wxl.core" EXCLUDE_FROM_ALL)
-endif()
-if(NOT TARGET wxl::xml)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.xml/src" "${CMAKE_BINARY_DIR}/wxl.xml" EXCLUDE_FROM_ALL)
-endif()
-
-# Построитель текста поверх fmt: модуль отдельный, чтобы ядро не зависело от
-# внешнего кода, а имена остались в wxl::core. Им читалка пишет свои XML.
-if(NOT TARGET wxl::fmt)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.fmt/src" "${CMAKE_BINARY_DIR}/wxl.fmt" EXCLUDE_FROM_ALL)
-endif()
-
-# wxl.async — операции с файлами и корутины сценариев читалки (Reader/src/main.cpp).
-if(NOT TARGET wxl::async)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.async/src" "${CMAKE_BINARY_DIR}/wxl.async" EXCLUDE_FROM_ALL)
-endif()
-
-# Семейство разметок — их требует wxl.ui: контролы HtmlBlock, BbBlock и
-# RsdnBlock линкуют свои парсеры. Той же формой, что модули выше.
-if(NOT TARGET wxl::html)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.html/src" "${CMAKE_BINARY_DIR}/wxl.html" EXCLUDE_FROM_ALL)
-endif()
-if(NOT TARGET wxl::bb)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.bb/src" "${CMAKE_BINARY_DIR}/wxl.bb" EXCLUDE_FROM_ALL)
-endif()
-# Подсветка кода: её линкует wxl.rsdn, а зависит она только от std.
-if(NOT TARGET wxl::highlight)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.highlight/src" "${CMAKE_BINARY_DIR}/wxl.highlight" EXCLUDE_FROM_ALL)
-endif()
-if(NOT TARGET wxl::rsdn)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.rsdn/src" "${CMAKE_BINARY_DIR}/wxl.rsdn" EXCLUDE_FROM_ALL)
-endif()
-
-# wxl.ui — проекция WinUI 3, на которой стоит Reader. Здесь, в отличие от
-# тех, что выше, берётся корневой CMakeLists модуля: он и есть весь модуль, а
-# генератор с его winmd и FetchContent живёт отдельной целью в дереве wxl и
-# сюда не приезжает. Собирается из профиля full, уже выпущенного в
-# wxl.ui/src/wxl дерева wxl, — сборка генератор не запускает, это отдельный
-# шаг там (`winui-srcgen --profile wxl.gen/profiles/full.json`).
-if(WIN32 AND NOT TARGET wxl::ui)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}/wxl.ui" "${CMAKE_BINARY_DIR}/wxl.ui" EXCLUDE_FROM_ALL)
-endif()
-
-# Цель, чьи исходники видят заголовки wxl, компилирует их `import std;` сама:
-# без этих двух свойств MSVC не найдёт модуль std, а CMake не станет сканировать
-# обычные .cpp на импорты (CMP0155 при cmake_minimum_required < 3.28).
+# Цель, чьи исходники видят заголовки wxl, получает общий предкомпилированный
+# заголовок: стандартные и системные заголовки до любого импорта и имена
+# wxl::core без квалификатора (см. pch.h). Модуль std и сканирование на импорты
+# цель берёт из CMAKE_CXX_MODULE_STD и CMAKE_CXX_SCAN_FOR_MODULES выше.
 function(bukvitsa_consumes_wxl target)
-    set_target_properties(${target} PROPERTIES
-        CXX_MODULE_STD ON
-        CXX_SCAN_FOR_MODULES ON
-    )
-    # Общий предкомпилированный заголовок: стандартные и системные заголовки
-    # до любого импорта и имена wxl::core без квалификатора (см. pch.h).
     target_precompile_headers(${target} PRIVATE "${PROJECT_SOURCE_DIR}/pch.h")
 endfunction()
 
@@ -214,12 +155,11 @@ endif()
 
 # ---- Документация ----
 #
-# Машинерия берётся из дерева wxl — тот же источник, что у vcpkg_bootstrap и
-# wxl_helpers. Выключателем, а не всегда: настройка один раз на дерево сборки
-# лезет в сеть (за темой, а при отсутствии свежего Doxygen — и за ним самим),
-# и дереву, настроенному ради сборки читалки, ждать этого незачем.
+# Машинерию (wxl_add_doxygen_site) даёт подключённая wxl. Выключателем, а не
+# всегда: настройка один раз на дерево сборки лезет в сеть (за темой, а при
+# отсутствии свежего Doxygen — и за ним самим), и дереву, настроенному ради
+# сборки читалки, ждать этого незачем.
 option(BUKVITSA_BUILD_DOCS "Собирать сайт документации (Doxygen)" ON)
 if(BUKVITSA_BUILD_DOCS)
-    include("${BUKVITSA_WXL_CMAKE_DIR}/wxl_doxygen.cmake")
     add_subdirectory(docs)
 endif()

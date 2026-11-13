@@ -37,7 +37,6 @@
 // `function` из wxl.core.
 #include "bukvitsa/reader/idle_scheduler.h"
 
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {

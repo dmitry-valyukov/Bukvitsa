@@ -65,15 +65,12 @@ target_include_directories(bukvitsa_lib PUBLIC
 )
 
 # Вёрстка — в интерфейсе: book.h отдаёт страницы и блоки вёрстки, а с ней
-# приходят FB3, DirectWrite и Direct2D. wxl::async — операции с файлами и
-# корутины модели; wxl::xml и wxl::fmt — файлы читалки; windowscodecs —
+# приходят FB3, DirectWrite и Direct2D. wxl::core — операции с файлами и
+# корутины модели, XML и форматирование файлов читалки; windowscodecs —
 # декодирование картинок (imaging.h).
 target_link_libraries(bukvitsa_lib PUBLIC
     bukvitsa::typography
-    wxl::async
-    wxl::xml
     wxl::core
-    wxl::fmt
     windowscodecs
 )
 bukvitsa_consumes_wxl(bukvitsa_lib)

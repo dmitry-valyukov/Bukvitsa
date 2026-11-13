@@ -7,7 +7,7 @@
 // очередью окна, тест — ожиданием, которое будит сам.
 
 // Последним: задача и токен отмены — wxl.async.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 

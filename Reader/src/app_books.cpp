@@ -10,7 +10,6 @@
 #include "app.h"
 
 // Импорт последним, после всех обычных заголовков.
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {

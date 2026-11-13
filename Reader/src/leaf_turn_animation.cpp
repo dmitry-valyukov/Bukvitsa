@@ -400,8 +400,7 @@ void LeafTurnAnimation::Leaf::detach(const ContainerVisual& leafLayer) const {
 /* ---------------- перевороты ---------------- */
 
 LeafTurnAnimation::LeafTurnAnimation(const Compositor& compositor, const ContainerVisual& leafLayer,
-                                     const DispatcherQueue& windowQueue, SpreadView& spreadView,
-                                     const PageFlow& flow,
+                                     SpreadView& spreadView, const PageFlow& flow,
                                      const async::stop_source& readingScope,
                                      async::stop_token stripStop,
                                      function<void(std::exception_ptr)> failureReceiver)
@@ -414,7 +413,7 @@ LeafTurnAnimation::LeafTurnAnimation(const Compositor& compositor, const Contain
       restBrush_(compositor.createColorBrush(rgba(0, 0, 0, 0))),
       turnSeries_(readingScope.token()),
       releaseStop_(std::move(stripStop)),
-      releasePauses_(windowQueue, releaseStop_.token()) {
+      releasePauses_(releaseStop_.token()) {
     // Отпускание пула — на всю жизнь стратегии: цикл тут же встаёт на долгую
     // паузу и до первой посадки ничего не трогает.
     releasing_ = releaseIdleLeaves();
@@ -970,10 +969,9 @@ void LeafTurnAnimation::settle() {
 
 /* ---------------- отпускание пула ---------------- */
 
-LeafTurnAnimation::ReleasePauses::ReleasePauses(const DispatcherQueue& windowQueue,
-                                                async::stop_token releaseToken)
-    : firstPause{windowQueue, kLeafReleaseFirst, releaseToken},
-      stepPause{windowQueue, kLeafReleaseStep, releaseToken} {}
+LeafTurnAnimation::ReleasePauses::ReleasePauses(async::stop_token releaseToken)
+    : firstPause{kLeafReleaseFirst, releaseToken},
+      stepPause{kLeafReleaseStep, releaseToken} {}
 
 // Паузы и источник — стратегии: цикл стоит в её поле и уходит вместе с ней,
 // так что, проснувшись, он находит их на месте.

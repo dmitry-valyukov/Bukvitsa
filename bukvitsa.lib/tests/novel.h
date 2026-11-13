@@ -32,7 +32,6 @@
 #include "bukvitsa/reader/page_flow.h"
 #include "bukvitsa/reader/idle_scheduler.h"
 
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader::tests {

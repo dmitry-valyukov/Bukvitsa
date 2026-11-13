@@ -24,7 +24,6 @@
 #include "novel.h"
 #include "bukvitsa/reader/chapter_tail.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;

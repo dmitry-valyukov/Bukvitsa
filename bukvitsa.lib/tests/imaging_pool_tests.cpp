@@ -19,7 +19,6 @@
 #include "bukvitsa/reader/imaging.h"
 #include "imaging_probe.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa::reader;

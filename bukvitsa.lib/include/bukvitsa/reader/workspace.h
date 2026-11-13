@@ -70,7 +70,7 @@
 #include "skins.h"
 #include "store.h"
 
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 

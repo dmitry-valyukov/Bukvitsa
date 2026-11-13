@@ -18,7 +18,7 @@
 #include "pch.h"
 
 // Импорт — последним: ожидание ответа и источник отмены — wxl.async.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 

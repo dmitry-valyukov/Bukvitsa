@@ -36,7 +36,6 @@
 #include "imaging_probe.h"
 #include "bukvitsa/reader/workspace.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;

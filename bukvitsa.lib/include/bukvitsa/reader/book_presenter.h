@@ -51,7 +51,6 @@
 
 // Импорт — последним: источник отмены — родитель досчёта главы и очереди
 // картинок.
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {

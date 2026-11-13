@@ -12,7 +12,6 @@
 
 #include "bukvitsa/typography/system_failure.h"
 
-import wxl.async;
 import wxl.core;
 
 using wxl::async::async_directory;

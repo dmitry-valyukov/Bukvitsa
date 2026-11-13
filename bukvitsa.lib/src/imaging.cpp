@@ -14,7 +14,6 @@
 
 // Последним: раскодирование в пуле — операция wxl.async, остановка на
 // нарушенном контракте — wxl.core.
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {

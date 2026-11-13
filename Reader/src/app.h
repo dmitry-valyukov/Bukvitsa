@@ -65,7 +65,7 @@
 #include "bukvitsa/reader/workspace.h"
 
 // Импорт — последним: сценарии — корутины wxl.async.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 

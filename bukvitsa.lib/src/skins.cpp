@@ -13,7 +13,7 @@
 #include "bukvitsa/reader/settings.h"
 #include "bukvitsa/reader/store.h"
 
-import wxl.fmt;
+import wxl.core;
 
 namespace bukvitsa::reader {
 

@@ -36,7 +36,6 @@
 #include "app.h"
 
 // Импорт последним, после всех обычных заголовков.
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {
@@ -108,15 +107,15 @@ App::App()
       wizard_{window_.chromeCompositor(), *this},
       panel_{window_.chromeCompositor(), presenter_, view_.root(), ws_.settings, places_, themes_,
              search_, *this},
-      stateWrite_{window_.dispatcherQueue(), kPositionQuiet, stop_.token(),
+      stateWrite_{kPositionQuiet, stop_.token(),
                   [this](WaitableTimer& timer, stop_token token) {
                       return writeState(timer, std::move(token));
                   }},
-      settingsWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
+      settingsWrite_{kSaveQuiet, stop_.token(),
                      [this](WaitableTimer& timer, stop_token token) {
                          return writeSettings(timer, std::move(token));
                      }},
-      libraryWrite_{window_.dispatcherQueue(), kSaveQuiet, stop_.token(),
+      libraryWrite_{kSaveQuiet, stop_.token(),
                     [this](WaitableTimer& timer, stop_token token) {
                         return writeLibrary(timer, std::move(token));
                     }},

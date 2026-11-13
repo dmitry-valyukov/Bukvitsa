@@ -36,7 +36,6 @@
 #include "novel.h"
 #include "bukvitsa/reader/book_presenter.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;

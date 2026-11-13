@@ -8,7 +8,7 @@
 #include "Bind.h"
 #include "look.h"
 
-import wxl.fmt;
+import wxl.core;
 
 namespace bukvitsa::reader {
 

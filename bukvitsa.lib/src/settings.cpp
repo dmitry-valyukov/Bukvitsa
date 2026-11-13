@@ -4,8 +4,6 @@
 #include "bukvitsa/reader/store.h"
 
 import wxl.core;
-import wxl.fmt;
-import wxl.xml;
 
 namespace bukvitsa::reader {
 

@@ -19,7 +19,6 @@
 #include "bukvitsa/reader/shelf_text.h"
 #include "bukvitsa/reader/notice.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa::reader;

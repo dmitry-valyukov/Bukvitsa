@@ -7,7 +7,6 @@
 // принимает.
 #include "bukvitsa/reader/book_presenter.h"
 
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {

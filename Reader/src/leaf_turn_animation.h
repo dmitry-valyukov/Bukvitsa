@@ -51,7 +51,7 @@
 
 // Импорт — последним: переворот и отпускание пула — корутины `task<>` под
 // своими источниками отмены.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 
@@ -61,7 +61,6 @@ class LeafTurnAnimation final : public TurnAnimation {
 public:
     /// @param leafLayer контейнер листов над страницами: листы вешаются в него
     ///        и прячутся вместе с ним.
-    /// @param windowQueue очередь потока окна: на ней таймеры отпускания пула.
     /// @param spreadView разворот: его страницы перелистываются, его растры
     ///        листы носят.
     /// @param flow поток страниц: мера полосы, число колонок и корешок.
@@ -73,8 +72,7 @@ public:
     /// @param failureReceiver получатель сбоя корутины стратегии — не отмены:
     ///        у полосы о нём узнаёт читатель. Не бросает.
     LeafTurnAnimation(const wxl::Compositor& compositor, const wxl::ContainerVisual& leafLayer,
-                      const wxl::DispatcherQueue& windowQueue, SpreadView& spreadView,
-                      const PageFlow& flow, const wxl::async::stop_source& readingScope,
+                      SpreadView& spreadView, const PageFlow& flow, const wxl::async::stop_source& readingScope,
                       wxl::async::stop_token stripStop,
                       function<void(std::exception_ptr)> failureReceiver);
     ~LeafTurnAnimation() override;
@@ -264,8 +262,7 @@ private:
     /// перезапускает долгую паузу, цикл отпускания ждёт обе; стоит он в поле
     /// стратегии ниже пауз и уходит раньше них.
     struct ReleasePauses {
-        ReleasePauses(const wxl::DispatcherQueue& windowQueue,
-                      wxl::async::stop_token releaseToken);
+        explicit ReleasePauses(wxl::async::stop_token releaseToken);
 
         wxl::WaitableTimer firstPause;
         wxl::WaitableTimer stepPause;

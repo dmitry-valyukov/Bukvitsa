@@ -39,7 +39,7 @@
 struct IWICImagingFactory;
 
 // Импорт — последним: задача раскодирования в пуле — тип wxl.async.
-import wxl.async;
+import wxl.core;
 
 namespace bukvitsa::reader {
 

@@ -2,7 +2,8 @@
 #
 # Объявляется так же, как всякое приложение на wxl: `wxl_add_executable`
 # делает исполняемый файл оконным (его точка входа wWinMain живёт в самой
-# wxl), линкует wxl::ui, кладёт рядом с ним всё, что wxl нужно во время
+# wxl), линкует библиотеку профиля из `UI` (wxl::ui.full), кладёт рядом с ним
+# всё, что wxl нужно во время
 # выполнения, — загрузчик Windows App Runtime, Win2D, WebView2Loader, — и
 # выписывает манифест: масштаб по монитору окно держит само, Windows названа
 # проверенной. Сверх этого читалке сказать в манифесте нечего, поэтому своего
@@ -13,6 +14,7 @@
 # гарантирует.
 
 wxl_add_executable(Reader
+    UI wxl::ui.full
     src/main.cpp
     src/app.cpp
     src/app_books.cpp
@@ -50,7 +52,7 @@ wxl_add_executable(Reader
 
 # Модель — bukvitsa::lib, и с ней приходит всё, что ниже: вёрстка с FB3,
 # DirectWrite и Direct2D (страницу читалка рисует своими глифами, и рисует их
-# та же вёрстка, что их разложила), операции с файлами и корутины wxl::async,
+# та же вёрстка, что их разложила), операции с файлами и корутины wxl::core,
 # windowscodecs. Своё у Reader одно: dxguid -- CLSID встроенных эффектов D2D
 # (изгиб страницы на подложке).
 target_link_libraries(Reader PRIVATE
@@ -58,8 +60,8 @@ target_link_libraries(Reader PRIVATE
     dxguid
 )
 
-# wxl::xml разбирает settings.xml, а память берёт из STA-пула wxl::core --
-# он строится в wxl_launched() и переживает последний разбор.
+# Разбор settings.xml в wxl::core берёт память из STA-пула -- он строится в
+# wxl_launched() и переживает последний разбор.
 bukvitsa_consumes_wxl(Reader)
 
 # Путь без схемы разрешается рядом с исполняемым файлом, поэтому ресурсы

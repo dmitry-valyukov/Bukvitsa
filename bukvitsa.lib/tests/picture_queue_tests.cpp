@@ -54,7 +54,6 @@
 #include "bukvitsa/reader/picture_queue.h"
 #include "bukvitsa/reader/imaging.h"
 
-import wxl.async;
 import wxl.core;
 
 using namespace bukvitsa;

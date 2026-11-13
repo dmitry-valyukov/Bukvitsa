@@ -8,10 +8,8 @@ wxl_add_module_library(bukvitsa_mathml STATIC
 add_library(bukvitsa::mathml ALIAS bukvitsa_mathml)
 
 # PUBLIC: вход toTex — wxl::core::u8_view, тип из wxl.core стоит в интерфейсе.
+# Разбор XML — область того же модуля и из интерфейса не виден.
 target_link_libraries(bukvitsa_mathml PUBLIC wxl::core)
-
-# wxl::xml — только внутри: разбор MathML не виден из интерфейса модуля.
-target_link_libraries(bukvitsa_mathml PRIVATE wxl::xml)
 
 if(BUKVITSA_BUILD_TESTS)
     add_subdirectory(tests)

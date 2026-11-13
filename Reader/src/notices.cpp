@@ -9,7 +9,6 @@
 // стандартный заголовок MSVC уже не принимает.
 #include "bukvitsa/reader/notice.h"
 
-import wxl.async;
 import wxl.core;
 
 namespace bukvitsa::reader {
