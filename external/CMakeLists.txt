@@ -2,8 +2,8 @@
 # вызовами абстрактного tex::Graphics2D. Взято ядро без каталога platform/ —
 # три статические фабрики (Font::create, Font::_create, TextLayout::create)
 # и сам Graphics2D реализует Typography поверх DirectWrite и Direct2D, см.
-# Typography/src/formula.cpp. Какой срез взят и почему без vcpkg — README.md
-# рядом.
+# Typography/src/formula.cpp. Какой срез взят и почему он лежит в дереве —
+# README.md рядом.
 #
 # После удаления platform/ и samples/ ядро — это все .cpp поддерева целиком,
 # поэтому GLOB здесь безопасен: состав меняется только новым вендорингом.

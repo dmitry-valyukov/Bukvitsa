@@ -29,7 +29,9 @@ ctest --preset x64-debug
 
 Скрипт сам поднимает окружение Visual Studio, так что годится обычная оболочка.
 Генератор — Ninja Multi-Config: генераторы Visual Studio не собирают
-`import std;`.
+`import std;`. Debug собирается с CRT в DLL, Release — со статической CRT;
+вид CRT задаёт пресет (`CMAKE_MSVC_RUNTIME_LIBRARY`) для всего дерева вместе
+с wxl.
 
 Пул-реквесты проверяет GitHub Actions (`.github/workflows/ci.yml`): на
 Windows-машине дерево собирается в Debug и Release, проходит тесты, и читалка
