@@ -19,7 +19,8 @@
         "dev": false
       },
       "cacheVariables": {
-        "CMAKE_CONFIGURATION_TYPES": "Debug;Release"
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:DebugDLL>"
       }
     },
     {
