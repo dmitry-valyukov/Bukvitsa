@@ -1,22 +1,20 @@
-cmake_minimum_required(VERSION 4.3)
+# 4.5 — тот же минимум, что у wxl: с этого выпуска CMake даёт `import std;`
+# каждой цели C++20 и новее, чьи исходники сканируются на импорты, без
+# экспериментального ключа.
+cmake_minimum_required(VERSION 4.5)
 
 # ---- wxl: соседнее дерево ----
 #
-# Задаётся здесь, а не в FB3/, по одной причине: wxl собирается с `import std;`,
-# а экспериментальный шлюз CMake для него открывается только в самом верхнем
-# CMakeLists и только ДО project(). Скрипт шлюза живёт в wxl и знает UUID,
-# привязанный к версии CMake, — включаем его оттуда, чтобы не заводить второе
-# место, где этот UUID придётся обновлять.
+# Путь проверяется до project(), чтобы дерево без wxl останавливалось сразу и
+# с понятным сообщением, а не на add_subdirectory ниже.
 set(BUKVITSA_WXL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../wxl" CACHE PATH
     "Корень дерева wxl (даёт wxl::core и wxl::ui.full)")
 
-if(NOT EXISTS "${BUKVITSA_WXL_ROOT}/cmake/wxl_import_std_gate.cmake")
+if(NOT EXISTS "${BUKVITSA_WXL_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR
         "Не найден wxl: ожидался в ${BUKVITSA_WXL_ROOT}. "
         "Задайте -DBUKVITSA_WXL_ROOT=<путь к дереву wxl>.")
 endif()
-
-include("${BUKVITSA_WXL_ROOT}/cmake/wxl_import_std_gate.cmake")
 
 project(Bukvitsa
     VERSION 0.1.0
@@ -79,6 +77,8 @@ endif()
 #
 # C++23, хотя сама Буквица обходится двадцатым: модуль std CMake собирает по
 # стандарту всего проекта, а wxl требует от своих потребителей двадцать третьего.
+# Модуль std цель получает от сканирования исходников на импорты
+# (CMAKE_CXX_SCAN_FOR_MODULES): отдельного ключа для него в CMake 4.5 нет.
 #
 # /utf-8 определяет _UTF8, а MSVC сверяет макросы при импорте модуля и ругается
 # C5050 на каждый импорт, если BMI собран с другим набором. /Zc:throwingNew
@@ -98,7 +98,6 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CXX_MODULE_STD 1)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 if(MSVC)
     add_compile_options(/permissive- /utf-8 /Zc:throwingNew /Zc:__cplusplus)
@@ -120,8 +119,8 @@ add_subdirectory("${BUKVITSA_WXL_ROOT}" wxl)
 
 # Цель, чьи исходники видят заголовки wxl, получает общий предкомпилированный
 # заголовок: стандартные и системные заголовки до любого импорта и имена
-# wxl::core без квалификатора (см. pch.h). Модуль std и сканирование на импорты
-# цель берёт из CMAKE_CXX_MODULE_STD и CMAKE_CXX_SCAN_FOR_MODULES выше.
+# wxl::core без квалификатора (см. pch.h). Сканирование на импорты, а с ним и
+# модуль std, цель берёт из CMAKE_CXX_SCAN_FOR_MODULES выше.
 function(bukvitsa_consumes_wxl target)
     target_precompile_headers(${target} PRIVATE "${PROJECT_SOURCE_DIR}/pch.h")
 endfunction()
