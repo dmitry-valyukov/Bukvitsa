@@ -29,6 +29,11 @@
 # самого, и вручную: пакет новой версии один раз собирается в кэш main, и
 # следующим PR его не собирать.
 #
+# Кэш, к которому не обращались 7 дней, GitHub удаляет. Поэтому сценарий
+# идёт и по расписанию, раз в три дня: locate тогда не только ищет пакет, но
+# и скачивает его, и это обращение продлевает кэш main; пакета нет — он
+# собирается заново, как при пуше.
+#
 # Тулсет, сборочные средства WinUI и CMake ставятся, как в ci.yml;
 # восстановление при настройке дерева wxl идёт в режиме блокировки, по её
 # tools/packages.lock.json.
@@ -52,6 +57,8 @@ on:
       - packages.lock.json
       - .github/workflows/winxl.yml
   workflow_dispatch:
+  schedule:
+    - cron: "17 4 */3 * *"
 
 permissions:
   contents: read
@@ -135,7 +142,7 @@ jobs:
         with:
           path: winxl-package
           key: ${{ steps.locate.outputs.key }}
-          lookup-only: true
+          lookup-only: ${{ github.event_name != 'schedule' }}
 
   libs:
     needs: [locate]
