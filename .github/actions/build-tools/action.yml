@@ -1,0 +1,27 @@
+# MSVC 14.53 и сборочные средства WinUI в C:\BuildToolsInsiders — одна
+# установка Build Tools канала Insiders на тулсет и на компонент C++ WinUI:
+# VsDevCmd этой установки даёт и компилятор, и MSBuild, которым настройка
+# восстанавливает пакеты NuGet. Тулсет 14.53, а не 14.51 из образа: 14.51
+# неверно компилирует корутину, чей final_suspend() возвращает suspend_never,
+# в оптимизированном коде с /EHsc (как у wxl, её .github/workflows/ci.yml).
+# 3010 — «установлено, ждёт перезагрузки»: компилятор годен и так.
+name: Build Tools
+description: Installs MSVC 14.53 and the WinUI build tools into C:\BuildToolsInsiders.
+
+runs:
+  using: composite
+  steps:
+    - name: Install MSVC 14.53 and the WinUI build tools
+      shell: pwsh
+      run: |
+        $boot = Join-Path $env:RUNNER_TEMP 'vs_buildtools.exe'
+        Invoke-WebRequest -Uri 'https://aka.ms/vs/insiders/vs_buildtools.exe' -OutFile $boot -UseBasicParsing
+        $p = Start-Process -FilePath $boot -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru -ArgumentList @(
+          '--installPath', 'C:\BuildToolsInsiders',
+          '--add', 'Microsoft.VisualStudio.Component.VC.Preview.Tools.x86.x64',
+          '--add', 'Microsoft.VisualStudio.Workload.UniversalBuildTools',
+          '--add', 'Microsoft.VisualStudio.ComponentGroup.WindowsAppDevelopment.VC.BuildTools',
+          '--quiet', '--wait', '--norestart', '--nocache')
+        "exit code $($p.ExitCode)"
+        Get-ChildItem 'C:\BuildToolsInsiders\VC\Tools\MSVC' | ForEach-Object { $_.Name }
+        if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "Build Tools install failed: $($p.ExitCode)" }

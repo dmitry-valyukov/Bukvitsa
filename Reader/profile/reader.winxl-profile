@@ -1,0 +1,7 @@
+{
+    "name": "reader",
+    "description": "Профиль читалки Буквицы: full wxl как есть. Читалка берёт из wxl.ui компоненты dsl, controls (Card), composition (CompositionWindow, DrawingSurface, ThemeBrush), dialogs (ShowDialog), accessibility (automationName) и компоненты base; dialogs и accessibility есть только в full, а типы и члены WinUI, которые читалка зовёт сверх rich, не перечислены. Поэтому профиль продолжает full и ничего не убирает; сужение до rich с перечнем того, что читалке нужно сверх него, — отдельная работа.",
+    "extends": [
+        "full"
+    ]
+}

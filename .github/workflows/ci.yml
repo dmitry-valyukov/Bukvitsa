@@ -2,26 +2,29 @@
 # собранное и проверенное тестами на Windows-машине GitHub, Debug и Release
 # рядом, с флагами самого дерева и ничем сверх них.
 #
-# Буквица собирается только вместе с wxl: корневой CMakeLists берёт её модули
-# из соседнего дерева. Здесь это дерево — wxl ровно на том коммите, который
-# назван в tools/wxl.json, а не текущая голова её main: проверяется то
-# сочетание, которое потом окажется в main Буквицы.
+# wxl Буквица берёт пакетом NuGet WinXL (пресет x64): поставщик
+# cmake/winxl-provider.cmake восстанавливает его для find_package(wxl) по
+# nuget.config и файлу блокировки packages.lock.json, который закрепляет
+# версию. WinXL берётся из локального каталога пакетов feed/, а в него — из
+# сценария winxl.yml: тот собирает пакет этой версии из wxl на коммите main с
+# этой версией её же действиями и держит его в кэше Actions. Проверяется то
+# сочетание, которое потом окажется в main Буквицы; PR, которому нужна ещё не
+# влитая правка wxl, остаётся красным на winxl, пока её не вольют.
 #
 # Тулсет — MSVC 14.53 из Build Tools канала Insiders, он ставится на каждом
 # запуске, по той же причине, что у wxl (её .github/workflows/ci.yml): 14.51 из
 # образа неверно компилирует корутину, чей final_suspend() возвращает
-# suspend_never, в оптимизированном коде с /EHsc.
+# suspend_never, в оптимизированном коде с /EHsc (.github/actions/build-tools).
 #
 # CMake — 4.5.0, тоже ставится на каждом запуске (.github/actions/cmake, копия
 # действия wxl): дерево, как и wxl, требует 4.5, а в образе windows-2025 — 4.4.5.
 #
-# wxl.ui нужно то, чего в репозитории wxl нет: закреплённые пакеты NuGet,
-# проекция cppwinrt и обёртки, которые пишет winui-srcgen. Всё это делает сама
-# wxl, и отдельных шагов для него нет: настройка Буквицы восстанавливает пакеты
-# и строит проекцию в своём каталоге сборки (MSBuild той установки Build Tools,
-# в которой есть компонент C++ WinUI; версии берутся из файла блокировки wxl,
-# отсюда RestoreLockedMode), а сборка запускает ею же построенный генератор и
-# компилирует обёртки вместе с читалкой.
+# Пакет несёт готовые библиотеки wxl, генератор и профили; пакеты Windows App
+# SDK, проекцию cppwinrt и обёртки профиля читалки делает сама настройка и
+# сборка: настройка восстанавливает пакеты и строит проекцию в своём каталоге
+# сборки (MSBuild той установки Build Tools, в которой есть компонент C++
+# WinUI), а сборка запускает генератор пакета и компилирует обёртки вместе с
+# читалкой.
 #
 # Коммиты пул-реквеста, его заголовок и описание проверяет отдельный workflow,
 # commits.yml: он отвечает и на правку описания, а эта сборка — нет.
@@ -43,70 +46,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # main Буквицы собирается только с теми коммитами wxl, что уже в main wxl.
-  # Пул-реквест, чья пара в wxl ещё не влита, остаётся красным на этой проверке,
-  # пока её не вольют; сборка ниже от неё не зависит и отвечает сама.
-  wxl-revision:
-    name: wxl-revision
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: Bukvitsa
-          persist-credentials: false
+  # Пакет WinXL версии из packages.lock.json: из кэша или собранный заново.
+  winxl:
+    uses: ./.github/workflows/winxl.yml
 
-      # Репозиторий в файле сверяется, а не берётся из него: иначе правка файла
-      # уводила бы проверку в чужой репозиторий, где «main» значит что угодно.
-      - name: Read the wxl pin
-        id: pin
-        run: |
-          pin=Bukvitsa/tools/wxl.json
-          if ! repository=$(jq -er '.repository' "$pin"); then
-            echo "::error::$pin has no repository"
-            exit 1
-          fi
-          if ! revision=$(jq -er '.revision' "$pin"); then
-            echo "::error::$pin has no revision"
-            exit 1
-          fi
-          if [ "$repository" != "wxl-project/wxl" ]; then
-            echo "::error::$pin names $repository, not wxl-project/wxl"
-            exit 1
-          fi
-          if ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::$pin: revision is not a full SHA"
-            exit 1
-          fi
-          echo "revision=$revision" >> "$GITHUB_OUTPUT"
-
-      # Вся история: закреплённый коммит ищется в ней.
-      - uses: actions/checkout@v4
-        with:
-          repository: wxl-project/wxl
-          ref: main
-          path: wxl
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Check that the pinned revision is on wxl's main
-        working-directory: wxl
-        env:
-          REVISION: ${{ steps.pin.outputs.revision }}
-        run: |
-          if ! git cat-file -e "$REVISION^{commit}" 2>/dev/null; then
-            echo "::error::wxl has no commit $REVISION"
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor "$REVISION" origin/main; then
-            echo "::error::wxl commit $REVISION is not on wxl's main"
-            exit 1
-          fi
-          echo "wxl $REVISION is on main"
-
+  # И при красном winxl: пропущенное задание не разворачивает матрицу, и
+  # обязательные проверки build (Debug) и build (Release) не пришли бы вовсе.
+  # Здесь они красные и называют причину.
   build:
+    needs: [winxl]
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -117,25 +66,28 @@ jobs:
             preset: x64-release
     name: build (${{ matrix.config }})
     runs-on: windows-2025
-    # Одна wxl в её собственной проверке собирается 47 минут. Здесь из её дерева
-    # собираются генератор и wxl.ui, которая компилируется внутри сборки
-    # Буквицы, и сама Буквица идёт сверх того.
+    # Библиотеки wxl приходят готовыми, но обёртки профиля читалки (full wxl)
+    # компилируются здесь, вместе с самой Буквицей.
     timeout-minutes: 120
     env:
       DEVCMD: C:\BuildToolsInsiders\Common7\Tools\VsDevCmd.bat
       VCVARS: -vcvars_ver=14.53
-      # Куда настройка кладёт восстановленные пакеты; winui-srcgen и winxl
-      # находят их по списку, который она пишет.
+      # Куда восстановление кладёт пакеты; winui-srcgen и winxl находят пакеты
+      # Windows App SDK по списку, который пишет настройка.
       NUGET_PACKAGES: C:\nuget-packages
-      # MSBuild читает переменные среды как свойства: восстановление идёт в
-      # режиме блокировки, по версиям из tools/packages.lock.json wxl, и файл
-      # блокировки, не совпавший с закреплёнными версиями, останавливает
+      # MSBuild читает переменные среды как свойства: восстановление WinXL идёт
+      # в режиме блокировки, по версиям из packages.lock.json, и файл
+      # блокировки, не совпавший со ссылкой поставщика, останавливает
       # настройку, а не переписывается.
       RestoreLockedMode: true
     steps:
-      # Оба дерева — соседние каталоги рабочей области, Bukvitsa и wxl, так что
-      # BUKVITSA_WXL_ROOT по умолчанию (../wxl) указывает куда надо и не
-      # задаётся.
+      - name: The package WinXL
+        shell: pwsh
+        env:
+          RESULT: ${{ needs.winxl.result }}
+        run: |
+          if ($env:RESULT -ne 'success') { throw "winxl is $env:RESULT: no package WinXL of the locked version to build with" }
+
       - uses: actions/checkout@v4
         with:
           path: Bukvitsa
@@ -143,43 +95,36 @@ jobs:
       # CMake 4.5, которого требуют Буквица и wxl: в образе машины он старее.
       - uses: ./Bukvitsa/.github/actions/cmake
 
-      - name: Read the wxl pin
-        id: pin
-        shell: pwsh
-        run: |
-          $pin = Get-Content Bukvitsa/tools/wxl.json -Raw | ConvertFrom-Json
-          if ($pin.repository -cne 'wxl-project/wxl') { throw "tools/wxl.json names $($pin.repository), not wxl-project/wxl" }
-          if ($pin.revision -cnotmatch '^[0-9a-f]{40}$') { throw 'tools/wxl.json: revision is not a full SHA' }
-          "revision=$($pin.revision)" >> $env:GITHUB_OUTPUT
+      - uses: ./Bukvitsa/.github/actions/build-tools
 
+      # Из wxl на коммите пакета — только сценарий публикации и global.json
+      # рядом с ним, который просит у dotnet нужный SDK.
       - uses: actions/checkout@v4
         with:
           repository: wxl-project/wxl
-          ref: ${{ steps.pin.outputs.revision }}
+          ref: ${{ needs.winxl.outputs.commit }}
           path: wxl
+          sparse-checkout: tools/package
           persist-credentials: false
 
-      # 3010 — «установлено, ждёт перезагрузки»: компилятор годен и так. Одна
-      # установка на тулсет и на сборочные средства WinUI: VsDevCmd даёт из неё и
-      # MSVC 14.53, и MSBuild, которым настройка восстанавливает пакеты.
-      - name: Install MSVC 14.53 and the WinUI build tools
-        shell: pwsh
-        run: |
-          $boot = Join-Path $env:RUNNER_TEMP 'vs_buildtools.exe'
-          Invoke-WebRequest -Uri 'https://aka.ms/vs/insiders/vs_buildtools.exe' -OutFile $boot -UseBasicParsing
-          $p = Start-Process -FilePath $boot -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru -ArgumentList @(
-            '--installPath', 'C:\BuildToolsInsiders',
-            '--add', 'Microsoft.VisualStudio.Component.VC.Preview.Tools.x86.x64',
-            '--add', 'Microsoft.VisualStudio.Workload.UniversalBuildTools',
-            '--add', 'Microsoft.VisualStudio.ComponentGroup.WindowsAppDevelopment.VC.BuildTools',
-            '--quiet', '--wait', '--norestart', '--nocache')
-          "exit code $($p.ExitCode)"
-          Get-ChildItem 'C:\BuildToolsInsiders\VC\Tools\MSVC' | ForEach-Object { $_.Name }
-          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "Build Tools install failed: $($p.ExitCode)" }
+      - uses: actions/cache/restore@v4
+        with:
+          path: winxl-package
+          key: ${{ needs.winxl.outputs.key }}
+          fail-on-cache-miss: true
 
-      # Без сайта: его машинерия ходила бы в сеть за Doxygen уже при настройке.
-      # WXL_WINXL — утилита winxl, которая ставит читалке экспериментальную среду
-      # Windows App Runtime (нужен .NET SDK 10, он есть в образе раннера).
+      # В feed/ Буквицы, источник local её nuget.config; затем хеш этого пакета
+      # — в файл блокировки (tools/winxl-lock.ps1 объясняет почему).
+      - name: Publish WinXL into the local feed
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.winxl.outputs.version }}
+        run: |
+          cmake "-DWXL_PUBLISH_PACKAGE=$PWD/winxl-package/WinXL.$env:VERSION.nupkg" "-DWXL_PUBLISH_FEED=$PWD/Bukvitsa/feed" -P wxl/tools/package/publish.cmake
+          if ($LASTEXITCODE -ne 0) { throw "publish.cmake exited with $LASTEXITCODE" }
+          & ./Bukvitsa/tools/winxl-lock.ps1
+
+      # Без сайта: пресет x64 его выключает, сайт строит только соседнее дерево.
       # Версии и кодовая страница Ninja — в журнал: Reader/src/Assets/Брошюра.png
       # идёт через правило Ninja с кириллицей в имени, ANSI-страница машины —
       # 1252, и уже первый журнал должен показать, пишет ли Ninja в UTF-8.
@@ -191,7 +136,22 @@ jobs:
           cmake --version
           ninja --version
           ninja -t wincodepage
-          cmake --preset x64 -DBUKVITSA_BUILD_DOCS=OFF -DWXL_WINXL=ON
+          cmake --preset x64
+
+      # find_package(wxl) взял пакет, который поставщик восстановил, той версии,
+      # что собрал winxl.yml, а не что-то другое с машины.
+      - name: Check the package the configure took
+        shell: pwsh
+        working-directory: Bukvitsa
+        env:
+          VERSION: ${{ needs.winxl.outputs.version }}
+        run: |
+          $dir = (Select-String -Path build/x64/CMakeCache.txt -Pattern '^wxl_DIR:[A-Z]+=(.*)$').Matches[0].Groups[1].Value
+          "wxl_DIR $dir"
+          if ($dir -notmatch "/winxl/$([regex]::Escape($env:VERSION))/build/native/lib/cmake/wxl$") {
+            throw "find_package(wxl) took $dir, not WinXL $env:VERSION restored by the provider"
+          }
+          "WXL_DIR=$dir" >> $env:GITHUB_ENV
 
       # -k 0: все ошибки компиляции правки сразу, а не только первая.
       - name: Build
@@ -210,7 +170,8 @@ jobs:
           ctest --preset ${{ matrix.preset }} --output-on-failure --timeout 300 --output-junit ctest.xml
 
       # Окна WinUI не открывает ни один тест, его открывает читалка. Сначала
-      # экспериментальная среда Windows App Runtime, которой просят обёртки,
+      # экспериментальная среда Windows App Runtime, которой просят обёртки, —
+      # её ставит утилита winxl из пакета по списку восстановления настройки;
       # потом читалка на двадцать секунд: без книги она показывает заставку, и
       # главное окно должно появиться на рабочем столе машины. После красных
       # тестов тоже — это разные вопросы, — но не после красной сборки: запускать
@@ -220,7 +181,9 @@ jobs:
         shell: pwsh
         working-directory: Bukvitsa
         run: |
-          & .\build\x64\wxl\winxl\winxl.exe runtime install --packages build\x64\wxl\wxl.packages\restored-packages.json
+          $winxl = Join-Path $env:WXL_DIR '../../../bin/winxl.exe'
+          & $winxl runtime install --packages build\x64\wxl.packages\restored-packages.json
+          if ($LASTEXITCODE -ne 0) { throw "winxl runtime install exited with $LASTEXITCODE" }
 
       # Процесс оконный, и отказ wxl уходит в stderr и OutputDebugString, которых
       # журнал не видит: потоки читалки перенаправлены в файлы и печатаются.

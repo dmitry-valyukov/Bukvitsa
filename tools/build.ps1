@@ -4,17 +4,22 @@
 # Prompt. Скрипт поднимает это окружение сам: выполняет vcvars64.bat в дочернем
 # cmd, читает выставленные им переменные обратно и применяет к текущему
 # процессу. Ровно так же устроен tools/build.ps1 в wxl, и это не случайно:
-# Буквица собирает wxl как подпроект, поэтому требования к тулчейну у них общие
-# (`import std;`, значит достаточно свежий MSVC и генератор Ninja; проекцию
-# WinUI настройка строит MSBuild'ом этого же окружения, нужен компонент C++
-# WinUI установки Visual Studio).
+# Буквица строит из wxl интерфейсы модулей и обёртки профиля, а с соседним
+# деревом — и всю wxl, поэтому требования к тулчейну у них общие (`import
+# std;`, значит достаточно свежий MSVC и генератор Ninja; пакет WinXL и
+# пакеты WinUI настройка восстанавливает MSBuild'ом этого же окружения, нужен
+# компонент C++ WinUI установки Visual Studio).
+#
+# -Preset — пресет настройки и каталог build\<пресет>: x64 (по умолчанию) берёт
+# wxl из пакета WinXL, x64-wxl-tree — из соседнего дерева BUKVITSA_WXL_ROOT.
 #
 # Использование:
 #   tools\build.ps1                  # настроить (если нужно) и собрать Debug
 #   tools\build.ps1 -Config Release
 #   tools\build.ps1 -Configure       # принудительно перенастроить
 #   tools\build.ps1 -Target fb3_tests
-#   tools\build.ps1 -Configure -Define BUKVITSA_WXL_ROOT=M:/wxl
+#   tools\build.ps1 -Preset x64-wxl-tree -Configure -Define BUKVITSA_WXL_ROOT=M:/wxl
+#   tools\build.ps1 -Preset x64-wxl-tree -Target docs
 #   tools\build.ps1 -Toolset 14.52  # другой установленный тулсет MSVC; по умолчанию — ниже
 
 [CmdletBinding()]

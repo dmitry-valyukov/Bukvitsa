@@ -18,15 +18,45 @@
 
 ## Сборка
 
-Нужна соседняя библиотека [wxl](../wxl) — путь задаётся `BUKVITSA_WXL_ROOT`
-(по умолчанию `../wxl`) — и Visual Studio с тулчейном, умеющим `import std;`.
-CMake нужен версии 4.5 или новее, как и самой wxl: с этого выпуска он даёт
-`import std;` без экспериментального ключа.
+Нужны Visual Studio с тулчейном, умеющим `import std;`, и компонентом C++
+WinUI, CMake 4.5 или новее (как и самой wxl: с этого выпуска он даёт
+`import std;` без экспериментального ключа), .NET SDK 10.0.200 или новее и
+библиотека [wxl](https://github.com/wxl-project/wxl) одним из двух способов.
+
+**Пакет NuGet `WinXL`** — пресет `x64`, основной путь. Поставщик
+`cmake/winxl-provider.cmake` (копия файла wxl) восстанавливает пакет для
+`find_package(wxl)`: наименьшую версию называет корневой `CMakeLists.txt`,
+точную — файл блокировки `packages.lock.json`, источники — `nuget.config`.
+`WinXL` берётся только из локального каталога пакетов `feed/` в корне
+дерева. Пакет собирается из дерева wxl на коммите той версии, что записана в
+файле блокировки, так, как его собирает `package.yml` wxl (раздел «Пакет
+WinXL» её `docs/building.md`), и публикуется в `feed/` её сценарием; затем
+`tools\winxl-lock.ps1` записывает в файл блокировки хеш этого пакета —
+упаковка не воспроизводится побайтно, а NuGet сверяет хеш при каждом
+восстановлении:
 
 ```
+cmake -DWXL_PUBLISH_PACKAGE=<каталог>\WinXL.<версия>.nupkg -DWXL_PUBLISH_FEED=feed -P <wxl>\tools\package\publish.cmake
+tools\winxl-lock.ps1
 tools\build.ps1                 # настроить (если нужно) и собрать Debug
 tools\build.ps1 -Config Release
 ctest --preset x64-debug
+```
+
+Пакету нужны обе сборки wxl, `x64-dynamic` и `x64-static`, каждая в Debug и
+Release: Debug Буквицы берёт библиотеки с CRT в DLL, Release — со статической,
+а конфигурация пакета требует обе конфигурации в каждом виде CRT.
+
+**Соседнее дерево wxl** — пресет `x64-wxl-tree`: корень дерева
+`BUKVITSA_WXL_ROOT` (по умолчанию `../wxl`) подключается подкаталогом. Так
+Буквица собирается с ещё не влитой правкой wxl, и только так строится сайт
+документации:
+
+```
+tools\build.ps1 -Preset x64-wxl-tree
+tools\build.ps1 -Preset x64-wxl-tree -Configure -Define BUKVITSA_WXL_ROOT=M:/wxl
+tools\build.ps1 -Preset x64-wxl-tree -Target docs
+ctest --preset x64-wxl-tree-debug
 ```
 
 Скрипт сам поднимает окружение Visual Studio, так что годится обычная оболочка.
@@ -36,10 +66,12 @@ ctest --preset x64-debug
 с wxl.
 
 Пул-реквесты проверяет GitHub Actions (`.github/workflows/ci.yml`): на
-Windows-машине дерево собирается в Debug и Release, проходит тесты, и читалка
-должна открыть своё окно. wxl для этого берётся на том коммите, который назван
-в `tools/wxl.json`; правка, которой нужна более новая wxl, передвигает его,
-когда та уже влита в `main` wxl.
+Windows-машине дерево собирается в Debug и Release из пакета `WinXL`,
+проходит тесты, и читалка должна открыть своё окно. Пакет той версии, что
+записана в файле блокировки, собирает сценарий `.github/workflows/winxl.yml`
+действиями самой wxl из её дерева на коммите `main` с этой версией; версия,
+которой ещё нет в `main` wxl, оставляет проверку красной, пока нужная правка
+wxl не влита.
 
 ## Читалка
 
