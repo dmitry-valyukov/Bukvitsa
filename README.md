@@ -54,7 +54,7 @@ Release: Debug Буквицы берёт библиотеки с CRT в DLL, Rel
 
 ```
 tools\build.ps1 -Preset x64-wxl-tree
-tools\build.ps1 -Preset x64-wxl-tree -Configure -Define BUKVITSA_WXL_ROOT=M:/wxl
+tools\build.ps1 -Preset x64-wxl-tree -Configure -Define BUKVITSA_WXL_ROOT=M:/wxl   # только перенастроить
 tools\build.ps1 -Preset x64-wxl-tree -Target docs
 ctest --preset x64-wxl-tree-debug
 ```
