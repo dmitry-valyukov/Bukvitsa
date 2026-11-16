@@ -137,8 +137,7 @@ endif()
 # docs/building.md, — модули по отдельности не подключаются. Читалка получает
 # бэкенд WinUI вместе с генератором, которым собираются обёртки (WXL_UI,
 # WXL_TOOLS), и не получает ни примеров, ни песочницы, ни сайта, ни тестов
-# wxl. EXCLUDE_FROM_ALL: собирается только то, что линкует Буквица, а не
-# библиотеки профилей и редактор профилей самой wxl.
+# wxl.
 #
 # В обоих случаях первая настройка восстанавливает пакеты NuGet и строит
 # проекцию cppwinrt (MSBuild окружения разработчика, компонент C++ WinUI),
@@ -148,7 +147,7 @@ endif()
 # всеми областями (fmt, async, logging, xml, json, html), wxl::ui.reader —
 # окно и контролы профиля читалки (Reader/profile).
 if(BUKVITSA_WXL_ROOT)
-    add_subdirectory("${BUKVITSA_WXL_ROOT}" wxl EXCLUDE_FROM_ALL)
+    add_subdirectory("${BUKVITSA_WXL_ROOT}" wxl)
 else()
     find_package(wxl 0.1.0.84 CONFIG REQUIRED)
 endif()
