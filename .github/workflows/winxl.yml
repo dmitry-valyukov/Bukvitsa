@@ -1,0 +1,277 @@
+# Пакет WinXL той версии, что записана в packages.lock.json, собранный здесь
+# из wxl, а не скачанный: Буквица берёт WinXL из локального каталога пакетов
+# feed/ (nuget.config), и пакет туда кладёт задание сборки, публикуя его
+# tools/package/publish.cmake дерева wxl, как задания consumer её
+# package.yml.
+#
+#   locate  версия WinXL из файла блокировки и коммит main wxl с этой версией.
+#           Версия коммита по cmake/wxl_package_version.cmake wxl — последний
+#           выпуск по метке v<x.y.z> и четвёртым числом число коммитов после
+#           неё, а main wxl вливает каждый PR одним коммитом, поэтому версия
+#           x.y.z.N — N-й коммит первой родительской линии main после метки, а
+#           x.y.z — коммит самой метки. Найденный коммит проверяется git
+#           describe, как его версию считает сама wxl; версии, которой на main
+#           wxl нет, нет и пакета: PR Буквицы, которому нужна невлитая правка
+#           wxl, остаётся красным, пока её не вольют. Затем — есть ли пакет
+#           этой версии и этого коммита в кэше Actions.
+#   libs, tools, pack  только без пакета в кэше: wxl выписывается на этом
+#           коммите, и пакет собирают её же действия .github/actions/
+#           package-libs, package-tools и package-pack — те шаги, что и у её
+#           package.yml, — а не копия их здесь. Готовый WinXL.<версия>.nupkg
+#           кладётся в кэш с ключом winxl-<версия>-<коммит>.
+#
+# Задание build из ci.yml берёт пакет из кэша, публикует его в feed/ и
+# записывает его хеш в файл блокировки (tools/winxl-lock.ps1: упаковка не
+# воспроизводится побайтно, а NuGet сверяет хеш при всяком восстановлении).
+#
+# Кэш PR виден только этому PR, кэш main — всем. Поэтому, кроме вызова из
+# ci.yml, сценарий запускается пушем в main, меняющим файл блокировки или его
+# самого, и вручную: пакет новой версии один раз собирается в кэш main, и
+# следующим PR его не собирать.
+#
+# Тулсет, сборочные средства WinUI и CMake ставятся, как в ci.yml;
+# восстановление при настройке дерева wxl идёт в режиме блокировки, по её
+# tools/packages.lock.json.
+name: winxl
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: Версия WinXL из packages.lock.json.
+        value: ${{ jobs.locate.outputs.version }}
+      commit:
+        description: Коммит main wxl с этой версией.
+        value: ${{ jobs.locate.outputs.commit }}
+      key:
+        description: Ключ кэша Actions, под которым лежит WinXL.<версия>.nupkg в каталоге winxl-package.
+        value: ${{ jobs.locate.outputs.key }}
+  push:
+    branches: [main]
+    paths:
+      - packages.lock.json
+      - .github/workflows/winxl.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Имя сценария при вызове — имя вызывающего, поэтому группа отдельна от группы
+# ci.yml; пакет следующим запуском не отменяется, иначе он не попал бы в кэш.
+concurrency:
+  group: ${{ github.workflow }}-winxl-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # На Windows, как и сборка: кэш, сохранённый на Windows, находится только
+  # с Windows.
+  locate:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.locate.outputs.version }}
+      commit: ${{ steps.locate.outputs.commit }}
+      key: ${{ steps.locate.outputs.key }}
+      hit: ${{ steps.cache.outputs.cache-hit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Bukvitsa
+          sparse-checkout: packages.lock.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Вся история main с метками: коммит версии ищется в ней.
+      - uses: actions/checkout@v4
+        with:
+          repository: wxl-project/wxl
+          ref: main
+          path: wxl
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Locate the commit of the locked WinXL
+        id: locate
+        shell: pwsh
+        run: |
+          $lock = Get-Content Bukvitsa/packages.lock.json -Raw | ConvertFrom-Json
+          $versions = @(foreach ($target in $lock.dependencies.PSObject.Properties) {
+            foreach ($package in $target.Value.PSObject.Properties) {
+              if ($package.Name -eq 'WinXL') { $package.Value.resolved }
+            }
+          })
+          if ($versions.Count -ne 1) { throw "packages.lock.json records WinXL $($versions.Count) times, not once" }
+          $version = $versions[0]
+          if ($version -notmatch '^([0-9]+\.[0-9]+\.[0-9]+)(\.([0-9]+))?$') { throw "packages.lock.json records WinXL '$version'" }
+          $release = $Matches[1]
+          $count = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+
+          $tag = git -C wxl rev-parse --verify -q "refs/tags/v$release^{commit}"
+          if ($LASTEXITCODE -ne 0) { throw "wxl has no release tag v$release" }
+          $after = @(git -C wxl rev-list --first-parent --reverse "$tag..origin/main")
+          if ($LASTEXITCODE -ne 0) { throw "git rev-list failed" }
+          if ($count -eq 0) {
+            git -C wxl merge-base --is-ancestor $tag origin/main
+            if ($LASTEXITCODE -ne 0) { throw "the tag v$release is not on wxl's main" }
+            $commit = $tag
+          } elseif ($count -le $after.Count) {
+            $commit = $after[$count - 1]
+          } else {
+            throw "wxl's main has no WinXL ${version}: $($after.Count) commits after v$release. A pair of wxl that is not merged yet?"
+          }
+
+          $described = git -C wxl describe --tags --match 'v*' --long $commit
+          if ($LASTEXITCODE -ne 0) { throw "git describe failed on $commit" }
+          if ($described -notmatch "^v$([regex]::Escape($release))-$count-g[0-9a-f]+$") { throw "wxl $commit describes as $described, not as WinXL $version" }
+
+          "WinXL $version is wxl $commit ($described)"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+          "key=winxl-$version-$commit" >> $env:GITHUB_OUTPUT
+
+      - name: Look the package up in the cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: winxl-package
+          key: ${{ steps.locate.outputs.key }}
+          lookup-only: true
+
+  libs:
+    needs: [locate]
+    if: needs.locate.outputs.hit != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: x64-dynamic
+            variant: md
+          - preset: x64-static
+            variant: mt
+    name: libs (${{ matrix.preset }})
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      DEVCMD: C:\BuildToolsInsiders\Common7\Tools\VsDevCmd.bat
+      VCVARS: -vcvars_ver=14.53
+      NUGET_PACKAGES: C:\nuget-packages
+      RestoreLockedMode: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Bukvitsa
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: wxl-project/wxl
+          ref: ${{ needs.locate.outputs.commit }}
+          path: wxl
+          persist-credentials: false
+
+      - uses: ./Bukvitsa/.github/actions/cmake
+
+      - uses: ./Bukvitsa/.github/actions/build-tools
+
+      - uses: ./wxl/.github/actions/package-libs
+        with:
+          preset: ${{ matrix.preset }}
+          version: ${{ needs.locate.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wxl-install-${{ matrix.variant }}
+          path: wxl/stage/
+          if-no-files-found: error
+
+  tools:
+    needs: [locate]
+    if: needs.locate.outputs.hit != 'true'
+    name: tools (Release)
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      DEVCMD: C:\BuildToolsInsiders\Common7\Tools\VsDevCmd.bat
+      VCVARS: -vcvars_ver=14.53
+      NUGET_PACKAGES: C:\nuget-packages
+      RestoreLockedMode: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Bukvitsa
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: wxl-project/wxl
+          ref: ${{ needs.locate.outputs.commit }}
+          path: wxl
+          persist-credentials: false
+
+      - uses: ./Bukvitsa/.github/actions/cmake
+
+      - uses: ./Bukvitsa/.github/actions/build-tools
+
+      - uses: ./wxl/.github/actions/package-tools
+        with:
+          version: ${{ needs.locate.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wxl-tools-x64
+          path: wxl/artifact/wxl-tools-x64/
+          if-no-files-found: error
+
+  pack:
+    needs: [locate, libs, tools]
+    if: needs.locate.outputs.hit != 'true'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Bukvitsa
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: wxl-project/wxl
+          ref: ${{ needs.locate.outputs.commit }}
+          path: wxl
+          persist-credentials: false
+
+      - uses: ./Bukvitsa/.github/actions/cmake
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wxl-install-md
+          path: wxl/install-md
+      - uses: actions/download-artifact@v4
+        with:
+          name: wxl-install-mt
+          path: wxl/install-mt
+      - uses: actions/download-artifact@v4
+        with:
+          name: wxl-tools-x64
+          path: wxl/tools-x64
+
+      - uses: ./wxl/.github/actions/package-pack
+        with:
+          version: ${{ needs.locate.outputs.version }}
+          commit: ${{ needs.locate.outputs.commit }}
+
+      - name: Put the package where the cache keeps it
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.locate.outputs.version }}
+        run: |
+          New-Item -ItemType Directory winxl-package | Out-Null
+          Copy-Item "wxl/package/WinXL.$env:VERSION.nupkg" winxl-package
+
+      - uses: actions/cache/save@v4
+        with:
+          path: winxl-package
+          key: ${{ needs.locate.outputs.key }}

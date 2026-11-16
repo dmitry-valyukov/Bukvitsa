@@ -1,8 +1,15 @@
 # Reader — читалка на wxl.ui.
 #
+# Библиотека профиля читалки, wxl::ui.reader: обёртки профиля
+# profile/reader.winxl-profile, которые пишет генератор wxl, и компоненты,
+# которые профиль выбирает. Профиль продолжает full wxl; full лежит не рядом
+# с ним, и генератор с настройкой находят его среди профилей wxl — пакета или
+# соседнего дерева.
+wxl_add_ui_library(reader PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/profile/reader.winxl-profile")
+
 # Объявляется так же, как всякое приложение на wxl: `wxl_add_executable`
 # делает исполняемый файл оконным (его точка входа wWinMain живёт в самой
-# wxl), линкует библиотеку профиля из `UI` (wxl::ui.full), кладёт рядом с ним
+# wxl), линкует библиотеку профиля из `UI` (wxl::ui.reader), кладёт рядом с ним
 # всё, что wxl нужно во время
 # выполнения, — загрузчик Windows App Runtime, Win2D, WebView2Loader, — и
 # выписывает манифест: масштаб по монитору окно держит само, Windows названа
@@ -14,7 +21,7 @@
 # гарантирует.
 
 wxl_add_executable(Reader
-    UI wxl::ui.full
+    UI wxl::ui.reader
     src/main.cpp
     src/app.cpp
     src/app_books.cpp
