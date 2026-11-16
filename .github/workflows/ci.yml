@@ -66,7 +66,7 @@ jobs:
             preset: x64-release
     name: build (${{ matrix.config }})
     runs-on: windows-2025
-    # Библиотеки wxl приходят готовыми, но обёртки профиля читалки (full wxl)
+    # Библиотеки wxl приходят готовыми, но обёртки профиля читалки (rich wxl и сверх него)
     # компилируются здесь, вместе с самой Буквицей.
     timeout-minutes: 120
     env:

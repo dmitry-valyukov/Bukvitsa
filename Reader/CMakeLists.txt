@@ -2,7 +2,7 @@
 #
 # Библиотека профиля читалки, wxl::ui.reader: обёртки профиля
 # profile/reader.winxl-profile, которые пишет генератор wxl, и компоненты,
-# которые профиль выбирает. Профиль продолжает full wxl; full лежит не рядом
+# которые профиль выбирает. Профиль продолжает rich wxl; rich лежит не рядом
 # с ним, и генератор с настройкой находят его среди профилей wxl — пакета или
 # соседнего дерева.
 wxl_add_ui_library(reader PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/profile/reader.winxl-profile")
