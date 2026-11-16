@@ -12,6 +12,9 @@
 # образа неверно компилирует корутину, чей final_suspend() возвращает
 # suspend_never, в оптимизированном коде с /EHsc.
 #
+# CMake — 4.5.0, тоже ставится на каждом запуске (.github/actions/cmake, копия
+# действия wxl): дерево, как и wxl, требует 4.5, а в образе windows-2025 — 4.4.5.
+#
 # wxl.ui нужно то, чего в репозитории wxl нет: закреплённые пакеты NuGet,
 # проекция cppwinrt и обёртки, которые пишет winui-srcgen. Всё это делает сама
 # wxl, и отдельных шагов для него нет: настройка Буквицы восстанавливает пакеты
@@ -136,6 +139,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: Bukvitsa
+
+      # CMake 4.5, которого требуют Буквица и wxl: в образе машины он старее.
+      - uses: ./Bukvitsa/.github/actions/cmake
 
       - name: Read the wxl pin
         id: pin
