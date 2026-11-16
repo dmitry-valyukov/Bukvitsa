@@ -1,7 +1,30 @@
 {
     "name": "reader",
-    "description": "Профиль читалки Буквицы: full wxl как есть. Читалка берёт из wxl.ui компоненты dsl, controls (Card), composition (CompositionWindow, DrawingSurface, ThemeBrush), dialogs (ShowDialog), accessibility (automationName) и компоненты base; dialogs и accessibility есть только в full, а типы и члены WinUI, которые читалка зовёт сверх rich, не перечислены. Поэтому профиль продолжает full и ничего не убирает; сужение до rich с перечнем того, что читалке нужно сверх него, — отдельная работа.",
+    "description": "Профиль читалки Буквицы: rich wxl и то, что читалка зовёт сверх него. Из rich читалка берёт компоненты dsl, controls (Card), composition (CompositionWindow, DrawingSurface, ThemeBrush) и компоненты base, automationName — из elements. Сверх rich: dialogs — ShowDialog, которым показываются сообщения (notices.cpp); items — itemContainerStyle списков полки и вкладок панели (library_screen.cpp, reader_panel.cpp).",
     "extends": [
-        "full"
-    ]
+        "rich"
+    ],
+
+    "components": [
+        "dialogs",
+        "items"
+    ],
+
+    "types": {
+        "Microsoft.UI.Xaml.DataTemplate": {
+            "comment": "Не читалке, а компоненту items: его ItemTemplate.h возвращает обёртку DataTemplate, а сам компонент её не называет, и в rich её нет.",
+            "members": []
+        },
+        "Microsoft.UI.Xaml.Controls.GridView": {
+            "comment": "Тоже не читалке, а компоненту items: проверка его поверхности (items.surface.cpp), которую собирает тест поверхности профиля, пишет GridView, а в rich его нет.",
+            "members": []
+        },
+        "Microsoft.UI.Xaml.Media.Imaging.BitmapImage": {
+            "comment": "Обложка книги на полке (library_screen.cpp): картинка по адресу файла, раскодированная под высоту карточки.",
+            "members": [
+                "UriSource",
+                "DecodePixelHeight"
+            ]
+        }
+    }
 }
