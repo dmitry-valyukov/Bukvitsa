@@ -88,7 +88,7 @@ LibraryScreen::LibraryScreen(observable_list<intrusive_ptr<ShelfCard> const>& ca
                              Actions& actions)
     : actions_(actions), cards_(cards) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
-    // бы обычные слова (entry, text) и под /W4 каждое стало бы C4459.
+    // бы обычные слова (entry, text) во всём файле.
     using namespace wxl::dsl;
 
     Apply {
