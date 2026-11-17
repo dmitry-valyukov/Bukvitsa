@@ -11,14 +11,6 @@
     ],
 
     "types": {
-        "Microsoft.UI.Xaml.DataTemplate": {
-            "comment": "Не читалке, а компоненту items: его ItemTemplate.h возвращает обёртку DataTemplate, а сам компонент её не называет, и в rich её нет.",
-            "members": []
-        },
-        "Microsoft.UI.Xaml.Controls.GridView": {
-            "comment": "Тоже не читалке, а компоненту items: проверка его поверхности (items.surface.cpp), которую собирает тест поверхности профиля, пишет GridView, а в rich его нет.",
-            "members": []
-        },
         "Microsoft.UI.Xaml.Media.Imaging.BitmapImage": {
             "comment": "Обложка книги на полке (library_screen.cpp): картинка по адресу файла, раскодированная под высоту карточки.",
             "members": [

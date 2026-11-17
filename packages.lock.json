@@ -4,8 +4,8 @@
     "native,Version=v0.0": {
       "WinXL": {
         "type": "Direct",
-        "requested": "[0.1.0.87, )",
-        "resolved": "0.1.0.87",
+        "requested": "[0.1.0.93, )",
+        "resolved": "0.1.0.93",
         "contentHash": "sFnOGQUvMb+ga9Pg6mv3QJAdpXmydfW2ASUOT7SXnYR9PGpsl21XOVBVd/t4GMyRJiL0459ru/P0Z5u1SlmwhQ==",
         "dependencies": {
           "Microsoft.Graphics.Win2D": "1.4.0",
