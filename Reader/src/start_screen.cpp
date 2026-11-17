@@ -32,7 +32,7 @@ constexpr Vector3 kRiseFrom{0.0f, 14.0f, 0.0f};
 // Разметка большой кнопки одна, с книгой и без: что в ней видно и какой она
 // высоты, выводится из полей книги (`BindOutput`). Выводы — здесь, а не
 // лямбдами в разметке: там открыты теги, и имя параметра вроде `title`
-// спрятало бы одноимённый тег (C4459).
+// спрятало бы одноимённый тег.
 
 /// Есть книга — есть и строки названия и автора под надписью.
 Visibility shownWithBook(u16_text const& bookTitle) {
@@ -87,7 +87,7 @@ StartScreen::StartScreen(const Compositor& compositor, Actions& actions)
       compositor_(compositor),
       cardVisual_(ElementCompositionPreview::getElementVisual(cardShell_)) {
     // Теги разметки — внутри строителей, не на уровне файла: там они накрыли
-    // бы обычные слова (title, key, delay) и под /W4 каждое стало бы C4459.
+    // бы обычные слова (title, key, delay) во всём файле.
     using namespace wxl::dsl;
 
     // Колонка текста большой кнопки: своя надпись, под ней название, под ним

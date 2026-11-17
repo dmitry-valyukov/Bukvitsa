@@ -15,7 +15,7 @@ add_library(microtex STATIC
     tinyxml2/tinyxml2.cpp
 )
 
-# SYSTEM: заголовки чужие, и их предупреждения в потребителях (/W4 у кода
+# SYSTEM: заголовки чужие, и их предупреждения в потребителях (/W3 у кода
 # Буквицы) — не наши; MSVC получает их через /external:I с /external:W0.
 target_include_directories(microtex SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/MicroTeX/src")
 target_include_directories(microtex PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tinyxml2")
@@ -31,7 +31,7 @@ set_target_properties(microtex PROPERTIES
 )
 
 # Чужой код с чужими предупреждениями: они не адресованы этой сборке, как и
-# предупреждения wxl (см. корневой CMakeLists про /W4).
+# предупреждения wxl (см. корневой CMakeLists про /W3).
 if(MSVC)
     target_compile_options(microtex PRIVATE /w)
 endif()
