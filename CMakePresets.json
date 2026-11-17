@@ -37,10 +37,10 @@
     {
       "name": "x64-wxl-tree",
       "displayName": "x64 (Ninja Multi-Config), wxl из соседнего дерева",
-      "description": "wxl из соседнего дерева BUKVITSA_WXL_ROOT (по умолчанию ../wxl), подключённого подкаталогом: сборка с невлитой парной веткой wxl и сайт документации.",
+      "description": "wxl из соседнего дерева BUKVITSA_WXL_ROOT (по умолчанию ../wxl), подключённого подкаталогом: сборка с невлитой парной веткой wxl и сайт документации. Пресет задаёт только умолчание BUKVITSA_WXL_ROOT_DEFAULT, поэтому путь, однажды записанный в кэш, перенастройка сохраняет.",
       "inherits": "base",
       "cacheVariables": {
-        "BUKVITSA_WXL_ROOT": "${sourceDir}/../wxl"
+        "BUKVITSA_WXL_ROOT_DEFAULT": "${sourceDir}/../wxl"
       }
     }
   ],
